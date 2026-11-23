@@ -8,11 +8,16 @@ import type { RepositoryGitOptions, RepositoryGitResult } from "./git-policy.js"
 export { RepositoryGitError } from "./git-policy.js";
 export type { RepositoryGitOptions, RepositoryGitResult } from "./git-policy.js";
 
+type RepositoryGitReadOptions = RepositoryGitOptions & {
+  /** Opt-in protocol output from an ordinary nonzero exit; never diagnostic text. */
+  readonly captureFailedStdout?: boolean;
+};
+
 export const runRepositoryGit = async (
   cwd: string,
   args: readonly string[],
   operation: Operation,
-  options: RepositoryGitOptions = {},
+  options: RepositoryGitReadOptions = {},
 ): Promise<RepositoryGitResult> => {
   const timeoutMs = gitTimeout(operation, options.timeoutMs);
   return new Promise((resolve, reject) => {
@@ -51,7 +56,9 @@ export const runRepositoryGit = async (
       }
       if (primary !== undefined) { reject(primary); return; }
       if (exitCode !== 0 && !(exitCode === 1 && options.allowExitOne === true)) {
-        reject(new RepositoryGitError("Repository Git command failed", exitCode, signal, errorOutput));
+        const output = options.captureFailedStdout === true && exitCode !== null && signal === null
+          ? { failedStdout: Buffer.concat(stdout).toString("utf8") } : undefined;
+        reject(new RepositoryGitError("Repository Git command failed", exitCode, signal, errorOutput, output));
         return;
       }
       if (exitCode === null) {

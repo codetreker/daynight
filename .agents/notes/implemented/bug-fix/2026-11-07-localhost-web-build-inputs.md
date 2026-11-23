@@ -29,8 +29,12 @@ The Web quality runner performs full typechecking, tooling tests, the actual
 localhost Dockerfile's `web` target, coverage collection and statement checking.
 The Docker stage verifies locked container installation, production compilation
 and publication into the Go embed directory without starting services or
-running Go tests. The existing module selection and independent browser job
-remain unchanged. The [Web validation decision](../testing/2026-11-06-web-quality-validation.md)
+running Go tests. It uses `docker build --output=type=cacheonly` with the same
+Dockerfile, target and context. Docker
+[cache-only export](https://docs.docker.com/build/exporters/#cache-only-export)
+executes the target and retains its build cache without exporting an image;
+subsequent quality checks run on the host and consume no image. The existing
+module selection and independent browser job remain unchanged. The [Web validation decision](../testing/2026-11-06-web-quality-validation.md)
 owns subprocess limits and the enclosing quality budget.
 
 ## Alternatives
@@ -47,6 +51,11 @@ and context-filter changes.
 that the Docker context or stage can omit, so this check cannot detect the
 reported deployment failure.
 
+**Export the validation image.** Exporting layers and loading the `web` image
+adds work with no consumer. Container installation, compilation and asset
+publication complete before export, so image materialization adds no proof
+required by this gate. Deployment validation owns final-image behavior.
+
 ## Consequences
 
 Production compilation requires its real source graph and no acceptance
@@ -59,6 +68,7 @@ cached. Unused CLI source is neither bundled into Web assets nor copied into
 the final runtime image.
 
 Quality validation requires Docker and registry access and spends additional
-time on container compilation. It leaves build cache but creates no running
-service, database or image tag. The Web target cannot establish final Go image
+time on container compilation. It also requires Buildx cache-only output
+support. It leaves build cache but creates no running service, database, image
+tag or untagged validation image. The Web target cannot establish final Go image
 startup; disposable deployment validation has that separate responsibility.

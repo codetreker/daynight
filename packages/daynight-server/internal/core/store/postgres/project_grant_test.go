@@ -12,6 +12,7 @@ import (
 )
 
 func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, target, project := membershipFixture(t)
 	ctx := context.Background()
 	if _, err := s.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, project.Ownership.TeamID, target.UserID); err != nil {

@@ -6,9 +6,12 @@ import { BotsPage } from '../src/features/bots/BotsPage';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_USER, botDefinition, botDefaults, botId, botResponse, botError } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
 import { parseAuthRoute } from '../src/app/router';
 import * as router from '../src/app/router';
 import { pauseAuthRequests } from '../src/api/client';
+import { getBotDeletionCoordinator } from '../src/features/bots/deletion-coordinator';
+import type { DeletedBot } from '../src/api/bots';
 import { assistantCreateSubmit, assistantDetailsOpener, expandAssistantAdvancedSettings, mockWideAssistantWorkspace, openAssistantCreation } from './helpers/assistant-ui';
 vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ displayBinding, presentation, error, active }: {displayBinding: {botId:string}|null; presentation: SessionPresentationSlots; error?: string | null; active: boolean}) => <section data-testid="host"><header>{presentation.renderHeader?.(undefined as unknown as SessionHeaderSlot)}</header>{displayBinding?.botId ?? 'no binding'}{active && error ? presentation.renderUnavailable?.({ phase: 'binding', hasContent: false, retry: () => {}, error }) : null}</section> }));
 const emptyPanes = Object.freeze([]);
@@ -25,6 +28,10 @@ function fixture() {
  const bots = [botDefinition(1),botDefinition(2)];
  const fetch = vi.fn(async (url: string|URL|Request, _options?: RequestInit) => {
   const path = String(url);
+  if(path.endsWith('/observation')) {
+    const bot = bots.find(bot => path.includes(bot.id))!;
+    return botResponse(botObservation(1, { botId: bot.id, botVersion: bot.version, machine: { id: 'machine-20', name: 'Machine 20' } }));
+  }
   if(path.includes('/defaults')) return botResponse(botDefaults());
   if(path.includes('?')) return botResponse({items:bots,nextCursor:null});
   return botResponse(bots.find(bot=>path.endsWith(bot.id))!);
@@ -311,4 +318,112 @@ it('waits for the first confirmed count before consuming an opening', async()=>{
  await act(async()=>firstDetail.resolve(botResponse(f.bots[0])));
  expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1);
  expect(document.querySelector('.bot-attention-count')).toBeNull();
+});
+
+it.each(['worker', 'server'] as const)('withdraws completed feedback after only %s cleanup was initially complete and keeps the deletion fence across remount and reload', async completeFirst => {
+ const f=fixture(); let request: {deletionId:string;ifVersion:string}|undefined;
+ const completion=Promise.withResolvers<Response>();
+ const deletion=(worker: 'pending'|'completed', server: 'pending'|'completed', version: string): DeletedBot => ({
+  id:botId(2),workerId:botId(20),version,deletion:{deletionId:request!.deletionId,requestedVersion:request!.ifVersion,workerCleanup:{state:worker,code:null},serverCleanup:{state:server,code:null}},
+ });
+ f.fetch.mockImplementation(async(url,options)=>{
+  if(options?.method==='DELETE') {
+   request=JSON.parse(String(options.body));
+   return botResponse(deletion(completeFirst==='worker'?'completed':'pending',completeFirst==='server'?'completed':'pending','2'));
+  }
+  if(String(url).includes('/defaults')) return botResponse(botDefaults());
+  if(String(url).includes('?')) return botResponse({items:f.bots,nextCursor:null});
+  if(String(url).endsWith(botId(2)) && request) return completion.promise;
+  return botResponse(f.bots.find(bot=>String(url).endsWith(bot.id)));
+ });
+ const view=mount(botId(1));
+ fireEvent.click(await screen.findByRole('button',{name:'More actions for Assistant 2'}));
+ fireEvent.click(screen.getByRole('menuitem',{name:'Delete assistant'}));
+ fireEvent.click(within(screen.getByRole('dialog')).getByRole('button',{name:'Delete assistant'}));
+ await screen.findByText('Waiting for cleanup');
+ const status=screen.getByRole('region',{name:'Assistant deletion'});
+ expect(within(status).getByText('Assistant 2')).toBeVisible();
+ expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+ if(completeFirst==='server') {
+  view.select(botId(2));
+  expect(screen.getByRole('region',{name:'Assistant deletion'}).closest('.bot-selected-deletion')).not.toBeNull();
+ }
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Check deletion'})).toBeEnabled());
+ fireEvent.click(screen.getByRole('button',{name:'Check deletion'}));
+ await act(async()=>completion.resolve(botResponse(deletion('completed','completed','3'))));
+ await waitFor(()=>expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull());
+ expect(screen.queryByText('Deletion completed')).toBeNull();
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+ if(completeFirst==='worker') expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+ const coordinator=getBotDeletionCoordinator(view.scope);
+ expect(coordinator.snapshot()[0]?.phase).toBe('completed');
+ act(()=>coordinator.observe(deletion('pending','pending','2')));
+ fireEvent.click(screen.getByRole('button',{name:'Refresh'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Refresh'})).toBeEnabled());
+ expect(coordinator.snapshot()[0]?.phase).toBe('completed');
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+ expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull();
+ view.select(botId(2));
+ expect(screen.getByText('This assistant has been deleted.')).toBeVisible();
+ expect(screen.getAllByRole('heading',{name:'Assistant 2'}).length).toBeGreaterThan(0);
+ expect(screen.getAllByRole('link',{name:'Back to assistants'}).length).toBeGreaterThan(0);
+ expect(screen.getByTestId('host')).toHaveTextContent('no binding');
+ view.select(null); view.select(botId(2));
+ expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull();
+ view.unmount();
+ const remount=renderWithLocale(<TaskCacheProvider scope={view.scope}><BotsPage botId={botId(2)} readEnabled /></TaskCacheProvider>,{locale:'en'});
+ expect(screen.getByText('This assistant has been deleted.')).toBeVisible();
+ expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull();
+ remount.unmount();
+ const restored=mount(botId(2));
+ expect(getBotDeletionCoordinator(restored.scope).snapshot()[0]?.phase).toBe('completed');
+ expect(screen.getByText('This assistant has been deleted.')).toBeVisible();
+ expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull();
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+ expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='DELETE')).toHaveLength(1);
+});
+it('shows a neutral deleted target with a stable title when a passive detail read first observes completion', async()=>{
+ const f=fixture();
+ const deleted: DeletedBot={id:botId(2),workerId:botId(20),version:'2',deletion:{deletionId:botId(90),requestedVersion:'1',workerCleanup:{state:'completed',code:null},serverCleanup:{state:'completed',code:null}}};
+ f.fetch.mockImplementation(async url=>String(url).includes('/defaults')?botResponse(botDefaults()):String(url).includes('?')?botResponse({items:f.bots,nextCursor:null}):botResponse(deleted));
+ const view=mount(botId(2));
+ await screen.findByText('This assistant has been deleted.');
+ expect(screen.getAllByRole('heading',{name:'Assistants'}).length).toBeGreaterThan(0);
+ expect(screen.queryByRole('heading',{name:'Loading…'})).toBeNull();
+ expect(screen.queryByRole('region',{name:'Assistant deletion'})).toBeNull();
+ expect(screen.queryByText('Deletion completed')).toBeNull();
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+ expect(screen.getByTestId('host')).toHaveTextContent('no binding');
+ expect(getBotDeletionCoordinator(view.scope).snapshot()[0]?.phase).toBe('completed');
+ expect(f.fetch.mock.calls.some(([,options])=>options?.method==='DELETE')).toBe(false);
+});
+
+it('shows missing execution evidence with original-machine compensation and only reads when checking deletion', async () => {
+ const deleted: DeletedBot = { id: botId(2), workerId: botId(20), version: '2', deletion: { deletionId: botId(90), requestedVersion: '1', workerCleanup: { state: 'failed', code: 'execution_evidence_missing' }, serverCleanup: { state: 'pending', code: null } } };
+ const fetcher = vi.fn(async (url: string | URL | Request, _options?: RequestInit) => {
+  const path = String(url);
+  if (path.includes('/defaults')) return botResponse(botDefaults());
+  if (path.includes('/bots?')) return botResponse({ items: [], nextCursor: null });
+  if (path.endsWith(`/bots/${deleted.id}`)) return botResponse(deleted);
+  throw new Error(`Unexpected route ${path}`);
+ }); vi.stubGlobal('fetch', fetcher);
+ mount(deleted.id);
+ await screen.findByText('Execution records are missing; deletion cannot be confirmed.');
+ expect(screen.queryByRole('heading', { name: 'Loading…' })).toBeNull();
+ expect(screen.getAllByRole('heading', { name: 'Assistants' }).length).toBeGreaterThan(0);
+ const status = within(screen.getByRole('region', { name: 'Assistant deletion' }));
+ expect(status.getByText('execution_evidence_missing')).toBeVisible();
+ expect(status.queryByRole('button', { name: 'Retry original deletion' })).toBeNull();
+ fireEvent.click(status.getByText('Show original-machine recovery steps'));
+ expect(status.getByText(`daynight bot recover ${deleted.id} --deletion-id ${deleted.deletion.deletionId}`)).toBeVisible();
+ expect(status.getByText(/original DN_CONFIG_DIR/)).toBeVisible();
+ expect(status.getByText(/Missing evidence can prevent recovery from completing deletion/)).toBeVisible();
+ expect(status.getByText(`daynight bot show ${deleted.id} --json`)).toBeVisible();
+ await waitFor(() => expect(status.getByRole('button', { name: 'Check deletion' })).toBeEnabled());
+ const reads = fetcher.mock.calls.length;
+ fireEvent.click(status.getByRole('button', { name: 'Check deletion' }));
+ await waitFor(() => expect(fetcher.mock.calls.length).toBeGreaterThan(reads));
+ await waitFor(() => expect(status.getByRole('button', { name: 'Check deletion' })).toBeEnabled());
+ expect(status.queryByText('Deletion completed')).toBeNull();
+ expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });

@@ -24,12 +24,18 @@ type MCPTaskResponse struct {
 	Modern    bool
 	Batch     bool
 	Full      bool
+	Receipt   bool
 }
 
 // WithMCPTaskResponse supplies the request ID used by the MCP success envelope.
 // The write admission uses the same encoder and outcome as the tool response.
 func WithMCPTaskResponse(ctx context.Context, requestID string, rpcID any, modern, batch, full bool) context.Context {
 	return context.WithValue(ctx, mcpTaskResponseKey{}, MCPTaskResponse{RequestID: requestID, RPCID: rpcID, Modern: modern, Batch: batch, Full: full})
+}
+
+// WithMCPTaskReceiptResponse admits the exact minimal MCP write envelope.
+func WithMCPTaskReceiptResponse(ctx context.Context, requestID string, rpcID any, modern, batch bool) context.Context {
+	return context.WithValue(ctx, mcpTaskResponseKey{}, MCPTaskResponse{RequestID: requestID, RPCID: rpcID, Modern: modern, Batch: batch, Receipt: true})
 }
 
 // MCPTaskResponseFromContext returns the response envelope supplied by the MCP adapter.
@@ -43,6 +49,8 @@ func MCPTaskResponseFromContext(ctx context.Context) (MCPTaskResponse, bool) {
 // but before the surrounding transaction commits. Returning its error directly
 // from the transaction callback is required to roll back the completed writes.
 func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error {
+	task = projectTaskWriteResponse(ctx, task)
+	actual := task
 	if len(task.Tags) != 0 {
 		// Reserve space for any legal rename and later version/time-only touches.
 		// The returned Task and its references must retain their actual values.
@@ -54,7 +62,7 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 		task.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
 	}
 	for _, extended := range []bool{false, true} {
-		if _, err := taskprotocol.EncodeREST(io.Discard, task, extended, taskcore.MaxTaskResponseJSONBytes); err != nil {
+		if _, err := taskprotocol.EncodeREST(io.Discard, task, extended, int64(taskcore.MaxTaskResponseJSONBytes)+taskprotocol.AliasBytes(task.Properties), taskParentView(ctx)); err != nil {
 			return taskResponseError(err)
 		}
 	}
@@ -70,7 +78,16 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 			difference = int64(5 * (strings.Count(id, "<") + strings.Count(id, ">") + strings.Count(id, "&")))
 		}
 		budget := int64(taskcore.MaxTaskResponseJSONBytes) + difference
-		if _, err := taskprotocol.EncodeMCPResponse(io.Discard, task, response.RequestID, outcome, response.RPCID, response.Modern, response.Full, budget); err != nil {
+		if response.Full {
+			budget += taskprotocol.AliasBytes(task.Properties)
+		}
+		var err error
+		if response.Receipt {
+			_, err = taskprotocol.EncodeMCPReceiptResponse(io.Discard, actual, response.RequestID, outcome, response.RPCID, response.Modern, budget)
+		} else {
+			_, err = taskprotocol.EncodeMCPResponse(io.Discard, task, response.RequestID, outcome, response.RPCID, response.Modern, response.Full, budget, taskParentView(ctx))
+		}
+		if err != nil {
 			return taskResponseError(err)
 		}
 	}

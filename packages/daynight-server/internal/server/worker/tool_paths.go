@@ -8,28 +8,52 @@ import (
 )
 
 const workerToolPathsHeader = "Daynight-Worker-Tool-Paths"
+const workerArchiveSessionsHeader = "Daynight-Worker-Archive-Sessions"
+const workerPlatformTaskModeHeader = "Daynight-Worker-Platform-Task-Mode"
+const workerControlModeHeader = "Daynight-Worker-Control-Mode"
 
 func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error) {
 	var result workerprotocol.Capabilities
-	var err error
-	result.ControlMode, err = controlModeProtocol(header)
-	if err != nil {
-		return result, err
+	if _, exists := header[workerControlModeHeader]; exists {
+		return result, httpx.InvalidInput("Worker control mode protocol is no longer supported; upgrade the Worker or refresh the Web client.")
 	}
 	if values, exists := header[workerToolPathsHeader]; exists {
-		if len(values) != 1 || values[0] != "1" {
-			return result, httpx.InvalidInput("Unsupported Worker tool paths protocol.")
+		if len(values) != 1 || values[0] != "2" {
+			return result, httpx.InvalidInput("Worker tool paths protocol requires version 2; upgrade the Worker or refresh the Web client.")
 		}
 		result.ToolPaths = true
+	}
+	if values, exists := header[workerArchiveSessionsHeader]; exists {
+		if len(values) != 1 || values[0] != "1" {
+			return result, httpx.InvalidInput("Unsupported Worker archive sessions protocol.")
+		}
+		result.ArchiveSessions = true
+	}
+	if values, exists := header[workerPlatformTaskModeHeader]; exists {
+		if len(values) != 1 || values[0] != "1" {
+			return result, httpx.InvalidInput("Unsupported Worker platform task mode protocol.")
+		}
+		result.PlatformTaskMode = true
 	}
 	return result, nil
 }
 
 func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Capabilities) {
-	if capabilities.ControlMode {
-		header.Set(workerControlModeHeader, "1")
+	if capabilities.PlatformTaskMode {
+		header.Set(workerPlatformTaskModeHeader, "1")
 	}
 	if capabilities.ToolPaths {
-		header.Set(workerToolPathsHeader, "1")
+		header.Set(workerToolPathsHeader, "2")
 	}
+	if capabilities.ArchiveSessions {
+		header.Set(workerArchiveSessionsHeader, "1")
+	}
+}
+
+// The two-tool contract is mandatory only for report, configuration and detail.
+func requireToolPaths(capabilities workerprotocol.Capabilities) error {
+	if !capabilities.ToolPaths {
+		return httpx.InvalidInput("Worker tool paths protocol requires version 2; upgrade the Worker or refresh the Web client.")
+	}
+	return nil
 }

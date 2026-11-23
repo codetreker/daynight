@@ -53,9 +53,10 @@ type gatedHTTPResult struct {
 }
 
 func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
+	fixture := newHTTPFixture(t)
 	for _, scenario := range []string{"credential revoked", "team membership removed"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newHTTPFixture(t)
+			f := fixture.forCase(t)
 			actor := f.actor(t)
 			ownerID := actor.id
 			path := "/api/v1/me/webhooks"
@@ -79,21 +80,24 @@ func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
 			gate := &postCommitGate{WebhookTransactions: f.db, completed: make(chan completedWrite, 1), resume: make(chan struct{})}
 			mux := http.NewServeMux()
 			httpwebhook.NewRoutes(&service.Service{DB: gate, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
-			server := httptest.NewServer(mux)
-			defer server.Close()
-			defer func() {
-				select {
-				case <-gate.resume:
-				default:
-					close(gate.resume)
-				}
-			}()
 			destination := "https://receiver.example/private-path?token=private-query"
 			fields := createFields(actor, "commit before revoke", destination)
 			body := encoded(t, fields)
 			operationID := fields["operationId"].(string)
 			result := make(chan gatedHTTPResult, 1)
+			clientDone := make(chan struct{})
+			server := httptest.NewServer(mux)
+			t.Cleanup(func() {
+				select {
+				case <-gate.resume:
+				default:
+					close(gate.resume)
+				}
+				server.Close()
+				<-clientDone
+			})
 			go func() {
+				defer close(clientDone)
 				r, err := http.NewRequestWithContext(f.ctx, http.MethodPost, server.URL+path, strings.NewReader(body))
 				if err != nil {
 					result <- gatedHTTPResult{err: err}

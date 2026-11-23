@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,15 +15,41 @@ func validRuntimeConfiguration() *model.WorkerRuntimeConfiguration {
 }
 
 func TestWorkerRuntimeConfigurationValidation(t *testing.T) {
+	const userID = "22222222-2222-4222-8222-222222222222"
+	const workerID = "33333333-3333-4333-8333-333333333333"
 	report := validWorkerReportForValidation()
 	report.Telemetry.RuntimeConfiguration = validRuntimeConfiguration()
-	if _, err := ValidateReport(report); err != nil {
+	normalized, err := ValidateReport(report)
+	if err != nil {
 		t.Fatal(err)
 	}
+	wantNative := &model.WorkerRuntimeNative{
+		Agent:           model.AgentCodex,
+		Model:           model.WorkerConfigurationValue{Value: workerValidationValue("gpt-model"), Source: "local"},
+		ReasoningEffort: model.WorkerConfigurationValue{Source: "native"},
+	}
+	if runtime := normalized.Telemetry.RuntimeConfiguration; runtime == nil || !reflect.DeepEqual(runtime.Native, wantNative) {
+		t.Fatalf("validated report lost the local runtime model: %#v", runtime)
+	}
+	snapshot := SnapshotForReport(userID, workerID, normalized, report.Telemetry.SampledAt, []model.WorkerObservedTask{})
+	if runtime := snapshot.Telemetry.RuntimeConfiguration; runtime == nil || !reflect.DeepEqual(runtime.Native, wantNative) {
+		t.Fatalf("snapshot lost the local runtime model: %#v", runtime)
+	}
+
 	report.Telemetry.RuntimeConfiguration.SchemaVersion = 2
 	if _, err := ValidateReport(report); err == nil {
 		t.Fatal("report bypassed runtime configuration validation")
 	}
+	report.Telemetry.RuntimeConfiguration = nil
+	normalized, err = ValidateReport(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot = SnapshotForReport(userID, workerID, normalized, report.Telemetry.SampledAt, []model.WorkerObservedTask{})
+	if normalized.Telemetry.RuntimeConfiguration != nil || snapshot.Telemetry.RuntimeConfiguration != nil {
+		t.Fatalf("omitted runtime configuration was introduced by validation or snapshot: report=%#v snapshot=%#v", normalized.Telemetry.RuntimeConfiguration, snapshot.Telemetry.RuntimeConfiguration)
+	}
+
 	if err := validateWorkerRuntimeConfiguration(nil); err != nil {
 		t.Fatal(err)
 	}

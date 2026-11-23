@@ -48,7 +48,7 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 		t.Fatal(err)
 	}
 	startup := json.RawMessage(`{"schemaVersion":1,"source":"worker","sessionId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","claimId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","executionGeneration":"9223372036854775807","controllerInstanceId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","revision":"9223372036854775807","observedAt":"2026-01-01T00:00:00.123456789Z","startup":{"state":"unknown","reasonCode":"native_transport_unknown"},"recovery":{"state":"blocked","reasonCode":"native_identity_missing"}}`)
-	properties, err := taskproperty.Normalize(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "paused": json.RawMessage(`true`), "sessionStartup": startup})
+	properties, err := taskproperty.NormalizeStored(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "blocked": json.RawMessage(`true`), "sessionStartup": startup})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestMaximumWorkerFieldsFitCompleteBudgets(t *testing.T) {
 	cpu := model.WorkerCPU{Model: strings.Repeat("c", workercore.MaxCPUModelBytes), LogicalProcessors: 1}
 	memory := model.WorkerMemory{UsedBytes: 1, TotalBytes: 2}
 	disk := model.WorkerDisk{AvailableBytes: 1, TotalBytes: 2}
-	tele := model.WorkerTelemetry{Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("m", workercore.MaxMachineNameBytes)}, Platform: model.PlatformLinux, WorkingDirectory: "/" + strings.Repeat("d", workercore.MaxWorkingDirectoryBytes-1), SampledAt: now, AssistantHost: host, OS: model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &os}, CPU: model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &cpu}, Memory: model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &memory}, Disk: model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &disk}, Versions: model.WorkerVersions{Daynight: version, Herdr: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Codex: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}}}
+	tele := model.WorkerTelemetry{Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("m", workercore.MaxMachineNameBytes)}, Platform: model.PlatformLinux, WorkingDirectory: "/" + strings.Repeat("d", workercore.MaxWorkingDirectoryBytes-1), SampledAt: now, AssistantHost: host, OS: model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &os}, CPU: model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &cpu}, Memory: model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &memory}, Disk: model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &disk}, Versions: model.WorkerVersions{Daynight: version, Codex: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}}}
 	claims := make([]model.WorkerTaskReference, workercore.MaxInventoryClaims)
 	items := make([]model.WorkerObservedTask, len(claims))
 	for i := range claims {
@@ -156,7 +156,7 @@ func TestMaximumWorkerFieldsFitCompleteBudgets(t *testing.T) {
 		t.Fatalf("worker size=%d error=%v", n, err)
 	}
 
-	config := model.WorkerConfiguration{MaxConcurrent: workercore.MaxConcurrent, PollIntervalMs: workercore.MaxPollIntervalMs, RecoveryLimit: workercore.MaxRecoveryLimit, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: &nativeModel, Args: args}, Projects: []model.WorkerProjectConfiguration{}}
+	config := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskPrefer, MaxConcurrent: workercore.MaxConcurrent, PollIntervalMs: workercore.MaxPollIntervalMs, RecoveryLimit: workercore.MaxRecoveryLimit, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: &nativeModel, Args: args}, Projects: []model.WorkerProjectConfiguration{}}
 	config, err = workercore.NormalizeConfiguration(config)
 	if err != nil {
 		t.Fatal(err)

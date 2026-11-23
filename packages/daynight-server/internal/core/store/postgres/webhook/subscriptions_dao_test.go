@@ -21,7 +21,7 @@ func TestSubscriptionDAOIdentityAndDatabaseFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	for _, path := range []string{"../migrations/048_webhook_management.sql", "../migrations/049_webhook_subscriptions.sql", "../migrations/051_webhook_delivery.sql", "../migrations/052_webhook_redelivery.sql"} {
+	for _, path := range []string{"../schema/migrations/048_webhook_management.sql", "../schema/migrations/049_webhook_subscriptions.sql", "../schema/migrations/051_webhook_delivery.sql", "../schema/migrations/052_webhook_redelivery.sql", "../schema/migrations/113_webhook_endpoint_client_key.sql"} {
 		sql, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

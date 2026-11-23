@@ -22,12 +22,13 @@ original order; only former independent fixture boundaries trigger a reset.
 
 Each group captures the complete rows of the migration ledger and four snapshot
 seed tables before preparing case facts. The seed rows must remain identical
-after each case, including the final case. Before another case, the package-local
-reset truncates all other tables together without cascading, restores every
-sequence's captured `last_value` and `is_called`, commits, and reads those
-sequence states back. Standalone sequences require explicit restoration because
-`TRUNCATE RESTART IDENTITY` only restores table-owned sequences. Sequence changes
-are not transactionally undone, so a failed reset stops the group.
+after each case, including the final case. Before another case, the
+[shared table reset](2026-11-11-session-store-group-fixtures.md#decision)
+clears populated mutable tables and their inbound foreign-key closure. The
+Webhook fixture restores every sequence's captured `last_value` and
+`is_called`, commits, and reads those states back. Standalone sequences and
+empty resets still require explicit restoration. Sequence changes are not
+transactionally undone, so a failed reset stops the group.
 
 The release guard executes after case defers and case-owned cleanup. It requires
 the native connection to remain open, non-busy and outside a transaction, then
@@ -43,6 +44,16 @@ retention-deletion matrix keep independent environments. Transactional fault DDL
 in grouped cases still rolls back before the release guard. The reset restores
 data for the audited case set; it does not promise to undo arbitrary catalog or
 session changes. Groups do not enter parallel scheduling.
+
+The History and Delivery Claim expiry cases wait on the PostgreSQL clock.
+They verify their initial observations while the fixture deadline is still
+future, wait with `pg_sleep_until`, and read the clock again before testing
+post-expiry behavior. Delivery Claim connects its traced claimant before
+arming the deadline so connection setup stays outside the lock observation
+window. The trace pauses the claimant before it samples the database clock.
+The observer confirms that the intended Delivery row is already held with
+`FOR UPDATE NOWAIT`. The test cancels and drains its claimant before fixture
+cleanup on any exit from the expiry case.
 
 Actual SQL constraints, 65,536/65,537-byte capture inputs, the 500-row retention
 boundary, independent readers, snapshots, row locks, cancellation and natural

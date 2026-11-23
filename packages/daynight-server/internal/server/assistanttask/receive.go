@@ -1,0 +1,320 @@
+package assistanttask
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"math"
+	"mime"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
+	"github.com/google/uuid"
+)
+
+const (
+	// InboxBodyLimit is the largest accepted inbox request body.
+	InboxBodyLimit = 64 << 10
+	// inboxRatePerMinute is the initial per-inbox request rate of one server
+	// instance. The pending-event backlog limit inside the receive transaction
+	// is the cross-instance bound.
+	inboxRatePerMinute = 120
+	// inboxBucketSweep is the bucket count above which idle, refilled buckets
+	// are dropped, so unknown inbox IDs cannot grow the limiter without bound.
+	inboxBucketSweep = 10000
+	// inboxRetryAfter is the delay advertised for backlog and availability
+	// refusals, whose recovery time the server cannot predict.
+	inboxRetryAfter = "60"
+)
+
+type inboxReceiver interface {
+	Receive(context.Context, service.ReceiveInput) (service.ReceiveResult, error)
+}
+
+// RegisterInboxRoute registers the public inbox receive route. It sits outside
+// authentication: the inbox token or a verified Daynight delivery is the only
+// credential, and the route never reads cookies.
+func RegisterInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver) {
+	registerInboxRoute(mux, inbox, nil)
+}
+
+// RegisterClassifiedInboxRoute records the public route's independent profile.
+func RegisterClassifiedInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver, record func(RouteClassification)) {
+	registerInboxRoute(mux, inbox, record)
+}
+
+func registerInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver, record func(RouteClassification)) {
+	if record != nil {
+		pattern := core.InboxPathPrefix + "{inboxId}"
+		record(RouteClassification{Pattern: pattern, Method: http.MethodPost, Owner: "inbox-token-or-daynight-delivery", Profile: "inbox-token-or-daynight-delivery"})
+		record(RouteClassification{Pattern: pattern, Method: "*", Owner: "method-fallback", Profile: "public-fallback"})
+	}
+	r := &inboxRoute{inbox: inbox, quiet: slog.New(slog.DiscardHandler), limiter: newInboxLimiter(time.Now)}
+	mux.HandleFunc(core.InboxPathPrefix+"{inboxId}", r.serve)
+}
+
+type inboxRoute struct {
+	inbox inboxReceiver
+	// quiet receives the diagnostics of shared response and failure helpers,
+	// whose records carry fields outside the inbox log allowlist.
+	quiet   *slog.Logger
+	limiter *inboxLimiter
+}
+
+// serve reports the inbox ID, classification and body size to the request
+// logging middleware, which writes them with the server-generated request ID
+// and the status as the request's only record. The token, the URL query, the
+// body, any sender-supplied request ID and failure causes never reach logs.
+func (h *inboxRoute) serve(w http.ResponseWriter, r *http.Request) {
+	outcome := httpx.InboxRecordFrom(r.Context())
+	if outcome == nil {
+		outcome = &httpx.InboxRecord{}
+	}
+	h.receive(w, r, outcome)
+}
+
+func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *httpx.InboxRecord) int {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		return h.refuse(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is supported.", "")
+	}
+	id := r.PathValue("inboxId")
+	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id || parsed == uuid.Nil {
+		return h.refuse(w, r, http.StatusNotFound, "not_found", "The assistant task inbox does not exist.", "")
+	}
+	outcome.InboxID = id
+	token, problem := requestInboxToken(r)
+	if problem != "" {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
+	}
+	webhookID, webhookOK := idempotencyHeader(r, "Webhook-Id")
+	idempotencyKey, keyOK := idempotencyHeader(r, "Idempotency-Key")
+	if !webhookOK || !keyOK {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", "Provide Webhook-Id and Idempotency-Key at most once each, with a non-empty value.", "")
+	}
+	if r.ContentLength > InboxBodyLimit {
+		return h.refuse(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "The request body exceeds 64 KiB.", "")
+	}
+	mediaType, text, ok := inboxMediaType(r.Header.Values("Content-Type"))
+	if !ok {
+		return h.refuse(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "The media type must be application/json, a +json type or UTF-8 text/plain.", "")
+	}
+	if wait, ok := h.limiter.take(id); !ok {
+		return h.refuse(w, r, http.StatusTooManyRequests, "rate_limited", "The inbox request rate limit was exceeded.", strconv.Itoa(wait))
+	}
+	body, err := httpx.ReadBody(w, r, InboxBodyLimit, transport.JSONBodyReadTimeout)
+	if err != nil {
+		httpx.WriteBodyError(w, r, h.quiet, "assistant_task_inbox", "body", err)
+		var bodyErr *httpx.BodyReadError
+		if errors.As(err, &bodyErr) {
+			return bodyErr.Status
+		}
+		return http.StatusBadRequest
+	}
+	outcome.Bytes = len(body)
+	if message := inboxBodyProblem(body, text); message != "" {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", message, "")
+	}
+	result, err := h.inbox.Receive(r.Context(), service.ReceiveInput{
+		InboxID: id, Token: token, MediaType: mediaType,
+		WebhookID: webhookID, IdempotencyKey: idempotencyKey,
+		Body: body,
+	})
+	if err != nil {
+		return h.failure(w, r, err, webhookID != "" || idempotencyKey != "")
+	}
+	outcome.Classification = result.Classification
+	httpx.WriteJSON(w, r, h.quiet, http.StatusAccepted, api.AssistantTaskInboxReceipt{EventID: result.EventID, Classification: result.Classification, Duplicate: result.Duplicate, Suppressed: result.Suppressed})
+	return http.StatusAccepted
+}
+
+func (h *inboxRoute) refuse(w http.ResponseWriter, r *http.Request, status int, code, message, retryAfter string) int {
+	httpx.CloseUnreadBody(w, r)
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	httpx.WriteJSON(w, r, h.quiet, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
+	return status
+}
+
+// failure maps receive results to the inbox status table. Anything else is an
+// internal failure reported without its cause. An unknown commit is safe to
+// replay only under an idempotency identity; without one, a replay of a request
+// whose commit succeeded writes a second event, so that sender is warned.
+func (h *inboxRoute) failure(w http.ResponseWriter, r *http.Request, err error, identified bool) int {
+	var completion *service.WriteError
+	if errors.As(err, &completion) && completion.Outcome == store.TransactionUnknown {
+		message := "The receive result is unknown; retry with the same idempotency identity."
+		if !identified {
+			message = "The receive result is unknown and the request has no idempotency identity; a retry can record the event twice."
+		}
+		return h.refuse(w, r, http.StatusServiceUnavailable, "write_outcome_unknown", message, inboxRetryAfter)
+	}
+	if fault, ok := httpx.KnownFault(err); ok && completion == nil {
+		statuses := map[string]int{
+			"invalid_input": http.StatusBadRequest, "unauthenticated": http.StatusUnauthorized,
+			"not_found": http.StatusNotFound, "operation_conflict": http.StatusConflict,
+			"inbox_gone": http.StatusGone, "rate_limited": http.StatusTooManyRequests,
+			"service_unavailable": http.StatusServiceUnavailable,
+		}
+		if status, mapped := statuses[fault.Code]; mapped {
+			retryAfter := ""
+			if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
+				retryAfter = inboxRetryAfter
+			}
+			return h.refuse(w, r, status, fault.Code, fault.Message, retryAfter)
+		}
+	}
+	return h.refuse(w, r, http.StatusInternalServerError, "internal_error", "internal server error", "")
+}
+
+// requestInboxToken returns the token from exactly one of the Bearer header and the
+// token query parameter, or nil when the request carries none. A refusal
+// returns its client-facing reason.
+func requestInboxToken(r *http.Request) (*string, string) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, "The request query is malformed."
+	}
+	headers := r.Header.Values("Authorization")
+	queried := query["token"]
+	if len(headers) > 1 || len(queried) > 1 || len(headers) == 1 && len(queried) == 1 {
+		return nil, "Provide the inbox token at most once, in the Authorization header or the token query parameter."
+	}
+	var token string
+	switch {
+	case len(headers) == 1:
+		// RFC 6750 section 2.1 permits one or more spaces after the scheme;
+		// whitespace inside the credential still fails the token form check.
+		scheme, value, found := strings.Cut(headers[0], " ")
+		if !found || !strings.EqualFold(scheme, "Bearer") {
+			return nil, "The Authorization header must use the Bearer scheme."
+		}
+		token = strings.TrimLeft(value, " ")
+	case len(queried) == 1:
+		token = queried[0]
+	default:
+		return nil, ""
+	}
+	if token == "" {
+		return nil, "The inbox token form is invalid."
+	}
+	return &token, ""
+}
+
+// idempotencyHeader returns the header value, or "" when the header is absent.
+// An explicitly empty or repeated header is refused rather than read as absent:
+// absence writes a new event per request, so a sender that meant to supply a
+// key would otherwise duplicate events on retry.
+func idempotencyHeader(r *http.Request, name string) (string, bool) {
+	values := r.Header.Values(name)
+	switch {
+	case len(values) == 0:
+		return "", true
+	case len(values) == 1 && values[0] != "":
+		return values[0], true
+	}
+	return "", false
+}
+
+// inboxMediaType accepts application/json, any +json type and text/plain,
+// each only in UTF-8. It returns the media type without parameters.
+func inboxMediaType(values []string) (string, bool, bool) {
+	if len(values) != 1 {
+		return "", false, false
+	}
+	essence, params, err := mime.ParseMediaType(values[0])
+	if err != nil {
+		return "", false, false
+	}
+	if charset, present := params["charset"]; present && !strings.EqualFold(charset, "utf-8") {
+		return "", false, false
+	}
+	// mime.ParseMediaType also accepts a bare token such as "problem+json",
+	// so a +json type must name both a type and a subtype.
+	kind, subtype, pair := strings.Cut(essence, "/")
+	if !pair || kind == "" || subtype == "" {
+		return "", false, false
+	}
+	text := essence == "text/plain"
+	if !text && essence != "application/json" && !strings.HasSuffix(subtype, "+json") {
+		return "", false, false
+	}
+	return essence, text, true
+}
+
+// inboxBodyProblem rejects NUL bytes, which a stored JSON payload cannot
+// represent, invalid UTF-8 and invalid JSON.
+func inboxBodyProblem(body []byte, text bool) string {
+	switch {
+	case bytes.IndexByte(body, 0) >= 0:
+		return "The request body must not contain NUL bytes."
+	case !utf8.Valid(body):
+		return "The request body must be valid UTF-8."
+	case !text && !json.Valid(body):
+		return "The request body must be valid JSON."
+	}
+	return ""
+}
+
+// inboxLimiter is a per-inbox token bucket local to this server instance.
+type inboxLimiter struct {
+	mu        sync.Mutex
+	now       func() time.Time
+	buckets   map[string]*inboxBucket
+	nextSweep time.Time
+}
+
+type inboxBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+func newInboxLimiter(now func() time.Time) *inboxLimiter {
+	return &inboxLimiter{now: now, buckets: map[string]*inboxBucket{}}
+}
+
+// take consumes one request for the inbox. A refusal reports the whole
+// seconds until the next request is admitted.
+func (l *inboxLimiter) take(id string) (int, bool) {
+	const capacity = float64(inboxRatePerMinute)
+	const perSecond = capacity / 60
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if len(l.buckets) >= inboxBucketSweep && !now.Before(l.nextSweep) {
+		for key, bucket := range l.buckets {
+			if bucket.tokens+now.Sub(bucket.at).Seconds()*perSecond >= capacity {
+				delete(l.buckets, key)
+			}
+		}
+		l.nextSweep = now.Add(time.Second)
+	}
+	bucket, ok := l.buckets[id]
+	if !ok {
+		bucket = &inboxBucket{tokens: capacity, at: now}
+		l.buckets[id] = bucket
+	}
+	if elapsed := now.Sub(bucket.at).Seconds(); elapsed > 0 {
+		bucket.tokens = math.Min(capacity, bucket.tokens+elapsed*perSecond)
+		bucket.at = now
+	}
+	if bucket.tokens < 1 {
+		return max(1, int(math.Ceil((1-bucket.tokens)/perSecond))), false
+	}
+	bucket.tokens--
+	return 0, true
+}

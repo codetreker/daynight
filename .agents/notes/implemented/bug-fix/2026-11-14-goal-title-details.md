@@ -14,7 +14,7 @@ Both actions need keyboard access and independent focus recovery.
 The Goal title is a native details button alongside the native disclosure
 button in a non-interactive summary. The surrounding row delegates clicks on
 non-interactive content and whitespace to disclosure, excluding interactive
-controls. The title and the existing details button use the same Goal reader and
+controls and the selectable ID group described in the [Goal list ID decision](../feature/2026-11-16-goal-list-id.md). The title and the existing details button use the same Goal reader and
 pass their actual trigger for focus restoration. The disclosure retains its
 accessible summary and controls the inline children; Session and graph actions
 remain independent. The completion-time keyboard hint remains on the existing
@@ -24,6 +24,8 @@ The [Goal row disclosure decision](2026-11-13-goal-row-disclosure.md) retains th
 reason for a broad expansion target. The [Goal specification](../../../../docs/spec/daynight-goals.md)
 owns the visible behavior and the [Web design](../../../../docs/design/daynight-web.md)
 describes the control structure.
+The [Goal prefix spacing decision](2026-11-16-goal-list-prefix-spacing.md)
+retains these separate actions while compacting their visual prefix.
 
 ## Alternatives
 

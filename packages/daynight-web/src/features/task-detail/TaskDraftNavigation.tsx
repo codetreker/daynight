@@ -1,7 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { nearestOverlayOwner } from '../../app/overlay';
 import { browserNavigation, type DraftScope } from '../../app/navigation';
-import { parseAuthRoute, parseRoute } from '../../app/router';
+import { parseAuthRoute, parseGoalGraphUrl, parseRoute } from '../../app/router';
 import { readMyTasksHistory, readProjectHistory, readResourceHistory } from '../../app/page-history';
 import { isRetiredMyTasksEntry, isRetiredResourceEntry } from '../../app/use-page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -76,7 +76,9 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensit
         if (target.kind !== 'project' || target.projectId !== projectId || projectHost.projectId !== projectId || view === undefined) return false;
         try {
           const selection = readProjectHistory(view, identity.userId, projectId);
-          if (selection === null || entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
+          if (selection === null || target.tab !== null && target.tab !== selection.section || entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
+          const goalUrl = parseGoalGraphUrl(url.pathname, url.search);
+          if (goalUrl.kind === 'invalid' || goalUrl.kind === 'goal' && (selection.section !== 'tasks' || selection.view !== 'goals' || selection.projectGraphWitness !== goalUrl.goalId)) return false;
           const detail = selection.detail;
           if (detail === null || detail.id !== projectHost.rootId || !projectHost.child && projectSourceSensitive && detail.source !== projectHost.source || detail.insideProjectGraph !== projectHost.insideProjectGraph ||
               projectHost.insideProjectGraph && selection.projectGraphWitness !== projectHost.graphWitness) return false;

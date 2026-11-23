@@ -170,6 +170,28 @@ it("rejects a late pre-snapshot response without restoring the private body", as
   expect(transactions).not.toHaveBeenCalled(); expect(session.snapshot(projectId, taskId).detail).toBeNull();
 });
 
+it("starts a new generation read while an old summary read is stalled and rejects its late response", async () => {
+  const old = body({ description: "Old history" });
+  const current = body({ description: "Current history" });
+  const scope = await seed([old]);
+  const oldRead = deferred<Response>();
+  const fetch = vi.fn().mockReturnValueOnce(oldRead.promise).mockImplementationOnce(() => Promise.resolve(resourceResponse(current, TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetch);
+  const session = new TaskDetailSessions(scope); sessions.push(session);
+  session.subscribe(projectId, taskId, () => {});
+  session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 1, "open");
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  const oldSignal = fetch.mock.calls[0]![1]!.signal as AbortSignal;
+
+  await apply(scope, [current], true);
+  session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 2, "automatic");
+  expect(oldSignal.aborted).toBe(true);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { description: "Current history" }, requiresFreshRead: false }));
+  await act(async () => { oldRead.resolve(resourceResponse(old, TEST_VIEWER_ID)); await oldRead.promise; });
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { description: "Current history" }, requiresFreshRead: false });
+});
+
 it("keeps a confirmed remote write distinct from a malformed successful body and reconciles only with GET", async () => {
   const detail = body(); const saved = { ...detail, version: 6n, allowAgents: true, updatedAt: "2026-10-22T10:00:20Z" }; const scope = await seed([detail]);
   const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse({ invalid: true }, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);

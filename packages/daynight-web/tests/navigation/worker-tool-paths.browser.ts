@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import { WORKER_TIME, workerDetail } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
 const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
+const refreshConfiguration = (page: Page) => configuration(page).getByRole('button', { name: /^(刷新|Refresh)$/, exact: true });
 const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具启动路径/ });
 const field = (page: Page, tool = 'codex') => page.locator(`#config-toolPaths-${tool}`);
 const facts = (page: Page, tool = 'codex', context = 'web') => configuration(page).locator(`.worker-tool-path-details[data-tool="${tool}"] .worker-tool-context[data-context="${context}"]`);
@@ -16,66 +18,56 @@ const clearFocus = (page: Page) => expect.poll(() => page.evaluate(() => {
   return rect.top >= 0 && rect.bottom <= bar.top;
 })).toBe(true);
 
-for (const width of [1440, 390, 320]) test(`${width}px Web application excludes other modes while retaining their errors and drafts`, async ({ page }) => {
-  await page.setViewportSize({ width, height: 900 });
-  const herdrPath = pathChoice('/missing/herdr');
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, herdr: herdrPath } }) });
-  state.detail = reportedDetail(toolReport([
-    toolObservation('codex', 'web'),
-    toolObservation('codex', 'herdr', { state: 'checking', actual: null }),
-    toolObservation('copilot', 'web', { state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
-    toolObservation('herdr', 'herdr', { target: herdrPath, state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
-  ]));
-  await openToolConfiguration(page); await expandTools(page);
-  const summary = page.locator('.configuration-summary');
-  await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
-  await expect(summary.locator('div').filter({ has: page.locator('dt', { hasText: '工具启动路径' }) })).toContainText('已应用');
-  await expect(facts(page, 'herdr', 'herdr')).toContainText('工具文件不存在');
-  await expect(field(page, 'herdr')).toBeEnabled();
-  await field(page).fill('/draft/codex'); await field(page).focus();
-  const gate = deferredRead(); state.configurationGate = gate;
-  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
-  await gate.observed;
-  try { await expect(field(page)).toBeFocused(); await expect(field(page)).toHaveValue('/draft/codex'); await noOverflow(page); }
-  finally { gate.release(); state.configurationGate = null; }
-  await expect(field(page)).toBeFocused(); await expect(field(page)).toHaveValue('/draft/codex');
-  await cancel(page).click();
-  state.resource = observedConfiguration('2', { ...state.resource.desired!.value, agentControlMode: 'herdr' });
-  state.detail = reportedDetail(toolReport([
-    toolObservation('codex', 'web', { targetRevision: '1', activeSelectionCount: 1, activeSelections: [{ actual: toolActual('codex', 'web'), executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }),
-    toolObservation('codex', 'herdr', { targetRevision: '2' }),
-    toolObservation('herdr', 'herdr', { targetRevision: '2', target: herdrPath, state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
-  ]));
-  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expandTools(page);
-  await expect(summary.getByText('已生效', { exact: true })).toHaveCount(0);
-  await expect(summary.getByText('部分生效', { exact: true })).toBeVisible();
-  await expect(summary.getByText('应用失败', { exact: true })).toBeVisible(); await noOverflow(page);
-});
-
-for (const status of ['not_checked', 'checking', 'applied'] as const) test(`Web remains applied when unrelated Herdr is ${status}`, async ({ page }) => {
-  const state = await installTools(page);
-  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('herdr', 'herdr', { state: status, actual: status === 'applied' ? toolActual('herdr', 'herdr', { version: '99.0.0' }) : null })]));
-  await openToolConfiguration(page);
-  await expect(page.locator('.configuration-summary').getByText('已生效', { exact: true })).toBeVisible();
-});
-
-test('project provider overrides require their own tool checks while Claude uses native observations', async ({ page }) => {
-  const value = observedConfiguration().desired!.value;
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...value, native: { ...value.native, agent: 'claude' }, projects: [
-    { projectId: '00000000-0000-4000-8000-000000000101', nativeOverrides: { agent: 'copilot' } },
-    { projectId: '00000000-0000-4000-8000-000000000102', nativeOverrides: {} },
-  ] }) });
-  state.detail = reportedDetail(toolReport([toolObservation('copilot', 'web', { state: 'checking', actual: null })]));
-  await openToolConfiguration(page);
-  const summary = page.locator('.configuration-summary');
-  await expect(summary.getByText('正在检查', { exact: true })).toBeVisible();
-  await expect(summary.getByText('已生效', { exact: true })).toHaveCount(0);
-  state.detail = reportedDetail(toolReport([toolObservation('copilot', 'web')]));
-  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
-  state.resource = observedConfiguration('2', { ...value, native: { ...value.native, agent: 'claude' }, projects: [] });
-  state.detail = reportedDetail(toolReport([]));
-  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
-});
+for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) {
+  test(`${width}px ${locale} software shortcut reveals loaded tool paths and retains drafts`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await installTools(page, { locale });
+    await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="system"]:visible').click();
+    const shortcut = page.locator('.worker-tool-path-shortcut');
+    await expect(shortcut).toHaveText(locale === 'zh-CN' ? '工具启动路径' : 'Tool launch paths');
+    await shortcut.focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    await expect(shortcut).toBeFocused(); await noOverflow(page);
+    const focusStyle = await shortcut.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+    });
+    expect(focusStyle.outlineStyle !== 'none' && parseFloat(focusStyle.outlineWidth) > 0 || focusStyle.boxShadow !== 'none').toBe(true);
+    const heading = shortcut.locator('..');
+    await info.attach('software-shortcut', { body: await heading.screenshot(), contentType: 'image/png' });
+    const gate = deferredRead(); state.configurationGate = gate;
+    await page.keyboard.press('Enter'); await gate.observed;
+    try {
+      await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
+      await expect(configuration(page).getByRole('heading', { name: locale === 'zh-CN' ? '正在读取配置' : 'Loading configuration' })).toBeVisible();
+      await expect(field(page)).toHaveCount(0);
+    } finally { gate.release(); state.configurationGate = null; }
+    const details = configuration(page).locator('.configuration-tool-paths');
+    const summary = details.locator(':scope > summary');
+    await expect(details).toHaveAttribute('open', ''); await expect(summary).toBeFocused();
+    await expect(field(page)).toBeEnabled(); await noOverflow(page);
+    await expect.poll(() => summary.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight;
+    })).toBe(true);
+    await info.attach('tool-paths-destination', { body: await page.screenshot(), contentType: 'image/png' });
+    await field(page).fill('/opt/unsaved/shortcut/codex');
+    const originalInput = await field(page).elementHandle();
+    await page.locator('[data-worker-tab="overview"]:visible').click();
+    await page.locator('[data-worker-tab="system"]:visible').click();
+    await shortcut.click();
+    await expect(summary).toBeFocused(); await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
+    expect(await field(page).evaluate((element, original) => element === original, originalInput)).toBe(true);
+    await page.keyboard.press('Enter'); await expect(details).not.toHaveAttribute('open');
+    const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}/configuration` && value.request().method() === 'GET');
+    await refreshConfiguration(page).click(); await response;
+    await expect(refreshConfiguration(page)).toBeEnabled();
+    await expect(details).not.toHaveAttribute('open');
+    await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
+    expect(state.writes).toHaveLength(0); await noOverflow(page);
+    await originalInput?.dispose();
+  });
+}
 
 test('tool paths start collapsed and retain automatic choices until explicitly edited', async ({ page }) => {
   const state = await installTools(page); await openToolConfiguration(page);
@@ -88,19 +80,19 @@ test('tool paths start collapsed and retain automatic choices until explicitly e
 });
 
 test('unadopted tools remain null and blank edits require explicit automatic reset', async ({ page }) => {
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { codex: null, copilot: null, herdr: null } }) });
+  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { codex: null, copilot: null } }) });
   await openToolConfiguration(page); await expandTools(page);
   await expect(field(page)).toHaveAttribute('placeholder', /等待.*导入/);
   await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
   await expect.poll(() => state.writes.length).toBe(1);
-  expect(state.writes[0]!.value.toolPaths).toEqual({ codex: null, copilot: null, herdr: null });
+  expect(state.writes[0]!.value.toolPaths).toEqual({ codex: null, copilot: null });
   await field(page).fill('/opt/custom/codex'); await field(page).fill('');
   await expect(save(page)).toBeDisabled();
   await expect(configuration(page).getByText('请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', { exact: true })).toBeVisible();
   const resets = configuration(page).getByRole('button', { name: '恢复自动', exact: true });
   await resets.first().click(); await save(page).click();
   await expect.poll(() => state.writes.length).toBe(2);
-  expect(state.writes[1]!.value.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: null, herdr: null });
+  expect(state.writes[1]!.value.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: null });
 });
 
 test('initial configuration loading does not invent an applied tool result', async ({ page }) => {
@@ -115,17 +107,19 @@ test('initial configuration loading does not invent an applied tool result', asy
   await expect(field(page)).toBeEnabled();
 });
 
-for (const missing of ['service', 'worker'] as const) {
-  test(`missing ${missing} capability disables only tool path editing`, async ({ page }) => {
-    const state = await installTools(page, { [missing]: false }); await openToolConfiguration(page); await expandTools(page);
-    for (const tool of ['codex', 'copilot', 'herdr']) await expect(field(page, tool)).toBeDisabled();
-    await expect(configuration(page).getByRole('button', { name: '恢复自动', exact: true }).first()).toBeDisabled();
-    await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
-    await expect.poll(() => state.writes.length).toBe(1); expect(state.writes[0]!.value.recoveryLimit).toBe(7);
-    expect(state.writes[0]!.value).not.toHaveProperty('toolPaths');
-    await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
-  });
-}
+test('a Worker without tool telemetry disables path editing while preserving saved paths', async ({ page }) => {
+  const state = await installTools(page, { worker: false }); await openToolConfiguration(page); await expandTools(page);
+  for (const tool of ['codex', 'copilot']) await expect(field(page, tool)).toBeDisabled();
+  await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0]!.value.toolPaths).toEqual(toolPaths);
+});
+
+test('an older service requires an upgrade', async ({ page }) => {
+  await installTools(page, { service: false });
+  await page.goto(`/workers/${targetWorker}`);
+  await expect(page.locator('[data-worker-panel="overview"]').getByText('升级服务后可查看 Worker 详情。')).toBeVisible();
+});
 
 test('offline supported Workers accept desired edits but label observed paths as historical', async ({ page }) => {
   const state = await installTools(page); state.detail = { ...reportedDetail(), observedAt: '2026-10-29T12:05:00Z' };
@@ -147,34 +141,6 @@ test('errors retain the old actual record without combining the new target and o
   await expect(actual).toContainText('0.166.0'); await expect(actual).toContainText('/opt/installed/bin/codex'); await expect(actual).not.toContainText('/missing/new-codex');
 });
 
-test('shared Herdr waiting shows the old instance separately from the verified candidate', async ({ page }) => {
-  const choice = pathChoice('/opt/herdr-new/bin/herdr'), old = toolActual('herdr', 'herdr');
-  const candidate = toolActual('herdr', 'herdr', { selection: choice, selectionKey: '4'.repeat(64), source: 'explicit', entryPath: choice.path, executablePath: choice.path, version: '0.10.0' });
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, herdr: choice } }) });
-  state.detail = reportedDetail(toolReport([toolObservation('herdr', 'herdr', { target: choice, state: 'pending', reason: 'active_instance', candidate,
-    activeSelectionCount: 1, activeSelections: [{ actual: old, executionCount: 2, instanceCount: 1, unconfirmedCount: 0 }] })]));
-  await openToolConfiguration(page); await expandTools(page);
-  const context = facts(page, 'herdr', 'herdr');
-  await expect(context).toContainText('等待应用'); await expect(context.locator('[data-selection-role="candidate"]')).toContainText('0.10.0');
-  await expect(context.locator('[data-selection-role="active"]')).toContainText('0.9.5');
-  await expect(context.locator('[data-selection-role="active"]')).not.toContainText('/opt/herdr-new');
-});
-
-test('macOS running selections remain distinct and incomplete inventories stay explicit', async ({ page }) => {
-  const current = toolActual('herdr', 'herdr'), older = toolActual('herdr', 'herdr', { selectionKey: '4'.repeat(64), entryPath: '/opt/herdr-old/bin/herdr', executablePath: '/opt/herdr-old/bin/herdr', version: '0.8.0' });
-  const state = await installTools(page), detail = reportedDetail(toolReport([toolObservation('herdr', 'herdr', {
-    activeSelectionCount: 3, activeSelectionsComplete: false, activeSelections: [
-      { actual: current, executionCount: 1, instanceCount: 1, unconfirmedCount: 0 },
-      { actual: older, executionCount: 1, instanceCount: 1, unconfirmedCount: 1 },
-    ],
-  })]));
-  state.detail = { ...detail, worker: { ...detail.worker, platform: 'macos', telemetry: { ...detail.worker.telemetry, platform: 'macos' } } };
-  await openToolConfiguration(page); await expandTools(page);
-  const context = facts(page, 'herdr', 'herdr'), groups = context.locator('[data-selection-role="active"]');
-  await expect(groups).toHaveCount(2); await expect(groups.nth(0)).toContainText('0.9.5'); await expect(groups.nth(1)).toContainText('0.8.0');
-  await expect(context).toContainText('仍有未展示的运行选择'); await expect(context).toContainText('已应用');
-});
-
 test('older report revisions and unchecked contexts cannot make all configuration applied', async ({ page }) => {
   const state = await installTools(page, { resource: observedConfiguration('2') });
   state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web', { targetRevision: '2', state: 'not_checked', actual: null })]));
@@ -183,19 +149,17 @@ test('older report revisions and unchecked contexts cannot make all configuratio
   await expect(page.locator('.configuration-summary')).not.toContainText('已生效');
 });
 
-for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details share reported paths and keep Web and Herdr Copilot versions separate`, async ({ page }) => {
+for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details share reported paths and show only native Copilot observations`, async ({ page }) => {
   const state = await installTools(page, { locale });
-  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web'), toolObservation('copilot', 'herdr', {
-    actual: toolActual('copilot', 'herdr', { version: '1.0.099' }),
-  }), toolObservation('herdr', 'herdr')]));
+  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web')]));
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const software = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
   await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '查看实际路径' : 'View actual paths' }).click();
-  const web = software.locator('[data-context="web"]'), herdr = software.locator('[data-context="herdr"]');
+  const web = software.locator('[data-context="web"]');
   await expect(web).toContainText('1.0.105'); await expect(web).toContainText('/opt/daynight/runtime/copilot');
-  await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '其他执行模式' : 'Other execution mode' }).click();
-  await expect(herdr).toContainText('1.0.099'); await expect(herdr).toContainText('/opt/installed/bin/copilot');
-  await expect(herdr).not.toContainText('/opt/daynight/runtime');
+  await expect(software).not.toContainText('1.0.099');
+  await expect(software.locator('[data-context="herdr"]')).toHaveCount(0);
   await page.locator('[data-worker-tab="configuration"]:visible').click(); await configuration(page).locator('.configuration-tool-paths > summary').click();
   await expect(field(page, 'copilot')).toHaveAttribute('placeholder', locale === 'zh-CN' ? '自动' : 'Automatic');
   await expect(facts(page, 'copilot')).toContainText('1.0.105');
@@ -205,7 +169,7 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await expect(page.locator('[data-worker-panel="prompt"]:visible')).toBeVisible(); await expect(field(page, 'copilot')).toBeHidden();
   await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(field(page, 'copilot')).toHaveValue('/opt/draft/copilot');
   expect(await field(page, 'copilot').evaluate(element => element === (window as unknown as { toolPromptDraftNode: Element }).toolPromptDraftNode)).toBe(true);
-  await page.locator('[data-worker-tab="overview"]:visible').click();
+  await page.locator('[data-worker-tab="system"]:visible').click();
   await expect(web).toContainText('/opt/daynight/runtime/copilot'); await expect(software).not.toContainText('/opt/draft/copilot');
 });
 
@@ -213,38 +177,35 @@ for (const width of [1440, 390, 320]) test(`software summary and full details su
   await page.setViewportSize({ width, height: 900 });
   const state = await installTools(page);
   const longPath = `/opt/${'long-directory/'.repeat(20)}codex`;
-  const empty = (tool: 'codex' | 'copilot' | 'herdr', context: 'web' | 'herdr') => toolObservation(tool, context, { state: 'not_checked', actual: null });
   state.detail = reportedDetail(toolReport([
-    toolObservation('codex', 'web', { actual: toolActual('codex', 'web', { entryPath: longPath, executablePath: longPath }) }), empty('codex', 'herdr'),
-    toolObservation('copilot', 'web'), empty('copilot', 'herdr'), empty('herdr', 'herdr'),
+    toolObservation('codex', 'web', { actual: toolActual('codex', 'web', { entryPath: longPath, executablePath: longPath }) }),
+    toolObservation('copilot', 'web'),
   ]));
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
   const copilot = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
-  await expect(codex.locator('.worker-tool-version')).toHaveText(['Web · 0.166.0']);
-  await expect(copilot.locator('.worker-tool-version')).toHaveText(['Web · 1.0.105']);
-  await expect(page.locator('.worker-software-tool-paths[data-tool="herdr"]')).toContainText('等待检查');
+  await expect(codex.locator('.worker-tool-version')).toHaveText(['0.166.0']);
+  await expect(copilot.locator('.worker-tool-version')).toHaveText(['1.0.105']);
+  await expect(page.locator('.worker-software-tool-paths[data-tool="herdr"]')).toHaveCount(0);
   const details = codex.locator('.worker-tool-software-details'), summary = details.locator(':scope > summary');
   await summary.focus(); await page.keyboard.press('Enter'); await expect(details).toHaveAttribute('open', '');
-  const other = codex.locator('.worker-tool-other-context > summary');
-  await other.focus(); await page.keyboard.press('Enter'); await expect(other.locator('..')).toHaveAttribute('open', '');
-  await expect(codex.locator('[data-context="herdr"]')).toContainText('近期状态未确认');
+  await expect(codex.locator('[data-context="herdr"]')).toHaveCount(0);
   const path = codex.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
   await path.locator(':scope > summary').click(); await expect(path).toContainText(longPath);
-  await other.focus();
-  const anchorTop = await other.evaluate(element => element.getBoundingClientRect().top);
+  const focus = path.locator(':scope > summary'); await focus.focus();
+  const anchorTop = await focus.evaluate(element => element.getBoundingClientRect().top);
   const gate = deferredRead(); state.workerGate = gate;
   const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
   await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
   await gate.observed;
-  try { await expect(other).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
+  try { await expect(focus).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
   finally { gate.release(); state.workerGate = null; await response; }
-  await expect(other).toBeFocused(); await expect(path).toHaveAttribute('open', '');
-  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
+  await expect(focus).toBeFocused(); await expect(path).toHaveAttribute('open', '');
+  expect(Math.abs(await focus.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
   await page.locator('.locale-control select').selectOption('en');
   await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
-  await expect(codex.locator('summary').filter({ hasText: 'Other execution mode' })).toBeFocused();
-  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
+  await expect(focus).toBeFocused();
   await noOverflow(page);
   await info.attach('software-summary', { body: JSON.stringify({ width, codex: await codex.locator('.worker-tool-version').allTextContents(), copilot: await copilot.locator('.worker-tool-version').allTextContents(), scrollWidth: await page.evaluate(() => document.documentElement.scrollWidth) }), contentType: 'application/json' });
 });
@@ -256,9 +217,10 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const long = `/Users/测试 用户/${'long-installation-directory/'.repeat(14)}bin/codex`;
     const actual = toolActual('codex', 'web', { entryPath: long, executablePath: long, interpreterPath: null });
     const state = await installTools(page, { locale });
-    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web'), toolObservation('herdr', 'herdr')]));
+    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web')]));
     await page.goto(`/workers/${targetWorker}`);
-    for (const tool of ['codex', 'copilot', 'herdr']) {
+    await page.locator('[data-worker-tab="system"]:visible').click();
+    for (const tool of ['codex', 'copilot']) {
       const row = page.locator(`.worker-software-tool-paths[data-tool="${tool}"]`);
       const details = row.locator('.worker-tool-software-details');
       await details.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
@@ -283,6 +245,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const entry = codex.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
     await entry.locator('summary').focus(); await page.keyboard.press('Enter');
     await expect(entry.locator('code')).toHaveText(long);
+    await expectCopyButtonSkin(page, entry.locator('button'), true);
     await entry.locator('button').click();
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(long);
     await noOverflow(page);
@@ -295,6 +258,7 @@ test('software path copy failure leaves the full value selectable', async ({ pag
   await page.setViewportSize({ width: 320, height: 900 });
   await installTools(page);
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }));
   const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
   await row.locator('.worker-tool-software-details > summary').click();
@@ -309,14 +273,32 @@ test('software path copy failure leaves the full value selectable', async ({ pag
   expect(selection).toBe('/opt/installed/bin/codex');
 });
 
+test('system reading position and expanded paths survive a failed background snapshot', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 600 });
+  const state = await installTools(page); await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
+  const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
+  const details = row.locator('.worker-tool-software-details'); await details.locator(':scope > summary').click();
+  const path = row.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
+  const focus = path.locator(':scope > summary'); await focus.click(); await focus.focus();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const top = await focus.evaluate(element => element.getBoundingClientRect().top);
+  state.workerFail = true;
+  const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.status() === 503);
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await response;
+  await expect(page.locator('[data-worker-panel="system"] [role="alert"]')).toBeVisible();
+  await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', ''); await expect(focus).toBeFocused();
+  expect(Math.abs(await focus.evaluate(element => element.getBoundingClientRect().top) - top)).toBeLessThan(4);
+});
+
 for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'en' }] as const) {
   test(`${sample.width}px ${sample.locale} software geometry stays stable throughout visibility revalidation`, async ({ page }, info) => {
     await page.setViewportSize({ width: sample.width, height: 900 });
     const state = await installTools(page, { locale: sample.locale }); await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="system"]:visible').click();
     const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
     const expanded = row.locator('.worker-tool-software-details'); await expanded.locator(':scope > summary').click();
-    const other = row.locator('.worker-tool-other-context');
-    await other.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
     const path = row.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
     const focus = path.locator(':scope > summary'); await focus.click(); await focus.focus();
     const selected = await path.locator('code').evaluate(element => {
@@ -326,25 +308,24 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     });
     await row.evaluate(element => {
       const owner = window as unknown as { toolSoftwareNodes: Element[] };
-      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!, element.querySelector('.worker-tool-other-context')!];
+      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!];
     });
     const measure = () => row.evaluate(element => {
       const software = element.closest('.worker-panel')!.getBoundingClientRect();
-      const tasks = document.querySelector('.worker-task-heading-label')!.getBoundingClientRect();
-      return { softwareHeight: software.height, tasksDocumentY: tasks.top + scrollY, scrollY };
+      return { softwareHeight: software.height, softwareDocumentY: software.top + scrollY, scrollY };
     });
     const before = await measure(), gate = deferredRead(); state.workerGate = gate;
     const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
     const check = async () => {
-      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', ''); await expect(other).toHaveAttribute('open', '');
+      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
       expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(selected);
       expect(await row.evaluate(element => {
         const nodes = (window as unknown as { toolSoftwareNodes: Element[] }).toolSoftwareNodes;
-        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value'), element.querySelector('.worker-tool-other-context')].every((node, index) => node === nodes[index]);
+        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value')].every((node, index) => node === nodes[index]);
       })).toBe(true);
       const current = await measure();
       expect(current.softwareHeight).toBeCloseTo(before.softwareHeight, 4);
-      expect(current.tasksDocumentY).toBeCloseTo(before.tasksDocumentY, 4);
+      expect(current.softwareDocumentY).toBeCloseTo(before.softwareDocumentY, 4);
       expect(current.scrollY).toBeCloseTo(before.scrollY, 4);
     };
     await page.evaluate(() => {
@@ -360,7 +341,7 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect.poll(async () => {
       const value = await measure();
-      return { softwareHeight: value.softwareHeight, tasksDocumentY: value.tasksDocumentY, scrollY: value.scrollY };
+      return { softwareHeight: value.softwareHeight, softwareDocumentY: value.softwareDocumentY, scrollY: value.scrollY };
     }).toEqual(before);
     await check();
   });
@@ -391,7 +372,7 @@ test('conflicts retain the draft and never replay a tool path write', async ({ p
   state.mode = 'conflict'; await field(page).fill('/opt/conflict/codex'); await save(page).click();
   await expect(page.getByText('云端配置已被其他页面修改。', { exact: true })).toBeVisible();
   await expect(field(page)).toHaveValue('/opt/conflict/codex'); await expect(save(page)).toBeDisabled();
-  await page.locator('.configuration-toolbar button').click();
+  await refreshConfiguration(page).click();
   await expect.poll(() => state.configurationReads).toBeGreaterThan(1); expect(state.writes).toHaveLength(1);
 });
 
@@ -408,7 +389,7 @@ test('lost save responses reconcile the submitted path by GET without a second P
   await expect(facts(page)).not.toContainText('已应用');
 });
 
-test('legacy unknown saves adopt untouched remote paths before tool support returns', async ({ page }) => {
+test('unknown saves preserve paths and retain the draft on a later remote change', async ({ page }) => {
   const original = pathChoice('/opt/original/codex'), remote = pathChoice('/opt/remote/codex');
   const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, codex: original } }) });
   await openToolConfiguration(page); await expandTools(page);
@@ -420,12 +401,14 @@ test('legacy unknown saves adopt untouched remote paths before tool support retu
   await revalidate(); await expect(field(page)).toBeDisabled();
   state.mode = 'unknown'; await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
   await expect(page.getByText('保存结果尚未确认，当前草稿已保留。')).toBeVisible();
-  expect(state.writes).toHaveLength(1); expect(state.writes[0]!.value).not.toHaveProperty('toolPaths');
+  expect(state.writes).toHaveLength(1); expect(state.writes[0]!.value.toolPaths?.codex).toEqual(original);
   state.resource = observedConfiguration('3', { ...state.resource.desired!.value, toolPaths: { ...toolPaths, codex: remote } });
   state.unknownReads = false;
   await page.getByRole('button', { name: '核对保存结果' }).click();
+  await expect(page.getByText('云端配置已被其他页面修改。')).toBeVisible();
+  await expect(field(page)).toHaveValue(original.path);
+  await page.getByRole('button', { name: '载入最新配置' }).click();
   await expect(field(page)).toHaveValue(remote.path);
-  await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
   state.detail = reportedDetail(); state.mode = 'success';
   await revalidate(); await expect(field(page)).toBeEnabled();
   await page.locator('#config-recoveryLimit').fill('8'); await save(page).click();

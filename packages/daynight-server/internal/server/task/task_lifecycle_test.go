@@ -414,6 +414,11 @@ func (f *taskCredentialFixture) expectLifecycleMutation(before, after model.Task
 		}
 		return false, nil
 	}
+	writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+		f.plan.Called("children")
+		f.requireAddress(ctx, f.project.ID, id)
+		return []string{}, nil
+	}
 	writer.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 		f.plan.Called("update")
 		f.requireAddress(ctx, f.project.ID, id)
@@ -457,7 +462,22 @@ func (f *taskCredentialFixture) expectLifecycleMutation(before, after model.Task
 		err := run(scope)
 		return store.Completion{Outcome: completion}, err
 	}
-	f.database.ReadSnapshotCall = nil
+	if patch {
+		f.database.ReadSnapshotCall = nil
+	} else {
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+			f.requireAddress(ctx, project, id)
+			return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+		}}
+		projectReader := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
+			if actor != f.actor || project != f.project.ID || ctx.Err() != nil {
+				f.fail("lifecycle preflight changed actor or project")
+			}
+			return taskHTTPMockAccess(f.project, actor), nil
+		}}
+		snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+		f.database.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(snapshot) }
+	}
 }
 
 func lifecycleMutationCalls(patch bool) map[string]int {
@@ -561,7 +581,11 @@ func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
 			if status == model.TaskDone {
 				actor, headers = memberSession, map[string]string{"Cookie": session["Cookie"], "Origin": f.origin, "X-Request-ID": "lifecycle-member-done"}
 			}
-			response = f.request(actor, http.MethodPut, path+"/status", body, headers, 200, "", lifecycleMutationCalls(false))
+			calls := lifecycleMutationCalls(false)
+			if status == model.TaskDone {
+				calls["children"] = 1
+			}
+			response = f.request(actor, http.MethodPut, path+"/status", body, headers, 200, "", calls)
 			assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
 			current = next
 		})

@@ -9,6 +9,7 @@ import (
 )
 
 func TestCredentialUsageBatchValidation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	valid := model.CredentialUsageEvent{Kind: model.UsageSubjectPAT, UserID: "11111111-1111-1111-1111-111111111111", SubjectID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	cases := []struct {
 		name   string

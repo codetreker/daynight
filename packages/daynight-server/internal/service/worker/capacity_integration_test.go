@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,14 +8,26 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
 
-func TestReportRejectsOversizedMergedSnapshotAtomically(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
+func TestWorkerReportCapacityRollback(t *testing.T) {
+	database := openWorkerIntegrationStore(t)
+	t.Run("oversized_merged_snapshot", func(t *testing.T) {
+		testReportRejectsOversizedMergedSnapshotAtomically(t, database)
+	})
+	t.Run("observation_wrapper_budget", func(t *testing.T) {
+		testObservationWrapperBudgetRollsBackReport(t, database)
+	})
+}
+
+func testReportRejectsOversizedMergedSnapshotAtomically(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
+	ctx := t.Context()
 	workers := NewWorkers(database)
 	for _, state := range []model.WorkerTaskObservationState{model.WorkerTasksObserved, model.WorkerTasksStale, model.WorkerTasksUnavailable} {
 		t.Run(string(state), func(t *testing.T) {
@@ -52,9 +63,10 @@ func TestReportRejectsOversizedMergedSnapshotAtomically(t *testing.T) {
 	}
 }
 
-func TestObservationWrapperBudgetRollsBackReport(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
+func testObservationWrapperBudgetRollsBackReport(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
+	ctx := t.Context()
 	workers := NewWorkers(database)
 	id := uuid.NewString()
 	importWorkerConfiguration(t, workers, principal, id, cloudWorkerConfiguration(""))

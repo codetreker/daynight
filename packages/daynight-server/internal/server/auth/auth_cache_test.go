@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,14 +15,15 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func conditionalMe(h *authHarness, method string, cookie *http.Cookie, authorization, validator string) *httptest.ResponseRecorder {
+func conditionalMe(h *strictAuthHTTP, method string, cookie *http.Cookie, authorization, validator string, pending ...authRequestCall) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "/api/v1/me", nil)
-	request.Header.Set("X-Request-ID", "project-test")
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}
@@ -29,113 +31,152 @@ func conditionalMe(h *authHarness, method string, cookie *http.Cookie, authoriza
 		request.Header.Set("Authorization", authorization)
 	}
 	request.Header.Set("If-None-Match", validator)
-	response := httptest.NewRecorder()
-	h.Handler.ServeHTTP(response, request)
-	return response
+	return h.serve(request, pending...)
+}
+
+func requireMeProfile(t *testing.T, response *httptest.ResponseRecorder, user model.User) string {
+	t.Helper()
+	payload, err := json.Marshal(api.User{
+		ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL,
+		PersonalTeam: api.TeamRef{ID: user.PersonalTeam.ID, Kind: user.PersonalTeam.Kind, Name: user.PersonalTeam.Name},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = append(payload, '\n')
+	digest := sha256.Sum256(payload)
+	etag := `"` + hex.EncodeToString(digest[:]) + `"`
+	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), payload) ||
+		response.Header().Get("Daynight-User-ID") != user.ID || response.Header().Get("Cache-Control") != "private, no-cache" ||
+		response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Content-Length") != strconv.Itoa(len(payload)) ||
+		response.Header().Get("ETag") != etag {
+		t.Fatalf("incorrect profile response for %q: status=%d headers=%v body bytes=%d want %d", user.ID, response.Code, response.Header(), response.Body.Len(), len(payload))
+	}
+	return etag
+}
+
+func requireUnchangedMe(t *testing.T, response *httptest.ResponseRecorder, userID, etag string) {
+	t.Helper()
+	if response.Code != http.StatusNotModified || response.Body.Len() != 0 ||
+		response.Header().Get("Daynight-User-ID") != userID || response.Header().Get("Cache-Control") != "private, no-cache" ||
+		response.Header().Get("ETag") != etag {
+		t.Fatalf("incorrect unchanged profile response: status=%d headers=%v body bytes=%d", response.Code, response.Header(), response.Body.Len())
+	}
+}
+
+func requireUncacheableMeError(t *testing.T, response *httptest.ResponseRecorder, status int, code, admittedUserID string) {
+	t.Helper()
+	testsupport.AssertProjectError(t, response, status, code)
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" ||
+		response.Header().Get("Daynight-User-ID") != admittedUserID {
+		t.Fatalf("profile error has incorrect cache or identity headers: %v", response.Header())
+	}
 }
 
 func TestIdentityHTTPMeCacheTracksProfileContent(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "cached-profile")
-	initial := conditionalMe(h, http.MethodGet, cookie, "", "")
-	user := testsupport.DecodeResponse[api.User](t, initial, http.StatusOK)
-	etag := initial.Header().Get("ETag")
-	if etag == "" {
-		t.Fatal("initial profile omitted validator")
-	}
+	h := newStrictAuthHTTP(t)
+	actor, profile := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
+	initial := conditionalMe(h, http.MethodGet, cookie, "", "", expectAuthentication(actor, cookie.Value), expectUser(actor, profile))
+	etag := requireMeProfile(t, initial, profile)
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		unchanged := conditionalMe(h, method, cookie, "", etag)
-		if unchanged.Code != http.StatusNotModified || unchanged.Body.Len() != 0 || unchanged.Header().Get("Daynight-User-ID") != user.ID || unchanged.Header().Get("Cache-Control") != "private, no-cache" {
-			t.Fatalf("%s did not reuse authenticated content: %d", method, unchanged.Code)
-		}
+		unchanged := conditionalMe(h, method, cookie, "", etag, expectAuthentication(actor, cookie.Value), expectUser(actor, profile))
+		requireUnchangedMe(t, unchanged, actor.UserID, etag)
 	}
-	cookie = h.Login(t, "cached-profile")
-	if unchanged := conditionalMe(h, http.MethodGet, cookie, "", etag); unchanged.Code != http.StatusNotModified {
-		t.Fatal("identical login invalidated profile content")
-	}
+
+	cookie = h.cookie(authReplacementCookie)
+	actor.CredentialID = "20000000-0000-4000-8000-000000000099"
+	admit := expectAuthentication(actor, cookie.Value)
+	unchanged := conditionalMe(h, http.MethodGet, cookie, "", etag, admit, expectUser(actor, profile))
+	requireUnchangedMe(t, unchanged, actor.UserID, etag)
+
+	name := "Updated <&> 中文"
+	avatar := "data:image/png;base64," + strings.Repeat("AAAA", 60_000)
+	email := "changed@example.test"
+	verified := true
 	for _, change := range []struct {
-		field string
-		value any
+		field  string
+		mutate func(*model.User)
 	}{
-		{"name", "Updated <&> 中文"},
-		{"avatar_url", "data:image/png;base64," + strings.Repeat("AAAA", 60_000)},
-		{"email", "changed@example.test"},
-		{"email_verified", true},
-		{"name", nil},
-		{"avatar_url", nil},
-		{"email", nil},
-		{"email_verified", nil},
+		{"name", func(u *model.User) { u.Name = &name }},
+		{"avatar_url", func(u *model.User) { u.AvatarURL = &avatar }},
+		{"email", func(u *model.User) { u.Email = &email }},
+		{"email_verified", func(u *model.User) { u.EmailVerified = &verified }},
+		{"name to null", func(u *model.User) { u.Name = nil }},
+		{"avatar_url to null", func(u *model.User) { u.AvatarURL = nil }},
+		{"email to null", func(u *model.User) { u.Email = nil }},
+		{"email_verified to null", func(u *model.User) { u.EmailVerified = nil }},
 	} {
-		if _, err := h.Database.Pool.Exec(t.Context(), "UPDATE users SET "+change.field+"=$2 WHERE id=$1", user.ID, change.value); err != nil {
-			t.Fatal(err)
-		}
-		response := conditionalMe(h, http.MethodGet, cookie, "", etag)
-		testsupport.DecodeResponse[api.User](t, response, http.StatusOK)
-		if next := response.Header().Get("ETag"); next == "" || next == etag {
+		change.mutate(&profile)
+		response := conditionalMe(h, http.MethodGet, cookie, "", etag, admit, expectUser(actor, profile))
+		next := requireMeProfile(t, response, profile)
+		if next == etag {
 			t.Fatalf("%s change did not invalidate content", change.field)
-		} else {
-			etag = next
 		}
-		if unchanged := conditionalMe(h, http.MethodGet, cookie, "", etag); unchanged.Code != http.StatusNotModified || unchanged.Body.Len() != 0 {
-			t.Fatalf("%s unchanged profile was retransmitted", change.field)
-		}
+		etag = next
+		unchanged := conditionalMe(h, http.MethodGet, cookie, "", etag, admit, expectUser(actor, profile))
+		requireUnchangedMe(t, unchanged, actor.UserID, etag)
 	}
 }
 
 func TestIdentityHTTPMeCacheNeverReplacesAuthentication(t *testing.T) {
-	h := authTestHarness(t)
-	aliceCookie := h.Login(t, "cache-alice")
-	aliceResponse := conditionalMe(h, http.MethodGet, aliceCookie, "", "")
-	alice := testsupport.DecodeResponse[api.User](t, aliceResponse, http.StatusOK)
-	aliceTag := aliceResponse.Header().Get("ETag")
-	bobCookie := h.Login(t, "cache-bob")
-	bobResponse := conditionalMe(h, http.MethodGet, bobCookie, "", aliceTag)
-	bob := testsupport.DecodeResponse[api.User](t, bobResponse, http.StatusOK)
-	if bob.ID == alice.ID || bobResponse.Header().Get("ETag") == aliceTag || bobResponse.Header().Get("Daynight-User-ID") != bob.ID {
+	h := newStrictAuthHTTP(t)
+	alice, aliceProfile := authRequestAccount(1)
+	bob, bobProfile := authRequestAccount(2)
+	aliceCookie, bobCookie := h.cookie(authAliceCookie), h.cookie(authBobCookie)
+	aliceAdmission := expectAuthentication(alice, aliceCookie.Value)
+	aliceResponse := conditionalMe(h, http.MethodGet, aliceCookie, "", "", aliceAdmission, expectUser(alice, aliceProfile))
+	aliceTag := requireMeProfile(t, aliceResponse, aliceProfile)
+	bobResponse := conditionalMe(h, http.MethodGet, bobCookie, "", aliceTag, expectAuthentication(bob, bobCookie.Value), expectUser(bob, bobProfile))
+	if bobTag := requireMeProfile(t, bobResponse, bobProfile); bobTag == aliceTag {
 		t.Fatal("a replacement identity reused cached account content")
 	}
 	for _, response := range []*httptest.ResponseRecorder{
 		conditionalMe(h, http.MethodGet, nil, "", aliceTag),
-		conditionalMe(h, http.MethodGet, aliceCookie, "Bearer invalid", aliceTag),
+		conditionalMe(h, http.MethodGet, aliceCookie, "Bearer invalid", aliceTag, expectRejectedCredential(model.PATCredential, "invalid")),
 	} {
-		testsupport.AssertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
-		if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" {
-			t.Fatal("authentication failure was cacheable")
-		}
+		requireUncacheableMeError(t, response, http.StatusUnauthorized, "unauthenticated", "")
 	}
-	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request(http.MethodPost, "/api/v1/me/tokens", `{"name":"cached-me","expiresAt":null}`, []*http.Cookie{aliceCookie}, nil, h.Origin), http.StatusCreated)
+
+	mintedFact := authRequestMintedPAT(alice, "cached-me")
+	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t,
+		h.request(http.MethodPost, "/api/v1/me/tokens", `{"name":"cached-me","expiresAt":null}`, []*http.Cookie{aliceCookie}, nil, authRequestOrigin,
+			aliceAdmission, authRequestCall{name: "CreatePAT", args: []any{alice, identitycore.CreatePAT{Name: "cached-me"}}, result: mintedFact}),
+		http.StatusCreated)
+	if minted.ID != mintedFact.Credential.ID || minted.Token != mintedFact.Secret {
+		t.Fatal("mint response changed the PAT")
+	}
+	pat := model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: minted.ID}
 	bearer := "Bearer " + minted.Token
-	if response := conditionalMe(h, http.MethodGet, bobCookie, bearer, aliceTag); response.Code != http.StatusNotModified || response.Header().Get("Daynight-User-ID") != alice.ID {
-		t.Fatal("cache validation did not follow the authoritative bearer identity")
+	unchanged := conditionalMe(h, http.MethodGet, bobCookie, bearer, aliceTag, expectAuthentication(pat, minted.Token), expectUser(pat, aliceProfile))
+	requireUnchangedMe(t, unchanged, alice.UserID, aliceTag)
+	revoked := h.request(http.MethodDelete, "/api/v1/me/tokens/"+minted.ID, "", []*http.Cookie{aliceCookie}, nil, authRequestOrigin,
+		aliceAdmission, authRequestCall{name: "RevokePAT", args: []any{alice, minted.ID}})
+	if revoked.Code != http.StatusNoContent || revoked.Body.Len() != 0 || revoked.Header().Get("Daynight-User-ID") != alice.UserID {
+		t.Fatalf("token revocation response: status=%d headers=%v", revoked.Code, revoked.Header())
 	}
-	if response := h.Request(http.MethodDelete, "/api/v1/me/tokens/"+minted.ID, "", []*http.Cookie{aliceCookie}, nil, h.Origin); response.Code != http.StatusNoContent {
-		t.Fatalf("token revocation failed: %d", response.Code)
-	}
-	testsupport.AssertProjectError(t, conditionalMe(h, http.MethodGet, bobCookie, bearer, aliceTag), http.StatusUnauthorized, "unauthenticated")
-	if _, err := h.Database.Pool.Exec(t.Context(), `UPDATE sessions SET created_at=now()-interval '8 days',expires_at=now()-interval '1 second' WHERE user_id=$1`, alice.ID); err != nil {
-		t.Fatal(err)
-	}
-	testsupport.AssertProjectError(t, conditionalMe(h, http.MethodGet, aliceCookie, "", aliceTag), http.StatusUnauthorized, "unauthenticated")
+	refused := conditionalMe(h, http.MethodGet, bobCookie, bearer, aliceTag, expectRejectedCredential(model.PATCredential, minted.Token))
+	requireUncacheableMeError(t, refused, http.StatusUnauthorized, "unauthenticated", "")
+	expired := conditionalMe(h, http.MethodGet, aliceCookie, "", aliceTag, expectRejectedCredential(model.SessionCredential, aliceCookie.Value))
+	requireUncacheableMeError(t, expired, http.StatusUnauthorized, "unauthenticated", "")
 }
 
 func TestIdentityHTTPMeCacheDoesNotHideUserReadFailure(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "cache-read-failure")
-	initial := conditionalMe(h, http.MethodGet, cookie, "", "")
-	user := testsupport.DecodeResponse[api.User](t, initial, http.StatusOK)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
-	request.Header.Set("X-Request-ID", "project-test")
-	request.Header.Set("If-None-Match", initial.Header().Get("ETag"))
-	if _, err := h.Database.Pool.Exec(t.Context(), "ALTER TABLE users RENAME TO unavailable_users"); err != nil {
-		t.Fatal(err)
+	h := newStrictAuthHTTP(t)
+	actor, profile := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
+	admit := expectAuthentication(actor, cookie.Value)
+	initial := conditionalMe(h, http.MethodGet, cookie, "", "", admit, expectUser(actor, profile))
+	etag := requireMeProfile(t, initial, profile)
+	cause := &store.Error{
+		Phase: "read user", DatabaseFailure: true, SQLState: "42P01",
+		Cause: &pgconn.PgError{Code: "42P01", Message: "user relation is missing"},
 	}
-	response := httptest.NewRecorder()
-	httpx.RequestLogging(slog.New(slog.NewJSONHandler(&h.Logs, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.Auth.me(w, r, model.Principal{UserID: user.ID})
-	})).ServeHTTP(response, request)
-	testsupport.AssertProjectError(t, response, http.StatusInternalServerError, "internal_error")
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" {
-		t.Fatal("a failed user read validated a cached profile")
+	response := conditionalMe(h, http.MethodGet, cookie, "", etag, admit,
+		authRequestCall{name: "User", args: []any{actor}, err: cause})
+	requireUncacheableMeError(t, response, http.StatusInternalServerError, "internal_error", actor.UserID)
+	if !strings.Contains(h.logs.String(), `"cause":"database"`) {
+		t.Fatal("User read failure lost its operational classification")
 	}
 }
 

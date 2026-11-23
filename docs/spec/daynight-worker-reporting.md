@@ -6,7 +6,7 @@
 
 Worker 复用已持久化的稳定 workerId、实例锁及启动时固定的认证账号。本地身份、认证和配置交换就绪后立即触发报告，随后每 30 秒独立触发；成功取得完整自有 claim 清单和确认新 claim 也触发报告。报告先于仓库与业务执行 backend 准备，不等待任务清单成功、候选查询、执行 tick 或原生任务结束。空项目、空闲、满并发、较大的 pollIntervalMs 和应用长操作均不停止定时报告。
 
-报告在 Herdr 和 Web 执行模式中使用同一机制。采集 Herdr 版本只观察私有端点，不能启动 daemon、调用 ensureInstance、修复 integration 或初始化延迟的 Herdr 执行 backend。纯 Web Worker 无须安装或启动 Herdr。
+报告只采集 Web 执行所需的原生工具事实，不探测或启动 Herdr。
 
 CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirectory 显式交给 runtime。磁盘只表示该目录所在文件系统；不使用任务 worktree、repositoryRoot、home 或系统根目录代替。上报没有独立公开命令或配置开关，也不修改任务、claim、凭据或执行资格。
 
@@ -26,7 +26,7 @@ CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirec
 
 ## 原生只读探测的清理与恢复
 
-本节适用于 `assistantHost` 的 Provider 预检与 `versions` 的原生版本采集。历史上发生清理失败与当前清理是否仍未确认是两个独立事实：`HerdrCommandCleanupError` 等历史错误类别不能单独证明当前仍有清理责任，也不能因时间经过自动失效。每次清理确认必须关联原探测、原 child 及其输出流，只能解除该次探测留下的阻塞。
+本节适用于 `assistantHost` 的 Provider 预检与 `versions` 的原生版本采集。历史上发生清理失败与当前清理是否仍未确认是两个独立事实：`OwnedCommandCleanupError` 等历史错误类别不能单独证明当前仍有清理责任，也不能因时间经过自动失效。每次清理确认必须关联原探测、原 child 及其输出流，只能解除该次探测留下的阻塞。
 
 | 原探测的清理事实 | 必须保持的结果 |
 |---|---|
@@ -63,12 +63,11 @@ Windows bare Codex 探测先按 Node 字母序选择第一个大小写不敏感 
 | 内存 | totalmem 与 totalmem-freemem，单位为 bytes |
 | 磁盘 | 启动目录文件系统的 `blocks*bsize` 总量和 `bavail*bsize` 可用量，单位为 bytes；可用量表示调用身份可用空间 |
 | Daynight | 当前运行 CLI 包注入的版本 |
-| Herdr | 当前 Worker 与服务所属私有 daemon 的只读 ping 版本；macOS 使用原始 run 身份验证后的端点，多个存活 daemon 必须版本一致；不确定或混合版本为 error/unavailable，确证无存活 daemon 为 not_running |
 | Codex、Copilot | 已观察到的原生版本；仅确证 executable 不存在为 not_installed，权限、命令、输出或超时故障为 error，未检查不能冒充已安装或未安装 |
 
 资源计数必须是非负安全整数，容量关系和 CPU 差分必须有效。越界、未推进或不一致的采样明确失败，不使用截断值。磁盘计算先使用 bigint，再验证可精确表示范围。底层 statfs 无法取消；某次超时后最多保留一个未完成调用，之后的磁盘探测在其完成前报告 timeout，不继续排队 I/O 或追加等待监听。
 
-独立版本采集的 Codex/Copilot 成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。接入工具管理器时版本报告只读所选工具快照，不为报告重新探测；Copilot 后台需求由[助手托管预检](daynight-worker-snapshots.md#助手托管预检)定义。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新观察，不复用旧实例版本。
+独立版本采集的 Codex/Copilot 成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。接入工具管理器时版本报告只读所选工具快照，不为报告重新探测；Copilot 后台需求由[助手托管预检](daynight-worker-snapshots.md#助手托管预检)定义。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。
 
 macOS 存在 durable journal 时，只读其原有格式，按当前 workerId 和 serverOrigin 选择执行记录；不迁移、恢复或修改 journal、claim 与控制状态，也不回退到遗留共享端点。忽略 stopped_confirmed run 与已确认退出的原始 daemon；stop_unknown 仍可报告经过验证的存活 daemon 版本，但不因此改变执行或停止结论。准备阶段已记录 daemon 身份时也观察它；已请求启动而尚无身份、进程身份未知或变化、端点被替换或仍存活进程的端点缺失均为 error/unavailable。每次 ping 前后核对端点的原始进程与 audit 身份；所有存活 daemon 的版本一致才为 ok。journal 读取、权限及协议错误保留字段错误。
 
@@ -90,7 +89,7 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 配置报告共用“持久化就绪→权威/候选准备→新采样→不可变捕获→generation 检查→发送一次→接收并持久化回执”的顺序，foreground 与实际配置管理路径一致。prepare 完成后才采样，代次改变时丢弃旧样本并等待后续触发；正常已同步周期不增加 GET，未知结果、400/协议失败及能力重发现先认证读取。回执包含当前目标、观测 CAS 及是否接纳该份观测。接收目标和处理确认通过配置模块的同一提交 owner，实际应用在心跳之外运行，不能在报告内等待 preflight、仓库或停止操作。目标、实际值与应用观测的完整语义由[Worker 配置需求](daynight-worker.md#w-01前台运行配置与平台)与[配置协议](daynight-worker-configuration.md)持有。
 
-捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执完整规范状态，再生成最新报告；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
+捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执观测基线与可接纳目标，再生成最新报告；迟到较低 desired revision 不回退已收到的目标，同 revision 完整语义冲突明确拒绝；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
 
 配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。请求关联仅来自实际 ApiError，优先保留合法 X-Request-ID；只有头缺席时才采用合法错误正文 ID，正文损坏不抹去已取得的头关联。不合法头与伪造对象均不进入关联字段，所选值遵守既有 64 字符安全格式。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
 
@@ -125,6 +124,5 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 受控命令或内存复现只证明上述分支与清理确认规则，不证明真实 Worker 已恢复或助手创建、启动成功。现场首次超时原因与原进程实际退出时刻须有各自证据；新采集器成功不能补足旧进程证据，也不能据此承诺刷新页面恢复旧 Worker。
 
-Herdr 验证覆盖实际 per-run 路径、零存活 run、多 run 同版本与混合版本、原始身份退出和替换、已确认停止、stop_unknown、准备阶段、损坏或旧 journal、端点身份变化、权限与协议故障，以及采集期限和取消；同时证明原始控制记录未变、旧平台和纯 Web 保持只读延迟边界，私有证据不进入报告。
 
 实际平台采集验证使用真实 OS、CPU、内存、statfs 及原生版本命令，分别记录 Linux、macOS ARM64、Windows 的环境与状态。fixture 证明分支行为，不能代替实际平台结果；完整原生执行、恢复与业务交付仍遵守整体 Worker 验收边界。

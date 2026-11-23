@@ -12,9 +12,9 @@ import (
 )
 
 func TestRetainedPersonalTaskWorker(t *testing.T) {
-	claim := &model.WorkerClaim{State: model.WorkerActive, WorkerID: "11111111-1111-4111-8111-111111111111", Machine: model.WorkerMachine{ID: "22222222-2222-4222-8222-222222222222", Name: "name"}}
+	claim := &model.WorkerClaim{UserID: "33333333-3333-4333-8333-333333333333", State: model.WorkerActive, WorkerID: "11111111-1111-4111-8111-111111111111", Machine: model.WorkerMachine{ID: "22222222-2222-4222-8222-222222222222", Name: "name"}}
 	worker, err := RetainedPersonalTaskWorker(claim)
-	if err != nil || worker == nil || worker.WorkerID != claim.WorkerID || worker.Machine != claim.Machine {
+	if err != nil || worker == nil || worker.UserID != claim.UserID || worker.WorkerID != claim.WorkerID || worker.Machine != claim.Machine {
 		t.Fatalf("active worker: %#v", worker)
 	}
 	claim.State = model.WorkerCompleted

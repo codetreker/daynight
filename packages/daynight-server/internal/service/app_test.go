@@ -23,10 +23,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/google/uuid"
 )
 
@@ -38,6 +36,48 @@ type configuredOAuthStore struct {
 	failure error
 }
 
+type configuredPreviewStore struct {
+	store.Transactions
+	calls   int
+	failure error
+}
+
+func (s *configuredPreviewStore) WritePreviewSSO(context.Context, func(store.PreviewSSODAO) error) (store.Completion, error) {
+	s.calls++
+	return store.Completion{Outcome: store.TransactionNotCommitted}, s.failure
+}
+
+func TestNewModulesConfiguresPreviewSSO(t *testing.T) {
+	c := appTestConfig(t)
+	database := &configuredPreviewStore{failure: errors.New("configured preview writer unavailable")}
+	app := NewModules(c, database, nil, nil, nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := app.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if app.PreviewSSOError != nil || app.Identity.PreviewSSO() == nil {
+		t.Fatalf("preview module was not assembled: %v", app.PreviewSSOError)
+	}
+	if _, err := app.Identity.PreviewSSO().Start(t.Context(), uuid.NewString()); !errors.Is(err, database.failure) || database.calls != 1 {
+		t.Fatalf("preview module did not retain the configured writer: calls=%d error=%v", database.calls, err)
+	}
+}
+
+func TestNewModulesRetainsPreviewSSOConfigurationFailure(t *testing.T) {
+	c := appTestConfig(t)
+	c.Server.PreviewOrigin = "invalid preview origin"
+	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
+	if app.PreviewSSOError == nil || app.Identity.PreviewSSO() != nil {
+		t.Fatal("invalid preview configuration produced an available module")
+	}
+	if err := app.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (s *configuredOAuthStore) WriteCredentialFamily(context.Context, func(store.CredentialFamilyScope) error) (store.Completion, error) {
 	s.calls++
 	return store.Completion{Outcome: store.TransactionNotCommitted}, s.failure
@@ -45,7 +85,7 @@ func (s *configuredOAuthStore) WriteCredentialFamily(context.Context, func(store
 
 func TestNewModulesConfiguresTheSharedOAuthAPIAudience(t *testing.T) {
 	database := &configuredOAuthStore{failure: errors.New("configured family unavailable")}
-	app := NewModules(config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}}, database, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session, Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}}, database, nil, nil, nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -60,7 +100,7 @@ func TestNewModulesConfiguresTheSharedOAuthAPIAudience(t *testing.T) {
 }
 
 func TestOAuthProfileComposition(t *testing.T) {
-	c := config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{
+	c := config.Config{Session: config.DefaultConfig().Session, Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{
 		"known": []byte(`{"client_id":"known","redirect_uris":["https://client.example/callback"]}`),
 	}}}
 	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
@@ -78,6 +118,7 @@ func TestOAuthProfileComposition(t *testing.T) {
 		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{"bad": []byte(`{}`)}}},
 		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example/path"}},
 	} {
+		invalid.Session = config.DefaultConfig().Session
 		app := NewModules(invalid, compositionOnlyStore{}, nil, nil, nil)
 		if app.OAuthProfile != nil || app.APIIssuer != nil || app.OAuthError == nil {
 			t.Fatal("invalid OAuth configuration produced a public profile")
@@ -89,13 +130,9 @@ func TestOAuthProfileComposition(t *testing.T) {
 }
 
 func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
-	if app.PrivateContent != nil || app.Uploads == nil {
-		t.Fatal("unexpected private content composition")
-	}
-	_, err := app.Uploads.Execute(context.Background(), transfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
-	if err == nil || !strings.Contains(err.Error(), "upload service unavailable") {
-		t.Fatalf("upload without private storage: %v", err)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
+	if app.PrivateContent != nil || app.Uploads != nil {
+		t.Fatal("incomplete private storage assembled scoped transfer services")
 	}
 	if err := app.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -120,11 +157,12 @@ func appTestConfig(t *testing.T) config.Config {
 	c := config.Config{
 		Database: databaseconfig.Config{URL: "postgres://app:app@database.invalid/app?sslmode=disable"},
 		Storage:  storageconfig.Config{Root: filepath.Join(root, "storage")},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example", PreviewOrigin: "https://preview.daynight.example"},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "app", AppSecret: "secret", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 	c.MCP.Transfer = transferconfig.DefaultConfig()
+	c.Session = config.DefaultConfig().Session
 	return c
 }
 
@@ -350,7 +388,7 @@ func (f *observedAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForPersistenceAndReusesTimedOutClose(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	started, release, completed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseClose := func() { releaseOnce.Do(func() { close(release) }) }
@@ -435,7 +473,7 @@ func (f *blockingAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	var persistenceCalls atomic.Int32
 	app.persistence = &Persistence{Close: func() { persistenceCalls.Add(1) }}
 	failure := errors.New("file close failed")
@@ -522,5 +560,50 @@ func TestOpenPersistenceRejectsInvalidDatabaseURL(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret") {
 		t.Fatalf("database startup error exposed credentials: %v", err)
+	}
+}
+
+func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
+	t.Setenv("DAYNIGHT_S2S_SHARED_KEY", "")
+	t.Setenv("DAYNIGHT_USAGE_CURSOR_KEY", "")
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "false")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
+	defer func() {
+		if err := app.Close(t.Context()); err != nil {
+			t.Error(err)
+		}
+	}()
+	if app.UsageError != nil || app.Usage == nil || app.Usage.Capabilities()["writeEnabled"] != false {
+		t.Fatalf("usage assembly: service=%v error=%v", app.Usage, app.UsageError)
+	}
+}
+
+func TestOpenAppCleansResourcesOnScopedUsageConfigurationFailure(t *testing.T) {
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "invalid")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	openers.monitoring = func(string) (monitoringBackend, error) {
+		t.Fatal("monitoring opened after invalid usage configuration")
+		return nil, nil
+	}
+	app, err := openApp(t.Context(), c, nil, openers)
+	var invalid *configvalue.ConfigurationError
+	if app != nil || !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_USAGE_WRITE_ENABLED" || backend.closes != 1 {
+		t.Fatalf("usage startup failure lost its field or cleanup: app=%v error=%v closes=%d", app, err, backend.closes)
+	}
+}
+
+func TestOpenAppRejectsMissingRequiredMonitoringOpener(t *testing.T) {
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	app, err := openApp(t.Context(), c, nil, openers)
+	if app != nil || err == nil || !strings.Contains(err.Error(), "monitoring store opener is unavailable") || backend.closes != 1 {
+		t.Fatalf("missing monitoring dependency did not fail and clean resources: app=%v error=%v closes=%d", app, err, backend.closes)
 	}
 }

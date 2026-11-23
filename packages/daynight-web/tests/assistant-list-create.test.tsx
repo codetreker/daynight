@@ -8,6 +8,7 @@ import { BotsPage } from '../src/features/bots/BotsPage';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { assistantCreateSubmit, assistantNameInput, expandAssistantAdvancedSettings, openAssistantCreation } from './helpers/assistant-ui';
 import { BOT_USER, botDefaults, botDefinition, botError, botId, botResponse } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
@@ -119,25 +120,49 @@ it('retains the old complete list through a failed second refresh page and repla
   expect(writes(fetch)).toHaveLength(0);
 });
 
-it('keeps startup failure distinct from Worker observation failure in compact selectable rows', async () => {
+it('keeps per-Bot availability and machine facts independent of creation-default failures in selectable rows', async () => {
   const failed = { ...botDefinition(2), startupResult: { state: 'failed' as const, code: 'invalid_cwd' } };
   const fetch = fixture([botDefinition(1), failed]);
   const defaults = botDefaults();
   const offline = { ...defaults, workerId: null, configuration: null, reason: 'no_available_worker', workers: [{ ...defaults.workers[0], state: 'offline', reason: 'offline', configuration: null }] };
-  fetch.mockImplementation(async url => String(url).includes('/defaults') ? botResponse(offline) : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
+  let defaultsFailed = false, observationFailed = false;
+  fetch.mockImplementation(async url => {
+    const path = String(url);
+    if (path === '/api/v1/me/bots/defaults') return defaultsFailed ? botError(503, 'unavailable') : botResponse(offline);
+    if (path === '/api/v1/me/bots?limit=100') return botResponse({ items: [botDefinition(1), failed], nextCursor: null });
+    if (path === `/api/v1/me/workers/${botId(20)}/alias`) return botResponse({ workerId: botId(20), alias: { value: null, version: '1' } });
+    const number = path === `/api/v1/me/bots/${botId(1)}/observation` ? 1 : path === `/api/v1/me/bots/${botId(2)}/observation` ? 2 : null;
+    if (number !== null) return observationFailed ? botError(503, 'capability_error') : botResponse(botObservation(number, {
+      state: number === 1 ? 'connecting' : 'abnormal', reason: number === 1 ? 'session_unregistered' : 'invalid_cwd',
+      machine: defaults.workers[0]!.machine, sessionId: null, testExecutionId: null, nativeSessionId: null, executionGeneration: null, connectionEpoch: null,
+    }));
+    return botError(404, 'not_found');
+  });
   mount();
-  const row = await screen.findByRole('link', { name: /Assistant 2.*Startup failed.*Worker offline/ });
+  const row = await screen.findByRole('link', { name: /Assistant 2.*Abnormal.*Machine 20/ });
   expect(row).toHaveAttribute('href', `/bots/${failed.id}`);
-  expect(screen.getByRole('link', { name: /Assistant 1/ })).toHaveTextContent('Starting');
-  expect(within(screen.getByRole('list', {name: /Your assistants|你的助手/})).queryByText('Machine 20')).toBeNull();
+  expect(screen.getByRole('link', { name: /Assistant 1/ })).toHaveTextContent('Connecting');
+  expect(within(screen.getByRole('list', {name: /Your assistants|你的助手/})).getAllByText('Machine 20')).toHaveLength(2);
   expect(within(screen.getByRole('list', {name: /Your assistants|你的助手/})).queryByText('/ordinary/directory')).toBeNull();
-  fetch.mockImplementation(async url => String(url).includes('/defaults') ? botError(503, 'unavailable') : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await screen.findByRole('alert');
-  expect(row).toHaveTextContent('Startup failed');
-  expect(row).toHaveTextContent('Worker status unknown');
+  defaultsFailed = true;
+  const refresh = screen.getByRole('button', { name: 'Refresh' });
+  fireEvent.click(refresh);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load creation defaults.');
+  expect(row).toHaveTextContent('Abnormal');
+  expect(row).toHaveTextContent('Machine 20');
   expect(row).not.toHaveTextContent('Worker offline');
+  expect(row).not.toHaveTextContent('Observation out of date');
+  await waitFor(() => expect(refresh).toBeEnabled());
+  defaultsFailed = false; observationFailed = true;
+  fireEvent.click(refresh);
+  await waitFor(() => expect(row).toHaveTextContent('Observation out of date'));
+  expect(row).toHaveTextContent('Machine 20');
+  expect(row.querySelector('time')).toHaveAttribute('dateTime', botObservation().observedAt);
+  expect(row).not.toHaveTextContent('Abnormal');
+  expect(screen.getByRole('link', { name: /Assistant 2/ })).toBe(row);
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   expect(listLinks()).toHaveLength(2);
+  expect(writes(fetch)).toHaveLength(0);
 });
 
 it('submits only the name and original ID through the real API, then checks the same unknown ID after reopening', async () => {
@@ -153,6 +178,7 @@ it('submits only the name and original ID through the real API, then checks the 
       throw new TypeError('Response lost after dispatch');
     }
     if (path.endsWith('/defaults')) return botResponse(botDefaults());
+    if (path === `/api/v1/me/workers/${botId(20)}/alias`) return botResponse({ workerId: botId(20), alias: { value: null, version: '1' } });
     if (path.includes('?')) return botResponse({ items: [], nextCursor: null });
     checked.push(path);
     return found ? botResponse({ ...botDefinition(), id: posted[0]!.id, name: 'Only 名称' }) : botError(404, 'not_found');
@@ -241,6 +267,7 @@ it('restores an unknown creation into a fresh scope and blocks its check during 
       throw new TypeError('Response lost');
     }
     if (String(url).includes('/defaults')) return botResponse(botDefaults());
+    if (String(url) === `/api/v1/me/workers/${botId(20)}/alias`) return botResponse({ workerId: botId(20), alias: { value: null, version: '1' } });
     if (String(url).includes('?')) return botResponse({ items: [], nextCursor: null });
     checked.push(String(url));
     return botError(404, 'not_found');

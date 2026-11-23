@@ -20,7 +20,7 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, principal, session := testutil.AuthRecords(t, s)
 	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: testutil.DeviceHash("state"), BrowserBindingHash: testutil.DeviceHash("browser"), ScopeHash: testutil.DeviceHash("scope"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: testutil.DeviceHash("pat"), Name: "DAO PAT", CreatedAt: now}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: testutil.DeviceHash("pat"), Name: "DAO PAT", CreatedAt: now}
 	identityScopeTest(t, s, func(scope IdentityScope) error {
 		dao := scope.IdentityDAO()
 		if err := dao.CleanupCredentials(ctx, now); err != nil {
@@ -140,6 +140,9 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 	if actual, _, err := testutil.IdentityUser(ctx, s, bob.ID); err != nil || !reflect.DeepEqual(actual, bob) {
 		t.Fatalf("other account changed after profile update: %+v %v", actual, err)
 	}
+	identityScopeTest(t, s, func(sc IdentityScope) error {
+		return sc.IdentityDAO().LockSession(ctx, principal, session.ExpiresAt)
+	})
 	for _, op := range []func(IdentityScope) error{
 		func(sc IdentityScope) error {
 			_, err := sc.IdentityDAO().ConsumeLogin(ctx, login.StateHash, login.BrowserBindingHash, now)
@@ -148,7 +151,6 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 		func(sc IdentityScope) error {
 			return sc.IdentityDAO().LockSession(ctx, model.Principal{Kind: model.PATCredential}, now)
 		},
-		func(sc IdentityScope) error { return sc.IdentityDAO().LockSession(ctx, principal, session.ExpiresAt) },
 		func(sc IdentityScope) error {
 			_, err := sc.IdentityDAO().LockActivePAT(ctx, uuid.NewString(), pat.ID, now)
 			return err

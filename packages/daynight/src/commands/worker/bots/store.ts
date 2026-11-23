@@ -3,14 +3,14 @@ import type { BotDeletionStop } from "./session-api.js";
 import type { BotDeletionTarget } from "./delete-files.js";
 import { randomUUID } from "node:crypto";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { assertCurrentSqlite, type SqliteFormat } from "../../../platform/sqlite-format.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import { workerStoreFormat } from "../store-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { FrozenToolObservation } from "../types.js";
-import type { BotExecution } from "./execution-store.js";
+import { hasNeverStartedDeletionEvidence, type BotExecution } from "./execution-store.js";
 import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type Bot, type BotOwner, type BotRecord, type BotLaunchIntent, type BotRoleConfiguration } from "./types.js";
 
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
@@ -18,17 +18,20 @@ const time = (value: number): number => { if (!Number.isSafeInteger(value) || va
 const key = (owner: BotOwner, botId: string) => ({ ...parseBotOwner(owner), botId: botUUID(botId, "Bot ID") });
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId";
 
-/** The caller holds the Worker instance lock throughout inventory and execution access. */
-export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true,
+/** The caller holds the owning Bot lock, or the Worker lock for legacy storage. */
+export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; format?: SqliteFormat; storageStateDirectory?: string } = {}) => {
+  const format = options.format ?? workerStoreFormat;
+  const db = openSqliteDatabase({ file: databaseFile, format, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
-  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).immediate();
-  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).deferred();
+  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).immediate();
+  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).deferred();
   const parseRecord = (value: string, owner: BotOwner): BotRecord => {
     const record = JSON.parse(value) as BotRecord;
     if (!same(record.owner, owner) || record.botId !== record.observed.id) throw new Error("Stored Bot inventory identity is inconsistent.");
     parseBot(record.observed, owner);
+    if (record.migration !== undefined && (record.migration.state !== "registration_pending" || typeof record.migration.manifestPath !== "string"
+      || !path.isAbsolute(record.migration.manifestPath) || /[\0\r\n]/.test(record.migration.manifestPath))) throw new Error("Bot migration ownership is invalid.");
     if (record.definition !== null) {
       const definition = parseBot(record.definition, owner);
       if (definition.deletion !== null || definition.id !== record.botId) throw new Error("Stored Bot definition is inconsistent.");
@@ -59,6 +62,10 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
         || typeof cleanup.localCompleted !== "boolean" || !Array.isArray(cleanup.targets)
         || new Set(cleanup.targets.map(target => target.path)).size !== cleanup.targets.length) throw new Error("Stored Bot deletion responsibility is inconsistent.");
       if (cleanup.localCompleted && (cleanup.targets.length !== 0 || record.intent !== null || record.definition !== null)) throw new Error("Completed Bot cleanup must retain only minimal deletion responsibility.");
+      if (cleanup.workerId !== undefined) {
+        botUUID(cleanup.workerId, "Bot deletion cleanup Worker");
+        if (cleanup.stop === null) throw new Error("Bot cleanup Worker requires its original stopped execution proof.");
+      }
       for (const target of cleanup.targets) {
         if (!path.isAbsolute(target.path) || !path.isAbsolute(target.root) || path.dirname(target.path) !== target.root
           || !["file", "socket", "directory"].includes(target.kind) || typeof target.completed !== "boolean"
@@ -80,6 +87,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     return row === undefined ? null : parseRecord(row.record, owner);
   });
   const put = (record: BotRecord): BotRecord => {
+    if (format === workerStoreFormat && db.prepare(`SELECT 1 FROM bot_migrations WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) !== undefined) throw new Error("Legacy Bot authority has migrated; its original Worker rows cannot be recreated.");
     const serialized = JSON.stringify(record);
     parseRecord(serialized, record.owner);
     db.prepare(`INSERT INTO bots(server_origin, owner_user_id, worker_id, bot_id, record) VALUES (@serverOrigin, @ownerUserId, @workerId, @botId, @record)
@@ -102,7 +110,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     /** The caller holds the per-Bot execution serializer and has proved the writer stopped. */
     prepareDeletion: (input: BotRecord, stop: BotDeletionStop | null, targets: BotDeletionTarget[]): BotRecord => atomic(() => {
       const record = deleting(input), deletion = record.observed.deletion!;
-      if (record.cleanup !== undefined) throw new Error("Bot cleanup responsibility has already been prepared.");
+      if (record.cleanup !== undefined && (record.cleanup.stop !== null || stop === null || record.intent === null || record.cleanup.targets.length !== 0)) throw new Error("Bot cleanup responsibility has already been prepared.");
       const intent = record.intent;
       if (stop !== null && (intent === null || stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
         || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId
@@ -117,6 +125,31 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       target.completed = true;
       return put(record);
     }),
+    /** Retains only responsibility for this stopped deletion, never execution hosting. */
+    bindDeletionWorker: (input: BotRecord, workerId: string): BotRecord => atomic(() => {
+      const record = deleting(input), cleanup = record.cleanup;
+      botUUID(workerId, "Bot deletion cleanup Worker");
+      if (cleanup?.stop == null
+        || cleanup.workerId !== undefined && cleanup.workerId !== workerId) throw new Error("Bot deletion cleanup requires its original stopped execution and Worker.");
+      if (cleanup.stop.stopProof.kind === "never_started") {
+        const row = db.prepare(`SELECT record FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) as { record: string } | undefined;
+        if (cleanup.localCompleted && cleanup.workerId === workerId) {
+          if (row !== undefined) throw new Error("Completed Bot deletion cannot retain conflicting execution evidence.");
+        } else if (record.observed.deletion?.workerCleanup.code !== "execution_evidence_missing"
+          || !hasNeverStartedDeletionEvidence(record, row === undefined ? null : JSON.parse(row.record) as BotExecution)) {
+          throw new Error("Bot deletion cleanup Worker requires retained never-started execution evidence.");
+        }
+      }
+      cleanup.workerId = workerId;
+      return put(record);
+    }),
+    /** A definitive receipt rejection ends only the never-started replay authority. */
+    rejectNeverStartedDeletion: (input: BotRecord): BotRecord => atomic(() => {
+      const record = deleting(input), cleanup = record.cleanup;
+      if (cleanup?.stop?.stopProof.kind !== "never_started" || !cleanup.localCompleted) throw new Error("Bot deletion rejection requires its completed never-started receipt.");
+      delete cleanup.workerId;
+      return put(record);
+    }),
     /** Commit logical erasure and its receipt together; no journal is needed for subsequent retries. */
     finishDeletion: (input: BotRecord): BotRecord => atomic(() => {
       const record = deleting(input), cleanup = record.cleanup;
@@ -126,7 +159,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       db.prepare(`DELETE FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).run(key(record.owner, record.botId));
       return put(record);
     }),
-    close: (): void => closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }),
+    close: (): void => closeSqliteDatabase(db, { file: databaseFile, format }),
     get,
     list: (owner: BotOwner): BotRecord[] => read(() => {
       const identity = parseBotOwner(owner);
@@ -152,10 +185,12 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       if (intent !== null && observed.deletion === null) {
         if (observed.testExecutionId !== null && observed.testExecutionId !== intent.registration.testExecutionId) throw new Error("Bot registered execution differs from the durable launch intent.");
         if (intent.sessionId !== null && observed.sessionId !== intent.sessionId) throw new Error("Bot stable session binding cannot change.");
-        if (observed.sessionId !== null) intent.sessionId = observed.sessionId;
-        if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
+        if (previous?.migration === undefined) {
+          if (observed.sessionId !== null) intent.sessionId = observed.sessionId;
+          if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
+        }
       }
-      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }) });
+      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }), ...(previous?.migration === undefined ? {} : { migration: previous.migration }) });
     }),
     /** Persist the first registration identity before any register, ticket write or spawn. */
     prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation }): BotLaunchIntent => atomic(() => {
@@ -166,11 +201,11 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       if (!path.isAbsolute(input.homeDirectory) || /[\0\r\n]/.test(input.homeDirectory)) throw new Error("Bot home directory must be absolute.");
       if (!Number.isSafeInteger(input.recoveryLimit) || input.recoveryLimit < 0) throw new Error("Bot recovery limit must be a nonnegative safe integer.");
       const executionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
-      const directory = controllerExecutionDirectory(input.homeDirectory, executionId);
+      const directory = controllerExecutionDirectory(input.homeDirectory, executionId, options.storageStateDirectory);
       record.intent = { botVersion: record.observed.version,
         registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId: randomUUID(), controllerInstanceId, provider: record.definition.resolvedConfiguration.provider, initialInput: "none" },
         launchId, executionId, controllerInstanceId, initialOperationId: randomUUID(), sessionId: null, executionGeneration: "1", nativeSessionId: null,
-        ticketPath: controllerTicketPath(input.homeDirectory, launchId), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration,
+        ticketPath: controllerTicketPath(input.homeDirectory, launchId, options.storageStateDirectory), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration,
         ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }) };
       return put(record).intent!;
     }),

@@ -1,36 +1,70 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { cpSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 
 const roots: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
 const worktreePaths = (cwd: string): string[] => git(cwd, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
-const emptySources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
-const fixture = async () => {
-  const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
+const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
+const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
+const url = "https://example.com/fixture/project.git";
+const seedRoots: string[] = [];
+let checkoutSeed: Promise<string> | undefined;
+let bareSeed: Promise<string> | undefined;
+
+const createCheckoutSeed = async (): Promise<string> => {
   await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(path.join(scratch, "repo-")); roots.push(root);
-  const repository = path.join(root, "repository"); await mkdir(repository);
+  const root = await mkdtemp(path.join(scratch, "seed-"));
+  seedRoots.push(root);
+  const repository = path.join(root, "repository");
+  await mkdir(repository);
   git(repository, "init", "--initial-branch=main");
   git(repository, "config", "user.name", "Fixture"); git(repository, "config", "user.email", "fixture@example.com");
   git(repository, "config", "core.autocrlf", "false"); git(repository, "config", "core.eol", "lf");
   await writeFile(path.join(repository, "tracked.txt"), "original\n");
-  git(repository, "add", "tracked.txt"); git(repository, "commit", "-m", "fixture");
-  const remote = path.join(root, "origin.git"); git(root, "clone", "--bare", repository, remote);
-  const url = "https://example.com/fixture/project.git";
-  git(repository, "remote", "add", "origin", url); git(repository, "config", `url.${remote}.insteadOf`, url);
+  git(repository, "add", "tracked.txt");
+  git(repository, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-m", "fixture");
+  git(repository, "remote", "add", "origin", url);
+  return repository;
+};
+
+const createBareSeed = async (checkout: string): Promise<string> => {
+  const root = path.dirname(checkout);
+  const bare = path.join(root, "origin.git");
+  git(root, "clone", "--bare", "--no-hardlinks", checkout, bare);
+  git(bare, "remote", "remove", "origin");
+  return bare;
+};
+
+const fixture = async (kind: "checkout" | "checkout-and-origin" = "checkout-and-origin") => {
+  const checkout = await (checkoutSeed ??= createCheckoutSeed());
+  const root = await mkdtemp(path.join(scratch, "repo-"));
+  roots.push(root);
+  const repository = path.join(root, "repository");
+  const remote = path.join(root, "origin.git");
+  const copyOptions = { recursive: true, force: false, errorOnExist: true };
+  cpSync(checkout, repository, copyOptions);
+  if (kind === "checkout-and-origin") cpSync(await (bareSeed ??= createBareSeed(checkout)), remote, copyOptions);
+  // An unexpected fetch in a checkout-only case fails at a private local path.
+  git(repository, "config", `url.${remote}.insteadOf`, url);
   const project = { projectId: randomUUID(), repoUrl: url, localPath: repository };
   const owner = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
   const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "temp"), prepareFormat: async (_project, repo, operation) => { await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: emptySources }); } });
   return { root, repository, project, owner, adapter };
 };
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
+afterAll(async () => {
+  await Promise.allSettled([checkoutSeed, bareSeed]);
+  await Promise.all(seedRoots.map(root => rm(root, { force: true, recursive: true })));
+});
 
 // Real Git setup and repository inspection use multiple subprocesses on every platform.
 it("gates current worktrees until real migration, creates unlocked worktree, and retires only metadata after deletion", async () => {
@@ -57,16 +91,20 @@ it("gates current worktrees until real migration, creates unlocked worktree, and
 }, 30_000);
 
 it("uses a migrated taskId directory without rewriting the existing checkout", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   try {
     const old = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
     await mkdir(path.dirname(old), { recursive: true });
     const marker = `daynight-worker:${JSON.stringify({ ...f.owner, leaf: "1:1", root: "1:1", common: "1:1" })}`;
     git(f.repository, "worktree", "add", "--lock", "--reason", marker, "-b", `daynight/${f.owner.taskId}`, old, "HEAD");
     const before = await readFile(path.join(old, ".git"));
+    const web = openWebExecutionStore(path.join(f.root, "web.sqlite"), { onMigration: () => {} });
+    const task = web.register({ ...f.owner, project: f.project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(),
+      configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+    web.bindWorktree(task, { repositoryPath: f.repository, commonDirectory: git(f.repository, "rev-parse", "--absolute-git-dir"), worktreePath: old, branch: `daynight/${f.owner.taskId}` }, 2);
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-migration"), prepareFormat: async (_project, repo, op) => {
       await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-        sources: { ...emptySources, listSchedules: () => [f.owner] } });
+        sources: { listSchedules: () => [f.owner], listWebTasks: () => web.listUnfinishedTasks() } });
     } });
     try {
       await adapter.prepareRepository(f.project, operation);
@@ -76,12 +114,12 @@ it("uses a migrated taskId directory without rewriting the existing checkout", a
       expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain("locked");
       await adapter.removeWorktree(f.project, f.owner, operation);
       await adapter.retireWorktreeManifest(f.project, f.owner, operation);
-    } finally { await adapter.dispose(); }
+    } finally { await adapter.dispose(); web.close(); }
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
 it("retains unknown content and never treats a missing manifest as proof of absence", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   try {
     await f.adapter.prepareRepository(f.project, operation);
     await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/manifest is missing/) }) });
@@ -128,7 +166,7 @@ it("does not restore a checkout that disappears after a live execution was obser
 }, 30_000);
 
 it("restores a missing manifest from the exact retained legacy binding", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   try {
     const repository = await f.adapter.prepareRepository(f.project, operation);
     const legacy = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
@@ -163,7 +201,7 @@ it("does not replace a missing original branch or overwrite an unregistered dire
 }, 30_000);
 
 it("rejects a conflicting retained binding before creating a checkout", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   try {
     const repository = await f.adapter.prepareRepository(f.project, operation);
     git(f.repository, "branch", `daynight/${f.owner.taskId}`);
@@ -212,7 +250,7 @@ it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a workt
 }, 30_000);
 
 it("serializes concurrent repository format preparation and leaves a failed gate closed", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   let release!: () => void, entered!: () => void, calls = 0;
   const start = new Promise<void>(resolve => { entered = resolve; });
   const barrier = new Promise<void>(resolve => { release = resolve; });
@@ -231,7 +269,7 @@ it("serializes concurrent repository format preparation and leaves a failed gate
 }, 30_000);
 
 it("keeps a prepared repository available while another caller repeats preparation", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   let release!: () => void, entered!: () => void, calls = 0;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const barrier = new Promise<void>(resolve => { release = resolve; });
@@ -255,7 +293,7 @@ it("keeps a prepared repository available while another caller repeats preparati
 }, 30_000);
 
 it("does not reuse a prepared gate for a different project binding", async () => {
-  const f = await fixture(), operation = createOperation();
+  const f = await fixture("checkout"), operation = createOperation();
   let calls = 0;
   const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-mapping"), prepareFormat: async (_project, repo, scoped) => {
     calls++;
@@ -272,7 +310,7 @@ it("does not reuse a prepared gate for a different project binding", async () =>
 }, 30_000);
 
 it("keeps the original preparation alive when a joined caller is canceled", async () => {
-  const f = await fixture(), firstOperation = createOperation();
+  const f = await fixture("checkout"), firstOperation = createOperation();
   const cancellation = new AbortController(), secondOperation = createOperation({ signal: cancellation.signal });
   let release!: () => void, entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });

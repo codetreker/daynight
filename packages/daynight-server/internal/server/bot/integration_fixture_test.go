@@ -36,6 +36,7 @@ import (
 type resourceTestHandler struct {
 	http.Handler
 	token     string
+	authority string
 	principal model.Principal
 }
 
@@ -50,11 +51,12 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	config := configpkg.Config{
 		Database: databaseconfig.Config{URL: "postgres://database"},
 		Storage:  storageconfig.Config{Root: "storage"},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, PreviewOrigin: testauth.PreviewOrigin(origin), AllowHTTPTestOrigin: true},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}
 	config.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
+	config.Session = configpkg.DefaultConfig().Session
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {
@@ -80,7 +82,7 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, principal: principal}
+	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, authority: instance.Listener.Addr().String(), principal: principal}
 }
 func projectRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -88,6 +90,7 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 		request.Header.Set("Authorization", "Bearer "+h.token)
 	}
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

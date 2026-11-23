@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -17,6 +18,11 @@ func (h *projectHandler) deletionPreview(w http.ResponseWriter, r *http.Request,
 	start := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger := transferLogID(h.logger.With("user_id", p.UserID), "project_id", r.PathValue("projectId"))
+	identity, err := httpx.WorkerIdentityProtocol(r.Header)
+	if err != nil {
+		httpx.WriteError(w, r, logger, "project_deletion", "preview", err)
+		return
+	}
 	page, err := httpx.PageRequest(r)
 	if err != nil {
 		httpx.WriteError(w, r, logger, "project_deletion", "preview", err)
@@ -30,6 +36,13 @@ func (h *projectHandler) deletionPreview(w http.ResponseWriter, r *http.Request,
 	out := api.ProjectDeletionPreview{ObservedAt: result.ObservedAt, Project: api.ProjectDeletionIdentity{ID: result.Project.ID, Name: result.Project.Name, RepoURL: result.Project.RepoURL, OwnerTeam: httpx.TeamRefResponse(result.OwnerTeam)}, Summary: api.ProjectDeletionSummary{TaskCount: result.Summary.TaskCount, UnfinishedTaskCount: result.Summary.UnfinishedTaskCount, AttachmentCount: result.Summary.AttachmentCount}, ActiveClaims: make([]api.ProjectDeletionClaim, 0, len(result.ActiveClaims)), NextCursor: result.NextCursor}
 	for _, claim := range result.ActiveClaims {
 		out.ActiveClaims = append(out.ActiveClaims, api.ProjectDeletionClaim{TaskID: claim.TaskID, Title: claim.Title, Worker: api.ProjectDeletionWorker{MachineName: claim.MachineName, Platform: string(claim.Platform), Phase: string(claim.Phase), Paused: claim.Paused, Connectivity: claim.Connectivity}})
+	}
+	if identity {
+		for i, claim := range result.ActiveClaims {
+			out.ActiveClaims[i].Worker.UserID = &claim.UserID
+			out.ActiveClaims[i].Worker.WorkerID = &claim.WorkerID
+		}
+		w.Header().Set(httpx.WorkerIdentityHeader, "1")
 	}
 	logger.InfoContext(r.Context(), "project deletion preview", "component", "project_deletion", "phase", "preview", "outcome", "success", "duration_ms", time.Since(start).Milliseconds(), "request_id", httpx.RequestID(r.Context()))
 	httpx.WriteJSON(w, r, logger, http.StatusOK, out)
@@ -56,7 +69,12 @@ func (h *projectHandler) delete(w http.ResponseWriter, r *http.Request, p model.
 			return
 		}
 	}
-	receipt, err := h.projects.Delete(r.Context(), p, r.PathValue("projectId"))
+	confirmed, err := goalDependencyRemovalConfirmation(r.Header)
+	if err != nil {
+		httpx.WriteError(w, r, logger, "project_deletion", "prepare", err)
+		return
+	}
+	receipt, err := h.projects.DeleteWithInput(r.Context(), p, r.PathValue("projectId"), coreproject.DeletionInput{ConfirmGoalDependencyRemoval: confirmed})
 	if err != nil {
 		var failure *service.DeletionFailure
 		if errors.As(err, &failure) {

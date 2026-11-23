@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -35,7 +36,6 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
     if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return sendWire({ projectId, taskId, version: task.version, steps: [] });
     if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
@@ -154,21 +154,20 @@ const foreground = async (page: Page, api: State) => {
   expect(api.meReads).toBe(meReads);
 };
 
-test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
+test('Task detail remains available after Team navigation without Steps requests', async ({ page }) => {
+  const stepsRequests: string[] = [];
+  page.on('request', request => { if (/\/tasks\/[^/]+\/steps(?:\/|$)/.test(new URL(request.url()).pathname)) stepsRequests.push(request.url()); });
   await install(page); await start(page);
-  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+  await traverse(page, `/projects/${projectId}/tasks/${taskId}?tab=steps`);
   await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
-  await page.getByRole('tab', { name: 'Steps' }).click();
-  const steps = await response;
-  expect(steps.status()).toBe(200);
-  expect(steps.headers()['daynight-user-id']).toBe(alice);
-  expect(await steps.text()).toBe(`{"projectId":"${projectId}","taskId":"${taskId}","version":${task.version},"steps":[]}`);
-  await expect(page.getByText('No steps yet')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Steps', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(stepsRequests).toEqual([]);
 });
 
-for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+for (const width of [1440, 768, 601, 600, 390, 375, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const api = await install(page);
     api.members.get(bob)!.role = 'member';
@@ -183,10 +182,10 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     const geometry = await page.locator('.team-member-row').evaluateAll((rows) => rows.map((row) => {
       const rect = (selector: string) => row.querySelector(selector)!.getBoundingClientRect();
       const role = rect('select'), arrow = rect('.native-select__arrow'), person = rect('.person'), action = rect('button');
-      return { left: role.left, right: role.right, width: role.width, height: role.height, roleY: role.top + role.height / 2, personY: person.top + person.height / 2, actionY: action.top + action.height / 2, arrowY: arrow.top + arrow.height / 2, arrowInset: role.right - arrow.right };
+      return { left: role.left, right: role.right, width: role.width, height: role.height, roleY: role.top + role.height / 2, personBottom: person.bottom, personY: person.top + person.height / 2, actionLeft: action.left, actionY: action.top + action.height / 2, arrowY: arrow.top + arrow.height / 2, arrowInset: role.right - arrow.right };
     }));
     for (const item of geometry) {
-      expect(item.width).toBe(120);
+      expect(item.width).toBeCloseTo(136.5, 1);
       expect(item.height).toBe(32);
       expect(Math.abs(item.arrowY - item.roleY)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.arrowInset - 12)).toBeLessThanOrEqual(1);
@@ -194,19 +193,55 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
       expect(Math.abs(item.right - geometry[0]!.right)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.width - geometry[0]!.width)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.actionY - item.roleY)).toBeLessThanOrEqual(1);
+      expect(item.right).toBeLessThanOrEqual(item.actionLeft);
       if (width > 600) expect(Math.abs(item.personY - item.roleY)).toBeLessThanOrEqual(1);
+      else expect(item.personBottom).toBeLessThanOrEqual(item.roleY - item.height / 2);
     }
     await testInfo.attach('geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
-    const textSpace = await selects.nth(0).evaluate((element: HTMLSelectElement) => {
+    const textSpaces = await selects.evaluateAll((elements: HTMLSelectElement[]) => elements.map((element) => {
       const style = getComputedStyle(element), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
       context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-      return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: Math.max(...Array.from(element.options, (option) => context.measureText(option.text).width)) };
-    });
-    expect(textSpace.available).toBeGreaterThanOrEqual(textSpace.required);
-    if (width === 601 && locale === 'en') {
-      const caption = await page.locator('.team-member-caption').evaluate((element) => ({ height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
-      expect(caption.height).toBeGreaterThan(caption.lineHeight);
-    }
+      return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: context.measureText(element.selectedOptions[0]!.text).width };
+    }));
+    for (const space of textSpaces) expect(space.available).toBeGreaterThanOrEqual(space.required);
+    await expect(page.locator('.team-member-caption')).toHaveCount(0);
+    const leave = page.getByRole('button', { name: locale === 'en' ? 'Leave Team' : '退出 Team', exact: true });
+    const reason = locale === 'en' ? 'At least one admin must remain.' : '至少保留一名 Admin。';
+    await expect(leave).toHaveAttribute('aria-disabled', 'true');
+    await expect(leave).toHaveAccessibleDescription(reason);
+    const tip = page.getByRole('tooltip');
+    await expect(tip).toHaveCount(0);
+    const rowGeometry = () => page.locator('.team-member-row').evaluateAll(rows => rows.map(row => {
+      const rect = row.getBoundingClientRect(), role = row.querySelector('select')!.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, roleX: role.x, roleWidth: role.width };
+    }));
+    const before = await rowGeometry();
+    const checkTip = async () => {
+      await expect(tip).toBeVisible(); await expect(tip).toHaveText(reason);
+      const bounds = await tip.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
+      });
+      expect(bounds.left).toBeGreaterThanOrEqual(8); expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth - 8);
+      expect(bounds.top).toBeGreaterThanOrEqual(8); expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight - 8);
+      expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+      expect(await rowGeometry()).toEqual(before);
+      await testInfo.attach('leave-tip-geometry', { body: JSON.stringify(bounds), contentType: 'application/json' });
+    };
+    await leave.hover(); await checkTip();
+    await page.screenshot({ path: testInfo.outputPath('leave-tip.png'), fullPage: true });
+    await page.mouse.move(0, 0); await expect(tip).toHaveCount(0);
+    await leave.focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+    await expect(leave).toBeFocused(); await checkTip();
+    await leave.hover(); await page.mouse.move(0, 0); await checkTip();
+    await leave.hover(); await selects.nth(1).focus(); await checkTip();
+    await page.mouse.move(0, 0); await expect(tip).toHaveCount(0);
+    await leave.focus(); await checkTip();
+    await page.keyboard.press('Escape'); await expect(tip).toHaveCount(0); await expect(leave).toBeFocused();
+    await page.keyboard.press('Enter'); await page.keyboard.press('Space');
+    await leave.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
+    expect(await rowGeometry()).toEqual(before);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await selects.nth(1).focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
     await expect(selects.nth(1)).toBeFocused();
@@ -214,9 +249,30 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     await selects.nth(1).click(); await page.keyboard.press('Escape');
     await selects.nth(1).selectOption('admin');
     await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0); await expect(selects.nth(1)).toHaveValue('member');
+    await expect(selects.nth(1)).toBeFocused(); expect(api.writes).toHaveLength(0);
   });
 }
+
+test('keyboard role selection and a pending write retain the role column', async ({ page }) => {
+  const api = await install(page); await page.setViewportSize({ width: 320, height: 640 }); await start(page);
+  const role = page.getByLabel('Team role: Bob');
+  await role.focus(); await page.keyboard.press(process.platform === 'darwin' ? 'm' : 'ArrowUp');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Bob'); await expect(dialog).toContainText('Administrator');
+  await page.keyboard.press('Escape');
+  await expect(role).toBeFocused(); await expect(role).toHaveValue('admin'); expect(api.writes).toHaveLength(0);
+  const before = await role.evaluate(element => element.getBoundingClientRect().width);
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdWrite = { started: started.resolve, wait: finish.promise };
+  try {
+    await role.selectOption('member'); await dialog.getByRole('button', { name: 'Confirm change' }).click();
+    await started.promise;
+    expect(await role.evaluate((element: HTMLSelectElement) => ({ disabled: element.disabled, width: element.getBoundingClientRect().width, value: element.value }))).toEqual({ disabled: true, width: before, value: 'admin' });
+    expect(api.writes).toHaveLength(1);
+  } finally { finish.resolve(); }
+  await expect(role).toHaveValue('member');
+});
 
 test('member loading and read failure retain a working retry', async ({ page }) => {
   const api = await install(page);
@@ -345,6 +401,44 @@ const confirmInvitationAccess = async (page: Page, access: 'admin' | 'member' | 
   else await expect(page.getByRole('alert').filter({ hasText: 'Unable to read members.' }).first()).toBeVisible();
 };
 
+test('invitation copy retains its labelled control and selects the secret after denial', async ({ page }) => {
+  const api = await install(page); await start(page); api.invitationSuccess = true;
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.getByRole('button', { name: 'Invite member' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Invitation link created' });
+  const value = dialog.getByLabel('One-time invitation link');
+  const copy = dialog.getByRole('button', { name: 'Copy link' });
+  await expect(copy).toContainText('Copy link');
+  await expectCopyButtonSkin(page, copy, true);
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }));
+  await copy.click();
+  await expect(value).toBeFocused();
+  expect(await value.evaluate((element: HTMLTextAreaElement) => element.value.slice(element.selectionStart, element.selectionEnd))).toBe(await value.inputValue());
+  await expect(dialog.getByRole('status')).toContainText('Automatic copying was blocked');
+  expect(api.invitationWrites).toBe(1);
+});
+
+for (const hasTouch of [false, true]) test(`Team invitation secret keeps responsive text at 320px (touch=${hasTouch})`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+  const page = await context.newPage();
+  try {
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+    expect(await page.evaluate(() => matchMedia('(pointer: fine)').matches)).toBe(!hasTouch);
+    const api = await install(page); await start(page); api.invitationSuccess = true;
+    await page.getByRole('button', { name: 'Invite member' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+    const value = page.getByLabel('One-time invitation link');
+    await expect(value).toHaveAttribute('data-touch-text', 'responsive');
+    await expect(value).toHaveValue(/#dnteam_/);
+    for (const rootSize of [16, 12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      await expect(value).toHaveCSS('font-size', `${Math.max(rootSize, 16)}px`);
+    }
+    expect(api.invitationWrites).toBe(1);
+  } finally { await context.close(); }
+});
+
 for (const access of ['admin', 'member', 'unavailable'] as const) test(`a displayed invitation remains available across navigation and ${access}`, async ({ page }) => {
   const api = await install(page); await start(page); api.invitationSuccess = true;
   await page.getByRole('button', { name: 'Invite member' }).click();
@@ -378,6 +472,8 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   const api = await install(page, 'member'); await start(page);
   await expect(page.getByLabel('Team role: Bob')).toBeDisabled();
   await expect(page.locator('.team-member-row').filter({ hasText: 'Bob' }).getByRole('button', { name: 'Remove' })).toBeDisabled();
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
   await expect.poll(() => selected(page)).toBe(teamId);
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await expect(dialog).toContainText('Project grants remain');
@@ -390,10 +486,14 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   await expect(page.getByText('Personal Team membership and role are fixed.')).toBeVisible();
   await expect(page.getByLabel('Team role: Alice')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Leave Team' })).toBeDisabled();
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
 });
 
 test('an admin can leave with another admin, but a concurrent last-admin change is refused', async ({ page }) => {
   const api = await install(page); await start(page);
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog');
   api.members.get(bob)!.role = 'member';
@@ -584,8 +684,9 @@ for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`ret
   const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite member' : '邀请成员' });
   await expect(invite).toBeVisible(); await expect(invite).toBeEnabled();
   const panel = invite.locator('xpath=ancestor::section');
-  const originalPanel = await panel.elementHandle(), panelBox = await panel.boundingBox();
+  const originalPanel = await panel.elementHandle();
   await invite.click();
+  const panelBox = await panel.boundingBox();
   const dialog = page.getByRole('dialog'), originalDialog = await dialog.elementHandle(), dialogBox = await dialog.boundingBox();
   const rosterStarted = Promise.withResolvers<void>(), rosterFinish = Promise.withResolvers<void>();
   const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
@@ -616,4 +717,94 @@ test('narrow viewport and Chinese dialog retain usable controls', async ({ page 
   await expect(dialog.getByRole('button', { name: '确认修改' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+});
+
+test('member search keeps identities and keyboard interaction readable across languages and widths', async ({ page }) => {
+  await install(page);
+  const target = '00000000-0000-4000-8000-000000000075';
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, route => route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alexandra Morgan-Williams Long Name', email: 'alexandra.long.email@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } }));
+  await start(page);
+  for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const input = page.getByRole('searchbox', { name: locale === 'en' ? 'Search and add members' : '搜索并添加成员' });
+    await input.fill('alex');
+    const popup = page.getByRole('dialog', { name: locale === 'en' ? 'Search users and add to team' : '搜索用户并添加到团队' });
+    await expect(popup.getByText('Alexandra Morgan-Williams Long Name')).toBeVisible();
+    await popup.locator('summary').click(); await expect(popup.getByText(target, { exact: true })).toBeVisible();
+    const bounds = await popup.boundingBox(); expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await input.focus(); await input.press('Enter'); await expect(popup.getByText('Alexandra Morgan-Williams Long Name')).toBeVisible();
+    await input.press('Escape'); await expect(popup).toBeHidden(); await expect(input).toBeFocused();
+    await input.fill('');
+  }
+});
+
+test('member search resumes an interrupted query after a background permission check', async ({ page }) => {
+  const api = await install(page);
+  const target = '00000000-0000-4000-8000-000000000075';
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let calls = 0;
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, async route => {
+    calls++;
+    if (calls === 1) { started.resolve(); await release.promise; }
+    await route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alex Candidate', email: 'alex@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } }).catch(() => {});
+  });
+  await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  await input.fill('alex'); await started.promise;
+  await foreground(page, api); release.resolve();
+  await expect(page.getByText('Alex Candidate')).toBeVisible();
+  expect(calls).toBeGreaterThanOrEqual(2); await expect(input).toHaveValue('alex'); await expect(input).toBeFocused();
+});
+
+test('member search retains its page during account-change waiting and sends no new requests', async ({ page, context }) => {
+  await install(page);
+  const target = '00000000-0000-4000-8000-000000000075'; let searches = 0;
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, route => {
+    searches++;
+    return route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alex Candidate', email: 'alex@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } });
+  });
+  await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  await input.fill('alex');
+  const popup = page.getByRole('dialog', { name: 'Search users and add to team' });
+  await expect(popup.getByText('Alex Candidate')).toBeVisible(); await expect(input).toBeFocused();
+  const other = await context.newPage();
+  try {
+    await other.route('**/api/v1/me', route => route.fulfill({ json: { id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': alice } }));
+    await other.goto('/projects');
+    await other.evaluate(id => localStorage.setItem('daynight.activeUser', JSON.stringify(id)), bob);
+    await page.bringToFront();
+    await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
+    await expect(input).toHaveValue('alex'); await expect(input).toBeFocused(); await expect(popup.getByText('Alex Candidate')).toBeVisible();
+    const before = searches;
+    await input.fill('another'); await page.waitForTimeout(500);
+    expect(searches).toBe(before); await expect(input).toHaveValue('another'); await expect(input).toBeFocused();
+  } finally { await other.close(); }
+});
+
+test('member search input follows browser text preferences at responsive widths', async ({ page }) => {
+  await install(page); await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+    }
+  }
+});
+
+test.describe('coarse pointer member search', () => {
+  test.use({ hasTouch: true });
+  test('keeps the input at the shared responsive size on a wide viewport', async ({ page }) => {
+    await install(page); await start(page);
+    const input = page.getByRole('searchbox', { name: 'Search and add members' });
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  });
 });

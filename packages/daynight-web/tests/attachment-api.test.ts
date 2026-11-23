@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, attachmentPageUrl, checkAttachmentPreview, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
+import { ApiError, attachmentPageUrl, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, previewLoginUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
 import { isAttachmentPath, parseAttachment, parseAttachmentPage } from "../src/api/parse";
 
 const project = "10000000-0000-0000-0000-00000000000a";
@@ -45,10 +45,24 @@ describe("attachment transport", () => {
     expect(attachmentPageUrl(project, task, "%2F")).toBe(`/projects/${project}/tasks/${task}/attachments/%252F`);
     expect(() => attachmentPageUrl("bad", task, "file")).toThrow(ApiError);
     expect(() => attachmentPageUrl(project, task, "a/../file")).toThrow(ApiError);
-    expect(attachmentPreviewRoot(project, task)).toBe(`${base}/preview/`);
-    expect(attachmentPreviewUrl(project, task, item.path)).toBe(`${base}/preview/${encoded}`);
+    expect(attachmentPreviewRoot(project, task)).toBe(`https://${task}.preview.daynight.test${base}/preview/`);
+    expect(attachmentPreviewUrl(project, task, item.path)).toBe(`https://${task}.preview.daynight.test${base}/preview/${encoded}`);
+    expect(previewLoginUrl()).toBe("https://preview.daynight.test/auth/sso/start");
     expect(attachmentDownloadUrl(project, task, "%2F")).toBe(`${base}/attachments/files/%252F`);
     expect(() => attachmentDownloadUrl("bad", task, "file")).toThrow(ApiError);
+  });
+  it.each(["http://127.0.0.1:8081", "http://[::1]:8081"])("does not fall back to a numeric preview host %s", (origin) => {
+    document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')!.content = origin;
+    expect(() => attachmentPreviewRoot(project, task)).toThrow(ApiError);
+  });
+  it("fails closed when the public preview origin is missing or malformed", () => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')!;
+    for (const value of ['https://example.test/path', 'https://user@example.test', 'javascript:alert(1)', '']) {
+      meta.content = value;
+      expect(() => attachmentPreviewRoot(project, task)).toThrow(ApiError);
+    }
+    meta.remove();
+    expect(() => previewLoginUrl()).toThrow(ApiError);
   });
   it("lists metadata with opaque cursors and no-store", async () => {
     const fetcher = mock(json({ items: [item], nextCursor: null }));
@@ -118,37 +132,16 @@ describe("attachment transport", () => {
     fetcher.mockResolvedValue(new Response("pending", { status: 202 }));
     await expect(readAttachmentText(project, task, item.path, signal())).rejects.toMatchObject({ kind: "protocol", status: 202 });
     const controller = new AbortController();
-    fetcher.mockResolvedValue({ ok: true, status: 200, text: async () => { controller.abort(); return "stale"; } });
+    const stale = new Response("stale");
+    vi.spyOn(stale, "text").mockImplementation(async () => { controller.abort(); return "stale"; });
+    fetcher.mockResolvedValue(stale);
     const error = await readAttachmentText(project, task, item.path, controller.signal).catch((failure: unknown) => failure);
     expect(error).toBe(controller.signal.reason);
     const aborted = new DOMException("Aborted", "AbortError");
-    fetcher.mockResolvedValue({ ok: true, status: 200, text: async () => { throw aborted; } });
+    const cancelled = new Response("text");
+    vi.spyOn(cancelled, "text").mockRejectedValue(aborted);
+    fetcher.mockResolvedValue(cancelled);
     await expect(readAttachmentText(project, task, item.path, signal())).rejects.toBe(aborted);
-  });
-});
-
-describe("native preview availability", () => {
-  it("checks the fixed preview URL with bodyless HEAD and cancellation", async () => {
-    const response = new Response(null);
-    const parse = vi.spyOn(response, "json");
-    const fetcher = mock(response);
-    const abortSignal = signal();
-    await expect(checkAttachmentPreview(project, task, item.path, abortSignal)).resolves.toBeUndefined();
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith(attachmentPreviewUrl(project, task, item.path), { method: "HEAD", signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error" });
-    expect(parse).not.toHaveBeenCalled();
-  });
-  it("retains status and safe request IDs without expecting an error response body", async () => {
-    const response = new Response(null, { status: 500, headers: { "X-Request-ID": "preview-1" } });
-    const parse = vi.spyOn(response, "json");
-    const fetcher = mock(response);
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 500, code: "server", requestId: "preview-1" });
-    expect(parse).not.toHaveBeenCalled();
-    fetcher.mockResolvedValue(new Response(null, { status: 404, headers: { "X-Request-ID": "invalid request id" } }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 404, requestId: null });
-    fetcher.mockResolvedValue(new Response(null, { status: 404 }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 404, requestId: null });
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "protocol", status: 204 });
   });
 });
 

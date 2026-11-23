@@ -11,7 +11,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const packageDirectory = path.join(workspace, "packages/daynight");
 const sqlDirectories = [
-  "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/backends/sqlite",
+  "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/lifecycle-sqlite", "commands/worker/backends/sqlite",
   "commands/controller/sqlite/journal", "commands/controller/sqlite/resume-lease",
 ];
 let fixture: Awaited<ReturnType<typeof createAcceptanceCli>>;
@@ -44,8 +44,15 @@ it("ships exact SQL resources and executes installed stores and canonical timeli
     expect(installedResources).toEqual(source);
   }
   expect(count).toBe(expectedCount);
+  expect(expectedResources.find(({ directory }) => directory === "commands/worker/backends/sqlite")!.source).toHaveProperty("005-discard-recording.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("011-outbox-accounting.sql");
-  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("012-direct-capture.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("014-usage.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("015-online-content.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("016-worker-lifecycle.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("017-stopped-generations.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("018-online-mode.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("019-codex-response-usage.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/worker/lifecycle-sqlite")!.source).toHaveProperty("001-lifecycle.sql");
   expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
@@ -67,8 +74,9 @@ const { controllerJournalWriteOptions } = await load("commands/controller/storag
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
-  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 4, ["executions", "orchestration_blockers"]],
-  ["commands/controller/journal-format.js", "controllerJournalFormat", 12, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox", "outbox_totals", "timeline_entries", "timeline_totals"]],
+  ["commands/worker/lifecycle-store.js", "lifecycleStoreFormat", 1, ["lifecycle_operations", "lifecycle_outbox", "lifecycle_state", "outbox_history", "resource_history", "resource_owners"]],
+  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 5, ["executions", "orchestration_blockers"]],
+  ["commands/controller/journal-format.js", "controllerJournalFormat", 19, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "online_entries", "online_totals", "operations", "outbox", "outbox_totals", "stopped_generations", "timeline_entries", "timeline_source_revisions", "timeline_totals", "usage_meta", "usage_outbox", "usage_sources", "worker_lifecycle_bindings"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
 const versions = [];
@@ -82,22 +90,25 @@ for (const [module, name, version, tables] of owners) {
   try {
     assert.equal(db.pragma("user_version", { simple: true }), version);
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name), tables);
+    if (name === "controllerJournalFormat") assert.deepEqual(db.pragma("table_info(stopped_generations)").map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })), [
+      { name: "ticket_hash", type: "TEXT", notnull: 0, pk: 1 },
+      { name: "snapshot", type: "TEXT", notnull: 1, pk: 0 },
+    ]);
     versions.push(version);
   } finally { db.close(); if (permit !== undefined) permit.release(); }
 }
 const { controllerJournalFormat, controllerJournalFormatForMigration } = await load("commands/controller/journal-format.js");
-const { createTimelineMaintenanceReservation } = await load("commands/controller/content/maintenance.js");
 const { openTimelineStore } = await load("commands/controller/content/timeline-store.js");
-assert.equal(currentSqliteVersion(controllerJournalFormat), 12);
+assert.equal(currentSqliteVersion(controllerJournalFormat), 19);
 const timelineFile = path.join(directory, "canonical-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
-let reservation, timelineDb;
-const timelineFormat = controllerJournalFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, stateDirectory: directory, storagePermit: timelinePermit }));
+let timelineDb;
+const timelineFormat = controllerJournalFormatForMigration(() => ({ storagePermit: timelinePermit }));
 const entry = { entryId: "00000000-0000-4000-8000-000000000001", entrySeq: "9007199254740993", revision: "9007199254740995", kind: "assistant_message", content: [{ type: "text", text: "Installed 正文 😀" }] };
 const replacement = { ...entry, revision: "9007199254740996", content: [{ type: "text", text: "Reopened 当前正文 🧩" }] };
 try {
   timelineDb = openSqliteDatabase({ file: timelineFile, format: timelineFormat, allowCreate: false, onMigration: () => {} });
   let writing = false;
-  const timeline = openTimelineStore(timelineDb, { assertWrite: bytes => { assert.equal(writing, true); reservation.assertReservedWrite(bytes); } });
+  const timeline = openTimelineStore(timelineDb, { assertWrite: () => { assert.equal(writing, true); } });
   assert.throws(() => timeline.save(entry), /original journal write transaction/);
   runSqliteImmediate(timelineDb, () => { writing = true; try { timeline.save(entry); timeline.save(replacement); } finally { writing = false; } });
   assert.deepEqual(timeline.get(entry.entryId), replacement);
@@ -105,17 +116,17 @@ try {
   assert.equal(timeline.nextSequence(), "9007199254740994");
   assert.deepEqual(timelineDb.prepare("SELECT COUNT(*) AS count,typeof(entry_seq) AS seq,typeof(revision) AS rev FROM timeline_entries").get(), { count: 1, seq: "integer", rev: "integer" });
   assert.equal(timelineDb.prepare("SELECT name FROM sqlite_schema WHERE name='content_index'").get(), undefined);
-  assert.deepEqual(inspectSqlite(timelineDb, controllerJournalFormat), { kind: "current", version: 12 });
+  assert.deepEqual(inspectSqlite(timelineDb, controllerJournalFormat), { kind: "current", version: 19 });
   assert.deepEqual(timelineDb.prepare("SELECT id,byte_length FROM outbox_totals").get(), { id: 1, byte_length: 0 });
   timelineDb.close();
   timelineDb = openSqliteDatabase({ file: timelineFile, format: controllerJournalFormat, allowCreate: false, onMigration: () => {} });
   const reopened = openTimelineStore(timelineDb, { assertWrite: () => { throw new Error("Installed readback is read-only."); } });
   assert.deepEqual(reopened.get(entry.entryId), replacement);
-  assert.equal(timelineDb.pragma("user_version", { simple: true }), 12);
-  versions.push(12);
+  assert.equal(timelineDb.pragma("user_version", { simple: true }), 19);
+  versions.push(19);
 } finally { if (timelineDb !== undefined && timelineDb.open) timelineDb.close(); timelinePermit.release(); }
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 12, 1, 12]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 1, 5, 19, 1, 19]);
 });

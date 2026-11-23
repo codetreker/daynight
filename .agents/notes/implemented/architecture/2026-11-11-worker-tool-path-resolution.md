@@ -18,7 +18,7 @@ services that reject unknown fields.
 ## Decision
 
 The platform-owned `tool-path-choice.ts` defines complete local choices for
-Codex, Copilot and Herdr. Both Worker configuration readers use the same parser.
+Codex and Copilot. Both Worker configuration readers use the same parser.
 An omitted mapping, omitted tool or per-tool null produces `kind: auto`; a path
 produces `kind: path` with its exact string. The parser rejects unsupported keys,
 empty values, non-absolute paths, control characters, malformed Unicode and
@@ -28,9 +28,7 @@ share rather than relying on the current drive.
 Path parsing has no filesystem or process side effects. The shared
 `tool-executables.ts` resolver turns a choice into a complete launch recipe while
 remaining independent of Worker scheduling and Provider implementations.
-Automatic choices preserve the tool/context distinction: Codex and Herdr use the
-captured PATH, Web Copilot uses the bundled native runtime, and Herdr Copilot uses
-the captured PATH. Explicit resolution uses only the selected installation.
+Automatic Codex uses the captured PATH and Web Copilot uses the bundled native runtime. Explicit resolution uses only the selected installation.
 
 Node entries use the fixed Worker Node executable. npm shims are unpacked by
 extracting a target from one bounded byte snapshot without executing shell text.
@@ -116,7 +114,7 @@ limitation to avoid rejecting normal upstream upgrades.
 
 ## Consequences
 
-Configuration consumers receive all three choices and cannot confuse missing
+Configuration consumers receive both choices and cannot confuse missing
 local values with an unadopted cloud setting. Existing unknown Worker fields
 retain their compatibility behavior; only the tool-path mapping rejects unknown
 tool keys. Diagnostics identify the field and rule without echoing arbitrary
@@ -133,8 +131,6 @@ unless separately recorded by the resolver.
 The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
 adds Web Task/Bot launch consumers, shared probes and a bounded Copilot authority
 profile. That profile freezes its known preload closure and a complete private
-distribution manifest in addition to the plain resolver dependencies. The
-[Herdr launch decision](2026-11-12-herdr-frozen-tool-launch.md) owns controlled
-pane mapping and frozen instance selection. A successful parse alone still does not prove
+distribution manifest in addition to the plain resolver dependencies. The [Web-only native model](../simplification/2026-11-18-web-only-native-tool-model.md) replaces the Herdr selection and launch paths. A successful parse alone still does not prove
 that a file exists, that a tool can run, that its protocol is compatible, or that
 the Worker has applied the selection.

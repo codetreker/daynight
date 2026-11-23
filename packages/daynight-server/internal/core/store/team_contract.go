@@ -32,6 +32,8 @@ type TeamWriteDAO interface {
 	HasProjects(context.Context) (bool, error)
 	Delete(context.Context) error
 	Member(context.Context, string) (model.TeamMember, error)
+	// MemberCandidate reads the current profile of an existing local account.
+	MemberCandidate(context.Context, string) (model.UserCandidate, error)
 	// MemberByExternalID finds only an existing membership in this scoped Team.
 	MemberByExternalID(context.Context, string) (model.TeamMember, error)
 	AdminCount(context.Context) (int64, error)

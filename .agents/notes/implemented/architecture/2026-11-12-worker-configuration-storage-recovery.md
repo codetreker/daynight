@@ -32,16 +32,17 @@ awaited preparation and before first intent, registration and dispatch. Original
 submitted/unknown execution and frozen native recovery/input/stop continue under
 their own identity and authorization.
 
-A recognized no-effect `agent_pane_busy` response is synchronously confirmed
-before another admission wait. The specialized Herdr transition requires the
+Before Herdr execution was removed, a recognized no-effect `agent_pane_busy`
+response was synchronously confirmed before another admission wait. The specialized Herdr transition required the
 same latest generation/binding and CAS plus absence of agent, segment, input
-and stop facts in that generation. Earlier assignment/input history remains
-unchanged; the same prepared/not-submitted run stays resumable.
-Ordinary cancellation, waiting or catch handling cannot downgrade requested,
-unknown or observed execution. First Herdr Session registration carries the
+and stop facts in that generation. Earlier assignment/input history remained
+unchanged; the same prepared/not-submitted run stayed resumable.
+Ordinary cancellation, waiting or catch handling could not downgrade requested,
+unknown or observed execution. First Herdr Session registration carried the
 dynamic guard through awaited support/current reads to the actual initial
 register intent and dispatch; reconciling existing or unknown registration
-and reconnect remain available. The
+and reconnect were available. The [Web-only runtime decision](2026-11-17-worker-web-runtime-composition.md)
+removes those Herdr execution paths. The
 [lifecycle design](../../../../docs/design/herdr-worker-lifecycle.md#启动与首次输入)
 owns the rejection proof and
 [registration boundary](../../../../docs/design/herdr-worker-lifecycle.md#session-连接与采集段).

@@ -68,8 +68,8 @@ The diagnostic owner records the first failure, changed reason or related target
 and matching recovery immediately. Existing calls emit a summary at most every
 five minutes for a continuing cause. Its signature uses the component, actual
 phase, key, fixed reason and relevant target identity. Native targets use the
-captured validation recipe: native tuple, actual execution mode and relevant
-configured tool choices. A mode or choice change under the same canonical
+captured validation recipe: native tuple and relevant Web tool choices. A choice
+change under the same canonical
 revision is still a different target; its success does not recover an old
 recipe's retained failure. Dynamic generation and selection keys are excluded.
 The recipe remains internal comparison data and is never projected into JSONL.
@@ -81,7 +81,11 @@ backoff steps. A new process starts a new diagnostic history.
 The existing recoverable sink explicitly projects the metadata into JSONL and
 applies credential redaction to every emitted string. Terminal events include a
 compact projection of key, target, source, correlation, certainty and progress;
-full record batches and classifier details stay in JSONL. Its fresh-segment recovery,
+routine `worker-configuration-stage` starts and successes stay in JSONL without
+foreground notification, while discarded stages, failures, summaries, recoveries,
+alignment and application events remain visible. This retains per-sync evidence
+without repeated normal heartbeat output. Full record batches and classifier details
+stay in JSONL. Its fresh-segment recovery,
 unknown append and undispatched omission semantics remain unchanged. Formatting
 and notification failures retain independent error chains and do not rewrite
 application or receipt results. The
@@ -92,6 +96,9 @@ owns source and capture lifetime, and the
 [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
 owns checkpoint and sink recovery. These diagnostics add no wire, database,
 checkpoint schema or execution-admission mechanism.
+
+The [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
+defines the current Web-only recipe and historical conversion.
 
 ## Alternatives
 

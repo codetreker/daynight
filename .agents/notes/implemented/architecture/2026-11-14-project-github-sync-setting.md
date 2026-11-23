@@ -19,3 +19,5 @@ Store synchronization intent separately from connection state, defaulting to off
 ## Consequences
 
 Disabling retains bindings, PRs and historical observations while clearing work and preventing stale publication. Re-enabling requires a full reconciliation, and events received while disabled are not accumulated. Existing synchronizing Projects require an administrator to enable them again after upgrade. All old replicas must be stopped and drained across migration because their admission path ignores the setting; mixed-version execution cannot enforce the stop guarantee.
+
+The [terminal discovery decision](2026-11-18-github-terminal-pr-discovery.md) extends this mechanism with coverage intervals and bounded all-state discovery.

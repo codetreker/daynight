@@ -20,47 +20,86 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
-type Operations interface {
-	List(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
-	Get(context.Context, model.Principal, string, string) (tagservice.Item, error)
-	Create(context.Context, model.Principal, string, string, *string) (tagservice.WriteResult, error)
-	Update(context.Context, model.Principal, string, string, int64, *string, *string) (tagservice.WriteResult, error)
-	Delete(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
-	Resolve(context.Context, model.Principal, string, []string) ([]model.TagReference, error)
-	ResolveColors(context.Context, model.Principal, string, []string, *string) (tagservice.ColorPage, error)
+type operations[A any] interface {
+	List(context.Context, A, string, tagservice.ListInput) (tagservice.Page, error)
+	Get(context.Context, A, string, string) (tagservice.Item, error)
+	Create(context.Context, A, string, string, *string) (tagservice.WriteResult, error)
+	Update(context.Context, A, string, string, int64, *string, *string) (tagservice.WriteResult, error)
+	Delete(context.Context, A, string, string, int64, bool) (tagservice.WriteResult, error)
+	Resolve(context.Context, A, string, []string) ([]model.TagReference, error)
+	ResolveColors(context.Context, A, string, []string, *string) (tagservice.ColorPage, error)
 }
+
+type Operations = operations[model.Principal]
+type ScopedOperations = operations[model.CredentialAuthorization]
 
 type Authentication interface {
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
 }
 
-type handler struct {
-	operations Operations
+type AuthorizedHandler = func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
+
+type ScopedAuthentication interface {
+	RequireAuthorization(AuthorizedHandler) http.HandlerFunc
+}
+
+type handler[A any] struct {
+	operations operations[A]
+	principal  func(A) model.Principal
 	logger     *slog.Logger
 }
 
 // RegisterRoutes mounts the authenticated project tag catalog endpoints.
-func RegisterRoutes(mux *http.ServeMux, operations Operations, auth Authentication, logger *slog.Logger) {
-	h := &handler{operations: operations, logger: logger}
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags", auth.Require(h.list))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags", auth.Require(h.create))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/resolve", auth.Require(h.resolve))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/colors/resolve", auth.Require(h.resolveColors))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags/colors/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	for _, method := range []string{"GET", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tags/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+func RegisterRoutes(mux httpx.RouteRegistrar, ops Operations, auth Authentication, logger *slog.Logger) {
+	registerRoutes(mux, ops, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
+		return auth.Require(httpx.AuthenticatedHandler(next))
+	}, func(p model.Principal) model.Principal { return p }, logger)
+}
+
+// RegisterScopedRoutes requires an explicitly authenticated policy snapshot.
+// Production selects this registration only when scoped credentials are enabled.
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, ops ScopedOperations, auth ScopedAuthentication, logger *slog.Logger) {
+	registerRoutes(mux, ops, func(next func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)) http.HandlerFunc {
+		return auth.RequireAuthorization(func(w http.ResponseWriter, r *http.Request, a model.CredentialAuthorization) {
+			if err := a.Validate(); err != nil {
+				writeError(w, r, logger, "authorization", err)
+				return
+			}
+			next(w, r, a)
+		})
+	}, func(a model.CredentialAuthorization) model.Principal { return a.Principal }, logger)
+}
+
+func registerRoutes[A any](mux httpx.RouteRegistrar, ops operations[A], authenticate func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, principal func(A) model.Principal, logger *slog.Logger) {
+	h := &handler[A]{operations: ops, principal: principal, logger: logger}
+	methodNotAllowed := func(allowed string) func(http.ResponseWriter, *http.Request, A) {
+		return func(w http.ResponseWriter, r *http.Request, a A) {
+			httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, principal(a))
+		}
 	}
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags/{tagId}", auth.Require(h.get))
-	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tags/{tagId}", auth.Require(h.rename))
-	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tags/{tagId}", auth.Require(h.delete))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags/{tagId}", auth.Require(func(w http.ResponseWriter, r *http.Request, principal model.Principal) {
+	rejectMethod := func(allowed string) http.HandlerFunc {
+		return httpx.MethodRejection(authenticate(methodNotAllowed(allowed)))
+	}
+
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags", authenticate(h.list))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags", authenticate(h.create))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags", rejectMethod("GET, HEAD, POST"))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/resolve", authenticate(h.resolve))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/colors/resolve", authenticate(h.resolveColors))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags/colors/resolve", rejectMethod("POST"))
+	for _, method := range []string{"GET", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tags/resolve", rejectMethod("POST"))
+	}
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.get))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.rename))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.delete))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags/{tagId}", httpx.MethodRejection(authenticate(func(w http.ResponseWriter, r *http.Request, principal A) {
 		allowed := "GET, HEAD, PATCH, DELETE"
 		if r.PathValue("tagId") == "resolve" {
 			allowed = "POST"
 		}
-		httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, principal)
-	}))
+		methodNotAllowed(allowed)(w, r, principal)
+	})))
 }
 
 func tagResponse(item tagservice.Item) api.Tag {
@@ -68,9 +107,9 @@ func tagResponse(item tagservice.Item) api.Tag {
 	return api.Tag{ID: t.ID, ProjectID: t.ProjectID, Name: t.Name, Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), Usage: api.TagUsage{Tasks: item.Usage.Tasks, Goals: item.Usage.Goals}}
 }
 
-func (h *handler) resource(w http.ResponseWriter, r *http.Request, p model.Principal, withTag bool) (string, string, *slog.Logger, error) {
+func (h *handler[A]) resource(w http.ResponseWriter, r *http.Request, p A, withTag bool) (string, string, *slog.Logger, error) {
 	w.Header().Set("Cache-Control", "no-store")
-	logger := h.logger.With("user_id", p.UserID)
+	logger := h.logger.With("user_id", h.principal(p).UserID)
 	projectID, err := model.CanonicalID(r.PathValue("projectId"))
 	if err != nil {
 		return "", "", logger, err
@@ -86,7 +125,7 @@ func (h *handler) resource(w http.ResponseWriter, r *http.Request, p model.Princ
 	return projectID, tagID, logger.With("tag_id", tagID), nil
 }
 
-func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) list(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, _, logger, err := h.resource(w, r, p, false)
 	if err == nil {
 		var valuesErr error
@@ -122,7 +161,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal
 	writeError(w, r, logger, "list", err)
 }
 
-func (h *handler) get(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) get(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, tagID, logger, err := h.resource(w, r, p, true)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -138,7 +177,7 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request, p model.Principal)
 	writeError(w, r, logger, "get", err)
 }
 
-func (h *handler) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) create(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, _, logger, err := h.resource(w, r, p, false)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -175,7 +214,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, p model.Princip
 	writeError(w, r, logger, "create", err)
 }
 
-func (h *handler) rename(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) rename(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, tagID, logger, err := h.resource(w, r, p, true)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -220,7 +259,7 @@ func optionalText(fields map[string]json.RawMessage, key string) (*string, error
 	return httpx.OptionalString(fields, key)
 }
 
-func (h *handler) delete(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) delete(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, tagID, logger, err := h.resource(w, r, p, true)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -255,7 +294,7 @@ func (h *handler) delete(w http.ResponseWriter, r *http.Request, p model.Princip
 	writeError(w, r, logger, "delete", err)
 }
 
-func (h *handler) resolve(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) resolve(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, _, logger, err := h.resource(w, r, p, false)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -302,7 +341,7 @@ func (h *handler) resolve(w http.ResponseWriter, r *http.Request, p model.Princi
 	writeError(w, r, logger, "resolve", err)
 }
 
-func (h *handler) resolveColors(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *handler[A]) resolveColors(w http.ResponseWriter, r *http.Request, p A) {
 	projectID, _, logger, err := h.resource(w, r, p, false)
 	if err == nil {
 		_, err = httpx.QueryValues(r)
@@ -382,8 +421,9 @@ func writeMutationError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 	writeError(w, r, logger, phase, err)
 }
 
-// The DAO marks only the specific unique index. A second error or unreliable
-// completion must not be hidden behind that marker.
+// The DAO marks only the specific unique index. Store wrappers above that
+// marker summarize the same failure; the marked branch must contain exactly
+// one database error. Additional branches and unreliable completion are unsafe.
 func safeNameConflict(err error) bool {
 	var transactions, databases, markers int
 	valid := true
@@ -404,7 +444,9 @@ func safeNameConflict(err error) bool {
 		case *store.ThreadTransactionError:
 			valid = false
 		case *store.Error:
-			databases++
+			if !errors.Is(e.Cause, store.ErrTagNameConflict) {
+				databases++
+			}
 			if !e.DatabaseFailure || e.SQLState != "23505" {
 				valid = false
 			}
@@ -431,6 +473,12 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, pha
 	if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
 		status := 0
 		switch fault.Code {
+		case "insufficient_scope":
+			httpx.CloseUnreadBody(w, r)
+			httpx.LogFailure(logger, r.Context(), "tag", phase, err)
+			w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
+			httpx.WriteJSON(w, r, logger, http.StatusForbidden, api.ErrorResponse{Error: api.Error{Code: "forbidden", Message: fault.Message, RequestID: httpx.RequestID(r.Context())}})
+			return
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required":
 			status = http.StatusBadRequest
 		case "tag_not_found":

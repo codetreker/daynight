@@ -40,7 +40,7 @@ test.each(["permit", "ownership-gate"] as const)("a real Controller waiting for 
       gate.exec("BEGIN IMMEDIATE");
     }
     const startedAt = Date.now();
-    child = spawn(process.execPath, ["--experimental-transform-types", fileURLToPath(new URL("../../fixtures/controller-storage-wait.mjs", import.meta.url)), home, ticket.launchId], {
+    child = spawn(process.execPath, ["--experimental-transform-types", fileURLToPath(new URL("../../fixtures/controller-storage-wait.mjs", import.meta.url)), home, ticket.launchId, contention], {
       cwd: home, env: { ...process.env, DN_CONFIG_DIR: stateDirectory }, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
     });
     const processChild = child;
@@ -53,18 +53,29 @@ test.each(["permit", "ownership-gate"] as const)("a real Controller waiting for 
     child.stderr!.on("data", chunk => { stderr += String(chunk); });
     await new Promise<void>((resolve, reject) => {
       const marker = "Controller storage is busy; the original launch is waiting.\n";
-      const cleanup = (): void => { clearTimeout(timer); processChild.stderr!.off("data", observe); processChild.off("error", failure); processChild.off("close", closed); };
-      const observe = (): void => { if (stderr.includes(marker)) { cleanup(); resolve(); } };
+      let held = false;
+      const cleanup = (): void => {
+        clearTimeout(timer); processChild.stderr!.off("data", observe);
+        processChild.off("message", observeRetry); processChild.off("error", failure); processChild.off("close", closed);
+      };
+      const observe = (): void => { if (stderr.includes(marker) && (contention === "permit" || held)) { cleanup(); resolve(); } };
+      const observeRetry = (message: unknown): void => {
+        if (typeof message !== "object" || message === null || !("kind" in message) || message.kind !== "storage-retry-held" || !("milliseconds" in message) || message.milliseconds !== 100) {
+          failure(new Error("Unexpected Controller storage retry fixture message.")); return;
+        }
+        held = true; observe();
+      };
       const failure = (error: Error): void => { cleanup(); reject(error); };
       const closed = (): void => { cleanup(); reject(new Error(`Controller exited before storage contention: ${stderr}\n${stdout}`)); };
       const timer = setTimeout(() => { cleanup(); reject(new Error(`Controller did not reach storage contention: ${stderr}\n${stdout}`)); }, 15_000);
-      processChild.stderr!.on("data", observe); processChild.once("error", failure); processChild.once("close", closed); observe();
+      processChild.stderr!.on("data", observe); processChild.on("message", observeRetry); processChild.once("error", failure); processChild.once("close", closed); observe();
     });
     if (contention === "ownership-gate") expect(Date.now() - startedAt).toBeGreaterThanOrEqual(5000);
     expect(child.exitCode).toBeNull();
     assertControllerStoragePermit(permit, journal);
     child.send("stop");
-    expect(await waitForExit(exited, () => `${stderr}\n${stdout}`)).toEqual({ code: 0, signal: null });
+    const outcome = await waitForExit(exited, () => `${stderr}\n${stdout}`);
+    expect(outcome, stderr).toEqual({ code: 0, signal: null });
     expect(stdout).toBe("controller-returned\n");
     expect(stderr.match(/Controller storage is busy;/g)).toHaveLength(1);
     expect(stderr).not.toContain("sqlite-migration-started");

@@ -25,6 +25,12 @@ export const runProjectCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.command.name === "set-repository") {
+    const { prepareSetRepository, runSetRepository } = await import("./set-repository.js");
+    const prepared = prepareSetRepository(command, context);
+    await dependencies.runServerCommand(context, (session) => runSetRepository(command, context, session, prepared));
+    return;
+  }
   if (command.command.name === "delete") {
     const { prepareDelete, runDelete } = await import("./delete.js");
     const prepared = prepareDelete(command, context);
@@ -54,7 +60,7 @@ export const runProjectCommand = async (
     const { renderProject, renderProjectJson, renderProjectList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
-      const { repositoryIdentity } = await import("../../repository/identity.js");
+      const { repositoryIdentity, RepositoryIdentityError } = await import("../../repository/identity.js");
       operation.check();
       const explicitRepo = command.options.get("--repo") as string | undefined;
       const repoUrl = explicitRepo === undefined
@@ -62,18 +68,25 @@ export const runProjectCommand = async (
         : explicitRepo;
       operation.check();
       const identity = repositoryIdentity(repoUrl);
-      const projects = await api.listProjects();
+      const user = await api.getTeamCurrentUser();
+      const { readTeamDefault, teamTarget } = await import("../team/context.js");
+      const configured = target === undefined ? await readTeamDefault(context.homeDirectory(), serverUrl, user, operation.signal) : undefined;
+      const teamId = teamTarget(target ?? configured ?? "personal", user);
+      const projects = await api.listProjects(user.id);
       operation.check();
-      const matches = projects.filter((project) => repositoryIdentity(project.repoUrl) === identity);
+      const matches = projects.filter((project) => {
+        if (project.ownership.teamId !== teamId) return false;
+        try { return repositoryIdentity(project.repoUrl) === identity; }
+        catch (cause) {
+          if (cause instanceof RepositoryIdentityError) return false;
+          throw cause;
+        }
+      });
       operation.check();
       if (matches.length > 1) throw new Error(`Multiple projects match this repository (${matches.map(({ id }) => id).join(", ")}); choose an existing project by its ID.`);
       if (matches.length === 1) return `Project already exists.\n${renderProject(matches[0]!)}`;
       const confirmed = command.options.has("--confirm");
       requireTeamConfirmation(context, confirmed);
-      const user = await api.getTeamCurrentUser();
-      const { readTeamDefault, teamTarget } = await import("../team/context.js");
-      const configured = target === undefined ? await readTeamDefault(context.homeDirectory(), serverUrl, user, operation.signal) : undefined;
-      const teamId = teamTarget(target ?? configured ?? "personal", user);
       const team = await api.getTeam(user.id, teamId);
       if ((team.kind === "personal") !== (team.id === user.personalTeam.id)) throw new (await import("../../api/parse.js")).ProtocolError("Team does not match the current user's Personal Team.");
       operation.check();

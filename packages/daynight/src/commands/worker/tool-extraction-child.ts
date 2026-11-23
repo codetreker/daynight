@@ -1,3 +1,5 @@
+import { createLinuxProcessCapture, parseLinuxBoot, parseLinuxStat } from "../controller/linux-process-proof.js";
+
 /**
  * The helper persists its own birth proof before admitting extraction. Before
  * commit, a lost parent exits without native work; after commit the group leader
@@ -14,10 +16,23 @@ const send = value => { if (process.connected) process.send(value); };
 process.on('disconnect', () => { if (!committed) process.exit(0); });
 process.on('SIGTERM', () => { if (!committed) process.exit(0); });
 setInterval(() => {}, 1000);
+(async () => {
+let proof;
+if (process.platform === 'linux') {
+  const capture = (${createLinuxProcessCapture.toString()})(
+    (file, timeout) => fs.promises.readFile(file, {encoding:'utf8',signal:AbortSignal.timeout(timeout)}),
+    (pid, timeout) => new Promise((resolve,reject) => cp.execFile('ps', ['-p',String(pid),'-o','pid=','-o','ppid=','-o','pgid=','-o','stat=','-o','lstart=','-o','command='], {encoding:'utf8',timeout,maxBuffer:8*1024*1024,env:{...process.env,LC_ALL:'C'}}, (error,stdout) => error ? reject(error) : resolve(stdout))),
+    text => crypto.createHash('sha256').update(text).digest('hex'),
+    () => performance.now(), (${parseLinuxBoot.toString()}), (${parseLinuxStat.toString()}));
+  const state = await capture(process.pid, 5000);
+  if (state.zombie || state.exiting || state.proof.processGroupId !== process.pid) process.exit(1);
+  proof = state.proof;
+} else {
 const output = cp.execFileSync('ps', ['-p',String(process.pid),'-o','pid=','-o','ppid=','-o','pgid=','-o','lstart=','-o','command='], {encoding:'utf8',timeout:5000,env:{...process.env,LC_ALL:'C'}});
 const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
 if (!match || Number(match[1]) !== process.pid || Number(match[3]) !== process.pid) process.exit(1);
-const proof = {pid:process.pid,parentPid:Number(match[2]),processGroupId:Number(match[3]),startedAt:match[4].replace(/\s+/g,' '),commandHash:crypto.createHash('sha256').update(match[5].trim()).digest('hex')};
+proof = {pid:process.pid,parentPid:Number(match[2]),processGroupId:Number(match[3]),startedAt:match[4].replace(/\s+/g,' '),commandHash:crypto.createHash('sha256').update(match[5].trim()).digest('hex')};
+}
 const data = JSON.stringify({schemaVersion:1,preparationId,proof});
 const temp = proofPath+'.pending';
 const fd = fs.openSync(temp,'wx',0o600); fs.writeFileSync(fd,data); fs.fsyncSync(fd); fs.closeSync(fd);
@@ -37,4 +52,5 @@ process.on('message', message => {
   child.on('close',(code,signal) => { if (!failed) send({type:'result',ok:code===0&&signal===null}); });
 });
 send({type:'ready'});
+})().catch(() => process.exit(1));
 `;

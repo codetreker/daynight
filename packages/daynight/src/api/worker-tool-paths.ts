@@ -2,11 +2,12 @@ import { array, bool, count, malformed, record, timestamp } from "./validation.j
 import type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/tool-path-choice.js";
 
 export type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/tool-path-choice.js";
-export type WorkerCloudToolPaths = Readonly<Record<Tool, ToolPathChoice | null>>;
-export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean };
+export type WorkerCloudToolPaths = Readonly<Record<"codex" | "copilot", ToolPathChoice | null>>;
+export type WorkerToolPathsBootstrap = Readonly<Record<"codex" | "copilot", ToolPathChoice>>;
+export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean; readonly archiveSessions?: boolean; readonly platformTaskMode?: boolean };
 export type WorkerConfigurationCapabilityInput = WorkerConfigurationCapabilities | boolean;
 export const workerConfigurationCapabilities = (value: WorkerConfigurationCapabilityInput = false): WorkerConfigurationCapabilities =>
-  typeof value === "boolean" ? { controlMode: value, toolPaths: false } : value;
+  typeof value === "boolean" ? { controlMode: value, toolPaths: false, archiveSessions: false } : value;
 export const TOOL_PATH_REPORT_BYTES = 256 * 1024;
 export type ToolPathErrorCode = "not_found" | "permission_denied" | "not_executable" | "invalid_path" | "unsupported_launcher" | "unrecognized_output" | "incompatible_runtime" | "probe_timeout" | "cleanup_unknown" | "tool_identity_changed" | "legacy_tool_identity_missing" | "io_error" | "unavailable";
 export type ToolPathActual = {
@@ -51,14 +52,14 @@ export const parseToolPathChoice = (value: unknown, platform?: Platform): ToolPa
   return data.kind === "path" ? { kind: "path", path: parseToolPath(data.path, platform) } : malformed();
 };
 export const parseWorkerCloudToolPaths = (value: unknown): WorkerCloudToolPaths => {
-  const data = exact(value, ["codex", "copilot", "herdr"]);
+  const data = exact(value, ["codex", "copilot"]);
   const entry = (value: unknown) => value === null ? null : parseToolPathChoice(value);
-  return { codex: entry(data.codex), copilot: entry(data.copilot), herdr: entry(data.herdr) };
+  return { codex: entry(data.codex), copilot: entry(data.copilot) };
 };
-export const parseToolPathsBootstrap = (value: unknown): ToolPaths => {
+export const parseToolPathsBootstrap = (value: unknown): WorkerToolPathsBootstrap => {
   const data = parseWorkerCloudToolPaths(value);
-  if (data.codex === null || data.copilot === null || data.herdr === null) return malformed();
-  return { codex: data.codex, copilot: data.copilot, herdr: data.herdr };
+  if (data.codex === null || data.copilot === null) return malformed();
+  return { codex: data.codex, copilot: data.copilot };
 };
 export const sameToolPathChoice = (left: ToolPathChoice, right: ToolPathChoice): boolean => left.kind === right.kind && (left.kind === "auto" || right.kind === "path" && left.path === right.path);
 const actual = (value: unknown, platform: Platform | undefined, observedAt: string): ToolPathActual => {
@@ -75,11 +76,11 @@ export const toolPathErrorCode = (error: unknown): ToolPathErrorCode => {
 };
 const parseToolPathTelemetryValue = (value: unknown, platform: Platform | undefined, enforceBudget: boolean, maximumGroups: number): ToolPathTelemetry => {
   const data = exact(value, ["schemaVersion", "observedAt", "entries"]), observedAt = instant(data.observedAt), seen = new Set<string>();
-  if (data.schemaVersion !== 1 || !Array.isArray(data.entries) || data.entries.length > 5 || enforceBudget && toolPathTelemetryBytes(value as ToolPathTelemetry) > TOOL_PATH_REPORT_BYTES) return malformed();
+  if (data.schemaVersion !== 1 || !Array.isArray(data.entries) || data.entries.length > 2 || enforceBudget && toolPathTelemetryBytes(value as ToolPathTelemetry) > TOOL_PATH_REPORT_BYTES) return malformed();
   const entries = array(data.entries, value => {
     const data = exact(value, ["tool", "context", "configurationSource", "targetRevision", "target", "state", "reason", "actual", "candidate", "activeSelectionCount", "activeSelectionsComplete", "activeObservationError", "activeSelections", "error"]);
-    const tool = choice(data.tool, ["codex", "copilot", "herdr"]), context = choice(data.context, ["web", "herdr"]), key = `${tool}/${context}`;
-    if (tool === "herdr" && context === "web" || seen.has(key)) return malformed();
+    const tool = choice(data.tool, ["codex", "copilot"]), context = choice(data.context, ["web"]), key = `${tool}/${context}`;
+    if (seen.has(key)) return malformed();
     seen.add(key);
     const configurationSource = choice(data.configurationSource, ["local", "cloud"]), target = parseToolPathChoice(data.target);
     const targetRevision = configurationSource === "cloud" ? revision(data.targetRevision) : data.targetRevision === null ? null : malformed();

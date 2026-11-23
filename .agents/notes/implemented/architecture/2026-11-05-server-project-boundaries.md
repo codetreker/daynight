@@ -30,10 +30,12 @@ Team locks. The [Team creation decision](../../archived/architecture/2026-11-04-
 [transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) retain their concurrency
 rationale. `ProjectScope` remains a query value for scoped project pagination.
 
-Repository registration uses `core/project` to select a unique visible match,
-reject ambiguity and require confirmation before creation. The service reads all
-pages in one snapshot and coordinates creation separately; matching does not
-make repository identity globally unique.
+Repository registration selects a unique visible match within the target Team,
+rejects ambiguity and requires confirmation before creation. The service uses a
+single snapshot and coordinates creation separately; the [Team-scoped reuse decision](2026-11-18-mcp-team-repository-reuse.md) owns the lookup. The later
+[Team repository uniqueness decision](2026-11-18-team-project-repository-uniqueness.md)
+adds shared create/transfer enforcement within each owner Team while preserving
+the separation between lookup and actual writes.
 
 ## Alternatives
 

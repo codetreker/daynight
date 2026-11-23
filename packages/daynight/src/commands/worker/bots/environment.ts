@@ -7,9 +7,10 @@ import { prepareAgentCliAliases, type AgentCliAliasBinding, type PreparedAgentCl
 import { readAgentCliAliases } from "../../../config/agent-cli-aliases.js";
 import { resolveConfigurationPaths, type ConfigurationPaths } from "../../../config/paths.js";
 import { loadServerConfiguration, normalizeServerUrl } from "../../../config/server.js";
-import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../owned-command.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "./cli-probe.js";
 import { loadOperationFiles } from "../../task/session/private-files.js";
+import { resolveBotPaths } from "./paths.js";
 
 export type BotEnvironmentOptions = {
   homeDirectory: string;
@@ -33,7 +34,7 @@ export type PreparedBotEnvironment = {
 export type BotEnvironmentDependencies = {
   fetch?: typeof globalThis.fetch;
   /** Overrides must join all descendants before settling, or reject BotCliProbeCleanupError with retryable ownership. */
-  runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+  runCommand?: (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 };
 
 export class BotEnvironmentCleanupError extends Error {
@@ -53,7 +54,7 @@ const queries = ["project", "task", "bot", "worker"].flatMap(resource => ["list"
 export const botStateDirectory = (workerPaths: Pick<ConfigurationPaths, "stateDirectory">, botId: string): string => {
   if (canonicalId(botId) !== botId || botId === "00000000-0000-0000-0000-000000000000") throw new Error("Bot ID must be a nonzero canonical UUID.");
   if (!path.isAbsolute(workerPaths.stateDirectory)) throw new Error("Bot state requires an absolute Worker configuration directory.");
-  return path.join(workerPaths.stateDirectory, "bots", botId, "state");
+  return resolveBotPaths(workerPaths.stateDirectory, botId).stateDirectory;
 };
 
 /** Durable claim state outlives Controller launches and temporary CLI aliases. */
@@ -105,12 +106,13 @@ export const prepareBotEnvironment = async (
       DAYNIGHT_BOT_ID: options.botId, DAYNIGHT_BOT_STATE_DIR: stateDirectory };
     // The Controller's relay credential authorizes its connection, not CLI API calls.
     delete environment.DAYNIGHT_CONTROLLER_TOKEN;
-    aliases = await prepareAgentCliAliases({ aliases: configuredAliases, environment, stateDirectory: paths.stateDirectory });
+    aliases = await prepareAgentCliAliases({ aliases: configuredAliases, environment, stateDirectory: paths.stateDirectory,
+      storageDirectory: resolveBotPaths(paths.stateDirectory, options.botId).directory });
     if (dependencies.runCommand === undefined) probe = await createBotCliProbe({ environment: aliases.environment, cwd: options.cwd }, operation);
-    const runCommand = dependencies.runCommand ?? ((command: HerdrCommand) => probe!.run(command.file, command.args));
+    const runCommand = dependencies.runCommand ?? ((command: OwnedCommand) => probe!.run(command.file, command.args));
     for (const query of queries) {
       operation.check();
-      let output: HerdrCommandResult;
+      let output: OwnedCommandResult;
       try { output = await runCommand({ file: "daynight", args: [...query, "--help"], environment: aliases.environment, cwd: options.cwd }, operation); }
       catch (error) {
         if (error instanceof BotCliProbeCleanupError) throw error;

@@ -18,7 +18,7 @@ import (
 )
 
 func workerDescriptor() taskcore.WorkerDescriptor {
-	return taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Build machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
+	return taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Build machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString()}
 }
 
 func workerTestCurrent(t *testing.T, state model.WorkerState) (model.Task, model.Principal, taskcore.WorkerDescriptor) {
@@ -27,7 +27,7 @@ func workerTestCurrent(t *testing.T, state model.WorkerState) (model.Task, model
 	current.AllowAgents = true
 	descriptor := workerDescriptor()
 	if state != "" {
-		worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: state, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
+		worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: state, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
 		current.Properties = testWithWorker(t, current.Properties, worker)
 		if state == model.WorkerActive {
 			current.Status, current.Ready, current.StartedAt = model.TaskInProgress, false, pointer(current.UpdatedAt)
@@ -57,7 +57,7 @@ func TestWorkerClaimPreservesTaskDataAndReadsScopedVersion(t *testing.T) {
 	current.Description = "Unrelated description"
 	current.Properties = model.TaskProperties{"pullRequests": propertyJSON([]model.PullRequestProperty{{URL: "opaque\x00\n", Title: "Evidence"}})}
 	observed := current.UpdatedAt.Add(time.Second)
-	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
 	want := workerTestResult(current)
 	want.Status, want.Ready, want.StartedAt = model.TaskInProgress, false, &observed
 	want.Properties = testWithWorker(t, current.Properties, worker)
@@ -102,20 +102,19 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
 	original := *testWorker(t, current.Properties)
 	native := "native-session"
-	herdr := &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace-1", PaneID: "pane-1"}
 	next := original
-	next.Phase, next.Herdr, next.NativeSessionID = model.WorkerExecuting, herdr, &native
+	next.Phase, next.NativeSessionID = model.WorkerExecuting, &native
 	updated := workerTestResult(current)
 	updated.Properties = testWithWorker(t, current.Properties, &next)
 	f := workerMockWrite(t, current, owner)
 	workerExpectUpdate(t, f, workerTestValues(updated), updated)
-	got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
+	got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, NativeSessionID: pointer(&native)})
 	if err != nil || !reflect.DeepEqual(got, updated) {
 		t.Fatalf("session update: %#v %v", got, err)
 	}
 	t.Run("same value", func(t *testing.T) {
 		f := workerMockWrite(t, updated, owner)
-		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
+		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, NativeSessionID: pointer(&native)})
 		if err != nil || !reflect.DeepEqual(got, updated) {
 			t.Fatalf("no-op update: %#v %v", got, err)
 		}
@@ -136,15 +135,14 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 			requireFault(t, err, entry.code)
 		})
 	}
-	t.Run("clear execution resources", func(t *testing.T) {
+	t.Run("clear native session", func(t *testing.T) {
 		cleared := workerTestResult(updated)
-		next.Herdr, next.NativeSessionID = nil, nil
+		next.NativeSessionID = nil
 		cleared.Properties = testWithWorker(t, updated.Properties, &next)
 		f := workerMockWrite(t, updated, owner)
 		workerExpectUpdate(t, f, workerTestValues(cleared), cleared)
-		var noHerdr *model.WorkerHerdr
 		var noNative *string
-		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Herdr: &noHerdr, NativeSessionID: &noNative})
+		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, NativeSessionID: &noNative})
 		if err != nil || !reflect.DeepEqual(got, cleared) {
 			t.Fatalf("resource clear: %#v %v", got, err)
 		}
@@ -191,6 +189,7 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 func TestWorkerReleaseClearsExecution(t *testing.T) {
 	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
 	active := *testWorker(t, current.Properties)
+	active.AgentControlMode = model.AgentControlModeHerdr
 	active.Herdr = &model.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
 	active.NativeSessionID = pointer("source-native")
 	current.Properties = testWithWorker(t, current.Properties, &active)
@@ -337,10 +336,6 @@ func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
 			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Phase: pointer(model.WorkerPhase("invalid"))})
 			return err
 		},
-		"Herdr": func(s *taskservice.Tasks) error {
-			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Herdr: pointer(&model.WorkerHerdr{})})
-			return err
-		},
 		"native": func(s *taskservice.Tasks) error {
 			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, NativeSessionID: pointer(pointer(" "))})
 			return err
@@ -446,7 +441,7 @@ func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testi
 	next := workerDescriptor()
 	next.Agent = model.AgentCopilot
 	observed := released.UpdatedAt.Add(time.Second)
-	fresh := &model.WorkerClaim{ClaimID: next.ClaimID, WorkerID: next.WorkerID, UserID: owner.UserID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+	fresh := &model.WorkerClaim{ClaimID: next.ClaimID, WorkerID: next.WorkerID, UserID: owner.UserID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
 	resumed := workerTestResult(released)
 	resumed.Status, resumed.Ready, resumed.StartedAt = model.TaskInProgress, false, &observed
 	resumed.Properties = testWithWorker(t, released.Properties, fresh)

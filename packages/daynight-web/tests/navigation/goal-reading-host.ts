@@ -19,6 +19,14 @@ window.selectGoalReading = (goalId, patch) => {
   } else throw new Error('The selected Goal is not owned by this reading state.');
 };
 
+window.openGoalGraphAddress = (projectId, goalId) => {
+  browserNavigation().navigate(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+};
+window.openNativeGoalGraphAddress = (projectId, goalId) => {
+  history.pushState({ nativeMarker: 'retained' }, '', `/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+};
+
 declare global {
-  interface Window { selectGoalReading: (goalId: string, patch: Partial<GoalChildren>) => void; }
+  interface Window { selectGoalReading: (goalId: string, patch: Partial<GoalChildren>) => void; openGoalGraphAddress: (projectId: string, goalId: string) => void; openNativeGoalGraphAddress: (projectId: string, goalId: string) => void; }
 }

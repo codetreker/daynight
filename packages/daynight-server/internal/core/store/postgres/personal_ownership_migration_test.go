@@ -54,12 +54,12 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 			projection = preCancellationTaskJSON
 		}
 		if table == "personal_access_tokens" {
-			projection = `(to_jsonb(t)-'last_used_at')`
+			projection = `(to_jsonb(t)-'last_used_at'-'description'-'business_scopes'-'scope_version')`
 		}
 		if table == "projects" {
-			// Later migrations add lifecycle and catalog fields. Compare every
-			// original column and check the lifecycle field after the full upgrade.
-			projection = `(to_jsonb(t)-'deleted_at'-'tag_catalog_epoch')`
+			// Later migrations add lifecycle, catalog and repository fields.
+			// Compare original columns and check lifecycle after the full upgrade.
+			projection = `(to_jsonb(t)-'deleted_at'-'tag_catalog_epoch'-'repository_identity'-'repository_version')`
 		}
 		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(`+projection+` ORDER BY `+projection+`::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
 			t.Fatal(err)
@@ -103,10 +103,19 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 			if !reflect.DeepEqual(before, ownershipMigrationFacts(t, s, "project_grants")) {
 				t.Fatal("later migrations changed retained grants, invitations, identity or project content")
 			}
+			var descriptionNull bool
+			if err := s.Pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=md5('pat')::uuid`).Scan(&descriptionNull); err != nil || !descriptionNull {
+				t.Fatalf("historical token description is not null: %v", err)
+			}
 			assertHistoricalTasksHaveNoCancellationTime(t, s)
 			var allLive bool
 			if err := s.Pool.QueryRow(ctx, `SELECT bool_and(deleted_at IS NULL) FROM projects`).Scan(&allLive); err != nil || !allLive {
 				t.Fatalf("existing projects are not live after lifecycle migration: %v %v", allLive, err)
+			}
+			var projectCount int
+			var versionsValid bool
+			if err := s.Pool.QueryRow(ctx, `SELECT count(*),coalesce(bool_and(repository_version=1),false) FROM projects`).Scan(&projectCount, &versionsValid); err != nil || projectCount != 2 || !versionsValid {
+				t.Fatalf("migrated repository versions: count=%d valid=%v error=%v", projectCount, versionsValid, err)
 			}
 			var catalogValid bool
 			if err := s.Pool.QueryRow(ctx, `SELECT to_regclass('project_member_versions') IS NULL

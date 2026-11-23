@@ -76,7 +76,7 @@ inputs to upper-layer tests, not proof that a transaction persisted or rolled
 back. HTTP cancellation propagation is distinct from releasing an actual SQL
 query and connection.
 
-Step and Thread services supply encoded documents; HTTP tests verify those
+Thread services supply encoded documents; HTTP tests verify those
 bytes, headers, write failures and cancellation. Server-owned envelopes use the
 actual encoder, and surviving input/write capacity checks stay with their owner.
 Canonical reads do not restore response-byte admission. The
@@ -84,17 +84,16 @@ Canonical reads do not restore response-byte admission. The
 owns capped output spans and the shared Writer's byte/error contracts, without
 changing each consumer's actual encoded boundary.
 
-The Step handler constructor initializes its body-read duration to the shared
-15-second production default. All Step write routes pass that instance duration
-through the shared JSON decoder to the actual body reader. The socket regression
-checks the constructed default before selecting 200 milliseconds for its own
-handler. It retains real TCP timeout delivery, `408 request_timeout`, request ID,
-connection closure, handler completion, zero Add calls and the `not_committed`
-log outcome. The body reader applies the same duration to its stored deadline
-and the socket; changing only the socket deadline can alter cancellation/error
-classification. The [Prompt socket decision](2026-11-09-prompt-socket-test-timeout.md)
-records the shared decoder's explicit duration entry. Capacity workloads use
-their separate `stress` fixture and entry point.
+The original Step handler initialized its body-read duration to the shared
+15-second production default. Its socket regression selected 200 milliseconds
+for that instance and retained real timeout delivery, request ID, connection
+closure, handler completion, zero Add calls and not-committed logging. The
+[REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md) removes
+that handler and its socket proof. The body reader still applies one duration
+to its stored deadline and socket; changing only the socket deadline can alter
+cancellation/error classification. The [Prompt socket decision](2026-11-09-prompt-socket-test-timeout.md)
+records the surviving shared decoder mechanism. Supported capacity workloads
+use their separate `stress` fixture and entry point.
 
 `scripts/integration.sh` builds the production Server and runs explicitly tagged
 `cmd/integration_tests` through Go HTTP clients, real authentication and isolated
@@ -150,9 +149,8 @@ component boundary. Changing a boundary requires preserving each lower rule and
 mechanism in its actual owner before removing the original assertion.
 
 Socket timeout expiration and exact encoded boundaries retain their real
-mechanisms. The Step timeout interval is selected per handler, avoiding shared
-mutable timing and preserving production defaults without a fixed 15-second
-wait in the regression. Performance comparisons must include receiving store/API
+mechanisms. The former Step regression selected its timeout per handler,
+avoiding shared mutable timing while preserving production defaults. Performance comparisons must include receiving store/API
 suites and complete validation. Source-bound test, profile and CI artifacts own
 observed results; package speed alone does not establish faster complete
 validation or hosted CI.

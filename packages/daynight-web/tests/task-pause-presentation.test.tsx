@@ -1,3 +1,4 @@
+import { selectStatus } from './helpers/statusFilter';
 import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
@@ -39,6 +40,10 @@ let observationStore: ProjectTaskObservationsStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); observationStore = new ProjectTaskObservationsStore(sessionScope, project.id); });
 afterEach(() => { observationStore.dispose(); sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
+const pausedTasks = (value: GraphSnapshot) => {
+  const ids = pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds);
+  return value.graph.tasks.filter(task => ids.has(task.id));
+};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
@@ -61,11 +66,11 @@ describe('paused task discovery', () => {
   it('shows complete-project counts and each paused standalone row through the production provider', () => {
     const value = snapshot();
     const view = renderWithLocale(workspace(value, 'standalone'), { locale: 'zh-CN', taskCache: true });
-    expect(screen.getByText('2 已暂停')).toBeVisible();
+    expect(screen.getByText('2 受阻')).toBeVisible();
     const paused = document.getElementById(`standalone-task-${id(3)}`)!;
-    expect(within(paused.closest<HTMLElement>('.task-row')!).getByText('已暂停')).toBeVisible();
-    expect(document.getElementById(`standalone-task-${id(4)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
-    expect(document.getElementById(`standalone-task-${id(5)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
+    expect(within(paused.closest<HTMLElement>('.task-row')!).getByText('受阻')).toBeVisible();
+    expect(document.getElementById(`standalone-task-${id(4)}`)!.closest('.task-row')).not.toHaveTextContent('受阻');
+    expect(document.getElementById(`standalone-task-${id(5)}`)!.closest('.task-row')).not.toHaveTextContent('受阻');
     view.rerender(workspace(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))), 'standalone'));
     expect(view.container.querySelector('.task-paused-badge')).toBeNull();
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
@@ -79,7 +84,7 @@ describe('paused task discovery', () => {
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
       standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
         pagination: { page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop } }} /></TaskExecutionClockProvider>, { locale: 'en', taskCache: true });
-    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
+    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 blocked');
     expect(document.getElementById(`standalone-task-${id(3)}`)).toBeNull();
     expect(document.getElementById(`standalone-task-${id(4)}`)).toBeVisible();
   });
@@ -120,12 +125,12 @@ describe('paused task discovery', () => {
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
     const view = renderWithLocale(<ProjectPage projectId={project.id} />, { container: root, locale: 'zh-CN', taskCache: true });
     const headingCount = () => view.container.querySelector('#project-section-panel-tasks .project-section-heading .task-pause-count');
-    await waitFor(() => expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^6 受阻$/ })).toHaveTextContent('6 受阻'));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
-    await waitFor(() => expect(headingCount()).toHaveTextContent('6 已暂停'));
+    await waitFor(() => expect(headingCount()).toHaveTextContent('6 受阻'));
     const expectPausedTasks = (numbers: number[]) => {
       fireEvent.click(headingCount()!);
-      const menu = screen.getByRole('menu', { name: '已暂停的任务' });
+      const menu = screen.getByRole('menu', { name: '受阻任务' });
       const rows = within(menu).getAllByRole('menuitem');
       expect(rows).toHaveLength(numbers.length);
       expect(rows.map((row) => row.textContent)).toEqual(numbers.map((number) => expect.stringContaining(`Task ${number}`)));
@@ -137,35 +142,43 @@ describe('paused task discovery', () => {
       fireEvent.click(await screen.findByRole('option', { name: label }));
     };
     await selectAssignee('分配给我');
-    expect(headingCount()).toHaveTextContent('3 已暂停');
+    expect(headingCount()).toHaveTextContent('3 受阻');
     expectPausedTasks([1, 6, 100]);
     const chain = document.getElementById(`task-root-${id(1)}`)!;
-    expect(within(chain).getByText('2 已暂停')).toBeVisible();
+    expect(within(chain).getByText('2 受阻')).toBeVisible();
     fireEvent.click(chain);
-    expect(within(chain).getByText('2 已暂停')).toBeVisible();
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
-    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'done' } });
-    expect(headingCount()).toHaveTextContent('3 已暂停');
-    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+    expect(within(chain).getByText('2 受阻')).toBeVisible();
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('受阻');
+    selectStatus('done');
+    expect(headingCount()).toHaveTextContent('3 受阻');
+    selectStatus('all');
     fireEvent.click(screen.getByRole('tab', { name: '独立任务' }));
-    expect(headingCount()).toHaveTextContent('3 已暂停');
+    expect(headingCount()).toHaveTextContent('3 受阻');
     const pagination = screen.getByRole('navigation', { name: '独立任务列表分页' });
     fireEvent.click(within(pagination).getByRole('button', { name: '下一页' }));
     expect(pagination).toHaveTextContent('第 2 / 2 页');
-    expect(headingCount()).toHaveTextContent('3 已暂停');
+    expect(headingCount()).toHaveTextContent('3 受阻');
     fireEvent.click(screen.getByRole('tab', { name: 'Goal' }));
-    expect(headingCount()).toHaveTextContent('3 已暂停');
+    expect(headingCount()).toHaveTextContent('3 受阻');
     await selectAssignee('未分配');
-    expect(headingCount()).toHaveTextContent('1 已暂停');
+    expect(headingCount()).toHaveTextContent('1 受阻');
     expectPausedTasks([4]);
     await selectAssignee(/^Other person/);
-    expect(headingCount()).toHaveTextContent('2 已暂停');
+    expect(headingCount()).toHaveTextContent('2 受阻');
     expectPausedTasks([2, 3]);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停');
+    const overviewBadge = screen.getByRole('button', { name: /^6 受阻$/ });
+    expect(overviewBadge).toHaveTextContent('6 受阻');
+    fireEvent.click(overviewBadge);
+    const overviewMenu = screen.getByRole('menu', { name: '受阻任务' });
+    expect(within(overviewMenu).getAllByRole('menuitem').map(row => row.textContent)).toEqual(
+      [1, 2, 3, 4, 6, 100].map(number => expect.stringContaining(`Task ${number}`)));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(headingCount()).toHaveTextContent('2 受阻');
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('Other person');
     await selectAssignee('所有负责人');
-    expect(headingCount()).toHaveTextContent('6 已暂停');
+    expect(headingCount()).toHaveTextContent('6 受阻');
   });
 
   it('counts whole chains, identifies the paused representative and child, and passes pause data into the graph', async () => {
@@ -173,30 +186,30 @@ describe('paused task discovery', () => {
     const value = snapshot();
     const view = renderWithLocale(workspace(value, 'chains'), { locale: 'zh-CN', taskCache: true });
     const root = document.getElementById(`task-root-${id(1)}`)!;
-    expect(within(root).getByText('1 已暂停')).toBeVisible();
-    expect(within(root).getByText('已暂停')).toBeVisible();
+    expect(within(root).getByText('1 受阻')).toBeVisible();
+    expect(within(root).getByText('受阻')).toBeVisible();
     fireEvent.click(root);
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('受阻');
     view.rerender(workspace(value, 'chains', id(1)));
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2);
     expect(graph.querySelectorAll('.task-node .task-paused-badge')).toHaveLength(2);
-    expect(within(graph).getByText('1 已暂停')).toBeVisible();
-    for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/已暂停/);
+    expect(within(graph).getByText('1 受阻')).toBeVisible();
+    for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/受阻/);
     view.setLocale('en');
-    for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/Paused/);
+    for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/Blocked/);
   });
 
   it('hides summary counts for done-only pause while retaining its raw badge', async () => {
     installGraphMeasurements();
     const value = snapshot([summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)] })]);
     const onOpenTask = vi.fn();
-    const view = renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+    const view = renderWithLocale(<ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en', taskCache: true });
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
     view.rerender(workspace(value, 'chains', id(1)));
     expect(view.container.querySelectorAll('.task-pause-count')).toHaveLength(0);
-    expect(document.getElementById(`task-root-${id(1)}`)).toHaveTextContent('Paused');
+    expect(document.getElementById(`task-root-${id(1)}`)).toHaveTextContent('Blocked');
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(1);
     expect(graph.querySelectorAll('.task-node .task-paused-badge')).toHaveLength(1);
@@ -208,12 +221,12 @@ describe('paused task discovery', () => {
     const view = renderWithLocale(workspace(snapshot(tasks), 'chains', id(1)), { locale: 'en', taskCache: true });
     const counts = () => [...document.querySelectorAll('.task-pause-count')].map((element) => element.textContent);
     await screen.findByRole('dialog');
-    expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
+    expect(counts()).toEqual(['1 blocked', '1 blocked', '1 blocked']);
     view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)), 'chains', id(1)));
     expect(counts()).toEqual([]);
     expect(screen.getByRole('dialog').querySelectorAll('.task-node-paused')).toHaveLength(2);
     view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)), 'chains', id(1)));
-    expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
+    expect(counts()).toEqual(['1 blocked', '1 blocked', '1 blocked']);
   });
 
   it.each(['proposed', 'todo'] as const)('updates the overview entry when status alone completes and reopens its target to %s', (reopenedStatus) => {
@@ -221,17 +234,22 @@ describe('paused task discovery', () => {
     const onOpenTask = vi.fn();
     const overview = (items: TaskSummary[]) => {
       const value = snapshot(items);
-      return <ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+      return <ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
         pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />;
     };
     const view = renderWithLocale(overview(tasks), { locale: 'en' });
-    expect(screen.getByRole('button', { name: 'Open paused task: Task 2' })).toHaveTextContent('1 paused');
+    expect(screen.getByRole('button', { name: /blocked$/ })).toHaveTextContent('1 blocked');
     view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)));
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
     view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)));
-    const entry = screen.getByRole('button', { name: 'Open paused task: Task 2' });
+    const entry = screen.getByRole('button', { name: /blocked$/ });
     fireEvent.click(entry);
+    expect(onOpenTask).not.toHaveBeenCalled();
+    const menu = screen.getByRole('menu', { name: 'Blocked tasks' });
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(1);
+    fireEvent.click(within(menu).getByRole('menuitem'));
     expect(onOpenTask).toHaveBeenCalledWith(id(2), entry);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('counts the complete ordinary chain but excludes a visible external prerequisite', async () => {
@@ -240,26 +258,31 @@ describe('paused task discovery', () => {
       summary(2, { dependsOn: [id(1), id(3)], externalDependsOn: [id(3)], properties: { paused: true } }),
       summary(3, { status: 'cancelled', properties: { paused: true } })]);
     const view = renderWithLocale(workspace(value, 'chains', id(1)), { locale: 'en', taskCache: true });
-    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
+    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 blocked');
     const root = document.getElementById(`task-root-${id(1)}`)!;
-    expect(within(root).getByText('1 paused')).toBeVisible();
+    expect(within(root).getByText('1 blocked')).toBeVisible();
     const graph = await screen.findByRole('dialog');
-    expect(within(graph).getByText('1 paused')).toBeVisible();
+    expect(within(graph).getByText('1 blocked')).toBeVisible();
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(3);
     fireEvent.click(root);
-    expect(within(root).getByText('1 paused')).toBeVisible();
+    expect(within(root).getByText('1 blocked')).toBeVisible();
   });
 
-  it('opens a specific paused task from the complete overview count without altering the seven status cards', () => {
+  it('opens the selected non-first paused task from the complete overview menu without altering the seven status cards', () => {
     const value = snapshot();
     const onOpenTask = vi.fn();
-    renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
+    renderWithLocale(<ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 2, total: 2, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
     expect(document.querySelectorAll('.stats .stat')).toHaveLength(7);
-    const open = screen.getByRole('button', { name: 'Open paused task: Task 2' });
-    expect(open).toHaveTextContent('2 paused');
+    const open = screen.getByRole('button', { name: /blocked$/ });
+    expect(open).toHaveTextContent('2 blocked');
     fireEvent.click(open);
-    expect(onOpenTask).toHaveBeenCalledWith(id(2), open);
+    expect(onOpenTask).not.toHaveBeenCalled();
+    const rows = within(screen.getByRole('menu', { name: 'Blocked tasks' })).getAllByRole('menuitem');
+    expect(rows.map(row => row.textContent)).toEqual([expect.stringContaining('Task 2'), expect.stringContaining('Task 3')]);
+    fireEvent.click(rows[1]!);
+    expect(onOpenTask).toHaveBeenCalledWith(id(3), open);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });
 
@@ -272,20 +295,20 @@ describe('unpause controls and outcomes', () => {
     const onUnpause = vi.fn();
     const props = { paused: true, disabled: false, mutation: mutation(), onUnpause, fallbackFocus };
     const view = renderWithLocale(<TaskPauseControl {...props} />, { locale: 'zh-CN' });
-    const unpause = screen.getByRole('button', { name: '解除暂停' });
+    const unpause = screen.getByRole('button', { name: '解除阻塞' });
     unpause.focus();
     fireEvent.click(unpause);
     expect(onUnpause).toHaveBeenCalledOnce();
     view.rerender(<TaskPauseControl {...props} disabled mutation={mutation({ phase: 'pending' })} />);
     expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled();
-    expect(screen.getByText('已暂停')).toBeVisible();
+    expect(screen.getByText('受阻')).toBeVisible();
     view.rerender(<TaskPauseControl {...props} paused={false} disabled mutation={mutation({ phase: 'pending' })} />);
-    expect(screen.queryByText('已暂停')).toBeNull();
+    expect(screen.queryByText('受阻')).toBeNull();
     expect(heading).toHaveFocus();
     view.rerender(<TaskPauseControl {...props} paused={false} mutation={mutation({ phase: 'confirmed' })} />);
     expect(heading).toHaveFocus();
     view.rerender(<TaskPauseControl {...props} disabled />);
-    const reason = screen.getByRole('group', { name: '解除暂停' });
+    const reason = screen.getByRole('group', { name: '解除阻塞' });
     fireEvent.focus(reason);
     expect(screen.getByRole('tooltip')).toHaveTextContent('确认当前任务详情与访问权限前无法修改任务。');
     heading.remove();
@@ -299,7 +322,7 @@ describe('unpause controls and outcomes', () => {
     document.body.append(heading, next);
     const props = { paused: true, disabled: false, mutation: mutation(), onUnpause: vi.fn(), fallbackFocus: { current: heading } };
     const view = renderWithLocale(<TaskPauseControl {...props} />, { locale: 'en' });
-    const unpause = screen.getByRole('button', { name: 'Unpause' });
+    const unpause = screen.getByRole('button', { name: 'Unblock' });
     unpause.focus();
     fireEvent.click(unpause);
     view.rerender(<TaskPauseControl {...props} disabled mutation={mutation({ phase: 'pending' })} />);
@@ -321,10 +344,10 @@ describe('unpause controls and outcomes', () => {
     const error = phase === 'refused' ? new ApiError('network') : null;
     renderWithLocale(<TaskPauseFeedback mutation={mutation({ phase, error })} onReconcile={onReconcile} />, { locale: 'en' });
     if (phase === 'pending') expect(screen.queryByText('Submitting the unpause request.')).toBeNull();
-    else if (phase === 'confirmed') expect(screen.queryByText('The task is unpaused.')).toBeNull();
-    else if (phase === 'refused') expect(screen.getByRole('alert')).toHaveTextContent('The unpause request did not receive a confirmed response');
-    else expect(screen.getByText(phase === 'conflict' ? 'The task changed. Check its current pause state before trying again.' : phase === 'unknown'
-      ? 'The unpause result is not confirmed. Check the current task state before making another change.' : 'The current task state has been read. This does not establish the outcome of the earlier unpause request.')).toBeVisible();
+    else if (phase === 'confirmed') expect(screen.queryByText('The task is unblocked.')).toBeNull();
+    else if (phase === 'refused') expect(screen.getByRole('alert')).toHaveTextContent('The unblock request did not receive a confirmed response');
+    else expect(screen.getByText(phase === 'conflict' ? 'The task changed. Check its current blocked state before trying again.' : phase === 'unknown'
+      ? 'The unblock result is not confirmed. Check the current task state before making another change.' : 'The current task state has been read. This does not establish the outcome of the earlier unblock request.')).toBeVisible();
     if (phase === 'unknown') { fireEvent.click(screen.getByRole('button', { name: 'Check task state' })); expect(onReconcile).toHaveBeenCalledOnce(); }
   });
 
@@ -332,8 +355,8 @@ describe('unpause controls and outcomes', () => {
     const view = renderWithLocale(<TaskPauseFeedback mutation={mutation({ phase: 'unknown', reconciling: true })} onReconcile={noop} />, { locale: 'en' });
     expect(screen.getByRole('button', { name: 'Checking the current task state…' })).toBeDisabled();
     view.rerender(<TaskPauseFeedback mutation={mutation({ phase: 'unknown', reconciliationError: new ApiError('protocol') })} onReconcile={noop} />);
-    expect(screen.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).toContain('The service response could not confirm the unpause request result.');
+    expect(screen.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).toContain('The service response could not confirm the unblock request result.');
     view.rerender(<TaskPauseFeedback mutation={mutation({ operation: { action: 'status', status: 'done', version: 1n }, phase: 'confirmed' })} onReconcile={noop} />);
-    expect(screen.queryByText('The task is unpaused.')).toBeNull();
+    expect(screen.queryByText('The task is unblocked.')).toBeNull();
   });
 });

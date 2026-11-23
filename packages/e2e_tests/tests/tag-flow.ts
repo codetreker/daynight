@@ -47,8 +47,9 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await page.locator("#project-task-tab-goals").click();
   const toolbar = page.locator(".project-tasks .task-list-filters").filter({ visible: true });
   await expect(toolbar.locator(":scope > .tag-filter-wrap")).toHaveCount(2);
-  expect(await toolbar.locator(":scope > *").evaluateAll(controls => controls.map(control => control.className)))
-    .toEqual(["task-assignee-filter", "task-status-filter", "tag-filter-wrap", "tag-filter-wrap"]);
+  await expect(toolbar.locator(":scope > *")).toHaveClass([
+    "task-assignee-filter", /(?:^|\s)task-status-filter(?:\s|$)/, "tag-filter-wrap", "tag-filter-wrap",
+  ]);
   const filter = toolbar.locator(".tag-filter").filter({ has: page.locator("summary").filter({ hasText: /^Child task tag filter/ }) });
   await expect(filter).toHaveCount(1);
   const emptyCard = page.locator(`[data-goal-id="${emptyGoalId}"]`);
@@ -162,7 +163,7 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
-  await filter.getByRole("button", { name: "Clear", exact: true }).click();
+  await filter.getByRole("button", { name: "Clear filter", exact: true }).click();
   await expect(control).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");

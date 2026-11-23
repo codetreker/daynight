@@ -1,6 +1,6 @@
 # Session 图片浏览器交互设计
 
-本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示、页内预览及持久图片草稿接入现有 Session 消费者。草稿上传与发送始终消费服务的当前图片能力；生产 Provider 图片 send/steer 尚未取得完整资格时保持关闭，浏览器组件或受控传输通过不能开放该资格。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
+本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示、页内预览及持久图片草稿接入现有 Session 消费者。草稿上传与发送始终消费服务的当前图片能力；生产 Provider 图片 send/steer 只在匹配[已发布资格](session-image-providers.md#已发布资格)时开放，其他组合保持关闭，浏览器组件或受控传输通过不能开放该资格。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
 
 [公共协议与存储设计](session-image-contracts.md)唯一拥有 wire DTO、严格解析、能力、身份、错误及容量合同；本文只定义浏览器内部状态和预览接口，并消费该合同。[来源采集设计](session-image-sources.md)拥有 AST 与来源 IO，[归档设计](session-image-archives.md)拥有记录 reader。本文不扩展 Herdr、Thread、通用文件、富文本、跨设备草稿、图片编辑或轮播。采用原 textarea 与有序附件区，所有入口沿现有 Session resolver。
 
@@ -48,7 +48,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 | `owners` | ownerKey → accessEpoch、当前 editableDraftId、unresolvedSubmissionId、blocked 原因、持久 recoveryOnly 历史访问限制、已分配本地字节计数。accessEpoch 是本地失效代次，不是权限令牌；真正授权始终来自现有身份入口。 |
 | `drafts` | ownerKey+draftId → 正 Decimal revision、text、有序 items、保存时间、editable/frozen/detached 状态、未确认放弃的 rejectedCandidates（稳定候选ID/安全label/原因）及超额拒绝数量。一个 owner 最多一个 editable 和一个未结算 frozen 提交；不会建立自动发送队列。 |
 | `blobs` | ownerKey+blobId → 不可变原始 Blob、长度、byteRevision 及引用集合，明确区分未校验原件与带摘要/真实 MIME/尺寸的已校验图片。未校验记录不编造图片元数据。仅同 owner 可共享本地字节；SHA 不是授权或全局 key。 |
-| `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent。没有公共 receipt revision，自有顺序不写回服务。 |
+| `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent，以及服务以引用占用拒绝释放后的 release retained 结论。没有公共 receipt revision，自有顺序不写回服务。 |
 | `submissions` | ownerKey+operationId → 完整不可变 command intent、原 ImageTarget、draftId/revision、提交文本/有序附件快照、相关 blob/upload 引用、dispatch 状态、最后观察 operation。草稿清除不能删除 unresolved 操作。 |
 
 每项附件有稳定本地 `draftImageId`、本地字节版本、label、blobId 或显式 null、校验状态、uploadId 或 null。wire imageId 是该次上传和待发送图片的出现身份；服务在同一 Session 内保留它与原 uploadId 的关联，终态或释放不会让该 imageId 可供另一次上传使用。精确重试原上传保持两项 wire 标识和原 spec；确认原上传为 failed、expired 或 released 后，显式重新准备必须同时建立新的 imageId 和 uploadId。稳定的本地 draftImageId 与原件不因此改变；已发送后的新消息也必须使用新 imageId。选择相同 bytes 两次仍是两个有序项，按两份长度计入消息限制。
@@ -129,7 +129,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 能力变化先暂停新块并观察原 receipt，不释放仍有效 bytes；同 target 且仍 supported、原 MIME/长度合格可继续准备。更小集合上限不偷偷丢图，整组 Send 禁用；指出当前上限，由用户移除/替换。upload complete 不携带永久模型许可，最终始终用最新 image capability revision。过期显示以服务判定为准，客户端时间只作提前查询提示，不自行延长 expiresAt。
 
-本地原件与远端上传账本分开保留。只有 editable、frozen 和未决 submission 的真实引用占用本地 Blob 及持久字节预算；单独的 release intent 不持有本地原件。最后一个本地内容引用移除后，在同一事务删除 Blob 并回收计量，但保留上传身份、请求未知状态及 release intent 供远端对账；旧 native owner 不再成为当前目标也不阻碍本地回收。同授权恢复范围在冷恢复时重新核对本地内容引用，回收旧版本曾仅因 release intent 保留的孤立 Blob；不修改远端账本，不越过当前访问权限或待清理屏障。移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束；upload_in_use 保留 operation 对账，不强删服务资源。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
+本地原件与远端上传账本分开保留。只有 editable、frozen 和未决 submission 的真实引用占用本地 Blob 及持久字节预算；单独的 release intent 不持有本地原件。最后一个本地内容引用移除后，在同一事务删除 Blob 并回收计量，但保留上传身份、请求未知状态及 release intent 供远端对账；旧 native owner 不再成为当前目标也不阻碍本地回收。同授权恢复范围在冷恢复时重新核对本地内容引用，回收旧版本曾仅因 release intent 保留的孤立 Blob；不修改远端账本，不越过当前访问权限或待清理屏障。移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束。服务对原释放请求返回 409 `resource_in_use`，表示消息、operation、归档或原生恢复仍引用该原件；草稿记录 release retained 并结束自己的释放责任，不重试 DELETE、不把它显示为草稿错误，也不影响已发送消息的显示。成功发送后清理冻结草稿属于这一情形。剩余上传引用由服务按上传到期与引用规则回收，operation 对账仍由原 submission 负责，客户端不强删服务资源。其他 409 或未知结果仍保持 unknown 并显示可重试状态。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
 
 ## 发送事务、编辑和未知结果
 
@@ -192,8 +192,10 @@ Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击
 - `SessionImageStore` 消费现有 Session client 或固定记录 reader，拥有完整验证、请求合并、Blob lease、取消、错误和内存预算。分块读取和块校验属于统一资源 reader；真实响应体进度刷新无进展时限。它不决定来源采集，不自行创建 Session client。
 - `SessionImageFrame` 拥有缩略展示、尺寸框、解码状态、可访问错误及动作；输入是稳定出现和 store 状态，不是 URL/path。用户、Agent、工具、Markdown 与 retainedImages 复用它。
 - `ImagePreviewHost`、`ImagePreviewController` 与 `useSessionImageScope` 定义本专题公共 UI API，负责一个展示 owner 的页内预览、缩放、焦点、滚动和下载；草稿消费者通过同一 asset/lease 合同接入。
-- `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 只接收已验证的纯渲染回调，不获取权限、解析 Controller 路径或发网络请求。
+- `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 通过公共 Markdown 内核接收受控渲染回调，不获取权限、解析 Controller 路径或发网络请求。
 - live/record/draft adapter 各自提供可读原件与撤销信号。record 不依赖在线 Controller，draft 不伪造服务资源。
+
+实时 `timeline_upsert` 只携带图片出现，不携带 `SessionResource` descriptor；历史页才携带 descriptor。客户端发现条目引用当前状态中不存在的 resourceId 时，对每个条目 revision 至多读取一次当前 Session 的 tail 历史页，只补入缺少的 descriptor，不替换已接受的条目、覆盖范围或连接状态；读取失败保持“图片不可用”，下一次历史加载可再补齐。刚发送消息中的图片由此在原窗口和其他窗口中显示，不依赖草稿资源。
 
 读取流为：真实出现 → owner 校验与 descriptor → store 合并读取 → 校验全部块及完整 SHA → 创建受控 Blob → 浏览器解码 → 原位置展示。打开预览获取同一 lease，下载同一已校验原件。每一异步完成都检查 scope、resource identity 与请求代次；旧结果不能写进新账户、新记录或新出现。
 
@@ -285,13 +287,13 @@ saved reader 由真实 Session/record resolver 得到 base，使用公共协议�
 
 原件的预留类别随仍存续的使用者协调，不固定为首次请求类型。同一原件先被预览、再被下载共享时，关闭预览后由下载槽承担其占用；下载先释放而预览仍存续时反向转移。换槽仍受页面、owner和目标槽限额约束，不重复计费，也不提前归还未结束工作的预算。目标槽被占用时保留计量并在占用变化后重评；两个原件相互换槽须作为一次完整分配验证，避免彼此等待。
 
-下载保留最多一个前景原件lease/专用URL，最长60秒；后续下载按用户点击顺序排队，最多2项、等待最多65秒，超限/到时返回本地可理解的“下载繁忙，请重试”，不发请求、不报资源不可用。等待项不持bytes，只持句柄与取消信号，撤权/owner失活即取消；没有第三份下载原件挤占预览槽。预览不排在下载之后，每次新open取代尚未完成的旧open。后台队列最多32项，超出只保留idle框，等进入可视区或用户操作再准入；无自动来源重试。新前景操作可取消尚未完成的后台读取，取消确认并释放其缓冲后才能复用计费。每次读请求有15秒无进展和60秒总时限，到时取消并给显式读取失败；用户可重试同原件。由此即使后台可见卡片或下载占满其额度，一张合法10 MiB图仍有独立预览预留，不会永久queued。缓存压力改变页面表示，不删除历史资源。
+下载读取并发与已触发URL的保留分开计量。页面同时最多一个下载在取得原件lease并核验，该下载交给浏览器后立即让出读取位，下一个排队下载随即开始；不等已触发URL到期。后续下载按用户点击顺序排队，最多2项、等待最多65秒，超限/到时返回本地可理解的“下载繁忙，请重试”，不发请求、不报资源不可用。等待项不持bytes，只持句柄与取消信号，撤权/owner失活即取消；没有第三份下载原件挤占预览槽。预览不排在下载之后，每次新open取代尚未完成的旧open。后台队列最多32项，超出只保留idle框，等进入可视区或用户操作再准入；无自动来源重试。新前景操作可取消尚未完成的后台读取，取消确认并释放其缓冲后才能复用计费。每次读请求有15秒无进展和60秒总时限，到时取消并给显式读取失败；用户可重试同原件。由此即使后台可见卡片或下载占满其额度，一张合法10 MiB图仍有独立预览预留，不会永久queued。缓存压力改变页面表示，不删除历史资源。
 
 解码需单独准入：单图按 Controller 媒体存储最大 33554432 画布像素估算 128 MiB RGBA，页面同时在用图像画布估算预算 256 MiB、最多两个完整原件解码任务。 已保存 descriptor 缺少尺寸时，完整容器校验提取 PNG/JPEG/GIF/WebP/AVIF 的画布尺寸作为 legacy 准入估算；无法证明尺寸时保留最大估算。解码在途仍占估算额度，完成后按实际定向画布面积收缩保留额度，实际面积超出已准入估算则拒绝发布。并不声称这个估算是浏览器/GPU 的实际硬内存上限；动画和实现差异必须测量。超出准入的卡片保持尺寸框与可聚焦“查看图片”，用户打开可优先释放离屏解码表示后查看，不报服务资源失效，不改变 10 MiB 接受上限。大量小图可依其实际画布并行显示，但解码任务仍最多两个；大图完成任务后保持的画布也计入预算。隐藏/离屏 frame 可释放 img 的解码表示，外层框和 imageId 保留，之后优先复用 Blob而不是重复网络。可视中已展示图片不能因普通流式更新被逐出。若可视图耗尽预算，预览暂时挂起非当前图的解码展示并保留占位；关闭后恢复其原 Blob。浏览器不支持安全解码或内存不足是显式本地失败，不更改服务 descriptor。
 
 这里淘汰的是可重新读取的页面缓存，不释放消息、unknown operation 或归档引用，也不减少服务 1 GiB/1000 资源计费。8 张/20 MiB 仅限制输入消息，不能截断 Agent/工具/Markdown 图片输出。原件保持 PNG/JPEG/GIF/WebP/AVIF，输入三格式不缩减展示；禁止 SVG、HTML 或未知内容执行。
 
-下载先确认当前 canDownload，再取得完整验证 lease，在实际触发下载前复核相同 scope/资格。使用 Blob URL 与 download attribute，绝不导航来源路径/外站、对象存储地址或打开新标签作为下载替代。已经交给浏览器/用户的下载不能被后续撤权追回；撤权必须阻止尚未触发的下载并撤销页面保留地址。下载专用 URL 在发起后保留至浏览器接管所需的有界时间（默认 60 秒），或撤权/owner销毁时立即撤销；到期无论下载状态如何释放自身 lease。它不复用关闭预览即撤销的独占 URL。
+下载先确认当前 canDownload，再取得完整验证 lease，在实际触发下载前复核相同 scope/资格。使用 Blob URL 与 download attribute，绝不导航来源路径/外站、对象存储地址或打开新标签作为下载替代。已经交给浏览器/用户的下载不能被后续撤权追回；撤权必须阻止尚未触发的下载并撤销页面保留地址。下载专用 URL 在发起后保留至浏览器接管所需的有界时间（默认 60 秒），或撤权/owner销毁时立即撤销；到期无论下载状态如何释放自身 lease。页面同时最多保留两个已触发的下载URL，第三个下载触发时提前撤销最早一个。触发后下载lease降为后台lease，原件转入后台预算而不再占用前景下载槽；后台预算放不下时store移除该缓存项，已创建的URL仍持有Blob直到撤销。它不复用关闭预览即撤销的独占 URL。
 
 文件名去掉目录分隔符、控制字符、双向文本控制字符、路径段和 OS 保留名称；去除不匹配扩展名，按真实 MIME 添加 `.png/.jpg/.gif/.webp/.avif`，长度上限 120 个 Unicode code points，不截断代理项。空/危险名使用 `image-<imageId短片段>.<ext>`，草稿用稳定本地 ID。label 的完整安全显示值仍通过可访问名称或可聚焦详情读取，不把处理后的下载名写回消息。
 
@@ -311,7 +313,7 @@ Controller 媒体存储尺寸是未应用 EXIF orientation 的存储画布，动
 
 采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。 自动重取按同 owner 和 entry revision 去重，最多一次；账户变化或 current 准入暂停时保留待处理项，恢复后只重读权威条目或所选归档。同 available ID 元数据冲突使用同一恢复通道，普通网络、完整性或本地解码错误不自动循环读取。重取后仍不合格则保留显式失败与手动刷新入口。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
 
-`ChatMarkdown` 新增可选受控节点 renderer，只接收经验证的节点 key/内容；缺省仍显示不可用。Session 层负责创建 callback及scope，其他 ChatMarkdown 消费者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
+`ChatMarkdown` 将受控范围与纯渲染回调交给[公共内核](shared-markdown.md)，核验真实图片节点后只向回调提供范围、alt 和呈现方式；缺省显示不可用。Session 层负责验证 metadata、摘要、scope 和绑定并创建回调，公共范围匹配不授予访问权。其他调用者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
 
 同一scope与partId的合法完整正文更新在摘要待验期间保留最近一次已验证的正文及图片映射，避免已显示图片、预览触发点和解码lease因异步检查而卸载。新版本通过校验后原子替换展示，未改变的图片出现保持原DOM与焦点；新增或替换绑定在此之前没有准入权。身份变化、只读缓存、缺失或非法metadata不能沿用旧展示，迟到验证也不能恢复已经结束的scope。
 
@@ -326,6 +328,8 @@ retainedImages 使用原 imageId、label及保存资源；有合法 linkHref 时
 dialog 设置可访问标题、aria-modal；初始焦点到关闭按钮，Tab/Shift+Tab 只循环内部有效控件，包含可滚动图像区域。自己的 keydown 在冒泡到父级之前处理 Escape/Tab，Escape preventDefault+stopPropagation，cancel事件也 preventDefault 并调用同一 close。不要用全局 capture listener 抢其他模态。预览关闭后第二次 Escape 才交 Session 全屏，再交 Task 全屏/弹窗。背景点击不关闭，以免拖动大图误关闭；关闭按钮和 Escape 始终可用。
 
 user 关闭仅在 trigger 仍 connected、可见、非 inert且属于同 owner 时以 preventScroll 聚焦；否则调用 fallbackFocus，优先原工具 summary/原消息可聚焦容器，再当前 timeline；owner 已消失时不抢新界面焦点。原消息被过滤不强制展开/改模式以恢复焦点。身份验证/删除确认等更高层模态打开时暂停图片 host，隐藏敏感图像并把焦点权交给既有上层模态；授权未变且返回同 owner可恢复原预览状态，确认撤权则销毁。暂停必须在上层确认框聚焦之前同步执行：调用 dialog.close() 退出浏览器 top layer，解除预览自己的焦点trap与timeline/body滚动锁，清空显示src但保留经授权的asset/缩放/舞台位置状态，且不运行用户关闭的trigger恢复。仅把img设hidden或把祖先设inert不够，原生modal仍可能屏蔽现有body portal的role=alertdialog。上层模态关闭且同owner仍active、身份已确认后，重新showModal并恢复原asset/缩放/舞台位置，读取复用原lease；若撤权则完全释放而不恢复。该层级通过TaskDetailSurface/TaskConfirmation和既有认证modal owner的“即将打开/已关闭”桥接信号接入，不在确认框已经聚焦之后才依赖effect/MutationObserver补救，也不让多个trap互相抢焦点。
+
+打开预览时，timeline 先按当前 DOM 滚动位置同步阅读锚点。浏览器可以先把触发按钮滚入视口，随后才派发 scroll 事件；这样即使预览期间忽略该事件，关闭后也能保留激活时的阅读位置。
 
 body 使用已有引用计数 `useBodyScrollLock`；另锁定该 owner 的 timeline 内部滚动容器，并保存原 overflow/scrollTop/scrollLeft，以引用计数恢复，不能解除外层 Task 的锁。预览舞台 overflow:auto、overscroll-behavior:contain，移动端触摸只滚舞台；控制区域阻止滚动链到背景，键盘 PageUp/Down/Home/End 作用于舞台。不能在整页禁止 touch-action 导致浏览器缩放不可用。
 

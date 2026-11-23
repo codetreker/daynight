@@ -30,13 +30,8 @@ import (
 )
 
 type readOnlyFixture struct {
-	server  *httptest.Server
-	token   string
-	cookie  *http.Cookie
-	worker  string
-	owner   model.Principal
+	readOnlyTransportFixture
 	harness *testsupport.AuthHarness[*authhttp.Authentication]
-	routes  *ReadOnlyRoutes
 }
 
 func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readOnlyFixture {
@@ -51,10 +46,7 @@ func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readO
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := h.Identity.CreatePAT(context.Background(), owner, identitycore.CreatePAT{Name: "Worker read-only fixture"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	pat := h.MintPAT(t, owner, identitycore.CreatePAT{Name: "Worker read-only fixture"})
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, workerservice.NewWorkers(h.Database), h.Auth, slog.Default())
 	broker := workerservice.NewReadOnly(h.Database, func(context.Context, model.Principal) error {
@@ -75,7 +67,12 @@ func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readO
 			t.Error(err)
 		}
 	})
-	f := &readOnlyFixture{server: server, token: pat.Secret, cookie: cookie, worker: uuid.NewString(), owner: owner, harness: h, routes: routes}
+	f := &readOnlyFixture{
+		readOnlyTransportFixture: readOnlyTransportFixture{
+			server: server, token: pat.Secret, cookie: cookie, worker: uuid.NewString(), owner: owner, routes: routes,
+		},
+		harness: h,
+	}
 	f.report(t, f.worker, f.token)
 	return f
 }
@@ -84,6 +81,7 @@ func (f *readOnlyFixture) report(t *testing.T, worker, token string) {
 	raw, _ := json.Marshal(workerSnapshotReportBody())
 	r, _ := http.NewRequest("POST", f.server.URL+"/api/v1/me/workers/"+worker+"/report", strings.NewReader(string(raw)))
 	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerToolPathsHeader, "2")
 	r.Header.Set("Authorization", "Bearer "+token)
 	response, err := http.DefaultClient.Do(r)
 	if err != nil {
@@ -94,10 +92,10 @@ func (f *readOnlyFixture) report(t *testing.T, worker, token string) {
 		t.Fatalf("report: %d", response.StatusCode)
 	}
 }
-func (f *readOnlyFixture) connect(t *testing.T, worker, token string, operations ...string) (*websocket.Conn, ro.Message) {
+func (f *readOnlyTransportFixture) connect(t *testing.T, worker, token string, operations ...string) (*websocket.Conn, ro.Message) {
 	return f.connectWithPing(t, worker, token, nil, operations...)
 }
-func (f *readOnlyFixture) connectWithPing(t *testing.T, worker, token string, onPing func(context.Context, []byte) bool, operations ...string) (*websocket.Conn, ro.Message) {
+func (f *readOnlyTransportFixture) connectWithPing(t *testing.T, worker, token string, onPing func(context.Context, []byte) bool, operations ...string) (*websocket.Conn, ro.Message) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -140,15 +138,16 @@ func readOnlySend(t *testing.T, c *websocket.Conn, m ro.Message) {
 		t.Fatal(err)
 	}
 }
-func (f *readOnlyFixture) request(ctx context.Context, worker, token string, input ro.Request) (*http.Response, error) {
+func (f *readOnlyTransportFixture) request(ctx context.Context, worker, token string, input ro.Request) (*http.Response, error) {
 	raw, _ := json.Marshal(input)
 	r, _ := http.NewRequestWithContext(ctx, "POST", f.server.URL+"/api/v1/me/workers/"+worker+"/readonly/requests", strings.NewReader(string(raw)))
 	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerToolPathsHeader, "2")
 	r.Header.Set("Authorization", "Bearer "+token)
 	return http.DefaultClient.Do(r)
 }
 func TestReadOnlyHTTPRoutesTargetAndCancellation(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTransportFixture(t)
 	c, ready := f.connect(t, f.worker, f.token)
 	if ready.Type != "ready" || ready.OwnerUserID != f.owner.UserID || ready.WorkerID != f.worker {
 		t.Fatal("ready identity mismatch")
@@ -203,7 +202,7 @@ func TestReadOnlyHTTPRoutesTargetAndCancellation(t *testing.T) {
 	}
 }
 func TestReadOnlyHTTPRefusesUnsupportedAndUnauthorisedTargets(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTransportFixture(t)
 	input := ro.Request{RequestID: uuid.NewString(), Operation: "directory.list", Input: json.RawMessage(`{}`)}
 	response, err := f.request(context.Background(), f.worker, f.token, input)
 	if err != nil {
@@ -216,18 +215,7 @@ func TestReadOnlyHTTPRefusesUnsupportedAndUnauthorisedTargets(t *testing.T) {
 	if response.StatusCode != 501 || failure.Error.Code != "unsupported" {
 		t.Fatalf("legacy worker: %d %s", response.StatusCode, raw)
 	}
-	other := f.harness.Login(t, "readonly-other")
-	r := httptest.NewRequest("GET", "/", nil)
-	r.AddCookie(other)
-	p, err := f.harness.Auth.AuthenticateRequest(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := f.harness.Identity.CreatePAT(context.Background(), p, identitycore.CreatePAT{Name: "other"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err = f.request(context.Background(), f.worker, token.Secret, input)
+	response, err = f.request(context.Background(), f.worker, f.otherToken, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,10 +223,33 @@ func TestReadOnlyHTTPRefusesUnsupportedAndUnauthorisedTargets(t *testing.T) {
 	if response.StatusCode != 404 {
 		t.Fatal("cross-owner target allowed", response.StatusCode)
 	}
+
+	r, err := http.NewRequest("POST", f.server.URL+"/api/v1/me/workers/"+f.worker+"/readonly/requests", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.AddCookie(f.cookie)
+	r.Header.Set("Origin", readOnlyTransportOrigin)
+	r.Header.Set("Authorization", "Bearer "+readOnlyRejectedPAT)
+	response, err = http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || response.Header.Get("Daynight-User-ID") != "" {
+		t.Fatal("rejected bearer fell back to the browser cookie", response.StatusCode)
+	}
+}
+
+func newReadOnlyTCPRefusalFixture(t *testing.T) *controlledReadOnlyTransport {
+	t.Helper()
+	return newReadOnlyTransportFixture(t, func(routes *ReadOnlyRoutes) {
+		routes.broker = &strictReadOnly{t: t, closeExpected: true}
+	})
 }
 
 func TestReadOnlyHTTPBodyReadHasDeadline(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTCPRefusalFixture(t)
 	f.routes.bodyTimeout = 50 * time.Millisecond
 	conn, err := net.Dial("tcp", strings.TrimPrefix(f.server.URL, "http://"))
 	if err != nil {
@@ -265,7 +276,7 @@ func TestReadOnlyHTTPBodyReadHasDeadline(t *testing.T) {
 func TestReadOnlyHTTPEarlyRefusalsBoundUnreadBodies(t *testing.T) {
 	for _, mode := range []string{"invalid_query", "capacity"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newReadOnlyFixture(t)
+			f := newReadOnlyTCPRefusalFixture(t)
 			f.routes.bodyTimeout = 50 * time.Millisecond
 			suffix := "?invalid=true"
 			want := 400
@@ -300,7 +311,7 @@ func TestReadOnlyHTTPEarlyRefusalsBoundUnreadBodies(t *testing.T) {
 }
 
 func TestReadOnlyChannelRefusalsBoundUnreadBodies(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTCPRefusalFixture(t)
 	for _, test := range []struct {
 		name, suffix   string
 		capacity, body bool
@@ -345,14 +356,14 @@ func TestReadOnlyChannelRefusalsBoundUnreadBodies(t *testing.T) {
 }
 
 func TestReadOnlyChannelRejectsInvalidHandshakeAndFrames(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTransportFixture(t)
 	for _, mode := range []string{"binary_hello", "malformed_hello", "unsupported_hello", "unknown_worker", "malformed_result", "wrong_fence"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			worker := f.worker
 			if mode == "unknown_worker" {
-				worker = uuid.NewString()
+				worker = f.unknownWorker
 			}
 			c, _, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http:", "ws:", 1)+"/api/v1/me/workers/"+worker+"/readonly/channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}}})
 			if err != nil {
@@ -403,7 +414,7 @@ func TestReadOnlyChannelRejectsInvalidHandshakeAndFrames(t *testing.T) {
 	}
 }
 func TestReadOnlyChannelHeartbeatAndShutdownCancelReader(t *testing.T) {
-	f := newReadOnlyFixture(t, func(routes *ReadOnlyRoutes) { routes.heartbeatInterval = 100 * time.Millisecond })
+	f := newReadOnlyTransportFixture(t, func(routes *ReadOnlyRoutes) { routes.heartbeatInterval = 100 * time.Millisecond })
 	pings := make(chan struct{}, 2)
 	c, _ := f.connectWithPing(t, f.worker, f.token, func(context.Context, []byte) bool {
 		select {
@@ -500,7 +511,7 @@ func TestReadOnlyHTTPErrorStatusesRemainDistinct(t *testing.T) {
 
 func TestReadOnlyHTTPForwardingDeadlineReturnsTimeoutJSON(t *testing.T) {
 	const operationTimeout = 500 * time.Millisecond
-	f := newReadOnlyFixture(t, func(routes *ReadOnlyRoutes) {
+	f := newReadOnlyTransportFixture(t, func(routes *ReadOnlyRoutes) {
 		routes.operationTimeout = func(string) time.Duration { return operationTimeout }
 	})
 	c, ready := f.connect(t, f.worker, f.token)

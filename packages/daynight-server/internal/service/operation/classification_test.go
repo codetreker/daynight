@@ -56,8 +56,30 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	}
 }
 
+func TestAdmissionFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"project_repository_conflict", "project_repository_identity_unavailable", "insufficient_scope"} {
+		t.Run(code, func(t *testing.T) {
+			fault := &model.Fault{Code: code, Message: "Operation refused."}
+			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {
+				if got, ok := operation.KnownFault(safe); !ok || got != fault {
+					t.Fatalf("confirmed refusal was suppressed: %#v %v", got, ok)
+				}
+			}
+			for _, unsafe := range []error{
+				&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: fault},
+				&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: fault},
+				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("private SQL")}),
+			} {
+				if got, ok := operation.KnownFault(unsafe); ok {
+					t.Fatalf("unreliable completion exposed an admission refusal: %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestKnownTransferAndMediaFaultsRequireConfirmedRollback(t *testing.T) {
-	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete"} {
+	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete", "goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch", "goal_dependency_target_unavailable", "task_unfinished_children", "task_parent_terminal", "task_parent_immutable"} {
 		fault := &model.Fault{Code: code, Message: "refused"}
 		if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got.Code != code {
 			t.Fatalf("confirmed refusal %s was suppressed", code)
@@ -77,6 +99,18 @@ func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
 	facts := operation.CompletionFacts(failure)
 	if facts.Outcome != store.TransactionUnknown || !facts.CleanupFailed {
 		t.Fatalf("lost completion facts: %#v", facts)
+	}
+}
+
+func TestKnownGitHubConnectionFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"github_not_connected", "github_connection_unavailable"} {
+		fault := &model.Fault{Code: code, Message: "Connection unavailable"}
+		if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+			t.Fatalf("confirmed refusal %s was suppressed", code)
+		}
+		if _, ok := operation.KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
+			t.Fatalf("unknown result exposed as %s", code)
+		}
 	}
 }
 
@@ -131,5 +165,25 @@ func TestTagFaultsRequireReliableCompletion(t *testing.T) {
 		if _, ok := operation.KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
 			t.Fatalf("unknown result exposed as %s", code)
 		}
+	}
+}
+
+func TestPlatformTaskModeFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"worker_platform_task_mode_upgrade_required", "worker_platform_task_mode_unsupported"} {
+		t.Run(code, func(t *testing.T) {
+			fault := &model.Fault{Code: code, Message: "refused"}
+			if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+				t.Fatalf("confirmed refusal suppressed: %v %v", got, ok)
+			}
+			for _, failure := range []error{
+				&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault},
+				&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: fault},
+				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("database failure")}),
+			} {
+				if got, ok := operation.KnownFault(failure); ok {
+					t.Fatalf("unsafe failure exposed: %v", got)
+				}
+			}
+		})
 	}
 }

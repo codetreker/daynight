@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseWorkerCloudValue, parseWorkerCloudReport } from "../../src/api/worker-configuration.js";
 
 const value = { maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
-const paths = { codex: { kind: "path", path: "/opt/工具 codex" }, copilot: { kind: "auto" }, herdr: null };
+const paths = { codex: { kind: "path", path: "/opt/工具 codex" }, copilot: { kind: "auto" } };
 const capabilities = { controlMode: false, toolPaths: true };
 
 describe("negotiated Worker tool choices", () => {
@@ -13,13 +13,13 @@ describe("negotiated Worker tool choices", () => {
     expect(() => parseWorkerCloudValue({ ...value, toolPaths: paths })).toThrow();
     expect(() => parseWorkerCloudValue(value, true, capabilities)).toThrow();
     expect(() => parseWorkerCloudValue({ ...value, toolPaths: { ...paths, extra: null } }, true, capabilities)).toThrow();
-    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { codex: paths.codex, copilot: paths.copilot } }, true, capabilities)).toThrow();
+    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { ...paths, herdr: null } }, true, capabilities)).toThrow();
   });
   it("accepts full bootstrap choices but never an unadopted bootstrap tool", () => {
-    const bootstrap = { ...paths, herdr: { kind: "auto" } };
+    const bootstrap = { ...paths, codex: { kind: "auto" } };
     const report = { bootstrap: null, observation: null, toolPathsBootstrap: bootstrap };
     expect(parseWorkerCloudReport(report, capabilities)).toEqual(report);
-    expect(() => parseWorkerCloudReport({ ...report, toolPathsBootstrap: paths }, capabilities)).toThrow();
+    expect(() => parseWorkerCloudReport({ ...report, toolPathsBootstrap: { ...paths, copilot: null } }, capabilities)).toThrow();
   });
 });
 
@@ -85,13 +85,13 @@ describe("independent tool negotiation", () => {
     const desired = {revision:"1",updatedAt:time,value:{...value,toolPaths:paths}};
     const api = createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async (_url, init)=>{
       calls.push(init!); const get = init!.method === "GET";
-      return new Response(JSON.stringify(get ? {desired,observationRevision:"0",observation:null} : {observedAt:time,lastReportedAt:time,configuration:{desired,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"1"}});
+      return new Response(JSON.stringify(get ? {desired,observationRevision:"0",observation:null} : {observedAt:time,lastReportedAt:time,configuration:{desired,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"2"}});
     }});
     try {
       await api.getWorkerConfiguration(worker);
-      await api.reportWorkerConfiguration(worker,{...workerTelemetry,toolPaths:telemetry(),taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:{codex:{kind:"auto"},copilot:{kind:"auto"},herdr:{kind:"auto"}}});
-      expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");
-      expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");
+      await api.reportWorkerConfiguration(worker,{...workerTelemetry,toolPaths:telemetry(),taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:{codex:{kind:"auto"},copilot:{kind:"auto"}}});
+      expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("2");
+      expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("2");
       expect(JSON.parse(calls[1]!.body as string).toolPaths).toEqual(telemetry());
       expect(JSON.parse(calls[1]!.body as string).configuration.toolPathsBootstrap).toBeDefined();
     } finally {operation.dispose();}
@@ -106,47 +106,33 @@ it("uses the server JSON escaping budget for symbol-bearing paths", () => {
   expect(bounded.entries[0]!.activeSelectionsComplete).toBe(false);
 });
 
-describe("configuration capability combinations and admission",()=>{
-  const user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  const tools={codex:{kind:"auto" as const},copilot:{kind:"auto" as const},herdr:{kind:"auto" as const}};
-  it.each([false,true].flatMap(controlMode=>[false,true].flatMap(toolPaths=>[false,true].map(prompts=>({controlMode,toolPaths,prompts})))))
-    ("projects mode=$controlMode tools=$toolPaths independently of prompts=$prompts",async ({controlMode,toolPaths,prompts})=>{
-      const operation=createOperation(),calls:RequestInit[]=[];
-      const desired={revision:"1",updatedAt:time,value:{...value,...(controlMode?{agentControlMode:"web"}:{}),...(toolPaths?{toolPaths:paths}:{})}};
-      const api=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async (_url,init)=>{
-        calls.push(init!);const get=init!.method==="GET";
-        return new Response(JSON.stringify(get?{desired,observationRevision:"0",observation:null}:{observedAt:time,lastReportedAt:time,configuration:{desired,observationRevision:"0",observationAccepted:false,...(prompts?{prompts:[]}: {})}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":get||!prompts?"1":"2",...(controlMode?{"Daynight-Worker-Control-Mode":"1"}:{}),...(toolPaths?{"Daynight-Worker-Tool-Paths":"1"}:{})}});
-      }});
-      try {
-        await api.getWorkerConfiguration(worker);
-        await api.reportWorkerConfiguration(worker,{...workerTelemetry,toolPaths:telemetry(),taskInventory:null},{bootstrap:null,observation:null,controlModeBootstrap:"web",toolPathsBootstrap:tools},prompts?[]:undefined);
-        const body=JSON.parse(calls[1]!.body as string),headers=new Headers(calls[1]!.headers);
-        expect(headers.get("Daynight-Worker-Control-Mode")).toBe(controlMode?"1":null);
-        expect(headers.get("Daynight-Worker-Tool-Paths")).toBe(toolPaths?"1":null);
-        expect(headers.get("Daynight-Worker-Configuration")).toBe(prompts?"2":"1");
-        expect(Object.hasOwn(body,"toolPaths")).toBe(toolPaths);
-        expect(Object.hasOwn(body.configuration,"toolPathsBootstrap")).toBe(toolPaths);
-        expect(Object.hasOwn(body.configuration,"controlModeBootstrap")).toBe(controlMode);
-      } finally {operation.dispose();}
-    });
-  it.each(["http://localhost:8788", "http://localhost:8787"])("does not reuse tool capability across an origin or principal change (%s)",async origin=>{
-    const operation=createOperation(),calls:RequestInit[]=[];
-    const cache={supported:true,serverOrigin:"http://localhost:8787",userId:origin.endsWith("8787")?worker:user};
-    const api=createApiClient({serverUrl:origin,expectedUserId:user,workerToolPaths:cache,operation,fetch:async (_url,init)=>{
-      calls.push(init!);return new Response(JSON.stringify({observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1"}});
-    }});
-    try { await api.reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null,toolPaths:telemetry()},{bootstrap:null,observation:null,toolPathsBootstrap:tools});
-      expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Tool-Paths")).toBeNull();
-      expect(JSON.parse(calls[0]!.body as string)).not.toHaveProperty("toolPaths");
-    } finally {operation.dispose();}
+describe("configuration protocol admission", () => {
+  const user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  it.each([false, true])("uses v2 without mode and preserves prompt negotiation: %s", async prompts => {
+    const operation = createOperation(), calls: RequestInit[] = [];
+    const desired = { revision: "1", updatedAt: time, value: { ...value, toolPaths: paths } };
+    const api = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation, fetch: async (_url, init) => {
+      calls.push(init!); const get = init!.method === "GET";
+      return new Response(JSON.stringify(get ? { desired, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired, observationRevision: "0", observationAccepted: false, ...(prompts ? { prompts: [] } : {}) } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": get || !prompts ? "1" : "2", "Daynight-Worker-Tool-Paths": "2" } });
+    } });
+    try {
+      await api.getWorkerConfiguration(worker);
+      await api.reportWorkerConfiguration(worker, { ...workerTelemetry, toolPaths: telemetry(), taskInventory: null }, { bootstrap: null, observation: null, controlModeBootstrap: "web", toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" } } }, prompts ? [] : undefined);
+      const body = JSON.parse(calls[1]!.body as string), headers = new Headers(calls[1]!.headers);
+      expect(headers.get("Daynight-Worker-Control-Mode")).toBeNull();
+      expect(headers.get("Daynight-Worker-Tool-Paths")).toBe("2");
+      expect(headers.get("Daynight-Worker-Configuration")).toBe(prompts ? "2" : "1");
+      expect(body.toolPaths).toEqual(telemetry());
+      expect(body.configuration).not.toHaveProperty("controlModeBootstrap");
+      expect(body.configuration.toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" } });
+    } finally { operation.dispose(); }
   });
-  it("keeps a missing report capability acknowledgement as an unconfirmed write",async()=>{
-    const operation=createOperation();let calls=0;
-    const api=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async ()=>{
-      calls++;return new Response(JSON.stringify(calls===1?{desired:null,observationRevision:"0",observation:null}:{observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1",...(calls===1?{"Daynight-Worker-Tool-Paths":"1"}:{})}});
-    }});
-    try {await api.getWorkerConfiguration(worker);await expect(api.reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:tools})).rejects.toMatchObject({phase:"protocol",outcomeUnconfirmed:true});expect(calls).toBe(2);}
-    finally {operation.dispose();}
+  it("treats a missing report acknowledgement as an unconfirmed write", async () => {
+    const operation = createOperation(); let calls = 0;
+    const api = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation, fetch: async () => {
+      calls++; return new Response(JSON.stringify(calls === 1 ? { desired: null, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", ...(calls === 1 ? { "Daynight-Worker-Tool-Paths": "2" } : {}) } });
+    } });
+    try { await api.getWorkerConfiguration(worker); await expect(api.reportWorkerConfiguration(worker, { ...workerTelemetry, taskInventory: null }, { bootstrap: null, observation: null, toolPathsBootstrap: null })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true }); expect(calls).toBe(2); } finally { operation.dispose(); }
   });
 });
 
@@ -161,13 +147,13 @@ it("retains a local budget result when even the target fallback cannot fit", () 
 it("retains tool capability from an authenticated missing configuration across clients", async () => {
   const user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",worker="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", operation=createOperation();
   const cache={supported:false},calls:RequestInit[]=[];
-  const fetch:typeof globalThis.fetch=async (_url,init)=>{calls.push(init!);return new Response(JSON.stringify(calls.length===1?{error:{code:"not_found",message:"missing",requestId:worker}}:{observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{status:calls.length===1?404:200,headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"1"}});};
+  const fetch:typeof globalThis.fetch=async (_url,init)=>{calls.push(init!);return new Response(JSON.stringify(calls.length===1?{error:{code:"not_found",message:"missing",requestId:worker}}:{observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{status:calls.length===1?404:200,headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"2"}});};
   const client=()=>createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,workerToolPaths:cache,operation,fetch});
-  try {await expect(client().getWorkerConfiguration(worker)).rejects.toMatchObject({status:404});await client().reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:null});expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");}
+  try {await expect(client().getWorkerConfiguration(worker)).rejects.toMatchObject({status:404});await client().reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:null});expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("2");}
   finally {operation.dispose();}
 });
 
-it.each(["2","1, 1",""])("rejects malformed response capability %j",async header=>{
+it.each(["1","1, 1",""])("rejects malformed response capability %j",async header=>{
   const operation=createOperation(),user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const client=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async()=>new Response(JSON.stringify({desired:null,observationRevision:"0",observation:null}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":header}})});
   try {await expect(client.getWorkerConfiguration("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).rejects.toMatchObject({phase:"protocol",outcomeUnconfirmed:false});} finally {operation.dispose();}
@@ -176,7 +162,8 @@ it.each(["2","1, 1",""])("rejects malformed response capability %j",async header
 import path from "node:path";
 import { parseLocalToolPaths } from "../../src/platform/tool-path-choice.js";
 it.each([String.raw`\\?\C:\tools\codex.exe`, String.raw`\\.\C:\tools\codex.exe`])("round-trips an adopted Windows namespace path through cloud and telemetry: %s", selectedPath => {
-  const local = parseLocalToolPaths({ codex: selectedPath }, path.win32);
+  const { codex, copilot } = parseLocalToolPaths({ codex: selectedPath }, path.win32);
+  const local = { codex, copilot };
   expect(parseWorkerCloudValue({ ...value, toolPaths: local }, true, capabilities).toolPaths).toEqual(local);
   expect(parseWorkerCloudReport({ bootstrap: null, observation: null, toolPathsBootstrap: local }, capabilities).toolPathsBootstrap).toEqual(local);
   const selected = actual("a".repeat(64), selectedPath);
@@ -194,4 +181,15 @@ it("retains a rejected foreign-platform desired target without accepting foreign
   for (const invalid of [{ ...failure, actual: foreign }, { ...failure, candidate: foreign }, { ...failure, activeSelectionCount: 1, activeSelections: [{ actual: foreign, executionCount: 1, instanceCount: null, unconfirmedCount: 0 }] }]) {
     expect(() => parseToolPathTelemetry(telemetry([invalid]), "linux")).toThrow();
   }
+});
+
+it("reports an old server's protocol refusal as a confirmed upgrade requirement", async () => {
+  const operation = createOperation();
+  const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch: async (_url, init) => {
+    expect(new Headers(init!.headers).get("Daynight-Worker-Tool-Paths")).toBe("2");
+    return new Response(JSON.stringify({ error: { code: "invalid_input", message: "Unsupported Worker tool paths protocol.", requestId: "old-server" } }), { status: 400, headers: { "Content-Type": "application/json" } });
+  } });
+  try {
+    await expect(api.reportWorker("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", { ...workerTelemetry, taskInventory: null })).rejects.toMatchObject({ status: 400, confirmedRefusal: true, outcomeUnconfirmed: false, serverMessage: expect.stringContaining("upgrade the server") });
+  } finally { operation.dispose(); }
 });

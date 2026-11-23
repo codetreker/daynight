@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The Herdr execution mechanism described here is superseded by [daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md); its rationale and evidence remain historical.
+
 ## Problem
 
 Herdr starts agents by kind through an interactive shell. Selecting an executable
@@ -11,6 +13,10 @@ the original process tree while using a frozen tool selection. Replacing a share
 daemon can also abandon live agents or uncertain startup and shutdown work.
 
 ## Decision
+
+The [platform validation retirement](../testing/2026-11-18-retire-herdr-platform-validation.md) supersedes the dedicated fixture and checker described here. The original decisions and rationale remain below as history.
+
+The later [Web-only runtime decision](2026-11-17-worker-web-runtime-composition.md) removes this admission and instance ownership from the Worker runtime. The following records the original design and its rationale.
 
 Each new execution freezes both Agent and Herdr recipes. A private, owner-bound
 manifest maps the existing bare-kind interface to a fixed Node helper, which
@@ -149,7 +155,11 @@ checks.
 
 After submitted input, a direct Windows command-line proof failure with
 `STATUS_PROCESS_IS_TERMINATING` permits another complete observation within the
-original operation budget. The first valid official Session and receipt remain
+original operation budget. A direct `open-process` / Win32 87 during process
+proof acquisition also permits this complete reobservation: an inventory
+candidate can disappear before its handle is opened. Its PID, semantic role,
+acquisition phase and original cause are retained as bounded error context.
+The first valid official Session and receipt remain
 fixed through those observations. A temporarily missing Session remains
 unconfirmed without changing that identity; a different ID or receipt fails.
 Every successful confirmation still requires
@@ -297,6 +307,11 @@ with fixed Session and receipt identities can establish a later consistent
 result; persistent errors still end at the original deadline with the first
 failure retained. Merely treating the status as stopped would lose the original
 ownership and cleanup requirements.
+
+**Skip an inventory candidate that disappears during acquisition.** The missing
+PID may be required by the original shell or launch receipt, and an isolated
+skip cannot establish that the remaining parent and Session identities match.
+Reobserving the entire chain within the original deadline retains those checks.
 
 **Switch all platforms by draining one shared daemon.** macOS already isolates
 each run and can start a new execution with a different tool while old executions

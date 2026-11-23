@@ -1,12 +1,14 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent } from "../../../../src/api/assistant-task.js";
+import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent, type AssistantTaskEventQuery } from "../../../../src/api/assistant-task.js";
 import { withClaimStorage, type ClaimScope } from "../../../../src/commands/assistant-task/state.js";
 import * as claimOperations from "../../../../src/commands/assistant-task/claims.js";
 import { createAssistantTaskRuntime, type AssistantApplicationContext, type AssistantTaskClock, type AssistantTaskRuntime, type AssistantTaskRuntimeOptions } from "../../../../src/commands/worker/bots/assistant-tasks.js";
 import { AssistantTaskSessionError } from "../../../../src/commands/worker/bots/assistant-task-session.js";
+import { EXPERIENCE_TIME_MS } from "../../../../src/commands/worker/bots/assistant-task-experience.js";
 import type { BotRecord } from "../../../../src/commands/worker/bots/types.js";
 import { parseSessionCommand, SESSION_PROTOCOL, type SessionCommand, type SessionOperation } from "../../../../src/session/protocol.js";
 
@@ -54,13 +56,17 @@ const fixture = async (botNumber = 3) => {
   const listEvents = vi.fn<AssistantTaskClient["listEvents"]>(async (taskId, query) => {
     const after = query?.cursor === undefined ? -1 : events.findIndex(event => event.id === query.cursor);
     if (query?.cursor !== undefined && after < 0) throw new Error("Unexpected event cursor");
-    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId));
+    // Mirrors the server type filters: selecting inbound events also omits paused tasks.
+    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId)
+      && (query?.type === undefined || event.type === query.type && !(query.type === "inbound" && event.taskId === task.id && task.state === "paused")) && (query?.excludeType === undefined || event.type !== query.excludeType));
     const items = matching.slice(0, query?.limit ?? 200);
     return { items, nextCursor: matching.length > items.length ? items.at(-1)!.id : null, observedAt: new Date(clock.now()).toISOString() };
   });
   const ackEvent = vi.fn<AssistantTaskClient["ackEvent"]>(async (_taskId, eventId, input) => { const event = events.find(event => event.id === eventId)!; return { ...event, state: "delivered", ackOperationId: input.operationId }; });
   const addEvent = vi.fn<AssistantTaskClient["addEvent"]>(async (taskId, input) => ({ id: input.id, taskId, targetBotId: input.targetBotId, type: input.type, payload: input.payload ?? null, state: "pending", attention: false, createdAt: new Date(clock.now()).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null }));
-  const api = { listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent } as unknown as AssistantTaskClient;
+  const relatedAppendix = vi.fn<AssistantTaskClient["relatedAppendix"]>(async () => ({ items: [], observedAt: new Date(clock.now()).toISOString() }));
+  const getItem = vi.fn<AssistantTaskClient["getItem"]>(async () => { throw new Error("Unexpected item read"); });
+  const api = { listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, relatedAppendix, getItem } as unknown as AssistantTaskClient;
   const sessionResult = (command: SessionCommand): SessionOperation => ({ protocol: SESSION_PROTOCOL, sessionId: command.sessionId, testExecutionId: command.testExecutionId!, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: "send_message", state: "confirmed", providerResult: "started", error: null });
   const send = vi.fn(async (_bot: BotRecord, command: SessionCommand, _signal: AbortSignal) => sessionResult(command));
   const readOperation = vi.fn(async (_bot: BotRecord, command: SessionCommand, _signal: AbortSignal) => sessionResult(command));
@@ -68,8 +74,9 @@ const fixture = async (botNumber = 3) => {
   const options: AssistantTaskRuntimeOptions = { owner, bots: () => [bot], stateDirectory: async () => stateDirectory, healthy, idle, withApi: async (_botId, _signal, action) => action(api), sessions: { send, readOperation }, onError, clock };
   const create = () => { const runtime = createAssistantTaskRuntime(options); runtimes.push(runtime); return runtime; };
   const event = (n: number): AssistantTaskEvent => ({ id: id(n), taskId: task.id, targetBotId: botId, type: "trigger", payload: { fact: `Event ${n}` }, state: "pending", attention: false, createdAt: new Date(start).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null });
-  return { owner, bot, scope, clock, create, options, event, claimResult, api, listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, send, readOperation, healthy, idle, onError, get task() { return task; }, set task(value) { task = value; }, get events() { return events; }, set events(value) { events = value; } };
+  return { owner, bot, scope, clock, create, options, event, claimResult, api, relatedAppendix, getItem, listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, send, readOperation, healthy, idle, onError, get task() { return task; }, set task(value) { task = value; }, get events() { return events; }, set events(value) { events = value; } };
 };
+const notificationOperation = (command: SessionCommand, state: SessionOperation["state"]): SessionOperation => ({ protocol: SESSION_PROTOCOL, sessionId: command.sessionId, testExecutionId: command.testExecutionId!, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: "send_message", state, providerResult: null, error: null });
 const application = (runtime: AssistantTaskRuntime) => {
   const started = deferred<AssistantApplicationContext>(), stopped = deferred();
   runtime.registerApplication("watchdog", context => { started.resolve(context); return new Promise<void>(resolve => { context.signal.addEventListener("abort", () => { stopped.resolve(); resolve(); }, { once: true }); }); });
@@ -77,6 +84,130 @@ const application = (runtime: AssistantTaskRuntime) => {
 };
 
 describe("assistant-task managed loops", () => {
+  it("confirms a queued notification within the same delivery turn without another scan or submission", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const tick = f.create().tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1], scans = f.listEvents.mock.calls.length;
+    f.clock.advance(999); expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled();
+    f.clock.advance(1); await tick;
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.listEvents).toHaveBeenCalledTimes(scans);
+    expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+    expect(f.clock.pending).toEqual([]); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["unknown", "failed"] as const)("retains a %s notification for original-operation recovery without fast polling", async state => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, state));
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled(); expect(f.clock.pending).toEqual([]);
+    const original = f.send.mock.calls[0]![1]; await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it("retains the submitted journal after a definite original receipt query failure", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    f.readOperation.mockRejectedValueOnce(new AssistantTaskSessionError(false, "request_failed"));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1]; f.clock.advance(1000); await tick;
+    expect(f.ackEvent).not.toHaveBeenCalled(); expect(f.onError).toHaveBeenCalledOnce();
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledTimes(2);
+    expect(f.readOperation.mock.calls.every(call => call[1].operationId === original.operationId)).toBe(true);
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it("retains the same submitted command when the fast receipt budget expires in flight", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const reading = deferred<AbortSignal>();
+    f.readOperation.mockImplementationOnce((_bot, _command, readSignal) => new Promise((_resolve, reject) => {
+      reading.resolve(readSignal); readSignal.addEventListener("abort", () => reject(readSignal.reason), { once: true });
+    }));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    f.clock.advance(1000); const readSignal = await reading.promise;
+    f.clock.advance(8999); expect(readSignal.aborted).toBe(false);
+    f.clock.advance(1); await tick;
+    expect(readSignal.aborted).toBe(true); expect(f.ackEvent).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith(expect.stringContaining("observation deadline expired"), f.bot.botId);
+    const original = f.send.mock.calls[0]![1]; await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledTimes(2);
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it.each(["Bot", "runtime"] as const)("joins %s stop during fast observation and recovers only the original command", async stopping => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1];
+    if (stopping === "Bot") await runtime.stopBot(f.bot.botId); else await runtime.shutdown();
+    await tick;
+    expect(f.clock.pending).toEqual([]); expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled();
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+
+  it("retains an application which outlives the stop budget and allows a later join", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred(), finish = deferred();
+    f.task.application = "watchdog";
+    let applicationSignal: AbortSignal | undefined;
+    runtime.registerApplication("watchdog", async context => { applicationSignal = context.signal; started.resolve(); await finish.promise; });
+    await runtime.tick("renew", signal()); await started.promise;
+    await expect(runtime.shutdown({ deadline: Date.now() })).rejects.toThrow("resource responsibility is retained");
+    expect(applicationSignal?.aborted).toBe(true);
+    expect(runtime.snapshot()).toMatchObject({ closed: true, applications: [{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }] });
+    const previousCalls = f.listTasks.mock.calls.length;
+    await runtime.tick("renew", signal());
+    expect(f.listTasks).toHaveBeenCalledTimes(previousCalls);
+    finish.resolve(); await runtime.shutdown();
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
+  it("joins detached guarded writes and rejects new actions after admission closes", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred<AssistantApplicationContext>();
+    f.task.application = "watchdog";
+    runtime.registerApplication("watchdog", async context => { started.resolve(context); });
+    await runtime.tick("renew", signal());
+    const context = await started.promise, entered = deferred(), release = deferred();
+    const guarded = context.withClaim(async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    let stopped = false;
+    const stopping = runtime.shutdown().then(() => { stopped = true; });
+    try {
+      await nextTurn();
+      expect(context.signal.aborted).toBe(true); expect(stopped).toBe(false);
+      expect(runtime.snapshot().applications).toEqual([{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }]);
+      const action = vi.fn(async () => undefined), previousReads = f.getTask.mock.calls.length;
+      await expect(context.withClaim(action)).rejects.toBeDefined();
+      expect(action).not.toHaveBeenCalled(); expect(f.getTask).toHaveBeenCalledTimes(previousReads);
+    } finally { release.resolve(); await guarded; await stopping; }
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
+  it("retains a timed-out detached guard until the original action settles", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred<AssistantApplicationContext>();
+    f.task.application = "watchdog";
+    runtime.registerApplication("watchdog", async context => { started.resolve(context); });
+    await runtime.tick("renew", signal());
+    const context = await started.promise, entered = deferred(), release = deferred();
+    const guarded = context.withClaim(async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    try {
+      await expect(runtime.shutdown({ deadline: Date.now() })).rejects.toThrow("resource responsibility is retained");
+      expect(runtime.snapshot().applications).toEqual([{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }]);
+    } finally { release.resolve(); await guarded; await runtime.shutdown(); }
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
   it("renews at 60-second boundaries and stops renewing when the Controller becomes unhealthy", async () => {
     const f = await fixture(), runtime = f.create(), abort = new AbortController();
     const running = runtime.run(abort.signal);
@@ -336,10 +467,11 @@ describe("assistant-task managed loops", () => {
     const guarded = original.withClaim(action).then(() => null, error => error);
     await entered.promise;
     try {
-      a.options.bots = () => [b.bot]; await runtime.tick("renew", signal());
-      const current = contexts[1]!;
-      expect(original.signal.aborted).toBe(true); expect(current.signal.aborted).toBe(false);
+      a.options.bots = () => [b.bot]; const renewal = runtime.tick("renew", signal());
+      await vi.waitFor(() => expect(original.signal.aborted).toBe(true));
+      expect(contexts).toHaveLength(1);
       release.resolve(); expect(await guarded).toBeInstanceOf(Error);
+      await renewal; const current = contexts[1]!;
       expect(action).not.toHaveBeenCalled(); expect(current.signal.aborted).toBe(false);
       await current.withClaim(action); expect(action).toHaveBeenCalledOnce();
     } finally { release.resolve(); await guarded; }
@@ -510,6 +642,51 @@ describe("assistant-task managed loops", () => {
     expect(text).toContain("不用当前认领时间替代历史事件时间");
   });
 
+  it("attaches related experience for the delivered events and replays the same command without querying again", async () => {
+    const f = await fixture(), item = id(60);
+    f.events = [{ ...f.event(51), type: "retrospective", payload: { reason: "item_closed", itemId: item, episode: "1" } }, f.event(52)];
+    f.getItem.mockResolvedValue({ id: item, taskId: f.task.id, key: "k", episode: "1", state: "closed", category: "billing", followerBotId: null, appState: null, version: "2", createdAt: new Date(start).toISOString(), updatedAt: new Date(start).toISOString() });
+    f.relatedAppendix.mockImplementation(async (_taskId, query) => ({ items: query?.eventType === "retrospective" ? [{ id: id(70), taskId: f.task.id, text: `Retry ${"汉".repeat(800)}`, sourceRecords: [], authorBotId: null, state: "active", version: "1", createdAt: new Date(start).toISOString(), updatedAt: new Date(start).toISOString() }] : [], observedAt: new Date(start).toISOString() }));
+    f.send.mockRejectedValueOnce(new AssistantTaskSessionError(true, "request_failed"));
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.relatedAppendix.mock.calls).toEqual([[f.task.id, { eventType: "retrospective", itemCategory: "billing" }], [f.task.id, { eventType: "trigger" }]]);
+    const original = f.send.mock.calls[0]![1];
+    if (original.kind !== "send_message") throw new Error("Wrong notification kind");
+    const text = original.payload.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+    const line = text.split("\n").find(value => value.startsWith(`- 附录 ${id(70)}：`))!;
+    expect(Buffer.byteLength(line.slice(line.indexOf("：") + 1))).toBeLessThanOrEqual(1024);
+    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${f.task.id} --event-type=retrospective --category=billing`);
+    expect(text.indexOf("相关经验")).toBeLessThan(text.indexOf("处理以上事件前"));
+    await f.create().tick("delivery", signal());
+    expect(f.relatedAppendix).toHaveBeenCalledTimes(2); expect(f.readOperation).toHaveBeenCalledWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("delivers and acknowledges the batch without experience when the related query fails", async () => {
+    const f = await fixture(), runtime = f.create(); f.events = [f.event(51)];
+    f.relatedAppendix.mockRejectedValue(new AssistantTaskApiError(false, "server_error", 503));
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce(); expect(f.onError).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain("相关经验");
+  });
+
+  it("sends the batch without experience once a stalled experience read reaches the time budget", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(start);
+    const reading = deferred<AbortSignal>();
+    f.options.withApi = async (_botId, readSignal, action) => { const result = action(f.api); if (f.relatedAppendix.mock.calls.length) reading.resolve(readSignal); return result; };
+    f.relatedAppendix.mockImplementation(() => new Promise(() => undefined));
+    const tick = f.create().tick("delivery", signal());
+    const readSignal = await reading.promise;
+    await vi.advanceTimersByTimeAsync(EXPERIENCE_TIME_MS - 1);
+    expect(f.send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await tick;
+    expect(readSignal.aborted).toBe(true);
+    expect(f.relatedAppendix).toHaveBeenCalledOnce(); expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain("相关经验");
+  });
+
   it("only queries a durable unknown Session submission after runtime reconstruction", async () => {
     const f = await fixture(); f.events = [f.event(51), f.event(52)];
     f.send.mockRejectedValueOnce(new AssistantTaskSessionError(true, "request_failed"));
@@ -554,6 +731,95 @@ describe("assistant-task managed loops", () => {
     expect(f.onError).not.toHaveBeenCalled();
   });
 
+  it("delivers an inbound backlog across idle turns without blocking a later assistant task event", async () => {
+    const f = await fixture(), runtime = f.create(), body = "y".repeat(4096);
+    const inbound = (n: number): AssistantTaskEvent => ({ ...f.event(n), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 4096, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.events = [...Array.from({ length: 12 }, (_, index) => inbound(100 + index)), f.event(60)];
+    f.ackEvent.mockImplementation(async (_taskId, eventId, input) => {
+      const index = f.events.findIndex(event => event.id === eventId);
+      const delivered: AssistantTaskEvent = { ...f.events[index]!, state: "delivered", ackOperationId: input.operationId };
+      f.events[index] = delivered; return delivered;
+    });
+    await runtime.tick("delivery", signal());
+    const first = f.ackEvent.mock.calls.map(call => call[1]);
+    expect(f.send).toHaveBeenCalledOnce(); expect(first).toContain(id(60)); expect(first.length).toBeLessThan(13);
+    const text = (n: number) => { const command = f.send.mock.calls[n]![1]; if (command.kind !== "send_message") throw new Error("Wrong notification kind"); return command.payload.content.map(part => part.type === "text" ? part.text : "").join(""); };
+    expect(text(0)).toContain("untrusted-external-data"); expect(text(0)).toContain(`daynight assistant-task manual show ${f.task.id}`);
+    expect(f.events.filter(event => event.state === "pending").map(event => event.id)).toEqual(Array.from({ length: 13 - first.length }, (_, index) => id(100 + first.length - 1 + index)));
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.events.every(event => event.state === "delivered")).toBe(true);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[1])).size).toBe(13);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("selects other events before paging inbound events and stops inbound reads at the inbound budget", async () => {
+    const f = await fixture(), runtime = f.create(), body = "y".repeat(4096);
+    const inbound = (n: number): AssistantTaskEvent => ({ ...f.event(n), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 4096, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.events = [...Array.from({ length: 40 }, (_, index) => inbound(100 + index)), f.event(60)];
+    const send = f.send.getMockImplementation()!;
+    let selection: (AssistantTaskEventQuery | undefined)[] = [];
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selection = f.listEvents.mock.calls.map(([, query]) => query); return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    const acked = f.ackEvent.mock.calls.map(call => call[1]), admitted = acked.length - 1;
+    expect(acked).toContain(id(60)); expect(admitted).toBeGreaterThan(0); expect(admitted).toBeLessThan(40);
+    expect(acked.filter(eventId => eventId !== id(60))).toEqual(Array.from({ length: admitted }, (_, index) => id(100 + index)));
+    // One read returns the only non-inbound event; inbound reads end at the first deferred event.
+    expect(selection[0]).toEqual({ state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 });
+    expect(selection.slice(1)).toHaveLength(admitted + 1);
+    expect(selection.slice(1).every(query => query?.type === "inbound" && query.excludeType === undefined)).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("leaves inbound events of a paused task pending while other events are delivered", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.task = { ...f.task, state: "paused" };
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52)]);
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain(id(51));
+    expect(f.listEvents.mock.calls.map(([, query]) => query)).toEqual([
+      { state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 },
+      { state: "pending", targetBotId: f.bot.botId, type: "inbound", limit: 1 },
+    ]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a delivered inbound event after its task is paused", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!;
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; f.task = { ...f.task, state: "paused" }; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51)]);
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges delivered inbound events without reading a paused task's inbound backlog", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    const inbound = (n: number, taskId: string): AssistantTaskEvent => ({ ...f.event(n), taskId, type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.task = { ...f.task, state: "paused" };
+    f.events = [...Array.from({ length: 5 }, (_, index) => inbound(100 + index, f.task.id)), inbound(51, id(12)), f.event(52)];
+    const send = f.send.getMockImplementation()!;
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52), id(51)]);
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
+    expect(f.events.filter(event => event.taskId === f.task.id).every(event => event.state === "pending")).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("rejects an event page that conflicts with its type filter", async () => {
+    const f = await fixture(), runtime = f.create();
+    f.events = [f.event(51)];
+    f.listEvents.mockImplementationOnce(async () => ({ items: [{ ...f.event(51), type: "inbound" }], nextCursor: null, observedAt: new Date(f.clock.now()).toISOString() }));
+    await runtime.tick("delivery", signal());
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith("Assistant event page conflicts with its target, state or type filter.", f.bot.botId);
+  });
+
   it("queries and acknowledges only pending events for the local Bot", async () => {
     const f = await fixture(), runtime = f.create();
     f.events = [f.event(51), { ...f.event(52), targetBotId: id(90) }, { ...f.event(53), state: "delivered" }];
@@ -596,7 +862,74 @@ describe("assistant-task managed loops", () => {
     expect(f.readOperation.mock.calls.every(call => call[1].operationId === original.operationId)).toBe(true);
   });
 
-  it("recovers a lost ACK response by reading event state without sending or acknowledging it twice", async () => {
+  it("acknowledges journaled events directly without reading another task's pending backlog", async () => {
+    const f = await fixture(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
+      f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
+      // A later backlog of another task, whose reads would fail, must not hold the journal.
+      f.events = [...f.events, ...Array.from({ length: 5 }, (_, index) => ({ ...f.event(100 + index), taskId: id(12) }))];
+      f.listEvents.mockRejectedValue(new Error("ACK recovery must not page pending events"));
+      return { ...f.events[0]!, state: "delivered", ackOperationId: input.operationId };
+    });
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(true, "request_failed"));
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.onError).toHaveBeenCalledOnce();
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
+    // The retained journal replays its ACKs with the original operation, which the server answers idempotently.
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
+    expect(f.onError).toHaveBeenCalledOnce();
+  });
+
+  it.each(["invalid_transition", "operation_conflict", "task_deleted", "not_found"])("settles a journaled event that a confirmed %s refusal shows is no longer pending", async code => {
+    const f = await fixture(), runtime = f.create(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(false, code, code === "not_found" ? 404 : 409));
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["transfer", "takeover"])("settles a journaled inbound event retargeted by a %s between Session acceptance and ACK", async kind => {
+    const f = await fixture(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!, ack = f.ackEvent.getMockImplementation()!;
+    // The server retargets pending inbound events to the new holder and adds claim_lost for the previous one.
+    f.send.mockImplementationOnce(async (bot, command, abort) => {
+      const result = await send(bot, command, abort);
+      f.events = [...f.events.map(event => event.type === "inbound" ? { ...event, targetBotId: id(90) } : event), { ...f.event(52), type: "claim_lost", payload: { reason: kind } }];
+      return result;
+    });
+    f.ackEvent.mockImplementation(async (taskId, eventId, input) => {
+      if (f.events.find(event => event.id === eventId)!.targetBotId !== f.bot.botId) throw new AssistantTaskApiError(false, "forbidden", 403, true);
+      return ack(taskId, eventId, input);
+    });
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.listEvents.mock.calls.at(-1)).toEqual([f.task.id, { state: "pending", targetBotId: f.bot.botId, limit: 1 }]);
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.send.mock.calls[1]![1])).toContain(id(52));
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the journal when the task read also refuses the Bot identity after a forbidden ACK", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    const list = f.listEvents.getMockImplementation()!;
+    f.ackEvent.mockRejectedValue(new AssistantTaskApiError(false, "forbidden", 403, true));
+    f.listEvents.mockImplementation(async (taskId, query) => { if (taskId !== undefined) throw new AssistantTaskApiError(false, "forbidden", 403, true); return list(taskId, query); });
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    f.events = [...f.events, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51)]);
+    expect(f.listEvents.mock.calls.filter(([taskId]) => taskId !== undefined)).toHaveLength(2);
+    expect(f.onError).toHaveBeenCalledTimes(2);
+    expect(f.onError.mock.calls.every(([message]) => String(message).includes("(forbidden)"))).toBe(true);
+  });
+
+  it("replays a lost ACK response with its original operation without sending the notification again", async () => {
     const f = await fixture(); f.events = [f.event(51), f.event(52)];
     f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
       f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
@@ -605,8 +938,8 @@ describe("assistant-task managed loops", () => {
     const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
     await f.create().tick("delivery", signal());
     expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
-    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
-    expect(f.ackEvent.mock.calls[0]![2].operationId).toBe(f.ackEvent.mock.calls[1]![2].operationId);
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
   });
 
   it.each(["interval", "daily"])("does not duplicate a due %s event after runtime reconstruction", async kind => {

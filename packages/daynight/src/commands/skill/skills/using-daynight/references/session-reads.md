@@ -7,7 +7,9 @@ or resume Agents, take control, change claims or alter Task state.
 ## Observations
 
 Goals have Session registration `not_applicable`; this is a complete observation,
-not a partial failure.
+not a partial failure. Missing `session:read` on an implicit Task observation
+produces a permission notice and a successful Task query; other partial
+observations retain their failure status.
 
 Ordinary `task list`, `task show` and `task graph` include a versioned `session`,
 not history. Identify it by owning Project, Task and platform `sessionId`, never
@@ -55,6 +57,7 @@ daynight task graph <displayTaskId> --json --project <project-id>
 ```bash
 daynight task session current TASK --project PROJECT --json
 daynight task session list TASK --project PROJECT --limit 20 --json
+daynight task session list TASK --project PROJECT --directory-version 1 --json
 daynight task session show TASK SESSION --project PROJECT --json
 ```
 
@@ -66,6 +69,15 @@ platform `sessionId`; historical reads keep that Session even after a new claim.
 | `current` | `registered`, `not_registered` or `not_applicable`; null `session` never selects historical content. |
 | `list` | One directory page with each item's `currentBinding` and archive facts. Continue only as needed using `nextCursor` unchanged as `--cursor TOKEN`. |
 | `show` | Selected execution fence, `currentBinding`, `source` (`live`, `archive` or `unavailable`) and `session` observation. Apply [freshness and eligibility rules](#observations). |
+
+Default `list` retains the legacy endpoint and JSON. `--directory-version 1`
+requires the separate directory's version-1 capability and returns exact string
+`graphVersion`, `observedAt`, archive/retention state, reason and nullable expiry
+times. Keep that option when passing its `nextCursor`; never mix legacy and
+versioned cursors. A directory `reset_required` requires starting again without
+a cursor. Unsupported services, invalid responses and permission refusals do not
+fall back to the legacy directory. Pending and expired rows preserve the original
+Session; `show` and `read` continue using that explicit identity.
 
 ## Read history on demand
 
@@ -115,7 +127,7 @@ controls, preserving line breaks but not the original byte stream.
 | `reset_required` | Discard page/block cursors and restart the same explicit Session; never combine live/archive pages. |
 | `content_changed` | Discard that entry's accumulated blocks; read a fresh page for a new content reference. |
 | `upgrade_required` or `unsupported` | Upgrade the applicable service/Controller; old services report unsupported with upgrade guidance. Display-budget placeholders cannot replace originals. |
-| `history_pending` or `history_unavailable` | Error, not empty history. Preserve unavailability and inspect the same Session. |
+| `history_pending` or `history_unavailable` | Error, not empty history. Preserve unavailability and inspect the same Session. A confirmed expiry message reports deleted history explicitly; no replacement Session is selected. |
 | `source_corrupt` | Preserve the integrity failure; partial bytes are not a valid archive. |
 | `forbidden` or `unauthenticated` | Stop and restore authorization; no bypass through Worker files, SSH or cached content. |
 | `unsupported_mode` | Herdr supports state inspection only. |

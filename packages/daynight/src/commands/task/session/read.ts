@@ -7,7 +7,7 @@ import { PublicDiagnosticError } from "../../../platform/diagnostics.js";
 import type { TaskCommandDependencies } from "../command.js";
 import type { TaskSessionCommand } from "./registry.js";
 import { SessionReadCommandError } from "./read-diagnostics.js";
-import { renderTaskSessionChunk, renderTaskSessionCurrent, renderTaskSessionDirectory, renderTaskSessionInspection, renderTaskSessionPage } from "./read-rendering.js";
+import { renderTaskSessionChunk, renderTaskSessionCurrent, renderTaskSessionDirectory, renderTaskSessionInspection, renderTaskSessionPage, renderTaskSessionHistoryDirectory } from "./read-rendering.js";
 
 const parseId = (value: string, label: string, help: string): string => {
   const parsed = canonicalId(value);
@@ -35,6 +35,8 @@ export const run = async (command: TaskSessionCommand, context: CliContext, depe
     const cursor = parseCursor(command.options.get("--cursor") as string | undefined, help);
     const before = parseCursor(command.options.get("--before") as string | undefined, help);
     const conversation = command.options.has("--conversation"), json = command.options.has("--json");
+    const directoryVersion = command.options.get("--directory-version");
+    if (directoryVersion !== undefined && directoryVersion !== "1") throw new UsageError("--directory-version must be 1; omit it to use the legacy directory.", help);
     await dependencies.runServerCommand(context, async ({ api, operation, serverUrl }) => {
       operation.check();
       if (projectId === undefined) projectId = (await dependencies.resolveProject({ serverUrl, api, operation, workingDirectory: context.workingDirectory() })).id;
@@ -46,8 +48,14 @@ export const run = async (command: TaskSessionCommand, context: CliContext, depe
         partial = current.session !== null && taskObservationPartial(current.session.session);
         phase = "render"; output = json ? "" : renderTaskSessionCurrent(current, projectId, taskId!);
       } else if (name === "list") {
-        const directory = await api.listTaskSessions(projectId, taskId!, { limit, ...(cursor === undefined ? {} : { cursor }) }); value = directory;
-        phase = "render"; output = json ? "" : renderTaskSessionDirectory(directory, projectId, taskId!, limit);
+        const query = { limit, ...(cursor === undefined ? {} : { cursor }) };
+        if (directoryVersion === "1") {
+          const directory = await api.listTaskSessionHistoryDirectory(projectId, taskId!, query); value = directory;
+          phase = "render"; output = json ? "" : renderTaskSessionHistoryDirectory(directory, projectId, taskId!, limit);
+        } else {
+          const directory = await api.listTaskSessions(projectId, taskId!, query); value = directory;
+          phase = "render"; output = json ? "" : renderTaskSessionDirectory(directory, projectId, taskId!, limit);
+        }
       } else if (name === "show") {
         const inspection = await api.inspectTaskSession(projectId, taskId!, sessionId!); value = inspection;
         partial = taskObservationPartial(inspection.session);

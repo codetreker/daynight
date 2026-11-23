@@ -8,7 +8,7 @@ import { createOperation } from "../../../../src/api/operation.js";
 import { ApiError } from "../../../../src/api/client.js";
 import { resolveConfigurationPaths } from "../../../../src/config/paths.js";
 import { BotEnvironmentCleanupError, prepareBotEnvironment, prepareBotStateDirectory } from "../../../../src/commands/worker/bots/environment.js";
-import { HerdrCommandError, runHerdrCommand, type HerdrCommand } from "../../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandError, runOwnedCommand, type OwnedCommand } from "../../../../src/commands/worker/owned-command.js";
 
 import { BotCliProbeCleanupError } from "../../../../src/commands/worker/bots/cli-probe.js";
 
@@ -31,7 +31,7 @@ const fixture = async () => {
   const environment: NodeJS.ProcessEnv = { ...process.env, HOME: homeDirectory, CODEX_HOME: path.join(homeDirectory, "native-codex"), DN_CONFIG_DIR: path.join(root, "wrong-config"), DAYNIGHT_CONTROLLER_TOKEN: "fixture-relay-secret" };
   const options = { homeDirectory, cwd, workerPaths, serverOrigin, ownerUserId: owner, botId: other, environment, signal: new AbortController().signal };
   const fetch = vi.fn<typeof globalThis.fetch>(async () => userResponse());
-  const runCommand = vi.fn(async (command: HerdrCommand) => ({ stdout: `Usage: daynight ${command.args.slice(0, -1).join(" ")} [--json]\n`, stderr: "" }));
+  const runCommand = vi.fn(async (command: OwnedCommand) => ({ stdout: `Usage: daynight ${command.args.slice(0, -1).join(" ")} [--json]\n`, stderr: "" }));
   return { root, config, options, dependencies: { fetch, runCommand }, fetch, runCommand };
 };
 afterEach(async () => {
@@ -145,7 +145,7 @@ describe("Bot CLI environment preparation", () => {
 
   it("does not expose child stderr through failure causes", async () => {
     const f = await fixture();
-    f.runCommand.mockRejectedValue(new HerdrCommandError("private-secret-in-message", 1, null, "private-secret-in-stderr"));
+    f.runCommand.mockRejectedValue(new OwnedCommandError("private-secret-in-message", 1, null, "private-secret-in-stderr"));
     try { await prepareBotEnvironment(f.options, f.dependencies); throw new Error("Expected refusal"); }
     catch (error) {
       expect(error).toBeInstanceOf(Error);
@@ -172,7 +172,7 @@ describe("Bot CLI environment preparation", () => {
     const main = path.resolve(import.meta.dirname, "../../../../dist/main.js");
     const prepared = await prepareBotEnvironment(f.options, {
       fetch: f.fetch,
-      runCommand: (command, operation) => runHerdrCommand({ ...command, file: process.execPath, args: [main, ...command.args] }, operation),
+      runCommand: (command, operation) => runOwnedCommand({ ...command, file: process.execPath, args: [main, ...command.args] }, operation),
     }); resources.push(prepared);
     expect(prepared.environment.HOME).toBe(f.options.homeDirectory);
     await expect(stat(path.join(f.options.cwd, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -186,13 +186,15 @@ describe("Bot CLI environment preparation", () => {
     await f.config(`agentCliAliases:\n  daynight: ${JSON.stringify(executable)}\n`);
     const prepared = await prepareBotEnvironment(f.options, { fetch: f.fetch }); resources.push(prepared);
     expect(prepared.bindings[0]?.target).toBe(executable);
+    expect(prepared.environment.DN_CONFIG_DIR).toBe(f.options.workerPaths.stateDirectory);
+    expect(path.dirname(prepared.aliasDirectory!)).toBe(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"));
     expect(prepared.environment.PATH).toBe(`${prepared.aliasDirectory}${path.delimiter}${f.options.environment.PATH}`);
     expect((await stat(prepared.aliasDirectory!)).isDirectory()).toBe(true);
     await prepared.release(); await prepared.release();
     await expect(stat(prepared.aliasDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
     f.runCommand.mockRejectedValue(new Error("missing executable"));
     await expect(prepareBotEnvironment(f.options, f.dependencies)).rejects.toThrow(/CLI capability/);
-    expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "agent-cli-aliases"))).toEqual([]);
+    expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"))).toEqual([]);
   }, 30_000);
 
   it("joins a cancelled CLI probe and propagates cancellation", async () => {
@@ -201,7 +203,7 @@ describe("Bot CLI environment preparation", () => {
       fetch: f.fetch,
       runCommand: (command, operation) => {
         setTimeout(() => controller.abort(new Error("cancelled-probe")), 30);
-        return runHerdrCommand({ ...command, file: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] }, operation);
+        return runOwnedCommand({ ...command, file: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] }, operation);
       },
     });
     await expect(pending).rejects.toThrow(/cancel/);
@@ -213,7 +215,7 @@ describe("Bot CLI environment preparation", () => {
       fetch: f.fetch,
       runCommand: async command => {
         const operation = createOperation({ limits: { totalMs: 2000, requestMs: 30 } });
-        try { return await runHerdrCommand({ ...command, file: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] }, operation); }
+        try { return await runOwnedCommand({ ...command, file: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] }, operation); }
         finally { operation.dispose(); }
       },
     })).rejects.toThrow(/CLI capability/);
@@ -281,7 +283,7 @@ describe("Bot CLI environment preparation", () => {
       await expect(prepareBotEnvironment(f.options, { fetch: f.fetch })).rejects.toThrow(/advertise/);
       const pids = await readPids(); expect(pids.length).toBeGreaterThan(0);
       expect(await Promise.all(pids.map(live))).toEqual(pids.map(() => false));
-      expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "agent-cli-aliases"))).toEqual([]);
+      expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"))).toEqual([]);
     } finally {
       for (const pid of await readPids().catch(() => [])) if (await live(pid)) {
         try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }

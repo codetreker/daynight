@@ -3,7 +3,7 @@ import { TaskChainDialog } from './TaskChainDialog';
 import { GoalGraphDialog } from './GoalGraphDialog';
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from '../projects/project-graph-target';
 
-type ProjectListGraphHostProps = Omit<ComponentProps<typeof TaskChainDialog>, 'onNavigateExternalTask' | 'rootId'> & {
+type ProjectListGraphHostProps = Omit<ComponentProps<typeof TaskChainDialog>, 'onNavigateExternalTask' | 'rootId' | 'witnessTaskId' | 'usageMode'> & {
   readonly target: ProjectGraphTarget;
   readonly onOpenGoalTask?: (id: string, trigger: HTMLElement) => void;
   readonly graphError?: unknown;
@@ -22,5 +22,5 @@ export const ProjectListGraphHost = ({ target, onOpenChain, onNavigateExternalTa
     }
   }, [dialog.index, dialog.onClose, dialog.onOpenTask, onOpenChain, onNavigateExternalTask]);
   if (target.kind === 'goal') return dialog.summaries === undefined ? null : <GoalGraphDialog {...dialog} summaries={dialog.summaries} goalId={target.goalId} onOpenTask={onOpenGoalTask ?? dialog.onOpenTask} graphError={graphError} {...(onRefreshGraph === undefined ? {} : { onRefreshGraph })} />;
-  return <TaskChainDialog {...dialog} rootId={target.rootId} onNavigateExternalTask={navigateExternalTask} />;
+  return <TaskChainDialog {...dialog} rootId={target.rootId} witnessTaskId={target.witnessTaskId} usageMode="hidden" onNavigateExternalTask={navigateExternalTask} />;
 };

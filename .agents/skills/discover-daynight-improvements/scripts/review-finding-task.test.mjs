@@ -17,6 +17,7 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(scratch, "review "));
   t.after(() => rm(root, { recursive: true, force: true }));
   const files = {
+    "summary.md": "修复底部操作区换行。见[任务定义](task.md)。\n",
     "task.md": "# 底部操作区换行\n\n[原型](prototype.html)\n![证据](evidence/idle/screen.png)\n",
     "prototype.html": "<!doctype html><button type=button>Send</button>",
     "evidence/idle/evidence.json": JSON.stringify({ format: "daynight-ui-evidence-v1", status: "consistent", mode: "screenshot", artifact: { kind: "screenshot", path: "screen.png", compositorScreenshot: true } }),
@@ -26,11 +27,11 @@ async function fixture(t) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), content);
   }
-  const manifest = { format: "daynight-finding-v1", title: "底部操作区换行", description: "task.md", prototype: "prototype.html", evidence: ["evidence/idle/evidence.json"] };
+  const manifest = { format: "daynight-finding-v1", title: "底部操作区换行", description: "summary.md", prototype: "prototype.html", evidence: ["evidence/idle/evidence.json"], supportingFiles: ["task.md"] };
   await writeFile(path.join(root, "finding.json"), JSON.stringify(manifest));
   const remote = {
-    task: { id: task, title: manifest.title, description: files["task.md"], version: 3, status: "todo", allowAgents: false, assignedTo: user, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [] },
-    attachments: new Map(Object.entries(files).filter(([name]) => name !== "task.md").map(([name, content]) => [name, Buffer.from(content)])),
+    task: { id: task, title: manifest.title, description: files["summary.md"], version: 3, status: "todo", allowAgents: false, assignedTo: user, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [] },
+    attachments: new Map(Object.entries(files).filter(([name]) => name !== "summary.md").map(([name, content]) => [name, Buffer.from(content)])),
   };
   const calls = [];
   const run = async (args) => {
@@ -54,7 +55,7 @@ test("matches a registered task with its package using only read commands", asyn
   assert.equal(report.description, "match");
   assert.equal(report.assignee, "match");
   assert.deepEqual(report.attachments.map((item) => [item.path, item.status]), [
-    ["evidence/idle/evidence.json", "match"], ["evidence/idle/screen.png", "match"], ["prototype.html", "match"],
+    ["evidence/idle/evidence.json", "match"], ["evidence/idle/screen.png", "match"], ["prototype.html", "match"], ["task.md", "match"],
   ]);
   assert.deepEqual(report.unresolvedLinks, []);
   for (const args of f.calls) assert.ok(["show", "attachment"].includes(args[1]) && (args[1] === "show" || ["list", "read"].includes(args[2])), args.join(" "));
@@ -73,7 +74,30 @@ test("reports differing bytes, missing attachments, descriptions and assignees",
   assert.equal(report.assignee, "differs");
   assert.equal(report.attachments.find((item) => item.path === "prototype.html").status, "differs");
   assert.equal(report.attachments.find((item) => item.path === "evidence/idle/screen.png").status, "missing");
-  assert.deepEqual(report.unresolvedLinks, ["evidence/idle/screen.png"]);
+  assert.deepEqual(report.unresolvedLinks, []);
+});
+
+test("requires the complete task definition attachment and compares it independently of the summary", async (t) => {
+  const f = await fixture(t);
+  const definition = f.remote.attachments.get("task.md");
+  f.remote.attachments.delete("task.md");
+  let report = await reviewFindingTask(f.file, { run: f.run, project, task });
+  assert.equal(report.ok, false);
+  assert.equal(report.description, "match");
+  assert.equal(report.attachments.find((item) => item.path === "task.md").status, "missing");
+  assert.deepEqual(report.unresolvedLinks, ["task.md"]);
+
+  f.remote.attachments.set("task.md", Buffer.from("# Different task definition\n"));
+  report = await reviewFindingTask(f.file, { run: f.run, project, task });
+  assert.equal(report.ok, false);
+  assert.equal(report.attachments.find((item) => item.path === "task.md").status, "differs");
+
+  f.remote.attachments.set("task.md", definition);
+  f.remote.task.description = definition.toString("utf8");
+  report = await reviewFindingTask(f.file, { run: f.run, project, task });
+  assert.equal(report.ok, false);
+  assert.equal(report.description, "differs");
+  assert.equal(report.attachments.find((item) => item.path === "task.md").status, "match");
 });
 
 test("lists attachments added after registration without failing the review", async (t) => {

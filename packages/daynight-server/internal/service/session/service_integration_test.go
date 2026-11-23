@@ -10,7 +10,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
@@ -36,7 +35,7 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	user := testsupport.ServicePrincipal(t, db)
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'session test',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
+	if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'session test',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	owner := model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: pat}
@@ -207,48 +206,5 @@ func TestServiceTestSessionRegistrationAndRevocation(t *testing.T) {
 	}
 	if _, err = s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err == nil {
 		t.Fatal("revoked controller remained active")
-	}
-}
-
-func TestServiceTerminalAndArchiveAdmission(t *testing.T) {
-	f := newServiceFixture(t)
-	ctx := context.Background()
-	s := f.service
-	s.SetOrigin("https://daynight.example")
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{agentControlMode}','"herdr"')::text WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	pane := "pane"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: f.registration.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: f.project, TaskID: f.task, WorkerID: f.registration.WorkerID, WorktreeID: f.registration.WorktreeID, OwnerUserID: f.owner.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}, Binding: v2.Binding{InstanceID: "instance", SessionID: "herdr", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_one"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	if _, err := s.RegisterTerminal(ctx, f.owner, f.project, f.task, m); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RegisterTerminal(ctx, f.owner, f.project, f.task, m); err != nil {
-		t.Fatal(err)
-	}
-	current, err := s.CurrentTerminal(ctx, f.owner, f.project, f.task)
-	if err != nil || current["status"] != "registered" {
-		t.Fatalf("current: %v %v", current, err)
-	}
-	if _, err = s.TerminalHistory(ctx, f.owner, f.project, f.task, "", 10); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.TerminalState(ctx, f.owner, f.project, f.task, m.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.TerminalArchiveStatus(ctx, f.owner, f.project, f.task, m.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = s.TerminalState(ctx, f.owner, f.project, f.task, uuid.NewString())
-	requireServiceError(t, err, "not_found")
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.TerminalArchiveState(ctx, f.owner, f.project, f.task, m.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	other := testsupport.ServicePrincipal(t, f.db)
-	if _, err = s.TerminalArchiveState(ctx, other, f.project, f.task, m.SessionID); err == nil {
-		t.Fatal("foreign finalizer accepted")
 	}
 }

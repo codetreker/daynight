@@ -6,9 +6,79 @@ status are separate; an active claim identifies execution, not extra authority.
 Determine assignment from the Task, Worker, claim, worktree and original runtime,
 not status or directory alone.
 
+Current execution monitoring uses direct POST with fresh observations; it does not
+read or replay an earlier snapshot. Deploy a compatible Server before upgrading a
+Worker. A monitoring failure does not establish that execution or cleanup stopped.
+
+## Disable, observe and resume a Worker
+
+Use the original machine, `DN_CONFIG_DIR`, service and Worker identity. These
+commands manage the whole Worker's admission; they do not replace Task pause,
+claim release or native Session recovery commands.
+
+```bash
+daynight worker disable --worker-id <uuid> --local --confirm --json
+daynight worker lifecycle show --worker-id <uuid> --local --json
+daynight worker resume --worker-id <uuid> --confirm --json
+```
+
+Local disable persists a veto before waking the original manager. It works
+without waiting for cloud intent, but failure to contact the service can leave
+`sync` pending. The manager closes execution admission, joins producers and stops
+original native resources while retaining claims, worktrees, Sessions and unknown
+operations. It does not send cleanup prompts, release claims or alter Git files.
+Stopped management does not run capability probes, assistant renewal, takeover
+or delivery loops.
+
+`show` is a local read, including the retained resource inventory. Inspect
+`operationId`, `localEpoch`, `intentVersion`, `phase`, `stop`, `save`, `sync`,
+`inventoryComplete`, `resources` and `errorCode`. Describe local stop as confirmed
+only with complete inventory, `stop=confirmed` and `save=durable`; report cloud
+synchronization separately. A successful query, accepted IPC request or absent PID
+is not stop evidence. Transition commands report `outcome`; `pending` exits 3 and
+`blocked` exits 1. Preserve the original result and query it after uncertainty.
+
+Resume needs online service authority, original stop/save evidence and explicit
+activation. It reopens admission for a fresh execution scope while preserving
+independent Task pauses, permissions, recovery budgets and original native
+identities. Missing evidence prevents recovery; initial prompts and unknown
+requests are not replayed. Without a live manager, an available original instance
+lock permits management only, never a background execution scope or lock takeover.
+Use normal foreground `worker run` when execution is required.
+
+Unknown assistant event, record, item, answer or attention writes without an
+original-operation result protocol remain unknown. Matching text, an existing
+resource, HTTP 404 or a failed permission check cannot establish non-submission
+or success. Do not delete the private lifecycle database, create a replacement
+Worker or submit another write to hide that responsibility.
+
+## Legacy Bot storage migration
+
+Explicitly authorized migration moves one stopped original Bot's Worker and
+Controller records into its dedicated directory. Stop the original Worker and
+assistant execution first; unknown process state or an occupied lock refuses
+migration rather than terminating a process.
+
+```bash
+daynight worker migrate-bot <bot-id> --confirm
+daynight worker migrated-bot-history <bot-id> --json
+```
+
+The command verifies the configured service, authenticated account, original
+Worker and Bot. It snapshots committed SQLite/WAL data and owned resources,
+retaining original tickets, Session IDs and unresolved operations. Durable
+phases and the source transaction's receipt distinguish copied data from a
+committed transfer. After an interruption, inspect the original result and
+identity before continuing the same migration; do not create a replacement Bot.
+
+Local completion leaves recovery registration pending. It grants no remote
+execution authority and proves no Provider resume. The history command reads
+the verified copy without starting an Agent. Source evidence, ordinary working
+directories and shared Provider homes are not implicitly deleted.
+
 ## Tool path configuration
 
-Worker-level choices cover `codex`, `copilot` and `herdr`; they do not configure
+Worker-level choices cover `codex` and `copilot`; they do not configure
 independent Controllers, other Workers or the Agent's own command aliases.
 Identify the intended Worker, machine and service before changing a path.
 
@@ -21,7 +91,6 @@ worker:
   toolPaths:
     codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
     copilot: null
-    herdr: /opt/homebrew/bin/herdr
 ```
 
 Each value is an absolute file path on the Worker machine, or `null` for automatic
@@ -37,7 +106,7 @@ the intended Worker → Configuration → Tool launch paths**. Expand the sectio
 path and use the panel's normal Save or Cancel action. **Restore automatic** is
 explicit: clearing the input is not a reset. Cloud automatic discovery does not
 reactivate an old local path. Editing local YAML after adoption does not replace
-the cloud target. An older service without this capability retains local choices.
+the cloud target. A service using the older tool-path protocol requires an upgrade.
 
 Tool paths are editable only when the service and Worker report support. A
 previously supported Worker may be offline while a cloud target is saved; it has
@@ -50,21 +119,19 @@ There is no `daynight config` or `daynight worker config` command for this edit.
 
 | Tool and execution mode | Automatic source |
 | --- | --- |
-| Codex, Web or Herdr | Captured Worker command environment (`PATH`) |
+| Codex | Captured Worker command environment (`PATH`) |
 | Copilot, Web Tasks and Worker assistants | Runtime bundled with this Daynight installation |
-| Copilot, Herdr | Captured Worker command environment (`PATH`) |
-| Herdr | Captured Worker command environment (`PATH`) |
 
 An explicit path selects that installation and never silently falls back to
 `PATH` or the bundled runtime. Version/capability checks and execution use the
 same verified selection. Web Copilot still uses Daynight's SDK and requires a
-compatible external runtime. Adopted automatic and explicit choices receive bounded
-checks, including unused tools. A stable target resolves to a verified launch path
-and version or a concrete error; failures remain visible while awaiting retry.
-These checks do not perform unused Provider model discovery or login, or start a
-long-running Herdr service. Configuration application and its Tool launch paths
-summary consider only tools required by the target mode and effective default and
-Project Agents. Web mode never depends on Herdr; details retain all tool results.
+compatible external runtime. After adopting the cloud target, the Worker checks
+both configured tool choices within bounded operations, even when current work
+does not use one of them. Successful checks are reused; failed checks retain their
+actual errors during retry backoff. A failure does not establish failure of
+unrelated tools or Provider availability. Overall configuration success still
+requires current applied evidence for both editable tools. These checks do not
+start a task or replace demand-based Provider capability discovery.
 
 Native executables, symlinks, supported Node entries and recognized npm shims
 are resolved on the Worker. npm shim text is inspected, not run as shell code;
@@ -86,7 +153,7 @@ daynight worker show <worker-id> --json
 These commands read the configured service; they do not start or attach to a
 Worker. Confirm its machine/platform and report time. In the JSON result inspect
 `worker.telemetry.toolPaths.entries`, selecting both `tool` and `context`
-(`web` or `herdr`). The same facts appear in the configuration panel and software
+(`web`). The same facts appear in the configuration panel and software
 details, where complete paths can be expanded and copied.
 
 | Report field | Meaning |
@@ -113,21 +180,18 @@ and last reported actual path/version separate.
 | `unsupported_launcher` | Select a supported native/Node entry instead of an arbitrary shell, batch or PowerShell wrapper |
 | `unrecognized_output`, `incompatible_runtime` | Verify this installation's tool identity, version and required protocol; a filename alone is not proof |
 | `probe_timeout`, `cleanup_unknown` | Preserve the original probe/process responsibility; inspect its error and stopping evidence before another attempt |
-| `pending` with `active_instance` or `cleanup_unconfirmed` | Inspect the old Herdr instance and its remaining responsibilities; do not kill it merely to apply a target |
 | Missing `toolPaths` | Check service/Worker support and report freshness; do not infer an automatic path |
 
 A failed explicit target blocks new executions needing that tool; it does not
 authorize fallback or stopping healthy old executions. Changing paths cannot
-erase unconfirmed cleanup. On macOS, Herdr's per-run instances can keep old and
-new selections concurrently. Linux/Windows shared instances wait until the old
-daemon, endpoints and process responsibilities are confirmed closed before
-switching. Verify actual groups rather than assuming one topology on every OS.
+erase unconfirmed cleanup. Verify the actual active groups and retained process
+responsibilities.
 
 ### Existing execution and recovery
 
 New executions freeze their selected files and interpreter, including automatic
 choices. Target/PATH edits affect later executions; they do not restart an old
-Session, release its claim or replace its worktree. Recovery, retry and attach
+Session, release its claim or replace its worktree. Recovery and retry
 keep the original selection and identity. Replacing a file or symlink can produce
 `tool_identity_changed`: restore the matching installation if recovery is needed;
 the new configured path cannot substitute for it. Daynight does not archive every
@@ -147,14 +211,80 @@ ownership records. Before an authorized `worker retry` or `worker release`, stop
 the corresponding runner and follow that command's help and original-claim
 conditions; neither is a tool-path reset.
 
+### Retained resource recovery
+
+A retained Git marker does not identify the Worker or prove that its original
+execution stopped. Current monitoring preserves its occupied slot and reports
+the claim and Project-relative worktree. Do not delete its database, raise the
+concurrency limit or use `worker retry` to hide the reservation.
+
+For an original completed Web execution whose full journals remain available,
+stop the corresponding `worker run`, then preview recovery under its original
+Worker lock:
+
+```bash
+daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id>
+daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id> --confirm
+```
+
+The second command rechecks the exact service, authenticated owner, Worker,
+terminal claim, worktree binding, original native stop and ready archive receipt
+before removing the worktree without force and retiring its manifest. It preserves
+the branch and execution journals. Optional `--worktree-id` adds an exact identity
+check; omission reads the original journal and still verifies the unique Git
+binding. Modified, untracked or ignored files, index flags that hide changes and
+commits with no observed remote
+reference block removal; preserve those files and commits before making a new
+decision. Unknown removal results require inspecting the original worktree and
+manifest before another attempt.
+
+Missing journals, a successor claim or another Worker never authorize adoption.
+Restore the original Worker and Controller journals from backup; a completed Task,
+missing process or Git marker cannot replace them. Unfinished Web executions use
+normal Worker reconciliation after their original evidence is restored. Successful
+observation clears repaired monitoring failures; recovery does not create a new execution.
+
+## Repair stopped Markdown image projections
+
+On the original Worker machine, use an explicitly authorized repair for the
+retained terminal Web execution:
+
+```bash
+daynight worker repair-markdown <task-id> --project <project-id> --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>
+```
+
+The command checks the signed-in owner, service, terminal Task, completed original
+claim, Session, Worker configuration, launch ticket and actual managed worktree.
+A blocked Task, changed identity or unconfirmed original stop prevents repair.
+It uses the stopped Controller storage permit and can run beside the Worker;
+it does not take over scheduling, start an Agent or replay user input.
+
+Only preserved complete, nontruncated inputs with trusted block identities can
+be reanalyzed. Original text, entry order and identities, prior image references
+and the original failed projection remain retained. Newly discovered images
+must resolve to verified retained resources or ordinary local files inside the
+original directory root. Repair does not download external URLs or follow links
+outside that root. Missing files, changed roots, ambiguous blocks and analysis
+failures remain explicit failures; restoring the reported original source or
+context permits another attempt with the same arguments.
+
+Successful repair continues the existing archive upload and validates its
+receipt. A pending source-tail batch, history checkpoint, upload intent or receipt
+selects reconciliation instead of rewriting its source. The Worker still owns
+resource cleanup. Read the original
+Session afterwards and distinguish a ready content archive from an archived
+lifecycle. Unknown output or upload results require observing that same
+execution before deciding again. Successful reanalysis does not prove the cause
+of an earlier failure whose diagnostic details were not recorded.
+
 ## Pause and complete an assigned claim
 
-A worker-managed Task may expose `paused`; authorized changes use ordinary Task
+A worker-managed Task may expose `blocked`; authorized changes use ordinary Task
 property writes:
 
 ```bash
-daynight task set-property <task-id> paused true --project <project-id> --if-version <observed-version>
-daynight task set-property <task-id> paused false --project <project-id> --if-version <observed-version>
+daynight task set-property <task-id> blocked true --project <project-id> --if-version <observed-version>
+daynight task set-property <task-id> blocked false --project <project-id> --if-version <observed-version>
 ```
 
 Claim-bound completion needs the original explicitly supplied claim ID;

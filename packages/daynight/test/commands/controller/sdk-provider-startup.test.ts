@@ -19,7 +19,8 @@ afterEach(async () => {
 });
 
 for (const provider of ["copilot", "claude"] as const) {
-  const modes = provider === "copilot" ? ["reject", "reject-connect", "reject-resume", "disconnect", "timeout"] as const : ["reject", "disconnect", "timeout"] as const;
+  // Claude Code is temporarily unsupported; disconnect cleanup is not certified.
+  const modes = provider === "copilot" ? ["reject", "reject-connect", "reject-resume", "disconnect", "timeout"] as const : ["reject", "timeout"] as const;
   test.each(modes)(`${provider} real SDK startup %s retains rejection and uncertainty boundaries`, async mode => {
     const base = path.resolve(import.meta.dirname, "../../../../../.tmp/sdk-startup");
     await mkdir(base, { recursive: true });

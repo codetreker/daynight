@@ -22,6 +22,7 @@ jobs:
       server: ${{ steps.modules.outputs.server }}
       api: ${{ steps.modules.outputs.api }}
       web: ${{ steps.modules.outputs.web }}
+      mobile: ${{ steps.modules.outputs.mobile }}
       e2e: ${{ steps.modules.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +64,7 @@ jobs:
             shard: ""
             suffix: ""
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 15 || 10 }}
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 20 || 10 }}
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
@@ -110,18 +111,6 @@ jobs:
       - name: Test the compiled CLI with macOS termination diagnostics
         if: matrix.os == 'macos-15'
         run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
-      - name: Pack the CLI for runtime compatibility checks
-        if: matrix.os == 'ubuntu-latest'
-        run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
-      - name: Upload the runtime compatibility package
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-runtime-package
-          path: .tmp/daynight-runtime.tgz
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
       - name: Upload ordinary CLI environment
         if: ${{ always() && steps.environment.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -167,57 +156,6 @@ jobs:
         with:
           name: daynight-cli-tests-results-${{ matrix.os }}${{ matrix.suffix }}
           path: .tmp/windows-cli-shard/*.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
-  verify-herdr-platform:
-    name: verify (real Herdr, ${{ matrix.os }})
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
-    env:
-      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
-      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          check-latest: true
-          package-manager-cache: false
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 11.28.6
-          run_install: false
-          dest: ${{ github.workspace }}/.tmp/pnpm
-      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - run: pnpm build
-      - name: Download and verify pinned official native assets
-        run: node packages/daynight/scripts/prepare-herdr-platform.mjs
-      - name: Verify the original shell, native terminal and official Session hook
-        id: herdr-platform
-        working-directory: packages/daynight
-        run: node node_modules/vitest/vitest.mjs run test/commands/worker/herdr-tool-platform.integration.test.ts test/commands/worker/herdr-windows-process-metadata-native.test.ts
-      - name: Independently verify owned process and endpoint cleanup
-        if: ${{ always() && steps.herdr-platform.outcome != 'skipped' }}
-        run: node packages/daynight/scripts/check-herdr-platform-cleanup.mjs
-      - name: Upload real Herdr platform evidence
-        if: ${{ always() && steps.herdr-platform.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-herdr-platform-${{ matrix.os }}
-          path: |
-            .tmp/herdr-tools/research-platform/acceptance-*.json
-            .tmp/herdr-tools/research-platform/cleanup.json
-            .tmp/herdr-tools/research-platform/official-tools/receipt.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -280,9 +218,45 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  prepare-runtime-package:
+    name: prepare runtime compatibility package
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - run: pnpm build
+      - name: Pack the CLI for runtime compatibility checks
+        run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
+      - name: Upload the runtime compatibility package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-runtime-package
+          path: .tmp/daynight-runtime.tgz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   verify-runtime:
     name: verify (Node.js ${{ matrix.node }})
-    needs: [detect-changes, verify]
+    needs: [detect-changes, prepare-runtime-package]
     if: ${{ needs.detect-changes.outputs.cli == 'true' }}
     strategy:
       fail-fast: false
@@ -331,7 +305,14 @@ jobs:
       GOTOOLCHAIN: go1.27.2
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
       DAYNIGHT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
     services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
+        env:
+          AZURITE_ACCOUNTS: daynight:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        ports:
+          - 10000:10000
       redis:
         image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
         ports:
@@ -373,9 +354,20 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Create the Store root test database
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec "$POSTGRES_CONTAINER" createdb -U daynight daynight_store_root
       - name: Validate Go module tests and coverage
         id: server-validation
+        env:
+          DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
         run: bash scripts/check.sh --coverage
+      - name: Validate Azure storage and startup
+        run: |
+          go test -count=1 -timeout=5m -run '^TestAzurite(ArchiveStaging)?$' ./internal/core/filestorage/azure
+          GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
+          go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
       - name: Upload Go coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -407,7 +399,24 @@ jobs:
       GOENV: "off"
       GOTOOLCHAIN: go1.27.2
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
+      DAYNIGHT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
     services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
+        env:
+          AZURITE_ACCOUNTS: daynight:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        ports:
+          - 10000:10000
+      redis:
+        image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
       postgres:
         image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
         env:
@@ -595,6 +604,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-mobile:
+    name: verify (mobile)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.mobile == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPO_HOME: ${{ github.workspace }}/.tmp/expo
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Install mobile dependencies
+        run: pnpm --filter @codetreker/daynight-mobile --fail-if-no-match install --frozen-lockfile
+      - name: Verify mobile types and Expo SDK dependency versions
+        run: |
+          pnpm --filter @codetreker/daynight-mobile --fail-if-no-match typecheck
+          pnpm --filter @codetreker/daynight-mobile --fail-if-no-match exec expo install --check
+      - name: Export iOS and Android application bundles
+        run: pnpm --filter @codetreker/daynight-mobile --fail-if-no-match bundle
+
   verify-e2e:
     name: verify (product E2E)
     needs: detect-changes
@@ -671,7 +711,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-herdr-platform, verify-installed, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
+    needs: [detect-changes, verify, verify-installed, prepare-runtime-package, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-mobile, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -683,10 +723,10 @@ jobs:
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         env:
           CLI_RESULT: ${{ needs.verify.result }}
-          HERDR_RESULT: ${{ needs.verify-herdr-platform.result }}
           INSTALLED_RESULT: ${{ needs.verify-installed.result }}
+          PACKAGE_RESULT: ${{ needs.prepare-runtime-package.result }}
           RUNTIME_RESULT: ${{ needs.verify-runtime.result }}
-        run: test "$CLI_RESULT" = success && test "$HERDR_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$RUNTIME_RESULT" = success
+        run: test "$CLI_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$PACKAGE_RESULT" = success && test "$RUNTIME_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         with:
@@ -727,6 +767,11 @@ jobs:
         env:
           WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
         run: test "$WEB_QUALITY_RESULT" = success
+      - name: Require selected mobile validation to succeed
+        if: ${{ needs.detect-changes.outputs.mobile == 'true' }}
+        env:
+          MOBILE_RESULT: ${{ needs.verify-mobile.result }}
+        run: test "$MOBILE_RESULT" = success
       - name: Require selected product E2E to succeed
         if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
         env:

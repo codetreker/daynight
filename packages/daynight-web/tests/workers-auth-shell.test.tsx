@@ -13,6 +13,8 @@ import { viewerHeaders } from './helpers/taskSync';
 import { personalTeamPage } from './helpers/team';
 import { configurationResource, configurationResponse } from './helpers/worker-configuration';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
@@ -28,20 +30,22 @@ const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, 
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
 const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal, observation = { observedAt, reportedAt, cpu: 34 }) => {
   const worker = summary(workerId, name);
-  return json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
+  const response = json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
     machine: worker.machine, platform: worker.platform, workingDirectory: '/srv/workers', sampledAt: observedAt,
     os: { state: 'ok', checkedAt: observedAt, value: { type: 'Linux', release: '6.8.0', version: '#1', arch: 'x64' } },
     cpu: { state: 'ok', checkedAt: observation.observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: observation.cpu } },
     memory: { state: 'ok', checkedAt: observedAt, value: { usedBytes: 4 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 } },
     disk: { state: 'ok', checkedAt: observedAt, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
-    versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: observedAt }, codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
+    versions: { daynight: '0.27.1', codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
   } } }, 200, viewer);
+  response.headers.set('Daynight-Worker-Tool-Paths', '2');
+  return response;
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
-const monitoringDetail = (viewer = principal) => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
+const monitoringDetail = (viewer = principal, activityTitle = 'Private activity task') => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
   runId: secondWorker, sequence: '1', capturedAt: observedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: null, lastSuccessfulAt: null, lastOutcome: null, nextPollAt: null },
   capacity: { observedAt, quality: 'current', limit: 2, occupied: 1, available: 1, detailCoverage: 'complete' },
-  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [],
+  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [{ operationId: secondWorker, kind: 'cleanup', phase: 'worktree-removal', status: 'running', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, association: { kind: 'task', projectName: 'Private project', title: activityTitle }, startedAt: observedAt, lastProgressAt: null, elapsedMs: 100, deadlineAt: null, waitReason: null, nextAttemptAt: null }],
   currentFailures: [{ operationId: firstWorker, component: 'execution', phase: 'executing', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, firstObservedAt: observedAt, lastObservedAt: observedAt, occurrencesInRun: 1, retryState: 'none', nextAttemptAt: null, association: { kind: 'task', projectName: 'Private project', title: 'Private failure task' } }],
   lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: null, lastFailure: null },
 } }, 200, viewer);
@@ -265,12 +269,12 @@ describe('Worker pages in the authenticated workspace', () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole('button', { name: 'User prompt' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'User prompt' }));
     const field = await screen.findByRole('textbox', { name: 'Prompt text' });
     fireEvent.change(field, { target: { value: 'account instructions' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Profile' }));
     expect(field).not.toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(field);
     fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toBe(1));
@@ -278,8 +282,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/account'));
-    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    expect(screen.getByRole('link', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);
@@ -327,6 +331,7 @@ describe('Worker pages in the authenticated workspace', () => {
     });
     render(<AuthenticatedApp />);
     const heading = await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
     const cpu = screen.getByRole('meter', { name: 'CPU usage' });
     const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
     returnToWorkspace();
@@ -446,21 +451,20 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(screen.queryByRole('heading', { name: 'Late Alice private worker' })).toBeNull();
   });
 
-  it('retains expanded monitoring errors and rejects a late response on account change', async () => {
+  it('retains the monitoring snapshot and rejects a late response on account change', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     const pending = Promise.withResolvers<Response>(); let reads = 0;
     install(url => url === `/api/v1/me/workers/${firstWorker}` ? detail() : defaults(url), () => ++reads === 1 ? monitoringDetail(owner) : pending.promise);
     render(<AuthenticatedApp />);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' });
-    fireEvent.click(summary.closest('summary')!);
-    const old = await screen.findByText('Private failure task');
+    const old = await screen.findByRole('link', { name: 'Private activity task' });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await waitFor(() => expect(reads).toBe(2));
     act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
-    await screen.findByText('Account changed'); await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.getByText('Private failure task')).toBe(old);
+    await screen.findByText('Account changed'); await act(async () => pending.resolve(monitoringDetail(owner, 'Late private activity')));
+    expect(screen.getByRole('link', { name: 'Private activity task' })).toBe(old);
+    expect(screen.queryByText('Late private activity')).toBeNull();
   });
 
-  it('withdraws an expanded scoped monitoring failure immediately and rejects its late response', async () => {
+  it('withdraws a scoped monitoring activity immediately and rejects its late response', async () => {
     const project = '00000000-0000-4000-8000-000000000030';
     const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: vi.fn() });
     vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map([[project, 'a']]));
@@ -471,14 +475,13 @@ describe('Worker pages in the authenticated workspace', () => {
     vi.stubGlobal('fetch', vi.fn(() => ++reads === 1 ? Promise.resolve(monitoringDetail(owner)) : reads === 2 ? pending.promise : newer.promise));
     const Monitor = () => { const state = useWorkerMonitoring(firstWorker, { readEnabled: true }); return <><button onClick={state.refresh}>Read again</button><WorkerMonitoring state={state} readEnabled /></>; };
     const view = render(<TaskCacheProvider scope={scope}><Monitor /></TaskCacheProvider>);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' }); fireEvent.click(summary.closest('summary')!);
-    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Private activity task' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Read again' })); await waitFor(() => expect(reads).toBe(2));
     act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'a' }));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument();
     await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     view.unmount(); scope.dispose(); newer.resolve(monitoringDetail(owner));
   });
 
@@ -506,7 +509,7 @@ describe('Worker pages in the authenticated workspace', () => {
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Worker A' });
     const main = screen.getByRole('main');
-    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => navigate(`/workers/${secondWorker}`));
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -519,6 +522,7 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(breadcrumb.getByRole('link', { name: 'My Workers' })).toHaveAttribute('href', '/workers');
     expect(breadcrumb.getByText('Worker')).toHaveAttribute('aria-current', 'page');
     expect(document.title).toBe('Worker · Daynight');
-    expect(within(screen.getByRole('complementary', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(within(screen.getByRole('dialog', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
   });
 });

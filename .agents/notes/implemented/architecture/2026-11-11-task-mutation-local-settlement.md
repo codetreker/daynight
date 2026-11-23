@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Task and Step writes share a result owner, but presentation admission can remain
+Task and Step writes originally shared a result owner, but presentation admission can remain
 paused after a request has been cancelled or its receipt observed. Waiting for
 that admission to finish local settlement can retain a busy lock and promise
 indefinitely. A late missing-resource response can also discard displayed
@@ -28,13 +28,13 @@ checks editor instance, in-memory draft revision and navigation context before
 resetting or closing local state. Superseding or disposing the owner cancels the
 work and receives its errors. A temporary pause can resume publication of the
 same result without replaying the write. The [Task inspection design](../../../../docs/design/daynight-task-inspection.md#状态与详情会话)
-and [Steps design](../../../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
-own the current contract.
+owns the current contract. The [Web Steps retirement](../simplification/2026-11-23-retire-web-task-steps.md)
+removes Step writes from this owner; the same Task settlement guarantees remain.
 
 This extends the [direct observation decision](2026-11-06-task-direct-observation.md),
 which retains source-specific admission, and the [Step success continuation decision](../bug-fix/2026-11-04-step-success-terminal-continuation.md),
-which prevents stale success from reviving a deleted detail. Both admission and
-terminal checks remain necessary after local settlement.
+which originally prevented stale Step success from reviving a deleted detail.
+Admission and terminal checks remain necessary after local settlement.
 
 ## Alternatives
 
@@ -52,7 +52,7 @@ operation token can install stale data or reset a newer draft.
 
 ## Consequences
 
-Task and Step callers regain local completion without replaying an uncertain
+Task callers regain local completion without replaying an uncertain
 write or clearing retained content. Publication still needs the original
 identity and resource fences, and later editing adds an in-memory revision and
 navigation ownership check for destructive effects. The capability does not

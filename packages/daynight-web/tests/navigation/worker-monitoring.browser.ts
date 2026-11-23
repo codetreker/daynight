@@ -1,16 +1,35 @@
 import { expect, test, type Page } from '@playwright/test';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerId, workerPage, workerSummary } from '../helpers/workers';
 import { configurationResource } from '../helpers/worker-configuration';
+import type { MonitoringActivity } from '../../src/api/worker-monitoring';
 
 const target = workerId(1), projectId = workerId(301), taskId = workerId(201), personalId = workerId(90);
-const scope = { kind: 'claim', projectId, taskId, claimId: workerId(401) };
+const scope = { kind: 'claim' as const, projectId, taskId, claimId: workerId(401) };
 const longTitle = `Long task ${'monitoring-'.repeat(28)}`;
 const longPath = `../retained/${'工作目录-long-path-'.repeat(18)}task`;
 const longWorkerName = `Worker ${'long-name-'.repeat(12)}`;
-const association = { kind: 'task', projectName: 'Monitoring project', title: longTitle };
-const install = async (page: Page) => {
-  const state = { fail: false, activity: true };
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
+const association = { kind: 'task' as const, projectName: 'Monitoring project', title: longTitle };
+const cleanupActivity = (n: number, overrides: Partial<MonitoringActivity> = {}): MonitoringActivity => ({ operationId: workerId(n), kind: 'cleanup', phase: 'observation', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME, ...overrides });
+const retainedOwners = Array.from({ length: 5 }, (_, index) => ({
+  scope: { kind: 'claim', projectId, taskId: workerId(202 + index), claimId: workerId(402 + index) },
+  association: { kind: 'task', projectName: 'Monitoring project', title: index === 0 ? longTitle : `Retained task ${index + 1}` },
+  path: index === 0 ? longPath : `.worktrees/daynight/${workerId(502 + index)}`,
+}));
+const retainedObservation = () => ({
+  reservations: [
+    { reservationId: workerId(700), scope, association: { ...association, title: 'Snapshot task' }, roles: ['active-task', 'resource-owner'], occupied: true, observedAt: WORKER_TIME },
+    ...retainedOwners.map((owner, index) => ({ reservationId: workerId(701 + index), scope: owner.scope, association: owner.association, roles: ['resource-owner'], occupied: true, observedAt: WORKER_TIME })),
+  ],
+  activities: [{ operationId: workerId(600), kind: 'execution', phase: 'executing', status: 'running', scope, association: { ...association, title: 'Snapshot task' }, startedAt: WORKER_TIME, lastProgressAt: WORKER_TIME, elapsedMs: 2000, deadlineAt: null, waitReason: null, nextAttemptAt: null }],
+  currentFailures: retainedOwners.map((owner, index) => ({ operationId: workerId(601 + index), component: 'resources', phase: 'resource-observation', scope: owner.scope, association: owner.association,
+    worktree: { kind: 'project-relative', path: owner.path }, error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false },
+    firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: 'manual', nextAttemptAt: null,
+  })),
+});
+const install = async (page: Page, retained = false, locale = 'zh-CN', partial = false) => {
+  const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle;
+  const state = { fail: false, detailFail: false, activity: true, activities: null as readonly MonitoringActivity[] | null, capacityUnknown: false, partial, detailReads: 0, monitoringReads: 0, detail };
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, json, headers: { 'Daynight-User-ID': WORKER_USER, ...extra } });
@@ -19,7 +38,7 @@ const install = async (page: Page) => {
     const project = { id: projectId, name: 'Monitoring project', repoUrl: 'https://example.test/project.git', settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: personalId, version: 1 }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME };
     const failure = { error: { code: 'monitoring_unavailable', message: 'Unavailable', requestId: 'fixture' } };
     const scheduler = { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: WORKER_TIME, nextPollAt: null };
-    const capacity = { observedAt: WORKER_TIME, quality: 'current', limit: 2, occupied: 2, available: 0 };
+    const capacity = { observedAt: WORKER_TIME, quality: 'current', limit: retained ? 6 : 2, occupied: retained ? 6 : 2, available: 0, ...(retained ? { breakdown: { active: 1, retained: 5 } } : {}) };
     const common = { revision: workerId(4), receivedAt: WORKER_TIME, expiresAt: '2026-10-29T13:00:00.123456789Z' };
     if (path === '/api/v1/me') return send({ id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
@@ -27,22 +46,227 @@ const install = async (page: Page) => {
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(project);
     if (path === '/api/v1/me/workers') return send(workerPage([{ ...workerSummary(), machine: { ...workerSummary().machine, name: longWorkerName } }]));
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
-    if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1' });
-    if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: ['cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
-    if (path === `/api/v1/me/workers/${target}/monitoring`) return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: 'complete', permissionProjection: 'current', data: {
-      runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
-      admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
+    if (path === `/api/v1/me/workers/${target}`) { state.detailReads++; return state.detailFail ? send(failure, 503) : send(state.detail, 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
+    if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
+    if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
+    if (path === `/api/v1/me/workers/${target}/monitoring`) { state.monitoringReads++; return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: state.partial ? 'partial' : 'complete', permissionProjection: state.partial ? 'restricted' : 'current', data: {
+      runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: state.capacityUnknown ? null : { ...capacity, detailCoverage: 'complete' },
+      admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
-      currentFailures: [{ operationId: workerId(6), component: 'cleanup', phase: 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: 'command-failed', cause: 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: 'scheduled', nextAttemptAt: WORKER_TIME }], lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
-    } });
+      currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: { operationId: workerId(910), component: 'execution', scope, association: { ...association, title: 'Recovery-only task' }, observedAt: WORKER_TIME, explanation: 'The operation recovered.', explanationTruncated: false }, detailCoverage: state.partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: { observedAt: WORKER_TIME, phase: 'write', error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, requestId: workerId(911) } },
+      ...(retained ? retainedObservation() : {}),
+      ...(state.activities === null ? {} : { activities: state.activities }),
+    } }); }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
   return state;
 };
 
-for (const width of [1360, 390, 320]) test(`monitoring interactions and reading stability at ${width}px`, async ({ page }) => {
-  await page.setViewportSize({ width, height: width === 1360 ? 900 : 844 });
+const releaseTitle = 'Review the cross-platform release checklist and confirm the failing tests';
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 320]) for (const rootSize of [16, 24]) test(`monitoring values use sm at ${width}px and ${rootSize}px root in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, true, locale);
+  await page.goto('/workers');
+  await page.addStyleTag({ content: `html { font-size: ${rootSize}px; }` });
+  const listState = page.locator('.monitoring-card-state');
+  await expect(listState).toContainText('6 / 6');
+  await expect(listState).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  await page.locator(`a.worker-card[href="/workers/${target}"]`).click();
+  const cards = page.locator('.monitoring-grid .monitoring-card');
+  const phase = cards.nth(0), capacity = cards.nth(1);
+  const phaseValue = phase.locator('.monitoring-value'), capacityValue = capacity.locator('.monitoring-value');
+  await expect(phaseValue).toHaveText(locale === 'zh-CN' ? '等待下次检查' : 'Waiting for next check');
+  await expect(capacityValue).toContainText('6 / 6');
+  for (const value of [phaseValue, capacityValue, capacityValue.locator('small')]) {
+    await expect(value).toBeVisible();
+    await expect(value).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  }
+  await expect(phaseValue).toHaveCSS('font-weight', '600');
+  await expect(capacityValue.locator('small')).toHaveCSS('font-weight', '400');
+  for (const card of [phase, capacity]) await expect(card.locator('h2')).toHaveCSS('font-size', `${rootSize * 1.125}px`);
+  await expect(capacity).toContainText(locale === 'zh-CN' ? '0 可用' : '0 available');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toContainText(locale === 'zh-CN' ? '活动任务占用' : 'Active task occupancy');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toContainText(locale === 'zh-CN' ? '保留资源占用' : 'Retained resource occupancy');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.locator('[data-worker-tab="system"]:visible').click();
+  const metric = page.locator('.worker-metric-value').first();
+  await expect(metric).toBeVisible(); await expect(metric).toHaveCSS('font-size', `${rootSize * 1.375}px`);
+  await page.locator('[data-worker-tab="overview"]:visible').click();
+  state.capacityUnknown = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(capacity).toContainText(locale === 'zh-CN' ? '尚未观测到容量。' : 'Capacity has not been observed.');
+  await expect(capacityValue).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`task cleanup filtering and links at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, locale);
+  const otherActivities = [
+    cleanupActivity(610, { kind: 'execution', phase: 'waiting', association: { ...association, title: 'Execution waiting only' } }),
+    cleanupActivity(611, { kind: 'maintenance', phase: 'reconciliation', scope: { kind: 'worker' }, association: null }),
+    cleanupActivity(612, { scope: { kind: 'worker' }, association: null }),
+    cleanupActivity(613, { scope: { kind: 'project', projectId }, association: { kind: 'project', projectName: 'Project cleanup only' } }),
+  ];
+  state.activities = [
+    otherActivities[0]!, cleanupActivity(614), otherActivities[1]!,
+    cleanupActivity(615, { phase: 'archive', status: 'running', waitReason: null, association: { ...association, title: 'Running task cleanup' } }),
+    ...otherActivities.slice(2),
+    cleanupActivity(616, { association: { kind: 'labels-omitted' }, scope: { ...scope, taskId: workerId(207) } }),
+  ];
+  await page.goto(`/workers/${target}`);
+  const panel = page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..');
+  const rows = panel.locator('.monitoring-activities > li');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).getByRole('link')).toHaveText(longTitle);
+  await expect(rows.nth(0)).toContainText(locale === 'zh-CN' ? '清理 · 观测' : 'Cleanup · Observation');
+  await expect(rows.nth(0)).toContainText(locale === 'zh-CN' ? '重试退避' : 'Retry backoff');
+  await expect(rows.nth(1).getByRole('link')).toHaveText('Running task cleanup');
+  await expect(rows.nth(1)).toContainText(locale === 'zh-CN' ? '运行中' : 'Running');
+  const fallback = rows.nth(2).getByRole('link');
+  await expect(fallback).toHaveText(`${locale === 'zh-CN' ? '任务' : 'Task'} · ${workerId(207)}`);
+  await expect(fallback).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${workerId(207)}`));
+  await expect(rows.nth(2)).toContainText(locale === 'zh-CN' ? '标签已省略' : 'Labels omitted');
+  await expect(panel).not.toContainText('Execution waiting only'); await expect(panel).not.toContainText('Project cleanup only');
+  await expect(page.locator('.worker-task-table').getByRole('link', { name: longTitle })).toBeVisible();
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '调度阶段' : 'Scheduler phase' })).toBeVisible();
+  await expect(page.locator('.monitoring-issue')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  if (width <= 390) expect(await rows.nth(0).getByRole('link').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('tasks-in-cleanup.png'), fullPage: true });
+  state.fail = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  const alert = page.getByRole('alert').filter({ hasText: locale === 'zh-CN' ? '运行监控更新失败' : 'Runtime monitoring could not be updated' });
+  await expect(alert).toContainText(locale === 'zh-CN' ? '保留上次确认的观测。' : 'The last confirmed observation remains visible.');
+  await expect(rows).toHaveCount(3);
+  state.fail = false;
+  await alert.getByRole('button', { name: locale === 'zh-CN' ? '重试' : 'Retry' }).click(); await expect(alert).toHaveCount(0);
+  await fallback.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${workerId(207)}`));
+  await page.goBack(); await expect(rows).toHaveCount(3);
+  state.activities = otherActivities;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(panel).toContainText(locale === 'zh-CN' ? '没有清理中的任务。' : 'No tasks in cleanup.');
+  await expect(rows).toHaveCount(0);
+  state.partial = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(panel).toContainText(locale === 'zh-CN' ? '本次观测没有可见的清理任务。' : 'No visible cleanup tasks in this observation.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+const lineCount = (selector: string) => (page: Page) => page.locator(selector).first().evaluate(element => {
+  const range = document.createRange(); range.selectNodeContents(element);
+  return new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top))).size;
+});
+
+for (const locale of ['en', 'zh-CN']) for (const width of [320, 375, 390]) test(`Worker task rows remain readable at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  const state = await install(page, false, locale);
+  state.detail.worker.tasks[0]!.title = releaseTitle;
+  state.detail.worker.tasks[0]!.agent = 'claude';
+  state.detail.worker.tasks.push({ ...state.detail.worker.tasks[0]!, taskId: workerId(202), claimId: workerId(402), title: '中文任务' + 'unbroken'.repeat(20), agent: 'codex' });
+  state.detail.worker.activeTaskCount = 2;
+  await page.goto(`/workers/${target}`);
+  const table = page.getByRole('table').filter({ has: page.getByRole('link', { name: releaseTitle }) });
+  await expect(table.getByRole('columnheader')).toHaveCount(3);
+  await expect(table.getByRole('link', { name: releaseTitle })).toHaveCount(1);
+  const accessibility = await table.ariaSnapshot();
+  expect(accessibility).toContain('columnheader'); expect(accessibility).toContain('cell'); expect(accessibility).toContain('link');
+  const rows = table.locator('tbody tr');
+  await expect(rows).toHaveCount(2);
+  expect(await rows.first().locator('td').evaluateAll(cells => cells.every(cell => {
+    const header = document.getElementById(cell.getAttribute('headers') ?? '');
+    return header?.getAttribute('scope') === 'col';
+  }))).toBe(true);
+  await expect(rows.nth(0)).toContainText('Claude Code');
+  expect(await lineCount('.worker-task-title')(page)).toBeLessThanOrEqual(3);
+  expect(await lineCount('.worker-task-status')(page)).toBe(1);
+  expect(await lineCount('.worker-task-phase')(page)).toBe(1);
+  const boxes = await rows.first().evaluate(row => {
+    const identity = row.querySelector('.worker-task-identity')!.getBoundingClientRect();
+    const work = row.querySelector('.worker-task-work')!.getBoundingClientRect();
+    const agent = row.querySelector('.worker-task-agent')!.getBoundingClientRect();
+    return { identity: { bottom: identity.bottom, width: identity.width }, work: { top: work.top, right: work.right }, agent: { left: agent.left, top: agent.top } };
+  });
+  expect(boxes.identity.bottom).toBeLessThanOrEqual(boxes.work.top);
+  expect(boxes.work.right).toBeLessThanOrEqual(boxes.agent.left);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  state.detail.worker.tasks[0]!.agent = 'copilot'; state.detail.worker.tasks[0]!.phase = 'waiting';
+  await page.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新', exact: true }).click();
+  await expect(rows.nth(0)).toContainText('Copilot'); await expect(rows.nth(1)).toContainText('Codex');
+  const link = table.getByRole('link', { name: releaseTitle });
+  await expect(link).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await link.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await page.goBack(); await expect(table.getByRole('link', { name: releaseTitle })).toBeVisible();
+});
+
+test('Worker task table uses its container width at the boundary', async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await install(page, false, 'en'); await page.goto(`/workers/${target}`);
+  const container = page.locator('.worker-task-table-container');
+  const row = container.locator('tbody tr').first();
+  for (const width of [429, 430, 431]) {
+    await container.evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px`; }, width);
+    await expect.poll(() => row.evaluate(element => getComputedStyle(element).display)).toBe(width <= 430 ? 'flex' : 'table-row');
+    await expect(container.getByRole('columnheader')).toHaveCount(3);
+    await expect(container.getByRole('link', { name: longTitle })).toHaveCount(1);
+  }
+});
+
+for (const width of [768, 1360]) test(`Worker task table retains desktop navigation at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, 'en'); state.detail.worker.tasks[0]!.title = releaseTitle;
+  await page.goto(`/workers/${target}`);
+  const table = page.locator('.worker-task-table'); const link = table.getByRole('link', { name: releaseTitle });
+  await expect(table.locator('tbody tr')).toHaveCSS('display', 'table-row');
+  await link.scrollIntoViewIfNeeded();
+  const before = await link.boundingBox();
+  await link.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await page.goBack(); await expect(link).toBeVisible();
+  await expect.poll(async () => Math.abs((await link.boundingBox())!.y - before!.y)).toBeLessThan(4);
+});
+
+test('Worker task metadata reflows without overlap at a large browser font', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  const state = await install(page, false, 'en'); state.detail.worker.tasks[0]!.agent = 'claude';
+  await page.goto(`/workers/${target}`);
+  await page.addStyleTag({ content: 'html { font-size: 40px; }' });
+  const row = page.locator('.worker-task-table tbody tr').first();
+  const rects = await row.evaluate(element => {
+    const work = element.querySelector('.worker-task-work')!.getBoundingClientRect();
+    const agent = element.querySelector('.worker-task-agent')!.getBoundingClientRect();
+    return { work: { right: work.right, bottom: work.bottom }, agent: { left: agent.left, top: agent.top } };
+  });
+  expect(rects.work.right <= rects.agent.left || rects.work.bottom <= rects.agent.top).toBe(true);
+  await expect(row).toContainText('In progress'); await expect(row).toContainText('Executing'); await expect(row).toContainText('Claude Code');
+});
+
+test.describe('Worker task snapshot interactions', () => {
+  test.use({ hasTouch: true });
+  test('retains offline rows, recovers from failure, and navigates by touch', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 });
+    const state = await install(page, false, 'en');
+    state.detail.worker.tasks[0]!.title = releaseTitle; state.detail.worker.tasks[0]!.agent = 'claude';
+    state.detail.worker.lastReportedAt = '2026-10-29T11:50:00.123456789Z';
+    await page.goto(`/workers/${target}`);
+    await expect(page.locator('[data-worker-panel="overview"]').getByText('This Worker is offline. The last reported snapshot is shown below.')).toBeVisible();
+    const link = page.getByRole('link', { name: releaseTitle }); await expect(link).toBeVisible();
+    state.detailFail = true; await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    const alert = page.getByRole('alert').filter({ hasText: 'Worker updates could not be synchronized.' }); await expect(alert).toBeVisible();
+    await expect(link).toBeVisible(); state.detailFail = false; await alert.getByRole('button', { name: 'Retry' }).click(); await expect(alert).toHaveCount(0);
+    await link.tap(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+    await page.goBack(); await expect(link).toBeVisible();
+    state.detail.worker.tasks = []; state.detail.worker.activeTaskCount = 0;
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(page.getByText('No tasks in the last observed snapshot')).toBeVisible();
+  });
+});
+
+for (const width of [1360, 390, 320]) test(`monitoring interactions and reading stability at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: width === 1360 ? 600 : 844 });
   const state = await install(page); await page.goto('/workers');
   await expect(page.locator('.monitoring-card-state')).toContainText('2 / 2');
   await expect(page.locator('.monitoring-card-state')).not.toContainText('清理占用容量');
@@ -52,30 +276,135 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   if (width === 320) { await card.focus(); await page.keyboard.press('Enter'); }
   else await card.click();
   await expect(page.getByText('清理占用容量')).toBeVisible();
-  const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
-  await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true');
-  const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
-  await expect(issue).toHaveAttribute('open', ''); await expect(issue).toContainText('所需命令失败。');
-  const path = issue.locator('code.monitoring-worktree'); await expect(path).toHaveText(longPath);
+  const monitoringTime = page.locator('.monitoring-time');
+  await expect(monitoringTime).toHaveCount(1); await expect(monitoringTime).toContainText('收到时间'); await expect(monitoringTime).toContainText('采集时间');
+  const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
+  expect(await monitoringTime.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.worker-task-heading-label')!.closest('section')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  const timeBox = await monitoringTime.boundingBox(), taskBox = await taskPanel.boundingBox();
+  expect(timeBox!.y + timeBox!.height).toBeLessThanOrEqual(taskBox!.y);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await issue.scrollIntoViewIfNeeded();
-  await issue.locator('summary').focus();
-  await path.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
-  const before = await issue.boundingBox(); state.activity = false;
+  await page.screenshot({ path: testInfo.outputPath('monitoring-time.png'), fullPage: true });
+  await expect(page.getByRole('heading', { name: '容量责任' })).toHaveCount(0);
+  const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
+  await expect(page.locator('[data-worker-tab="system"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await expect(monitoringTime).toBeHidden();
+  await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true'); await expect(monitoringTime).toBeVisible();
+  const activity = page.locator('.monitoring-activities > li').first();
+  const activityLink = activity.getByRole('link', { name: longTitle });
+  await expect(activityLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await activity.scrollIntoViewIfNeeded();
+  await activityLink.focus();
+  await activityLink.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
+  // Finish the user scroll event before triggering an unrelated background response.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const before = await activity.boundingBox();
+  const unchangedRead = page.waitForResponse(response => response.url().endsWith(`/workers/${target}/monitoring`) && response.status() === 200);
   await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
-  await expect(page.getByText('未报告活动。')).toBeVisible(); await expect(issue).toHaveAttribute('open', '');
-  await expect(issue.locator('summary')).toBeFocused(); expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(longPath);
-  const after = await issue.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
+  await unchangedRead;
+  const after = await activity.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
+  await expect(activityLink).toBeFocused(); expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(longTitle);
   state.fail = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
   const alert = page.getByRole('alert').filter({ hasText: '运行监控更新失败' }); await expect(alert).toBeVisible();
-  await expect(issue).toHaveAttribute('open', ''); state.fail = false;
+  await expect(monitoringTime).toHaveCount(1); await expect(monitoringTime).toContainText('采集时间');
+  expect(await taskPanel.evaluate(panel => !!(panel.compareDocumentPosition(document.querySelector('.monitoring-notice')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  await expect(activityLink).toBeVisible(); state.fail = false;
   await alert.getByRole('button', { name: '重试' }).click(); await expect(alert).toHaveCount(0);
-  await issue.getByRole('link', { name: longTitle }).click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await expect(monitoringTime).toHaveCount(1);
+  await activityLink.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
   await page.goBack(); await expect(page.getByText('清理占用容量')).toBeVisible();
+  const taskLink = page.locator('.worker-task-table').getByRole('link', { name: longTitle });
+  await taskLink.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await page.goBack(); await expect(page.getByText('清理占用容量')).toBeVisible();
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const resources = page.locator('.worker-metric-grid'); await resources.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
   const resourceBefore = await resources.boundingBox();
   await page.evaluate(() => { const original = performance.now.bind(performance); Object.defineProperty(performance, 'now', { configurable: true, value: () => original() + 3_600_000 }); });
-  await expect(page.getByText('运行观测已过期')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('运行观测已过期')).toHaveCount(1, { timeout: 5000 });
+  await expect(monitoringTime).toHaveCount(0);
   const resourceAfter = await resources.boundingBox(); expect(Math.abs(resourceAfter!.y - resourceBefore!.y)).toBeLessThan(4);
+});
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`retained resources preserve capacity without diagnostic panels at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  await install(page, true, locale); await page.goto(`/workers/${target}`);
+  await expect(page.getByText('6 / 6')).toBeVisible();
+  if (locale === 'en' && width <= 390) {
+    await page.evaluate(() => { const original = performance.now.bind(performance); Object.defineProperty(performance, 'now', { configurable: true, value: () => original() + 90_000 }); });
+    const time = page.locator('.monitoring-time');
+    await expect(time).toContainText('Runtime observation is stale');
+    expect(await time.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  }
+  const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
+  const taskLink = taskPanel.getByRole('link', { name: longTitle });
+  await expect(taskLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  for (const selector of ['.monitoring-content']) {
+    expect(await taskPanel.evaluate((panel, targetSelector) => !!(panel.compareDocumentPosition(document.querySelector(targetSelector)!) & Node.DOCUMENT_POSITION_FOLLOWING), selector)).toBe(true);
+  }
+  const taskBox = await taskPanel.boundingBox(), monitoringBox = await page.locator('.monitoring-content').boundingBox();
+  expect(monitoringBox!.y - (taskBox!.y + taskBox!.height)).toBeGreaterThanOrEqual(16);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  const active = page.getByText(locale === 'zh-CN' ? '活动任务占用' : 'Active task occupancy');
+  const retained = page.getByText(locale === 'zh-CN' ? '保留资源占用' : 'Retained resource occupancy');
+  await expect(active.locator('xpath=following-sibling::dd[1]')).toHaveText('1');
+  await expect(retained.locator('xpath=following-sibling::dd[1]')).toHaveText('5');
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '容量责任' : 'Capacity responsibilities' })).toHaveCount(0);
+  await expect(page.locator('.monitoring-reservations')).toHaveCount(0);
+  const cleanup = page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..');
+  await expect(cleanup).toContainText(locale === 'zh-CN' ? '没有清理中的任务。' : 'No tasks in cleanup.');
+  await expect(cleanup.locator('li')).toHaveCount(0);
+  for (const name of ['Current failures', 'Most recent recovery', 'Monitoring delivery', '当前异常', '最近恢复', '监控上报']) {
+    await expect(page.getByRole('heading', { name, exact: true })).toHaveCount(0);
+  }
+  await expect(page.locator('.monitoring-content > section')).toHaveCount(1);
+  await expect(page.locator('.monitoring-issue, .monitoring-delivery')).toHaveCount(0);
+  await expect(page.getByText('Recovery-only task')).toHaveCount(0);
+  await expect(page.getByText(workerId(911))).toHaveCount(0);
+  for (const owner of retainedOwners) {
+    await expect(page.getByText(owner.scope.claimId)).toHaveCount(0);
+    await expect(page.getByText(owner.path)).toHaveCount(0);
+  }
+  await page.screenshot({ path: testInfo.outputPath('retained-resources.png'), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`system and runtime tabs partition observations at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, locale); await page.goto(`/workers/${target}`);
+  const runtime = page.locator('[data-worker-panel="overview"]');
+  const system = page.locator('[data-worker-panel="system"]');
+  const runtimeTab = page.locator('[data-worker-tab="overview"]:visible');
+  const systemTab = page.locator('[data-worker-tab="system"]:visible');
+  await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
+  await expect(runtime.locator('.worker-task-table')).toBeVisible();
+  await expect(runtime.locator('.worker-metric-grid')).toHaveCount(0);
+  const detailReads = state.detailReads, monitoringReads = state.monitoringReads;
+  await runtimeTab.focus(); await page.keyboard.press('ArrowRight');
+  await expect(systemTab).toBeFocused(); await expect(systemTab).toHaveAttribute('aria-selected', 'true');
+  await expect(runtime).toBeHidden(); await expect(system.locator('.worker-metric-grid')).toBeVisible();
+  await expect(system.locator('.worker-task-table, .monitoring-content')).toHaveCount(0);
+  expect(state.detailReads).toBe(detailReads); expect(state.monitoringReads).toBe(monitoringReads);
+  const length = await page.evaluate(() => history.length);
+  await systemTab.click(); expect(await page.evaluate(() => history.length)).toBe(length);
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect.poll(() => state.detailReads).toBe(detailReads + 1);
+  expect(state.monitoringReads).toBe(monitoringReads);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await systemTab.focus(); await page.keyboard.press('End'); await expect(page.locator('[data-worker-tab="prompt"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Home'); await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(page.locator('[data-worker-tab="prompt"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(systemTab).toHaveAttribute('aria-selected', 'true');
+});
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`restricted partial monitoring omits responsibilities at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  await install(page, true, locale, true); await page.goto(`/workers/${target}`);
+  await expect(page.getByText('6 / 6')).toBeVisible();
+  await expect(page.getByText(locale === 'zh-CN' ? '部分任务详情不可见。' : 'Some task details are not visible.')).toBeVisible();
+  await expect(page.getByText(locale === 'zh-CN' ? '部分详情已省略。' : 'Some details were omitted.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '容量责任' : 'Capacity responsibilities' })).toHaveCount(0);
+  await expect(page.locator('.monitoring-reservations')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..')).toContainText(locale === 'zh-CN' ? '本次观测没有可见的清理任务。' : 'No visible cleanup tasks in this observation.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });

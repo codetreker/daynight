@@ -145,6 +145,7 @@ func PersonalTaskPaused(raw *string) (bool, error) {
 
 // PersonalTaskWorker exposes the retained claim's display identity and state.
 type PersonalTaskWorker struct {
+	UserID   string
 	WorkerID string
 	State    model.WorkerState
 	Machine  model.WorkerMachine
@@ -162,5 +163,5 @@ func RetainedPersonalTaskWorker(claim *model.WorkerClaim) (*PersonalTaskWorker, 
 			return nil, fmt.Errorf("invalid retained personal task worker identity")
 		}
 	}
-	return &PersonalTaskWorker{WorkerID: claim.WorkerID, State: claim.State, Machine: claim.Machine}, nil
+	return &PersonalTaskWorker{UserID: claim.UserID, WorkerID: claim.WorkerID, State: claim.State, Machine: claim.Machine}, nil
 }

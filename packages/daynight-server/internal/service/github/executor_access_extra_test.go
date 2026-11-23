@@ -13,18 +13,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
-type accessTestScope struct {
-	store.ProjectWriteScope
-	ack     func(context.Context, store.GitHubLease, string) (bool, error)
-	pending func(context.Context, store.GitHubLease) (bool, bool, error)
-}
-
-func (s accessTestScope) GitHubDAO() store.GitHubWriteDAO {
-	return accessTestDAO{GitHubWriteDAO: s.ProjectWriteScope.GitHubDAO(), ack: s.ack, pending: s.pending}
-}
-
 type accessTestDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	ack     func(context.Context, store.GitHubLease, string) (bool, error)
 	pending func(context.Context, store.GitHubLease) (bool, bool, error)
 }
@@ -47,9 +37,9 @@ func TestExecutorAcknowledgesAccessHintOnlyAfterVerification(t *testing.T) {
 			f.connection.NextAccessCheckAt = &f.now
 			old := f.db.write
 			acks := 0
-			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-				return old(ctx, id, func(scope store.ProjectWriteScope) error {
-					return work(accessTestScope{scope, func(_ context.Context, l store.GitHubLease, id string) (bool, error) {
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return old(ctx, id, func(dao store.GitHubWorkDAO) error {
+					return work(accessTestDAO{dao, func(_ context.Context, l store.GitHubLease, id string) (bool, error) {
 						if id != hint || l != f.lease {
 							t.Fatalf("ack %q %+v", id, l)
 						}
@@ -146,9 +136,9 @@ func TestEventAccessSuccessPreservesPollAndClearsWebhookOnlyWhenDrained(t *testi
 			f.connection.NextAccessCheckAt = &f.now
 			old := f.db.write
 			acks := 0
-			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-				return old(ctx, id, func(scope store.ProjectWriteScope) error {
-					return work(accessTestScope{scope, func(_ context.Context, l store.GitHubLease, got string) (bool, error) {
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return old(ctx, id, func(dao store.GitHubWorkDAO) error {
+					return work(accessTestDAO{dao, func(_ context.Context, l store.GitHubLease, got string) (bool, error) {
 						if l != f.lease || got != hint {
 							t.Fatalf("wrong acknowledgement: %s %+v", got, l)
 						}
@@ -201,9 +191,9 @@ func TestEventAccessRateLimitAndStaleAcknowledgement(t *testing.T) {
 		hint := "original-hint"
 		f.connection.AccessHintID, f.connection.NextAccessCheckAt = &hint, &f.now
 		old := f.db.write
-		f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-			return old(ctx, id, func(scope store.ProjectWriteScope) error {
-				return work(accessTestScope{scope, func(context.Context, store.GitHubLease, string) (bool, error) { return false, nil }, func(context.Context, store.GitHubLease) (bool, bool, error) {
+		f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+			return old(ctx, id, func(dao store.GitHubWorkDAO) error {
+				return work(accessTestDAO{dao, func(context.Context, store.GitHubLease, string) (bool, error) { return false, nil }, func(context.Context, store.GitHubLease) (bool, bool, error) {
 					t.Fatal("pending read after stale acknowledgement")
 					return false, false, nil
 				}})
@@ -222,7 +212,9 @@ func TestAppChangeStopsWithoutRemoteReads(t *testing.T) {
 	f := newPollFixture(t)
 	f.lease = store.GitHubLease{Generation: 7, Token: "original"}
 	f.until = f.now.Add(time.Minute)
-	r := run{e: &Executor{db: f.db, remote: executorRemote{}, appID: 99, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, project: testProject, lease: f.lease, connection: f.connection, kind: "access", log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := f.preparedRun(executorRemote{})
+	r.lease, r.connection, r.kind, r.log = f.lease, f.connection, "access", slog.New(slog.NewTextHandler(io.Discard, nil))
+	r.appID = 99
 	if err := r.execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +298,7 @@ func TestRepositoryIdentityRefusalAndCancellation(t *testing.T) {
 			r := executorRemote{verify: func(context.Context, int64, string, string) (githubpr.RepositoryObservation, error) {
 				return githubpr.RepositoryObservation{}, &remote.Error{Code: "not_found", Status: 404}
 			}, resolve: tc.resolve}
-			run := run{e: &Executor{remote: r}, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name}}
+			run := run{remote: r, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name}}
 			_, err := run.repository(context.Background())
 			if err == nil || tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("error %v", err)
@@ -315,18 +307,8 @@ func TestRepositoryIdentityRefusalAndCancellation(t *testing.T) {
 	}
 }
 
-type accessFaultScope struct {
-	store.ProjectWriteScope
-	fail  string
-	cause error
-}
-
-func (s accessFaultScope) GitHubDAO() store.GitHubWriteDAO {
-	return accessFaultDAO{s.ProjectWriteScope.GitHubDAO(), s.fail, s.cause}
-}
-
 type accessFaultDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	fail  string
 	cause error
 }
@@ -335,25 +317,25 @@ func (d accessFaultDAO) Connection(ctx context.Context) (githubpr.Connection, er
 	if d.fail == "connection" {
 		return githubpr.Connection{}, d.cause
 	}
-	return d.GitHubWriteDAO.Connection(ctx)
+	return d.GitHubWorkDAO.Connection(ctx)
 }
 func (d accessFaultDAO) ObservedAt(ctx context.Context) (time.Time, error) {
 	if d.fail == "clock" {
 		return time.Time{}, d.cause
 	}
-	return d.GitHubWriteDAO.ObservedAt(ctx)
+	return d.GitHubWorkDAO.ObservedAt(ctx)
 }
 func (d accessFaultDAO) Renew(ctx context.Context, l store.GitHubLease, at time.Time) (bool, error) {
 	if d.fail == "renew" {
 		return false, d.cause
 	}
-	return d.GitHubWriteDAO.Renew(ctx, l, at)
+	return d.GitHubWorkDAO.Renew(ctx, l, at)
 }
 func (d accessFaultDAO) SaveRuntime(ctx context.Context, l store.GitHubLease, w store.GitHubRuntimeWrite) (bool, error) {
 	if d.fail == "save" {
 		return false, d.cause
 	}
-	return d.GitHubWriteDAO.SaveRuntime(ctx, l, w)
+	return d.GitHubWorkDAO.SaveRuntime(ctx, l, w)
 }
 func (d accessFaultDAO) AckAccessHint(_ context.Context, _ store.GitHubLease, _ string) (bool, error) {
 	if d.fail == "ack" {
@@ -383,10 +365,11 @@ func TestAccessDatabaseFailuresPropagateWithoutCompletion(t *testing.T) {
 			f.connection.AccessHintID = &hint
 			failure := errors.New("database failure")
 			old := f.db.write
-			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-				return old(ctx, id, func(scope store.ProjectWriteScope) error { return work(accessFaultScope{scope, tc.fault, failure}) })
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return old(ctx, id, func(dao store.GitHubWorkDAO) error { return work(accessFaultDAO{dao, tc.fault, failure}) })
 			}
-			r := run{e: &Executor{db: f.db, remote: f.remote(), appID: 10}, project: testProject, lease: f.lease, connection: f.connection, kind: "access", log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			r := f.preparedRun(f.remote())
+			r.lease, r.connection, r.kind, r.log = f.lease, f.connection, "access", slog.New(slog.NewTextHandler(io.Discard, nil))
 			var err error
 			switch tc.operation {
 			case "renew":
@@ -405,29 +388,5 @@ func TestAccessDatabaseFailuresPropagateWithoutCompletion(t *testing.T) {
 				t.Fatalf("saved runtime on failure: %+v", f.runtimes)
 			}
 		})
-	}
-}
-
-func TestNewExecutorRejectsMissingDependencies(t *testing.T) {
-	db := &executorStore{t: t}
-	upstream := executorRemote{}
-	for _, tc := range []struct {
-		name   string
-		db     Store
-		remote Remote
-		app    int64
-	}{
-		{"missing store", nil, upstream, 10},
-		{"missing remote", db, nil, 10},
-		{"nonpositive app", db, upstream, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if exec, err := NewExecutor(tc.db, tc.remote, tc.app, nil); err == nil || exec != nil {
-				t.Fatalf("accepted dependencies: %+v %v", exec, err)
-			}
-		})
-	}
-	if exec, err := NewExecutor(db, upstream, 10, nil); err != nil || exec == nil || exec.log == nil {
-		t.Fatalf("default logger: %+v %v", exec, err)
 	}
 }

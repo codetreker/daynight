@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
@@ -32,6 +33,7 @@ type completionProjectReadPlan struct {
 	callbackErr error
 	cancel      context.CancelFunc
 	snapshots   int
+	lifecycle   bool
 }
 
 func (s *completionProjectReadPlan) take(ctx context.Context, name string, args ...any) completionProjectReadCall {
@@ -49,6 +51,13 @@ func (s *completionProjectReadPlan) take(ctx context.Context, name string, args 
 
 func (s *completionProjectReadPlan) ReadSnapshot(ctx context.Context, operation func(store.SnapshotScope) error) error {
 	s.snapshots++
+	if s.lifecycle {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > projectLifecycleTimeout {
+			s.t.Fatal("Project lifecycle snapshot has no bounded context")
+		}
+		s.ctx = ctx
+	}
 	if ctx != s.ctx || s.snapshots != 1 {
 		s.t.Fatal("Project snapshot changed context or repeated")
 	}
@@ -106,6 +115,18 @@ func (s *completionProjectReadPlan) TransferTeam(ctx context.Context, id string)
 		s.t.Fatal("transfer Team read requires explicit result facts")
 	}
 	return value, call.err
+}
+
+func (s *completionProjectReadPlan) TransferRole(ctx context.Context, userID, projectID, teamID string) (*model.ProjectRole, error) {
+	call := s.take(ctx, "transfer role", userID, projectID, teamID)
+	if call.err != nil {
+		return nil, call.err
+	}
+	role, ok := call.result.(*model.ProjectRole)
+	if !ok {
+		s.t.Fatal("transfer role requires an explicit nullable role")
+	}
+	return role, nil
 }
 func (s *completionProjectReadPlan) Invitation(ctx context.Context, hash []byte) (model.ProjectInvitation, error) {
 	call := s.take(ctx, "invitation", hash)

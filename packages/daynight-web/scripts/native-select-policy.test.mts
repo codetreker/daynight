@@ -118,8 +118,69 @@ test('checks literal spread and createElement component props and rejects unreso
   });
 });
 
+test('allows shared presentation owners and statically resolved trigger layout aliases', async () => {
+  await fixture(async (directory, put) => {
+    await put('src/ui/selection-control/SelectTrigger.tsx', 'export const SelectTrigger = (props: unknown) => <button />;');
+    await put('src/ui/selection-control/selection-control.css', '.selection-control { --selection-control-height:32px; font-size:var(--text-sm) }.select-trigger {height:var(--selection-control-height);background:white}.selection-control__arrow,.select-trigger__count{width:10px}');
+    await put('src/view.tsx', `import { SelectTrigger as Trigger } from './ui/selection-control/SelectTrigger';
+      import * as Selection from './ui/selection-control/SelectTrigger';
+      import { createElement as element } from 'react';
+      const narrow = 'narrow'; const alias = narrow; declare const flag: boolean;
+      const a = <Trigger density="filter" layoutClassName={alias} />;
+      const b = <Selection.SelectTrigger as="summary" layoutClassName={flag ? alias : 'wide'} />;
+      const c = element(Trigger, {layoutClassName: 'factory'});
+      const d = <Trigger {...(flag ? {layoutClassName: 'spread'} : {})} />;
+      const shadow = (Trigger: any) => <Trigger className="unrelated" />;`);
+    await put('src/layout.css', '.narrow{max-width:240px}.wide{width:100%}.factory{grid-column:2}.spread{margin:8px}');
+    const result = await checkNativeSelectPolicy(directory);
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.wrappers, ['factory', 'narrow', 'spread', 'wide']);
+  });
+});
+
+test('rejects trigger skins, unresolved layout tokens and JSX/factory styling escapes', async () => {
+  await fixture(async (directory, put) => {
+    await put('src/ui/selection-control/SelectTrigger.tsx', 'export const SelectTrigger = (props: unknown) => <button />;');
+    await put('src/view.tsx', `import { SelectTrigger as Trigger } from './ui/selection-control/SelectTrigger';
+      import * as Selection from './ui/selection-control/SelectTrigger';
+      import React, { createElement as element } from 'react';
+      declare const dynamic: string; declare const props: object;
+      const a = <Trigger className="tag-filter-trigger" style={{height:36}} />;
+      const b = <Trigger layoutClassName={dynamic} />;
+      const c = element(Trigger, {className:'assignee-trigger', style:{color:'red'}});
+      const d = React.createElement(Selection.SelectTrigger, {layoutClassName:dynamic});
+      const e = <Trigger {...props} />;
+      const legacy = 'tag-filter-trigger'; const alias = legacy;
+      const f = <Trigger layoutClassName={alias} />;
+      const g = <Trigger {...{['class'+'Name']: 'bad', ['style']: {color:'red'}}} />;`);
+    await put('src/feature.css', '.tag-filter-trigger{font-size:14px}');
+    const result = await checkNativeSelectPolicy(directory);
+    assert.equal(result.diagnostics.filter(text => text.includes('className/style')).length, 6);
+    assert.equal(result.diagnostics.filter(text => text.includes('static string token')).length, 2);
+    assert.equal(result.diagnostics.filter(text => text.includes('spreads must be literal')).length, 1);
+    assert.equal(result.diagnostics.filter(text => text.includes('CSS ownership')).length, 1);
+  });
+});
+
+test('keeps native internals and shared presentation owners separate without CSS exemptions', async () => {
+  await fixture(async (directory, put) => {
+    await put('src/ui/selection-control/selection-control.css', '.selection-control{--selection-control-height:32px}.native-select__control{font-size:14px}select{color:red}');
+    await put('src/ui/native-select/native-select.css', '.native-select__control{appearance:none}.select-trigger{background:red}:root{--selection-control-height:40px}');
+    await put('src/page.css', ':root{--selection-control-height:80px}.selection-control{font-size:20px}.select-trigger__count{color:red}.selection-control__arrow path{stroke:red}');
+    const result = await checkNativeSelectPolicy(directory);
+    assert.equal(result.diagnostics.filter(text => text.startsWith('src/ui/selection-control/selection-control.css:')).length, 2);
+    assert.equal(result.diagnostics.filter(text => text.startsWith('src/ui/native-select/native-select.css:')).length, 2);
+    assert.equal(result.diagnostics.filter(text => text.startsWith('src/page.css:')).length, 4);
+  });
+});
+
 test('rejects appearance, mixed selector branches, internal markers and pseudo-element arrows', () => {
   for (const css of [
+    '.selection-control[data-density="filter"]{height:40px}', '.select-trigger{font-size:14px}',
+    '.select-trigger__label{font-weight:600}', '.select-trigger__count{padding:10px}',
+    '.selection-control__arrow path{stroke-width:3}', ':is(.selection-control,.other){background:red}',
+    '[class~="select-trigger__arrow"]{width:20px}', '.select-trigger{&:focus-visible{outline:none}}',
+    '@scope (.selection-control){:scope{font-size:20px}}',
     'input,select,textarea{font:inherit}', '.field :is(input, select, textarea):disabled{color:gray}',
     '.native-select__control{appearance:auto}', '.native-select__arrow{width:12px}',
     '[class~="native-select__control"]{background:white}', '.layout{padding:10px}',

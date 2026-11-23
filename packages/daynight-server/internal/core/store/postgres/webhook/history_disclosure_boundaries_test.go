@@ -128,7 +128,7 @@ func testHistoryDisclosureIgnoresRetentionAndPostCutoffRecords(t *testing.T, con
 		t.Fatal(err)
 	}
 	var expiry, before time.Time
-	if err := f.conn.QueryRow(ctx, `UPDATE webhook_deliveries SET state='failed',automatic_open=false,next_attempt_at=NULL,metadata_expires_at=clock_timestamp()+interval '1 second' WHERE id=$1 RETURNING metadata_expires_at`, id).Scan(&expiry); err != nil {
+	if err := f.conn.QueryRow(ctx, `UPDATE webhook_deliveries SET state='failed',automatic_open=false,next_attempt_at=NULL,metadata_expires_at=clock_timestamp()+interval '600 milliseconds' WHERE id=$1 RETURNING metadata_expires_at`, id).Scan(&expiry); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.conn.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&before); err != nil {
@@ -177,20 +177,7 @@ func testHistoryDisclosureIgnoresRetentionAndPostCutoffRecords(t *testing.T, con
 		t.Fatal(err)
 	}
 	assertStable("post-cutoff project and Delivery insertion")
-	for {
-		var expired bool
-		if err = f.conn.QueryRow(ctx, `SELECT clock_timestamp()>=$1`, expiry).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	waitForWebhookExpiry(t, ctx, f.conn, expiry)
 	assertStable("natural metadata expiry")
 	tx, err = f.conn.Begin(ctx)
 	if err != nil {

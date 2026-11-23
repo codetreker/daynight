@@ -17,7 +17,7 @@ code consumption and the session hash update share a transaction. Completion
 checks the actual preview credential against the source session before returning
 the saved target. Only a confirmed commit returns a secret. The
 [identity design](../../../../docs/design/daynight-auth.md) describes the data
-and module boundary; HTTP adoption remains separate.
+and module boundary; [explicit browser SSO](2026-11-16-preview-sso-http.md) owns HTTP adoption.
 
 The [identity boundary decision](2026-11-05-server-identity-boundaries.md)
 continues to assign business rules to Core, transaction coordination to Service,
@@ -43,4 +43,8 @@ Existing sessions remain valid with no preview hash until SSO completes. A later
 exchange replaces the preview hash, so concurrent exchanges or account switching
 can leave a browser with an invalid cookie; a new SSO can recover. A lost commit
 acknowledgment is not proof of rollback and the exchange is not replayed. Browser
-navigation and cookie behavior require the separate HTTP integration.
+navigation and Cookie behavior are owned by the separate HTTP integration.
+The [browser activity decision](2026-11-23-browser-session-activity.md) keeps
+that shared row and adds a single rolling idle deadline; preview renewal rechecks
+the original hash after protected content admission, so a rotated hash cannot
+renew the replacement credential.

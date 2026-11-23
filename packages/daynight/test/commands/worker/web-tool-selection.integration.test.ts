@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -57,7 +58,7 @@ const assertNativeInvocation = (request: NativeRequest, receipts: readonly Nativ
   });
 };
 
-const fixture = async () => {
+const fixture = async (afterServiceStart?: (port: number) => void) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/web-tool-selection");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), repository = path.join(home, "repository");
@@ -94,11 +95,35 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
 `);
   const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
   const tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd: repository, environment: { ...process.env },
-    localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
+    localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } }, readActiveSelections: () => [] });
+  tools.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } } });
   const selectToolLaunch = vi.fn(tools.selectToolLaunch);
-  const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(relay, "listening");
-  const address = relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
+  const service = createServer();
+  const relay = new WebSocketServer({ server: service });
+  relay.on("headers", headers => headers.push("Daynight-Task-Body-History-Version: 1"));
+  let mainCleanupRegistered = false;
+  let serviceClose: Promise<void> | undefined;
+  const closeService = (): Promise<void> => serviceClose ??= (async () => {
+    const failures: unknown[] = [];
+    const close = (start: (done: (error?: Error) => void) => void): Promise<void> => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Fixture service close timed out.")), 5000);
+      try { start(error => { clearTimeout(timer); if (error) reject(error); else resolve(); }); }
+      catch (error) { clearTimeout(timer); reject(error); }
+    });
+    for (const socket of relay.clients) socket.terminate();
+    try { await close(done => relay.close(done)); } catch (error) { failures.push(error); }
+    if (service.listening) {
+      try { await close(done => { service.close(done); service.closeAllConnections(); }); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "Fixture service cleanup failed.");
+  })();
+  cleanups.push(async () => { await closeService(); if (!mainCleanupRegistered) await rm(home, { recursive: true, force: true }); });
+  service.listen(0, "127.0.0.1"); await once(service, "listening");
+  const address = service.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
+  afterServiceStart?.(address.port);
   const origin = `http://127.0.0.1:${address.port}`, workerId = randomUUID(), userId = randomUUID(), projectId = randomUUID();
+  await mkdir(state, { recursive: true });
+  await writeFile(path.join(state, "config.yml"), `serverUrl: ${origin}\nserverToken: controlled-task-token\n`);
   const database = path.join(home, "worker.sqlite");
   let store = openWebExecutionStore(database);
   const bindings = new Map<string, WorktreeBinding>(), tasks = new Map<string, { tool: "A" | "B"; sessionId: string }>();
@@ -140,7 +165,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     expect((await lstat(binding.worktreePath)).isDirectory()).toBe(true);
     return binding;
   }), prepareRepository: unexpected, findWorktree: unexpected, removeWorktree: unexpected, dispose: unexpected } as unknown as WorkerGitManager;
-  const buildPrompt = vi.fn((task: LocalTask) => `original assignment ${tasks.get(task.claimId)!.tool}`);
+  const buildPrompt = vi.fn((task: LocalTask) => `${task.resources.nativeSession === null ? "original" : "resumed"} assignment ${tasks.get(task.claimId)!.tool}`);
   const leaseOwners: ReturnType<typeof createControllerJobLeases>[] = [];
   const observerJobs = new Map<string, ControllerJobLease>();
   const observerFor = (proof: ProcessProof) => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
@@ -159,9 +184,21 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     return { launcher, backend };
   };
   let execution = stack();
-  const relayErrors: unknown[] = [];
+  const relayErrors: unknown[] = [], taskReads: string[] = [];
+  service.on("request", (request, response) => {
+    const task = store.listUnfinishedTasks().find(item => request.url === `/api/v1/projects/${item.projectId}/tasks/${item.taskId}`);
+    if (request.method !== "GET" || request.headers.authorization !== "Bearer controlled-task-token" || !task) {
+      relayErrors.push(new Error("Unexpected fixture Task request.")); response.writeHead(404); response.end(); return;
+    }
+    taskReads.push(task.taskId);
+    const now = new Date().toISOString();
+    response.writeHead(200, { "content-type": "application/json", "daynight-user-id": userId });
+    response.end(JSON.stringify({ id: task.taskId, projectId, type: "task", parentId: null, title: "Fixture task", description: "", tags: [], status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: userId, startedAt: now, completedAt: null, cancelledAt: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: now, updatedAt: now, version: 1,
+      properties: { worker: { claimId: task.claimId, state: "active", userId, workerId, machine: { id: workerId, name: "fixture" }, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", agent: "codex", agentControlMode: "web", worktreeId: task.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: now } } }));
+  });
   relay.on("connection", (socket, request) => {
     if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-web-grant") { socket.close(1008); return; }
+    if (request.headers["daynight-task-body-history-version"] !== "1") { relayErrors.push(new Error("Task body history capability was not requested.")); socket.close(1008); return; }
     socket.on("message", raw => {
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString()));
@@ -218,6 +255,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     }
     return result.task;
   };
+  mainCleanupRegistered = true;
   cleanups.push(async () => {
     let safe = true, cleanupFailure: unknown;
     try { for (const task of store.listUnfinishedTasks()) if (task.webExecution?.launchSubmission !== "not-submitted" && task.webExecution !== null) await shutdown(task); }
@@ -227,8 +265,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       for (const owner of leaseOwners) try { await owner.close(); } catch (error) { failures.push(error); }
       for (const lease of observerJobs.values()) try { releaseControllerJobLease(lease); } catch (error) { failures.push(error); }
       observerJobs.clear();
-      for (const socket of relay.clients) socket.terminate();
-      try { await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve())); } catch (error) { failures.push(error); }
+      try { await closeService(); } catch (error) { failures.push(error); }
       try { await tools.close(); } catch (error) { failures.push(error); }
       try { store.close(); } catch (error) { failures.push(error); }
       if (safe && failures.length === 0) {
@@ -249,23 +286,33 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     store.bindWorktree(identity, binding, Date.now());
     return identity;
   };
-  const ready = async (identity: ClaimIdentity, signal: AbortSignal) => {
+  const ready = async (identity: ClaimIdentity, signal: AbortSignal, requireResumeAssignment = false) => {
     const deadline = Date.now() + 30_000;
     for (;;) {
       await execution.backend.advance(current(identity), signal);
       const saved = journal(identity);
-      if (saved?.lifecycle === "ready" && saved.initialInputState === "confirmed") {
+      const resumeInput = requireResumeAssignment && (await requests()).some(request => request.method === "turn/start" && request.fixtureTool === tasks.get(identity.claimId)!.tool && (request.params?.input as { text?: string }[] | undefined)?.some(part => part.text === `resumed assignment ${tasks.get(identity.claimId)!.tool}`));
+      if (saved?.lifecycle === "ready" && saved.initialInputState === "confirmed" && (!requireResumeAssignment || resumeInput)) {
         expect(saved.nativeSessionId).toBe(nativeIds[tasks.get(identity.claimId)!.tool]); return current(identity);
       }
       if (Date.now() >= deadline) throw new Error("Original Web generation did not become ready with its confirmed initial input.");
       await delay(100);
     }
   };
-  return { home, tools, toolEntries, nativeIds, current, journal, addTask, ready, shutdown, observerFor, register, grant, selectToolLaunch, buildPrompt, requests, receipts, relayErrors,
+  return { home, tools, toolEntries, nativeIds, current, journal, addTask, ready, shutdown, observerFor, register, grant, selectToolLaunch, buildPrompt, requests, receipts, relayErrors, taskReads,
     get backend() { return execution.backend; }, get store() { return store; },
     reopen: () => { store.close(); store = openWebExecutionStore(database); execution = stack(); },
   };
 };
+
+test("closes the service when fixture initialization fails after listening", async () => {
+  let port = 0;
+  await expect(fixture(value => { port = value; throw new Error("controlled initialization failure"); })).rejects.toThrow("controlled initialization failure");
+  const cleanup = cleanups.pop(); expect(cleanup).toBeDefined(); await cleanup!();
+  const probe = createServer();
+  try { probe.listen(port, "127.0.0.1"); await once(probe, "listening"); }
+  finally { if (probe.listening) await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve())); }
+});
 
 test("correlates native invocations when a PID is reused", () => {
   const execPath = "node", pid = 6044;
@@ -292,7 +339,7 @@ test("correlates native invocations when a PID is reused", () => {
   expect(() => assertNativeInvocation(requestA, [...receipts, receiptA], expectedA)).toThrow();
 });
 
-test("restores the original Web claim with A after target B and refuses missing A without replacing its native Session or replaying its prompt", async () => {
+test("restores the original Web claim with A after target B and refuses missing A without replacing its native Session or replaying its initial input", async () => {
   const f = await fixture(), signal = AbortSignal.timeout(150_000);
   const identityA = await f.addTask("A"), original = await f.ready(identityA, signal), initial = original.webExecution!;
   const ticketA = await readLaunchTicket(f.home, initial.launchId), ticketBytes = await readFile(initial.ticketPath!, "utf8"), a = original.configuration!.toolLaunch!;
@@ -303,7 +350,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   await f.shutdown(identityA);
 
   vi.stubEnv("PATH", path.join(f.home, "path-B") + path.delimiter + (process.env.PATH ?? ""));
-  f.tools.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  f.tools.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
   const identityB = await f.addTask("B"), next = await f.ready(identityB, signal), b = next.configuration!.toolLaunch!;
   expect(b.entryPath).toBe(f.toolEntries.B); expect(b.selectionKey).not.toBe(a.selectionKey);
   expect(next.configuration!.toolObservation).toMatchObject({ version: "1.20.2" });
@@ -315,7 +362,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, cleanup: { kind: "shutdown" }, resources: { nativeSession: { sessionId: f.nativeIds.A } } });
   expect(f.tools.manager.currentSelection("codex", "web")!.selectionKey).toBe(b.selectionKey);
   f.store.clearShutdown(identityA, Date.now());
-  const resumed = await f.ready(identityA, signal), resumedExecution = resumed.webExecution!;
+  const resumed = await f.ready(identityA, signal, true), resumedExecution = resumed.webExecution!;
   expect(resumed).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: original.resources.nativeSession }, recovery: { count: 0, pauseReason: null, retryAuthorized: false } });
   expect(resumedExecution).toMatchObject({ executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "2", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt, initialInputState: "confirmed" });
   const resumedTicket = await readLaunchTicket(f.home, resumedExecution.launchId);
@@ -325,7 +372,15 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect((await f.requests()).filter(request => request.method === "thread/resume")).toMatchObject([{ fixtureTool: "A", params: { threadId: f.nativeIds.A } }]);
   const journalPath = path.join(controllerExecutionDirectory(f.home, initial.executionId), "journal.sqlite");
   expect(readControllerOperation(journalPath, initial.initialOperationId)).toMatchObject({ state: "confirmed", kind: "initial" });
-  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(1);
+  const aInputs = (await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A");
+  expect(aInputs).toMatchObject([
+    { params: { clientUserMessageId: initial.initialOperationId, input: [{ type: "text", text: "original assignment A" }] } },
+    { params: { threadId: f.nativeIds.A, input: [{ type: "text", text: "resumed assignment A" }] } },
+  ]);
+  expect(aInputs).toHaveLength(2);
+  const resumeOperationId = aInputs[1]!.params!.clientUserMessageId as string;
+  expect(resumeOperationId).not.toBe(initial.initialOperationId);
+  expect(readControllerOperation(journalPath, resumeOperationId)).toMatchObject({ kind: "worker_input", executionGeneration: "2", state: "confirmed" });
   await f.shutdown(identityA);
 
   const beforeRemoval = await f.receipts();
@@ -336,8 +391,8 @@ test("restores the original Web claim with A after target B and refuses missing 
   const refused = f.journal(identityA)!; await stopped(refused.controllerProcess!, refused.nativeProcesses, f.observerFor(refused.controllerProcess!));
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: { sessionId: f.nativeIds.A } }, webExecution: { executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "3", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt } });
   expect(await f.receipts()).toEqual(beforeRemoval);
-  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(1);
-  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2); expect(f.buildPrompt).toHaveBeenCalledTimes(2);
+  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(2);
+  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2);
   const node = await realpath(process.execPath);
   for (const receipt of beforeRemoval) {
     expect(await realpath(receipt.execPath)).toBe(node);
@@ -355,4 +410,5 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect(starts).toHaveLength(expectedInvocations.length);
   starts.forEach((request, index) => assertNativeInvocation(request, beforeRemoval, expectedInvocations[index]!));
   expect(f.relayErrors).toEqual([]);
+  expect(f.taskReads).toEqual(expect.arrayContaining([identityA.taskId, identityB.taskId]));
 }, 180_000);

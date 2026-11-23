@@ -1,8 +1,8 @@
 import path from "node:path";
-import { toolSelectionKey, type ResolvedToolLaunch } from "../../../src/platform/tool-executables.js";
+import { toolSelectionKey } from "../../../src/platform/tool-executables.js";
 
 /** Store inputs identify recipes; subprocess tests separately verify actual files. */
-export const recordedHerdrTool = (tool: "codex" | "herdr", suffix = "A"): ResolvedToolLaunch => {
+export const recordedHerdrTool = <T extends "codex" | "herdr">(tool: T, suffix = "A") => {
   const file = path.resolve("tools", `${tool}-${suffix}`);
   const value = { schemaVersion: 1 as const, tool, context: "herdr" as const, source: "explicit" as const, entryPath: file, canonicalEntryPath: file, executablePath: file, interpreterPath: null, command: { file, prefixArgs: [] }, artifacts: [{ role: "entry" as const, path: file, realPath: file, size: "1", sha256: "a".repeat(64) }] };
   return { ...value, selectionKey: toolSelectionKey(value) };

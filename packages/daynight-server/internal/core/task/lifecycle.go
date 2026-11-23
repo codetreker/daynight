@@ -11,9 +11,11 @@ import (
 )
 
 type SetTaskStatus struct {
-	Version int64
-	Status  model.TaskStatus
-	ClaimID *string
+	Version                  int64
+	Status                   model.TaskStatus
+	ClaimID                  *string
+	CancelDescendants        bool
+	CancelDescendantsPresent bool
 }
 
 type DeleteTask struct {
@@ -31,6 +33,9 @@ func PrepareParentStart(ctx context.Context, dao store.TaskWriteDAO, child Mutat
 	parent, err := dao.ParentTask(ctx, *child.Current.ParentID)
 	if err != nil {
 		return Mutation{}, err
+	}
+	if parent.Type == model.TaskTypeTask {
+		return Mutation{}, nil
 	}
 	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
 		return Mutation{}, invalidInput("Parent must identify a visible Goal in this project.")
@@ -52,6 +57,9 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 	if !input.Status.Valid() {
 		return input, invalidInput("Task status is invalid.")
 	}
+	if (input.CancelDescendantsPresent || input.CancelDescendants) && input.Status != model.TaskCancelled {
+		return input, invalidInput("Descendant cancellation requires cancelled status.")
+	}
 	if input.ClaimID != nil {
 		if input.Status != model.TaskDone {
 			return input, invalidInput("A worker claim may only accompany completion.")
@@ -69,6 +77,9 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 // the project write lock. A false changed result preserves a same-status no-op.
 func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal model.Principal, current model.Task, input SetTaskStatus, worker *model.WorkerClaim) (store.TaskWrite, bool, error) {
 	if current.Type == model.TaskTypeGoal {
+		if input.CancelDescendantsPresent || input.CancelDescendants {
+			return store.TaskWrite{}, false, invalidInput("Descendant cancellation requires an ordinary Task.")
+		}
 		if input.Status == model.TaskProposed || !input.Status.Valid() {
 			return store.TaskWrite{}, false, invalidInput("Goal status must be todo, in_progress, done or cancelled.")
 		}
@@ -105,6 +116,15 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 		return store.TaskWrite{}, false, &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: current.BlockedBy}
 	}
 	if current.Status == model.TaskDone && !input.Status.IsTerminal() {
+		if current.ParentID != nil && current.ParentType == model.TaskTypeTask {
+			parent, err := dao.ParentTask(ctx, *current.ParentID)
+			if err != nil {
+				return store.TaskWrite{}, false, err
+			}
+			if parent.Status.IsTerminal() {
+				return store.TaskWrite{}, false, &model.Fault{Code: "task_parent_terminal", Message: "The parent task has ended.", TaskIDs: []string{parent.ID}}
+			}
+		}
 		dependents, err := dao.ActiveDependentIDs(ctx, current.ID)
 		if err != nil {
 			return store.TaskWrite{}, false, err
@@ -136,8 +156,24 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 			return store.TaskWrite{}, false, ClaimConflict()
 		}
 	}
+	if (input.Status == model.TaskDone || input.Status == model.TaskCancelled) && !input.CancelDescendants {
+		if err := requireFinishedChildren(ctx, dao, current.ID); err != nil {
+			return store.TaskWrite{}, false, err
+		}
+	}
 	values.Status = input.Status
 	return values, true, nil
+}
+
+func requireFinishedChildren(ctx context.Context, dao store.TaskWriteDAO, id string) error {
+	ids, err := dao.UnfinishedChildIDs(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(ids) != 0 {
+		return &model.Fault{Code: "task_unfinished_children", Message: "Finish or cancel direct child tasks first.", TaskIDs: ids}
+	}
+	return nil
 }
 
 func cancelledTransition() error {
@@ -161,6 +197,9 @@ func ValidateDelete(ctx context.Context, dao store.TaskWriteDAO, current model.T
 	}
 	if worker != nil && worker.State == model.WorkerActive {
 		return &model.Fault{Code: "invalid_transition", Message: "Release the active worker execution before deleting the task."}
+	}
+	if err := requireFinishedChildren(ctx, dao, current.ID); err != nil {
+		return err
 	}
 	if !removeDepends {
 		dependents, err := dao.DependentIDs(ctx, current.ID)

@@ -26,7 +26,11 @@ func TestCredentialUsageMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := &Store{Pool: pool}
-			mustQueryExec(t, s, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'retained',now())`, queryID(1), queryID(2), deviceStoreHash("retained"))
+			if upgrade {
+				mustQueryExec(t, s, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'retained',now())`, queryID(1), queryID(2), deviceStoreHash("retained"))
+			} else {
+				mustQueryExec(t, s, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,business_scopes,scope_version) VALUES($1,$2,$3,'retained',now(),ARRAY['task:read'],1)`, queryID(1), queryID(2), deviceStoreHash("retained"))
+			}
 			mustQueryExec(t, s, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at) VALUES($1,$2,'client','{}','resource','scope',now(),now()+interval '1 day',now())`, queryID(3), queryID(2))
 			if upgrade {
 				if err := migrate(ctx, pool, schemaMigrations); err != nil {

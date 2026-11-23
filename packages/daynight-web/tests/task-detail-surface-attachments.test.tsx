@@ -33,7 +33,6 @@ const fixture = (items: readonly Attachment[]): AttachmentApi => {
   return {
   list: vi.fn(async () => ({ items: [...files.values()], nextCursor: null })),
   readText: vi.fn(async (_project, _task, path) => `Contents of ${path}`),
-  checkPreview: vi.fn(async () => {}),
   put: vi.fn(async (_project, _task, path) => { const item = file(path); files.set(path, item); return item; }),
   remove: vi.fn(async (_project, _task, path) => { files.delete(path); }),
   };
@@ -113,8 +112,9 @@ describe('full-detail attachment surface', () => {
     expect(window.location.pathname).toBe(attachmentPageUrl(projectId, taskId, 'notes/new.txt'));
     expect(screen.getByRole('link', { name: '下载' })).toHaveAttribute('href', expect.stringContaining('/notes/new.txt'));
     expect(screen.getByLabelText('目标相对路径')).toHaveValue('');
-    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.txt')).not.toBeVisible();
+    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toHaveFocus();
   });
 
   it('reveals only a changed route target while retaining manually closed directories through refresh', async () => {
@@ -196,7 +196,7 @@ describe('full-detail attachment surface', () => {
     await act(async () => next.resolve({ items: [], nextCursor: null }));
     await screen.findByRole('heading', { name: 'Full document' });
     expect(screen.getByRole('table')).toHaveTextContent('UIReady');
-    expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);
+    expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);
     expect(screen.getByText('<script>unsafe()</script>')).toBeVisible();
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByRole('heading', { name: item.path })).toHaveAttribute('title', item.path);

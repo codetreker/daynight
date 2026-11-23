@@ -27,7 +27,6 @@ const (
 	testProjectID = "a1111111-a111-4111-8111-a11111111111"
 	testTaskID    = "b2222222-b222-4222-8222-b22222222222"
 	testUserID    = "c3333333-c333-4333-8333-c33333333333"
-	testStepID    = "abcdef01"
 	testEpoch     = "d4444444-d444-4444-8444-d44444444444"
 )
 
@@ -57,7 +56,6 @@ type resourceTestHandler struct {
 	principal        model.Principal
 	Tasks            *taskServiceMock
 	Observations     *observationServiceMock
-	Steps            *stepsServiceMock
 	Threads          *threadsServiceMock
 	Search           taskhttp.SearchOperation
 	Sync             taskhttp.SyncOperation
@@ -70,7 +68,6 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 		serviceCalls: newServiceCalls(t), token: "test-pat", principal: testPrincipal(),
 		Tasks:        newTaskServiceMock(t),
 		Observations: newObservationServiceMock(t),
-		Steps:        newStepsServiceMock(t),
 		Threads:      newThreadsServiceMock(t),
 	}
 	handler.required = func() []string {
@@ -98,7 +95,6 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 	}
 	mux := http.NewServeMux()
 	taskhttp.TaskRoutes(mux, handler.Tasks, handler.Observations, auth, logger)
-	taskhttp.TaskStepsRoutes(mux, handler.Steps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, handler.Threads, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
 		if err := handler.check("Search", handler.Search != nil); err != nil {

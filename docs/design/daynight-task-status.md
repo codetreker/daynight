@@ -111,7 +111,7 @@ MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_
 
 ## Web 读取、缓存与进度
 
-Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足、终态时间和进度规则。sameSummary 与完整响应保护包含 cancelledAt。读取资料不走 markDeleted，不清空仍有权访问的描述、附件、Steps 或 Thread。
+Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足、终态时间和进度规则。sameSummary 与完整响应保护包含 cancelledAt。读取资料不走 markDeleted，不清空仍有权访问的描述、附件或 Thread。
 
 持久缓存的必需字段变化通过显式 schema 升级重建受影响的 Project、summary 和 detail 记录；未改变的 profile 格式保留。不能用缺 cancelledAt→null 兼容旧缓存。既有用户/项目 generation、历史 fence、高版本合并和同版本不一致拒绝继续适用。
 
@@ -135,4 +135,6 @@ Worker 仅凭成功完整自有 inventory 中 claim 缺席确认所有权丢失�
 
 真实数据库验证默认 proposed 与显式 todo 创建、迁移资料保全、五态组合、blocked 取消、release 后取消、active/claim/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
 
-CLI native 验证两种 launcher 与严格解析，Web验证显式schema重建、双图投影、持久读取、ended统计、取消确认/筛选、active项禁派发、未知结果及旧历史保护。服务端与第一方读取必要修改以同一可运行修订交付，配套server、CLI和内置Web组合验收。普通实现不隐含npm发布或生产部署权限，不回退新状态以兼容旧客户端。模块门禁、覆盖率、必要CI和真实独立批准保持。
+CLI 在原生环境验证两种 launcher 与严格解析。Web 验证显式 schema 重建、双图投影、持久读取、ended 统计、取消确认与筛选、active 项禁派发、未知结果和旧历史保护。Server、CLI 和内置 Web 的组合验收验证第一方读端对同一状态契约的理解，保持模块门禁、覆盖率、必要 CI 和独立批准要求。
+
+服务端保留真实状态，不为旧读端改写或回退状态值。按[组件交付与启用规则](../development.md#component-delivery-and-activation)分别安排代码合入、运行时切换和客户端采用。组合验收不证明已发布客户端支持新状态；需要支持的混合版本组合须另行验证。普通实现不授权 npm 发布或生产部署。

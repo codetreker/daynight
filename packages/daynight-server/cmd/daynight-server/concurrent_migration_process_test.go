@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -107,6 +109,7 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		t.Fatal("could not select distinct service addresses")
 	}
 	secondValues["DAYNIGHT_PUBLIC_ORIGIN"] = "http://" + secondValues["DAYNIGHT_LISTEN_ADDR"]
+	secondValues["DAYNIGHT_PREVIEW_ORIGIN"] = testauth.PreviewOrigin(secondValues["DAYNIGHT_PUBLIC_ORIGIN"])
 	secondValues["DAYNIGHT_UNIAUTH_CALLBACK_URL"] = secondValues["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/auth/callback"
 	adminURL := firstValues["DAYNIGHT_DATABASE_URL"]
 	applications := []string{"migration_first_" + strings.ToLower(rand.Text()), "migration_second_" + strings.ToLower(rand.Text())}
@@ -196,28 +199,28 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		+ (SELECT count(*) FROM oauth_authorization_cleanup_cursor WHERE singleton)`).Scan(&seedRows); err != nil || seedRows != 3 {
 		t.Fatalf("concurrent initialization lost system records: count=%d error=%v", seedRows, err)
 	}
-	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres")
+	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations")
 	var wantVersions []int64
-	for _, directory := range []string{filepath.Join(migrationRoot, "migrations"), filepath.Join(migrationRoot, "internal", "migration026", "migrations")} {
-		entries, err := os.ReadDir(directory)
+	if err := filepath.WalkDir(migrationRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-				continue
-			}
-			prefix, _, found := strings.Cut(entry.Name(), "_")
-			version, err := strconv.ParseInt(prefix, 10, 64)
-			if !found || err != nil || version < 1 {
-				t.Fatalf("invalid migration filename %q", entry.Name())
-			}
-			wantVersions = append(wantVersions, version)
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			return nil
 		}
+		prefix, _, found := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if !found || err != nil || version < 1 {
+			return fmt.Errorf("invalid migration filename %q", path)
+		}
+		wantVersions = append(wantVersions, version)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	slices.Sort(wantVersions)
 	if !slices.Equal(versions, wantVersions) {
-		t.Fatalf("concurrent processes did not share the complete migration ledger: %v", versions)
+		t.Fatalf("concurrent processes did not share the complete migration ledger: got=%v want=%v", versions, wantVersions)
 	}
 	if len(versions) < 39 || versions[37] != 38 || versions[38] != 39 {
 		t.Fatalf("OAuth migrations missing from ledger: %v", versions)

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"reflect"
 	"sync"
 	"testing"
@@ -57,6 +58,7 @@ func (d registrationOwnerDAO) LockTestOwner(ctx context.Context, user string) er
 }
 
 func TestProfilePatchSharesPATWithSameOwnerTestRegistrationRetry(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -64,8 +66,8 @@ func TestProfilePatchSharesPATWithSameOwnerTestRegistrationRetry(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	expires := now.Add(time.Hour)
 	pats := []model.PersonalAccessToken{
-		{ID: uuid.NewString(), UserID: user.ID, TokenHash: deviceStoreHash(uuid.NewString()), Name: "retry", CreatedAt: now, ExpiresAt: &expires},
-		{ID: uuid.NewString(), UserID: user.ID, TokenHash: deviceStoreHash(uuid.NewString()), Name: "original", CreatedAt: now, ExpiresAt: &expires},
+		{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: deviceStoreHash(uuid.NewString()), Name: "retry", CreatedAt: now, ExpiresAt: &expires},
+		{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: deviceStoreHash(uuid.NewString()), Name: "original", CreatedAt: now, ExpiresAt: &expires},
 	}
 	identityScopeTest(t, database, func(scope store.IdentityScope) error {
 		for _, pat := range pats {

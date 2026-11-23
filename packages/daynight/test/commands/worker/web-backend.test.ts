@@ -16,15 +16,132 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
-import * as storagePreparation from "../../../src/commands/controller/storage-preparation.js";
 import * as storageLock from "../../../src/commands/controller/storage-lock.js";
 import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
+import { ArchiveRepairRequiredError, ArchiveRequestError } from "../../../src/commands/controller/archive-error.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
+
+it("stops the proven native boundary without mutating its Task writer or releasing its Windows lease", async () => {
+  const f = await orchestrationFixture();
+  const lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(), get: vi.fn(async () => lease), release: vi.fn(), close: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, jobLeases: leases,
+    platform: "windows", buildPrompt: () => "managed", emit: vi.fn(), now: Date.now, request: f.source.request });
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const before = f.store.getTask(f.task), deadline = Date.now() + 1_000;
+  await backend.requestExecutionStop(f.task, deadline);
+  expect(stop).toHaveBeenCalledWith(f.snapshot.controllerProcess, f.snapshot.nativeProcesses, deadline, lease);
+  expect(f.store.getTask(f.task)).toEqual(before);
+  expect(f.source.request).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled(); expect(leases.close).not.toHaveBeenCalled();
+});
+
+it.each(["ticket", "journal", "owner"] as const)("refuses native cancellation when the original %s identity conflicts", async source => {
+  const f = await orchestrationFixture();
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  if (source === "ticket") vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...f.source.ticket, claimId: randomUUID() });
+  if (source === "journal") f.source.saved.mockReturnValue({ ...f.snapshot, controllerInstanceId: randomUUID() });
+  const input = source === "owner" ? { ...f.task, workerId: randomUUID() } : f.task;
+  const before = f.store.getTask(f.task);
+  await expect(f.backend.requestExecutionStop(input, Date.now() + 1_000)).rejects.toThrow();
+  expect(stop).not.toHaveBeenCalled(); expect(f.store.getTask(f.task)).toEqual(before);
+});
+
+it("continues a healthy accepted original through orchestration recovery after an earlier recovery", async () => {
+  const f = await orchestrationFixture();
+  const task = f.store.beginRecovery(f.task, 8);
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, initialInputState: "provider_accepted" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockImplementation(async (_ticket, action) => action.kind === "submit_worker_input"
+    ? { requestId: randomUUID(), ok: true, snapshot, inputResult: { kind: "waiting", reason: "task_paused" } }
+    : { requestId: randomUUID(), ok: true, snapshot, workerInputProtocol: 1 });
+  f.store.blockOrchestration(task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 9);
+  const result = await f.backend.advanceResult(task, new AbortController().signal, undefined, async () => null);
+  expect(result).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(f.store.getOrchestrationBlocker(task)).toBeNull();
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "submit_worker_input"]);
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("does not infer legacy capability from a failed Controller observation", async () => {
+  const f = await orchestrationFixture();
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  f.source.stopped.mockResolvedValue(false);
+  f.source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("Controller transport unavailable."));
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow();
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each(["ordinary", "orchestration"] as const)("rejects an invalid advertised Worker protocol during %s observation", async mode => {
+  const f = await orchestrationFixture();
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: f.snapshot, workerInputProtocol: 2 as 1 });
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("protocol is unsupported");
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+});
+
+it.each(["ordinary", "orchestration"] as const)("recognizes an idle legacy Controller during %s observation and rechecks it before adoption", async mode => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(snapshot);
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  const authority = vi.fn(async () => null);
+  const candidate = await f.backend.advanceResult(f.task, new AbortController().signal, undefined, authority);
+  expect(candidate.kind).toBe("upgrade");
+  expect(await f.backend.confirmUpgrade(candidate.task, async () => "task_paused", new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(await f.backend.confirmUpgrade(candidate.task, authority, new AbortController().signal)).toMatchObject({ kind: "upgrade" });
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "observe", "observe"]);
+  expect(f.store.getTask(f.task)?.resources.nativeSession).toEqual(f.task.resources.nativeSession);
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+});
+
+it("logs automatic input identity and waiting reason without prompt or IPC secret", async () => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockImplementation(async (_ticket, action) => action.kind === "submit_worker_input"
+    ? { requestId: randomUUID(), ok: true, snapshot, inputResult: { kind: "waiting", reason: "task_paused" } }
+    : { requestId: randomUUID(), ok: true, snapshot, workerInputProtocol: 1 });
+  const events: { kind: string; message: string }[] = [];
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: () => "private prompt marker", emit: event => events.push(event), now: () => 50_000, request: f.source.request });
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 9);
+  expect(await backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  const logged = events.find(event => event.kind === "web-input")!;
+  const action = f.source.request.mock.calls.find(([, value]) => value.kind === "submit_worker_input")![1];
+  expect(action.kind).toBe("submit_worker_input");
+  if (action.kind !== "submit_worker_input") throw new Error("Expected Worker input.");
+  expect(JSON.parse(logged.message)).toMatchObject({ purpose: "assignment", operationId: action.operationId, executionId: f.source.ticket.executionId, sessionId: f.source.ticket.sessionId, controllerInstanceId: f.source.ticket.controllerInstanceId, generation: f.source.ticket.executionGeneration, outcome: "waiting", detail: "task_paused" });
+  expect(logged.message).not.toContain("private prompt marker");
+  expect(logged.message).not.toContain(f.source.ticket.ipcSecret);
+  expect(events.filter(event => event.kind === "web-input" && JSON.parse(event.message).outcome === "waiting")).toHaveLength(1);
+});
+
+it("logs a legacy pause before any input operation without disclosing its frozen prompt", async () => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  const events: { kind: string; message: string }[] = [];
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: () => "private prompt marker", emit: event => events.push(event), now: () => 50_000, request: f.source.request });
+  expect(await backend.advanceResult(f.task, new AbortController().signal, undefined, async () => "task_paused")).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  const waiting = events.find(event => event.kind === "web-input")!;
+  expect(JSON.parse(waiting.message)).toMatchObject({ outcome: "waiting", detail: "task_paused", operationId: null, executionId: f.source.ticket.executionId, sessionId: f.source.ticket.sessionId });
+  expect(waiting.message).not.toContain(f.source.ticket.initialPrompt);
+  expect(waiting.message).not.toContain(f.source.ticket.ipcSecret);
+});
 
 it("waits before initial Web intent when readiness changes during worktree preparation", async () => {
   const f = await fixture(); let complete = true;
@@ -37,19 +154,18 @@ it("waits before initial Web intent when readiness changes during worktree prepa
   expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
 });
 
-it.each(["lock_busy", "physical_capacity"] as const)("keeps the stopped generation and recovery allowance while storage waits (%s)", async reason => {
+it("keeps the stopped generation and recovery allowance while storage ownership is held", async () => {
   const f = await recoveryFixture();
   f.store.pauseRecovery(f.task, "Original failure", 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
-  if (reason === "lock_busy") vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => { throw new Error("Storage ownership held.", { cause: new InstanceLockHeldError(process.pid) }); });
-  else vi.mocked(storagePreparation.prepareControllerStorage).mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: new Error("Storage reservation unavailable.") });
+  vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => { throw new Error("Storage ownership held.", { cause: new InstanceLockHeldError(process.pid) }); });
   expect(await f.backend.advanceResult(authorized, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "storage_maintenance" });
   const waiting = f.store.getTask(f.task)!;
   expect(waiting.webExecution).toMatchObject({ executionGeneration: "1", launchId: authorized.webExecution!.launchId });
   expect(waiting.recovery).toEqual(authorized.recovery);
   expect(f.launcher.launch).not.toHaveBeenCalled();
   const observed = await f.backend.advanceResult(waiting, new AbortController().signal, () => false);
-  expect(observed.kind).toBe("observed");
+  expect(observed).toMatchObject({ kind: "waiting_input", reason: "native_input" });
   expect(observed.task.webExecution!.executionGeneration).toBe("2");
   expect(f.launcher.launch).toHaveBeenCalledOnce();
 });
@@ -303,7 +419,7 @@ it.skipIf(process.platform === "win32")("does not restore a checkout while an un
     f.source.saved.mockReturnValue(saved); vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(saved);
     f.source.stopped.mockRestore(); vi.mocked(processProof.inspectProcessProof).mockResolvedValue("stopped");
     await rm(task.resources.worktree!.worktreePath, { recursive: true }); vi.mocked(f.git.prepareWorktree).mockClear();
-    await expect(f.backend.advance(task, new AbortController().signal)).rejects.toThrow("process tree remains active");
+    await expect(f.backend.advance(task, new AbortController().signal)).rejects.toThrow("original Web processes have not been confirmed stopped");
     expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
@@ -337,13 +453,13 @@ it("restores a Windows checkout using a verified durable stop proof after the Jo
   f.source.saved.mockReturnValue(saved); vi.mocked(processProof.inspectProcessProof).mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(saved);
   const proven = vi.spyOn(lifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(saved);
-  const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   await rm(binding.worktreePath, { recursive: true });
   vi.mocked(f.git.prepareWorktree).mockImplementation(async () => { await mkdir(binding.worktreePath, { recursive: true }); return binding; });
   f.launcher.prepare.mockRejectedValue(new Error("ticket preparation reached"));
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: f.launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: f.source.request });
   await expect(backend.advance(f.task, new AbortController().signal)).rejects.toThrow("ticket preparation reached");
-  expect(proven).toHaveBeenCalledOnce(); expect(f.source.stopped).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).toHaveBeenCalled();
+  expect(proven).toHaveBeenCalledTimes(2); expect(f.source.stopped).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).toHaveBeenCalled();
 });
 
 it("rechecks a native process recorded after the original Web controller stops", async () => {
@@ -405,9 +521,11 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   if (bound) task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
   const source = await cleanupSource(f, task);
+  vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValue(null);
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "b".repeat(64) };
   let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "starting", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "starting", reasonCode: "initializing" }, nativeProcesses: [] };
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "submit_initial") { expect(action.operationId).toBe(source.ticket.initialOperationId); snapshot = { ...snapshot, initialInputState: "unknown" }; }
     return { requestId: randomUUID(), ok: true, snapshot };
@@ -422,9 +540,9 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   expect(starting.webExecution?.initialInputState).toBe("not_submitted");
   vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Temporary branch deviation."));
   await expect(backend.advance(starting, new AbortController().signal)).rejects.toThrow("Temporary branch");
-  snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
+  snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...snapshot.capabilities, send: true }, startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
   launcher.prepare.mockClear(); launcher.launch.mockClear(); source.request.mockClear();
-  const ready = await backend.advance(starting, new AbortController().signal);
+  const ready = await backend.advance(starting, new AbortController().signal, undefined, async () => null);
   expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: starting.claimId }), { kind: "execution", phase: "agent-observation" });
   expect(ready.resources.nativeSession?.sessionId).toBe(snapshot.nativeSessionId);
   expect(ready.webExecution?.executionGeneration).toBe("1");
@@ -432,7 +550,7 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   expect(f.store.getOrchestrationBlocker(ready)).toBeNull();
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(delivery === "not_submitted" ? ["observe", "submit_initial"] : ["observe"]);
   expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
-  await backend.advance(ready, new AbortController().signal);
+  await backend.advance(ready, new AbortController().signal, undefined, async () => null);
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(delivery === "not_submitted" ? 1 : 0);
 });
 
@@ -561,20 +679,21 @@ it.each(["worker", "claim", "native", "short", "time", "reason", "revision"] as 
 });
 
 it.each([false,true])("submits once and reobserves unknown first input, including a lazy native identity (lazy=%s)",async(lazyIdentity)=>{
- const f=await fixture();let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
+ const f=await fixture();vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValue(null);let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
+ vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(()=>snapshot);
  const launcher={
   prepare:vi.fn(async(task:LocalTask,input:string | (()=>string)):Promise<ControllerLaunchTicket>=>{
    const prompt = typeof input === "function" ? input() : input;
    if(task.webExecution!.sessionId===null)task=f.store.updateWebExecution(task,{sessionId:randomUUID(),initialPrompt:prompt},3);
-   const e=task.webExecution!;snapshot??={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"ready",nativeSessionId:lazyIdentity?null:randomUUID(),initialInputState:"not_submitted",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null};
+   const e=task.webExecution!;snapshot??={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"ready",startup:{state:"ready",reasonCode:"ready"},nativeSessionId:lazyIdentity?null:randomUUID(),initialInputState:"not_submitted",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null};
    return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:prompt,resumeNativeSessionId:null,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};
   }),
   launch:vi.fn(async(task:LocalTask)=>{if(task.webExecution!.launchSubmission==="not-submitted"){launches++;f.store.updateWebExecution(task,{launchSubmission:"acknowledged"},4);}}),refreshGrant:vi.fn(async()=>{}),
  };
  const request:typeof requestController=async(_ticket,action)=>{if(action.kind==="submit_initial"){submissions++;snapshot.initialInputState="unknown";snapshot.nativeSessionId??=randomUUID();}return {requestId:randomUUID(),ok:true,snapshot};};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed task",emit:()=>{},now:()=>5,request});
- const first=await backend.advance(f.store.getTask(f.identity)!,new AbortController().signal);
- const second=await backend.advance(first,new AbortController().signal);
+ const first=await backend.advance(f.store.getTask(f.identity)!,new AbortController().signal,undefined,async()=>null);
+ const second=await backend.advance(first,new AbortController().signal,undefined,async()=>null);
  expect(launches).toBe(1);expect(submissions).toBe(1);expect(second.webExecution?.initialOperationId).toBe(first.webExecution?.initialOperationId);
  expect(second.nativeExecution).toBeNull();expect(second.resources.herdr).toBeNull();expect(second.resources.nativeSession?.source).toBe("controller");
 });
@@ -600,6 +719,8 @@ it.each([false,true])("only an orderly shutdown can resume at an exhausted recov
  vi.spyOn(lifecycle,"readControllerSnapshot").mockReturnValue(stopped);vi.spyOn(lifecycle,"recordStoppedControllerGeneration").mockResolvedValue(stopped);vi.spyOn(processProof,"confirmControllerProcessesStopped").mockResolvedValue(true);
  vi.spyOn(launchObservation,"reconcileSubmittedControllerLaunch").mockImplementation(async input=>({kind:"controller-exited",process:input.spawnProof,snapshot:stopped}));
  const launcher={prepare:vi.fn(async(task:LocalTask):Promise<ControllerLaunchTicket>=>{const e=task.webExecution!;return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:"managed",resumeNativeSessionId:nativeId,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};}),launch:vi.fn(async()=>{}),refreshGrant:vi.fn(async()=>{})};
+ await launchTickets.writeLaunchTicket(f.home, await launcher.prepare(task)); launcher.prepare.mockClear();
+ vi.spyOn(lifecycle,"readCompatibleControllerSnapshot").mockReturnValue(stopped);
  const actions:string[]=[];const request:typeof requestController=async(ticket,action)=>{actions.push(action.kind);if(ticket.executionGeneration==="1")throw new ControllerIpcOutcomeUnknownError("Original stopped controller is unreachable");return {requestId:randomUUID(),ok:true,snapshot:{...stopped,executionGeneration:ticket.executionGeneration,controllerInstanceId:ticket.controllerInstanceId,lifecycle:"ready",activity:"idle",nativeStopped:false,stoppedAt:null}};};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed",emit:()=>{},now:()=>20,request});
  if(orderly){const resumed=await backend.advance(task,new AbortController().signal);expect(resumed.webExecution?.executionGeneration).toBe("2");expect(resumed.recovery.count).toBe(2);expect(resumed.resources.nativeSession?.sessionId).toBe(nativeId);expect(actions).toEqual(["observe","observe"]);}
@@ -659,7 +780,22 @@ it("preserves an existing cleanup deadline and gives an expired first terminal c
   expect(f.git.removeWorktree).toHaveBeenCalledTimes(2);
 });
 
-it("retains the stopped task worktree on archive failure and retries without relaunching business work", async () => {
+it.each([
+  ["uploader missing", undefined],
+  ["SQLite admission", new Error("SQLite admission failed")],
+  ["invalid archive", new Error("Invalid Daynight session archive")],
+  ["image projection", new Error("image projection failed")],
+  ["missing source", Object.assign(new Error("source missing"), { code: "ENOENT" })],
+  ["identity", new Error("archive identity mismatch")],
+  ["busy", new ArchiveRequestError(429, "resource_busy")],
+  ["permission", new ArchiveRequestError(403, "forbidden")],
+  ["network", new Error("network failed")],
+  ["archive timeout", new DOMException("archive timeout", "TimeoutError")],
+  ["incomplete", new ArchiveRepairRequiredError("archive_incomplete")],
+  ["projection gap", new ArchiveRepairRequiredError("projection_gap")],
+  ["Markdown projection", new ArchiveRepairRequiredError("markdown_projection_failed")],
+  ["unknown", { unexpected: true }],
+])("cleans the stopped worktree after %s archive failure", async (_label, archiveError) => {
   const f = await fixture();
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
   task = f.store.initializeWebExecution(task, 4);
@@ -667,19 +803,31 @@ it("retains the stopped task worktree on archive failure and retries without rel
   task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
   const source = await cleanupSource(f, task); task = source.task;
 
-  const archiveError = new Error("archive offline");
-  const archive = vi.fn().mockRejectedValueOnce(archiveError).mockResolvedValue(undefined);
+  const archive = archiveError === undefined ? undefined : vi.fn().mockRejectedValue(archiveError);
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const request = source.request;
-  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
-  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "archive", cause: archiveError });
-  expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.store.getTask(task)?.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
+  const onArchiveFailure = vi.fn(), successes = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, ...(archive === undefined ? {} : { archive }), onArchiveFailure, request });
+  backend.setMonitoringObserver({ observeSuccess: successes });
   const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(result.complete).toBe(true);
-  expect(archive).toHaveBeenCalledTimes(2);
+  expect(onArchiveFailure).toHaveBeenCalledOnce();
+  expect(onArchiveFailure).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId, webExecution: expect.objectContaining({ executionId: task.webExecution!.executionId }) }), archiveError ?? expect.objectContaining({ message: "Session archive uploader is unavailable." }));
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "cleanup", phase: "archive" });
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
-  expect(launcher.launch).not.toHaveBeenCalled(); expect(source.stopped).toHaveBeenCalledTimes(2);
+  expect(launcher.launch).not.toHaveBeenCalled(); expect(source.stopped).toHaveBeenCalledTimes(3);
+});
+
+it("retains archive and registration errors without masking a worktree removal failure", async () => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 3);
+  const source = await cleanupSource(f, task);
+  const archiveError = new Error("archive failed"), registrationError = new Error("registration failed"), removalError = new Error("removal failed");
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(removalError);
+  const emit = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit, now: () => 20, archive: async () => { throw archiveError; }, onArchiveFailure: () => { throw registrationError; }, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: removalError });
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", component: "archive", error: expect.objectContaining({ cause: archiveError, errors: [archiveError, registrationError] }) }));
 });
 
 it("ordinary shutdown retains history without publishing an ended archive", async () => {
@@ -694,7 +842,41 @@ it("ordinary shutdown retains history without publishing an ended archive", asyn
   expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
-it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execution after failed terminal archival without retrying or losing finalization", async provider => {
+it.each([true, false, null])("uses the applied archive value %s at terminal cleanup", async value => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 3);
+  task = f.store.initializeWebExecution(task, 4);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 5);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
+  const source = await cleanupSource(f, task); task = source.task;
+  const archive = vi.fn(async () => {});
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, archiveSessions: () => value, request: source.request });
+  const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
+  expect(result.complete).toBe(true);
+  expect(archive).toHaveBeenCalledTimes(value === true ? 1 : 0);
+  expect(result.task.cleanup?.discardRecording).toBe(value === false);
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+  expect(source.stopped).toHaveBeenCalledTimes(3);
+});
+
+it("keeps a selected deletion when archival is re-enabled during a cleanup retry", async () => {
+  const f = await fixture();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const task = f.store.beginCleanup(source.task, { kind: "terminal", deadline: 30 }, 5);
+  const archive = vi.fn(async () => {});
+  let enabled = false;
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(new Error("temporary removal failure"));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, archiveSessions: () => enabled, request: source.request });
+  const request = { kind: "terminal" as const, deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } };
+  await expect(backend.cleanup(task, request)).rejects.toThrow();
+  expect(f.store.getTask(task)?.cleanup?.discardRecording).toBe(true);
+  enabled = true;
+  expect((await backend.cleanup(task, request)).complete).toBe(true);
+  expect(archive).not.toHaveBeenCalled();
+  expect(f.store.getTask(task)?.cleanup?.discardRecording).toBe(true);
+});
+
+it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execution without publishing an archive", async provider => {
   const f = await fixture(provider);
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
   task = f.store.initializeWebExecution(task, 4);
@@ -707,23 +889,22 @@ it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execut
   const request = source.request;
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
 
-  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toThrow("archive offline");
   const pending = f.store.getTask(task)!;
   expect(pending.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
   const stopped = await backend.cleanup(pending, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(stopped.task.cleanup).toEqual(pending.cleanup);
   expect(f.store.getTask(task)?.cleanup).toEqual(pending.cleanup);
-  expect(archive).toHaveBeenCalledOnce();
+  expect(archive).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 
   archive.mockResolvedValue(undefined);
   const completed = await backend.cleanup(stopped.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: stopped.task }, onExecutionStopped: () => {} } });
   expect(completed.task.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
-  expect(archive).toHaveBeenCalledTimes(2);
+  expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   expect(launcher.launch).not.toHaveBeenCalled();
   expect(request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
-  expect(source.stopped).toHaveBeenCalledTimes(3);
+  expect(source.stopped).toHaveBeenCalledTimes(4);
 });
 
 it("cleanup stops the original bootstrap when its journal snapshot read fails", async () => {
@@ -737,7 +918,7 @@ it("cleanup stops the original bootstrap when its journal snapshot read fails", 
   expect(stop).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, expect.any(Number));
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]); expect(source.stopped).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100 });
+  expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100, discardRecording: false });
 });
 
 it.each(["missing", "preceding-generation"] as const)("retains a submitted launch when its writer exited before committing (%s)", async journal => {
@@ -797,7 +978,7 @@ it("retains PID replacement and missing committed proof together", async () => {
     .mockResolvedValueOnce({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: { ...source.snapshot, controllerProcess: null } });
   source.saved.mockReturnValue({ ...source.snapshot, controllerProcess: null });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
-  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).rejects.toMatchObject({ cause: { errors: [replacement, expect.objectContaining({ message: expect.stringContaining("process identity is missing") })] } });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).rejects.toMatchObject({ cause: { errors: [replacement, expect.objectContaining({ constructor: launchObservation.ControllerLaunchJournalConflictError, message: "The original controller generation or process evidence is unavailable." })] } });
   expect(source.stopped).not.toHaveBeenCalled();
 });
 
@@ -934,13 +1115,13 @@ it("refuses an explicit retry whose native session identity is missing", async (
   expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(launcher.prepare).not.toHaveBeenCalled();
 });
 
-it("does not resend an initial assignment from a recovered generation", async () => {
+it("does not submit a recovered initial assignment without original launch and queued input evidence", async () => {
   const f = await recoveryFixture();
   f.store.beginRecovery(f.task, 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
   f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", initialInputState: "not_submitted", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } }));
-  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("cannot resubmit");
-  expect(f.store.getTask(f.task)?.recovery.pauseReason).toContain("cannot resubmit");
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("does not advertise safe recovered initial input");
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).toContain("does not advertise safe recovered initial input");
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
 });
 
@@ -1171,12 +1352,12 @@ it("retries endpoint closure after native stop without replaying native cleanup"
   if (process.platform !== "win32") {
     await mkdir(endpoint);
     await expect(backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "backend-close", cause: expect.objectContaining({ code: expect.stringMatching(/EISDIR|EPERM/) }) });
-    expect(f.store.getTask(task)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
+    expect(f.store.getTask(task)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30, discardRecording: false });
     await rm(endpoint, { recursive: true });
   }
   const completed = await backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(completed.complete).toBe(true);
-  expect(completed.task.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
+  expect(completed.task.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30, discardRecording: false });
   expect(source.request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
@@ -1199,10 +1380,10 @@ it("reobserves the endpoint without deleting a successor path after terminal com
   expect(second).toMatchObject({ complete: true, task: { status: "done" } });
   expect(worktreePresent).toBe(true);
   if (process.platform !== "win32") await expect(access(source.ticket.ipcEndpoint)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(source.stopped).toHaveBeenCalledTimes(2);
+  expect(source.stopped).toHaveBeenCalledTimes(6);
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
-  expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
+  expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100, discardRecording: false });
 });
 
 it("reports Git effect errors and settles using its confirmed absence", async () => {
@@ -1242,12 +1423,12 @@ it("finishes an admitted controller stop after caller cancellation without archi
   const binding = await f.git.prepareWorktree(f.identity, f.identity, {} as never);
   const source = await cleanupSource(f, f.store.bindWorktree(f.identity, binding, 2));
   vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
-  source.stopped.mockResolvedValueOnce(false).mockResolvedValue(true);
   source.request.mockImplementation(async (_ticket, _action) => ({ requestId: randomUUID(), ok: true, snapshot: source.snapshot }));
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let stopCompleted = false;
+  source.stopped.mockImplementation(async () => stopCompleted);
   const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => { entered.resolve(); await release.promise; stopCompleted = true; });
   const archive = vi.fn(async () => {});
-  const jobLeases = { enabled: false, retain: vi.fn(), get: vi.fn(), release: vi.fn(async () => {}), close: vi.fn() };
+  const jobLeases = { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(), get: vi.fn(), release: vi.fn(async () => {}), close: vi.fn() };
   const backendOptions = { homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request, jobLeases };
   const backend = createWebExecutionBackend(backendOptions);
   let settled = false;
@@ -1261,7 +1442,7 @@ it("finishes an admitted controller stop after caller cancellation without archi
   const contains = (value: unknown): boolean => value === cancellation || value instanceof Error && (contains(value.cause) || value instanceof AggregateError && value.errors.some(contains));
   expect(contains(error)).toBe(true);
   expect(stop).toHaveBeenCalledOnce(); expect(stopCompleted).toBe(true);
-  expect(source.stopped).toHaveBeenCalledTimes(2);
+  expect(source.stopped).toHaveBeenCalledTimes(4);
   // Controller stop persistence and lease release precede file cleanup when available.
   if ("readCurrentControllerSnapshot" in lifecycle) {
     expect(lifecycle.recordStoppedControllerGeneration).toHaveBeenCalledOnce();
@@ -1380,8 +1561,9 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
   const nativeSessionId = randomUUID();
   let recovering = false;
-  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
+  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...source.snapshot.capabilities, send: true }, nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => recovering && conflict !== "unproven-stop");
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot,
     ...(conflict === "changed-stop-native" ? { nativeSessionId: randomUUID() } : {}),
@@ -1404,7 +1586,7 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
     launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
   };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
-  await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
+  await expect(backend.advance(source.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("Initial response was lost");
   expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
   if (conflict === "exhausted") f.store.blockOrchestration(task, { source: "coordinator", code: "advance_failed", message: "Initial response was lost." }, 51);
   else {
@@ -1466,7 +1648,7 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
     expect((await outcome).complete).toBe(true);
   } else {
     expect(await outcome).toMatchObject({ stage: "worktree-removal", cause: { name: "OperationError", kind: "deadline" } });
-    expect(f.store.getTask(f.identity)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 600_005 });
+    expect(f.store.getTask(f.identity)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 600_005, discardRecording: false });
   }
 });
 
@@ -1690,7 +1872,7 @@ it.each(["stopped", "unknown"] as const)("Task retains a cleanup IPC identity co
   if (state === "stopped") inspect.mockResolvedValue("stopped"); else inspect.mockRejectedValue(observationFailure);
   source.stopped.mockResolvedValue(false);
   source.request.mockImplementation(async (_ticket, action) => { if (action.kind === "cleanup") throw conflict; return { requestId: randomUUID(), ok: true, snapshot: source.snapshot }; });
-  const operation = vi.spyOn(lifecycle, "readControllerOperation").mockReturnValueOnce(null).mockReturnValueOnce({ kind: "cleanup", executionGeneration: source.ticket.executionGeneration, state: "confirmed" } as never);
+  const operation = vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValueOnce(null).mockReturnValueOnce({ kind: "cleanup", executionGeneration: source.ticket.executionGeneration, state: "confirmed" } as never);
   const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
   const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
@@ -1703,7 +1885,7 @@ it.each(["stopped", "unknown"] as const)("Task retains a cleanup IPC identity co
 it("Task holds one Job lease through IPC stop, complete confirmation and journal recording", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
-  const leases = { enabled: true, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   source.stopped.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
@@ -1712,14 +1894,14 @@ it("Task holds one Job lease through IPC stop, complete confirmation and journal
   const deadline = tree.mock.calls[0]![2];
   expect(tree).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
   expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
-  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { stateDirectory: path.join(f.home, ".daynight"), deadline, jobLease: lease });
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { deadline, jobLease: lease });
   expect(leases.release).toHaveBeenCalledOnce();
 });
 
 it("Task still stops its bootstrap if original Job acquisition fails", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const failure = new Error("Job identity unavailable"), incomplete = new Error("Job lease required");
-  const leases = { enabled: true, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const bootstrap = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
   vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValue(incomplete);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
@@ -1735,7 +1917,7 @@ it("joins a preceding Job ticket read and retains its failure when it crosses th
   const allocated = f.store.beginWebGeneration(f.task, previous, 30);
   const clock = vi.spyOn(Date, "now").mockReturnValue(now);
   vi.mocked(launchTickets.readLaunchTicket).mockImplementation(async () => { clock.mockReturnValue(now + CLEANUP_OPERATION_MS); throw failure; });
-  const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: f.launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 40 });
   const error = await backend.cleanup(allocated, { kind: "shutdown", deadline: 40, immediateStop: true }).catch(error => error);
   expect(error.cause.errors[0]).toBe(failure); expect(error.cause.errors[1].message).toMatch(/deadline/);

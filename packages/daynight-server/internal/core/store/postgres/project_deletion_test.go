@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -10,7 +11,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
@@ -29,7 +32,7 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 		mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,$3,'todo',CASE WHEN $4 THEN now() END)`, id, project.ID, fmt.Sprintf("Task %d", i), i == 130)
 		mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
 	}
-	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, queryID(130))
+	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, queryID(130))
 	mustQueryExec(t, s, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, queryID(1), queryID(130))
 	err = s.ReadProjectDeletion(ctx, project.ID, func(snapshot store.ProjectDeletionSnapshot) error {
 		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, actor, project.ID)
@@ -106,7 +109,9 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 
 func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, _, _, project := membershipFixture(t)
+	// Pre-index storage permits corrupt bytes needed to exercise reader failures.
+	s := &Store{Pool: workerIndexOldPool(t)}
+	project := testutil.QueryProject(t, s.Pool, s, 10)
 	ctx := context.Background()
 	for _, raw := range []string{"{", `{"claimId":1}`} {
 		id := uuid.NewString()
@@ -118,12 +123,24 @@ func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 		if err == nil {
 			t.Fatalf("accepted corrupt worker %q", raw)
 		}
+		if raw == "{" {
+			var cause *pgconn.PgError
+			if !errors.As(err, &cause) || cause.Code != "22P02" {
+				t.Fatalf("lost PostgreSQL JSON conversion cause: %v", err)
+			}
+		} else {
+			var cause *json.UnmarshalTypeError
+			if !errors.As(err, &cause) {
+				t.Fatalf("lost Worker field decoding cause: %v", err)
+			}
+		}
 		mustQueryExec(t, s, `DELETE FROM task_properties WHERE task_id=$1`, id)
 		mustQueryExec(t, s, `DELETE FROM tasks WHERE id=$1`, id)
 	}
 }
 
 func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -142,7 +159,7 @@ func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
 		_, err := s.WriteProjectDeletion(ctx, project.ID, func(store.ProjectDeletionScope) error { return nil })
 		done <- err
 	}()
-	waitTransferTeamLock(t, ctx, s, "SELECT id FROM tasks WHERE project_id=", tx.Conn().PgConn().PID())
+	waitTransferTeamLock(t, ctx, s, "WITH goals AS (SELECT id FROM tasks WHERE project_id=", tx.Conn().PgConn().PID())
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}

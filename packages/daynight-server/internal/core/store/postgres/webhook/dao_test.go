@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	corestore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	coremodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 type rowFunc func(...any) error
@@ -34,21 +37,28 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	migration, err := os.ReadFile("../migrations/048_webhook_management.sql")
+	migration, err := os.ReadFile("../schema/migrations/048_webhook_management.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	migration, err = os.ReadFile("../migrations/051_webhook_delivery.sql")
+	migration, err = os.ReadFile("../schema/migrations/051_webhook_delivery.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	migration, err = os.ReadFile("../migrations/052_webhook_redelivery.sql")
+	migration, err = os.ReadFile("../schema/migrations/052_webhook_redelivery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	migration, err = os.ReadFile("../schema/migrations/113_webhook_endpoint_client_key.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,5 +267,157 @@ func TestSigningKeyMapping(t *testing.T) {
 	k.Secret = []byte{1}
 	if err := d.PutSigningKey(context.Background(), k); err == nil {
 		t.Fatal("invalid signing secret length accepted")
+	}
+}
+
+func clientKeySchema(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	url := testutil.ScopedDatabaseURL(t)
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	for _, path := range []string{"048_webhook_management.sql", "051_webhook_delivery.sql", "052_webhook_redelivery.sql", "113_webhook_endpoint_client_key.sql"} {
+		migration, err := os.ReadFile("../schema/migrations/" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = conn.Exec(ctx, string(migration)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return url
+}
+
+func keyedEndpoint(owner model.Owner, key string, now time.Time) model.Endpoint {
+	return model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "keyed", ClientKey: key, Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationConfiguration: sampleDestination(), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+}
+
+// The partial unique index admits one live endpoint per owner and key, keeps the
+// transaction usable after a collision and releases the key with the tombstone.
+func TestEndpointClientKeyLiveUniqueness(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, clientKeySchema(t, ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	d := New(tx)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	owner := model.Owner{Kind: "personal", ID: uuid.NewString()}
+	first := keyedEndpoint(owner, "assistant-task-inbox:1", now)
+	if err = d.PutEndpoint(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	unkeyed := keyedEndpoint(owner, "", now)
+	if err = d.PutEndpoint(ctx, unkeyed); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.Endpoint(ctx, owner, unkeyed.ID); err != nil || got.ClientKey != "" {
+		t.Fatalf("unkeyed endpoint=%+v err=%v", got, err)
+	}
+	if got, err := d.LiveEndpointByClientKey(ctx, owner, first.ClientKey); err != nil || got.ID != first.ID || got.ClientKey != first.ClientKey {
+		t.Fatalf("live holder=%+v err=%v", got, err)
+	}
+	if _, err := d.LiveEndpointByClientKey(ctx, owner, "absent"); !errors.Is(err, coremodel.ErrNotFound) {
+		t.Fatalf("absent key: %v", err)
+	}
+	duplicate := keyedEndpoint(owner, first.ClientKey, now)
+	if err = d.PutEndpoint(ctx, duplicate); !errors.Is(err, corestore.ErrWebhookClientKeyExists) {
+		t.Fatalf("duplicate live key: %v", err)
+	}
+	// The collision rolled back only its savepoint.
+	if _, err := d.Endpoint(ctx, owner, duplicate.ID); !errors.Is(err, coremodel.ErrNotFound) {
+		t.Fatalf("collision persisted or aborted the transaction: %v", err)
+	}
+	if err = d.PutEndpoint(ctx, keyedEndpoint(model.Owner{Kind: "team", ID: owner.ID}, first.ClientKey, now)); err != nil {
+		t.Fatalf("other owner kind shares the key: %v", err)
+	}
+	if err = d.PutEndpoint(ctx, keyedEndpoint(model.Owner{Kind: "personal", ID: uuid.NewString()}, first.ClientKey, now)); err != nil {
+		t.Fatalf("other owner shares the key: %v", err)
+	}
+	tomb := first
+	tomb.DeletedAt, tomb.Enabled, tomb.ClientKey = &now, false, ""
+	if err = d.PutEndpoint(ctx, tomb); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.LiveEndpointByClientKey(ctx, owner, first.ClientKey); !errors.Is(err, coremodel.ErrNotFound) {
+		t.Fatalf("tombstone retained the key: %v", err)
+	}
+	if err = d.PutEndpoint(ctx, duplicate); err != nil {
+		t.Fatalf("released key was not reusable: %v", err)
+	}
+	// A tombstone that still carries a key is corrupt storage, not a live holder.
+	if _, err = tx.Exec(ctx, `UPDATE webhook_endpoints SET client_key='stale' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Endpoint(ctx, owner, first.ID); err == nil {
+		t.Fatal("deleted endpoint with a client key was accepted")
+	}
+}
+
+// A concurrent writer of the same key waits on the index and reports the
+// collision once the holder commits; the holder is then visible to its reread.
+func TestEndpointClientKeyConcurrentCreate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	url := clientKeySchema(t, ctx)
+	connect := func() *pgx.Conn {
+		conn, err := pgx.Connect(ctx, url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		return conn
+	}
+	holderConn, waiterConn, observer := connect(), connect(), connect()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	owner := model.Owner{Kind: "personal", ID: uuid.NewString()}
+	holderTx, err := holderConn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holderTx.Rollback(context.Background())
+	holder := keyedEndpoint(owner, "inbox", now)
+	if err = New(holderTx).PutEndpoint(ctx, holder); err != nil {
+		t.Fatal(err)
+	}
+	waiterTx, err := waiterConn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiterTx.Rollback(context.Background())
+	waiter := New(waiterTx)
+	if _, err := waiter.LiveEndpointByClientKey(ctx, owner, "inbox"); !errors.Is(err, coremodel.ErrNotFound) {
+		t.Fatalf("uncommitted holder visible: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- waiter.PutEndpoint(ctx, keyedEndpoint(owner, "inbox", now)) }()
+	// Commit only after PostgreSQL reports the second writer waiting on a lock.
+	for waiting := false; !waiting; {
+		select {
+		case err := <-done:
+			t.Fatalf("second writer did not wait for the holder: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+		if err := observer.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')`, waiterConn.PgConn().PID()).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = holderTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, corestore.ErrWebhookClientKeyExists) {
+		t.Fatalf("waiting writer: %v", err)
+	}
+	if got, err := waiter.LiveEndpointByClientKey(ctx, owner, "inbox"); err != nil || got.ID != holder.ID {
+		t.Fatalf("holder after collision=%+v err=%v", got, err)
 	}
 }

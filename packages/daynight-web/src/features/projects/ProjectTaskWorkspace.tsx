@@ -13,6 +13,7 @@ import { GoalList } from "./GoalList";
 import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 import type { TaskSessionSummaryStore } from "../task-session-summary/store";
+import { UsageActivityProvider } from '../usage/useTaskUsage';
 
 export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange, filter, chains, standalone, goals }: {
   readonly active?: boolean;
@@ -33,7 +34,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore,
   readonly goals: Omit<ComponentProps<typeof GoalList>, "index" | "workerMachines" | "summaries">;
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
-  return <>
+  return <UsageActivityProvider active={active}>
     <div className="project-section-heading"><h2>{sections.tasks}</h2><ProjectPausedTasks tasks={pausedTasks} active={active} onOpenTask={onOpenPausedTask} onFocusFallback={onPausedFocusFallback} /></div>
       <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}><ProjectTaskObservationsProvider store={observationStore} active={active}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
@@ -49,5 +50,5 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore,
           {activeView === "goals" && <GoalList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
         </div>
       </ProjectTaskObservationsProvider></TaskSessionSummaryProvider></TaskPauseProvider>
-  </>;
+  </UsageActivityProvider>;
 };

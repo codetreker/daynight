@@ -37,7 +37,7 @@ func TestS2SAllowedOriginStartupValidation(t *testing.T) {
 	writeLayer(t, root, "config.yml", validBase+"s2s:\n  allowed_origin: https://private.example/path\n")
 	_, err := LoadServer(root, lookupValues(nil))
 	var failure *configvalue.ConfigurationError
-	if !errors.As(err, &failure) || failure.Field != "s2s.allowed_origin" || failure.Phase != "validate" || failure.Origin.Source != "config.yml" || failure.Origin.Line != 11 || strings.Contains(err.Error(), "private.example") {
+	if !errors.As(err, &failure) || failure.Field != "s2s.allowed_origin" || failure.Phase != "validate" || failure.Origin.Source != "config.yml" || failure.Origin.Line != 12 || strings.Contains(err.Error(), "private.example") {
 		t.Fatalf("YAML validation origin: %#v %v", failure, err)
 	}
 	_, err = LoadServer(root, lookupValues(map[string]string{"DAYNIGHT_S2S_ALLOWED_ORIGIN": "http://localhost:9000"}))
@@ -117,7 +117,7 @@ func TestS2SSharedKeyStartupValidation(t *testing.T) {
 	writeLayer(t, root, "config.yml", validBase+"s2s:\n  shared_key: do-not-expose-this-secret\n")
 	_, err := LoadServer(root, lookupValues(nil))
 	var failure *configvalue.ConfigurationError
-	if !errors.As(err, &failure) || failure.Field != "s2s.shared_key" || failure.Origin.Source != "config.yml" || failure.Origin.Line != 11 || strings.Contains(err.Error(), "do-not-expose") {
+	if !errors.As(err, &failure) || failure.Field != "s2s.shared_key" || failure.Origin.Source != "config.yml" || failure.Origin.Line != 12 || strings.Contains(err.Error(), "do-not-expose") {
 		t.Fatalf("YAML key diagnostic: %#v %v", failure, err)
 	}
 	_, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_S2S_SHARED_KEY": "not-valid"}))

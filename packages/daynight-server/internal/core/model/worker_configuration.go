@@ -17,23 +17,34 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
-	AgentControlMode  *WorkerAgentControlMode `json:"agentControlMode"`
-	ToolPaths         WorkerToolPaths         `json:"toolPaths"`
-	PreserveToolPaths bool                    `json:"-"`
-	// Legacy replacements retain the locked cloud mode without synthesizing a default.
-	PreserveAgentControlMode    bool                         `json:"-"`
-	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
-	MaxConcurrent               int64                        `json:"maxConcurrent"`
-	PollIntervalMs              int64                        `json:"pollIntervalMs"`
-	RecoveryLimit               int64                        `json:"recoveryLimit"`
-	Native                      WorkerNativeConfiguration    `json:"native"`
-	Projects                    []WorkerProjectConfiguration `json:"projects"`
+	TaskTagFilter                 *TagNameFilter               `json:"taskTagFilter,omitempty"`
+	PreserveTaskTagFilter         bool                         `json:"-"`
+	ArchiveSessions               *bool                        `json:"-"`
+	PreserveArchiveSessions       bool                         `json:"-"`
+	ToolPaths                     WorkerToolPaths              `json:"toolPaths"`
+	PreserveToolPaths             bool                         `json:"-"`
+	PreserveSudoCleanup           bool                         `json:"-"`
+	EnableSudoCleanup             bool                         `json:"enableSudoCleanup"`
+	PreserveWindowsProcessCleanup bool                         `json:"-"`
+	EnableWindowsProcessCleanup   bool                         `json:"enableWindowsProcessCleanup"`
+	PlatformTaskMode              WorkerPlatformTaskMode       `json:"platformTaskMode"`
+	LegacyPlatformTaskMode        bool                         `json:"-"`
+	MaxConcurrent                 int64                        `json:"maxConcurrent"`
+	PollIntervalMs                int64                        `json:"pollIntervalMs"`
+	RecoveryLimit                 int64                        `json:"recoveryLimit"`
+	Native                        WorkerNativeConfiguration    `json:"native"`
+	Projects                      []WorkerProjectConfiguration `json:"projects"`
 }
 
 type WorkerDesiredConfiguration struct {
 	Revision  string              `json:"revision"`
 	UpdatedAt time.Time           `json:"updatedAt"`
 	Value     WorkerConfiguration `json:"value"`
+	// Raw is the JSONB target as stored; it is independent of the current input schema.
+	Raw             json.RawMessage `json:"-"`
+	ArchiveSessions *bool           `json:"-"`
+	// ValueValid records successful typed decoding, not current input admission.
+	ValueValid bool `json:"-"`
 }
 
 type WorkerConfigurationItemKey struct {
@@ -70,10 +81,9 @@ type WorkerConfigurationReportedObservation struct {
 }
 
 type WorkerConfigurationExchange struct {
-	ToolPathsBootstrap   *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
-	ControlModeBootstrap *WorkerAgentControlMode         `json:"controlModeBootstrap,omitempty"`
-	Bootstrap            *WorkerConfiguration            `json:"bootstrap"`
-	Observation          *WorkerConfigurationObservation `json:"observation"`
+	ToolPathsBootstrap *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
+	Bootstrap          *WorkerConfiguration            `json:"bootstrap"`
+	Observation        *WorkerConfigurationObservation `json:"observation"`
 }
 
 type WorkerConfigurationResource struct {
@@ -86,4 +96,17 @@ type WorkerConfigurationReceipt struct {
 	Desired             *WorkerDesiredConfiguration `json:"desired"`
 	ObservationRevision string                      `json:"observationRevision"`
 	ObservationAccepted bool                        `json:"observationAccepted"`
+}
+
+// WorkerPlatformTaskMode controls client-side candidate selection, never claim admission.
+type WorkerPlatformTaskMode string
+
+const (
+	PlatformTaskAll    WorkerPlatformTaskMode = "all"
+	PlatformTaskPrefer WorkerPlatformTaskMode = "prefer"
+	PlatformTaskOnly   WorkerPlatformTaskMode = "only"
+)
+
+func (mode WorkerPlatformTaskMode) Valid() bool {
+	return mode == PlatformTaskAll || mode == PlatformTaskPrefer || mode == PlatformTaskOnly
 }

@@ -14,6 +14,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -26,6 +27,7 @@ func sessionDAOTransaction(t *testing.T, db *Store, fn func(store.SessionScope) 
 }
 
 func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -71,8 +73,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if err := dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: opID, Seq: 1, Hash: []byte("child"), Actor: principal, Command: sp.Command{Fence: fence, OperationID: opID, Kind: "send_message", Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{Fence: fence, OperationID: opID, State: "accepted"}}); err != nil {
 			return err
 		}
-		return dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64))
+		return nil
 	})
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,1,$2,1,$3)`, id, uuid.NewString(), strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
 	state := func() string {
 		t.Helper()
 		var result string
@@ -102,6 +107,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		var expiry time.Time
 		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
 			t.Fatal(err)
+		}
+		if expired && caller.Kind == model.SessionCredential {
+			if err := db.Pool.QueryRow(probeCtx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
+				t.Fatal(err)
+			}
 		}
 		admittedAt := expiry.Add(-time.Second)
 		recheckedAt := admittedAt
@@ -148,6 +158,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 			}
 		}()
 		waitTransferTeamLock(t, probeCtx, db, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
+		if expired && caller.Kind == model.SessionCredential {
+			if _, err := db.Pool.Exec(probeCtx, `SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())))`, expiry); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := holder.Commit(probeCtx); err != nil {
 			t.Fatal(err)
 		}
@@ -289,6 +304,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 }
 
 func TestSessionWriterClosedPoolDoesNotInvokeCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := t.Context()
 	db := closedStore(t)
 	completion, err := db.WriteSession(ctx, func(store.SessionScope) error {
@@ -301,6 +317,7 @@ func TestSessionWriterClosedPoolDoesNotInvokeCallback(t *testing.T) {
 }
 
 func TestSessionDisconnectFailureRollsBackAndPreservesCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	_, owner, _ := testAuthRecords(t, database)
 	project := queryProject(t, database, 1)
@@ -347,6 +364,7 @@ func TestSessionDisconnectFailureRollsBackAndPreservesCause(t *testing.T) {
 }
 
 func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	parsed, err := url.Parse(scopedDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
@@ -398,6 +416,31 @@ func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
 	if acquired := database.Pool.Stat().AcquiredConns(); acquired != 0 {
 		t.Fatalf("completed transaction retained a physical connection: acquired=%d", acquired)
 	}
+
+	var missingRow *store.Error
+	completion, err = database.WriteSession(ctx, func(scope store.SessionScope) error {
+		metadata, err := scope.SessionDAO().ArchiveMetadata(ctx, queryID(99))
+		if metadata != (store.ArchiveMetadata{}) || !errors.As(err, &missingRow) || !missingRow.MissingRow ||
+			missingRow.DatabaseFailure || !errors.Is(err, pgx.ErrNoRows) || !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("absent Session returned archive metadata or lost its missing row cause: metadata=%+v error=%v", metadata, err)
+		}
+		if acquired := database.Pool.Stat().AcquiredConns(); acquired != 1 {
+			t.Fatalf("missing metadata callback did not own the physical connection: acquired=%d", acquired)
+		}
+		return err
+	})
+	var transaction *store.TransactionError
+	isDatabaseFailure, _ := store.DatabaseErrorFacts(err)
+	if missingRow == nil || !errors.Is(err, missingRow) || !errors.As(err, &transaction) ||
+		isDatabaseFailure || transaction.Phase != "operation" ||
+		completion.Outcome != store.TransactionNotCommitted || transaction.Outcome != store.TransactionNotCommitted ||
+		transaction.CommitAttempted || transaction.CleanupFailed {
+		t.Fatalf("missing metadata transaction did not retain the callback error and rollback: completion=%+v error=%v", completion, err)
+	}
+	if acquired := database.Pool.Stat().AcquiredConns(); acquired != 0 {
+		t.Fatalf("rolled back transaction retained a physical connection: acquired=%d", acquired)
+	}
+
 	acquireCtx, stopAcquire := context.WithTimeout(ctx, time.Second)
 	defer stopAcquire()
 	connection, err := database.Pool.Acquire(acquireCtx)
@@ -412,6 +455,7 @@ func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
 }
 
 func TestSessionWriterSharesTransactionAndReportsCompletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)

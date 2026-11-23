@@ -104,6 +104,7 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -143,12 +144,37 @@ func workerHTTPUnexpected(t *testing.T, method string) {
 
 type workerHTTPWriteDAO struct {
 	t                                     *testing.T
+	WorkerAliasCall                       func(context.Context, string, string) (model.WorkerAlias, error)
+	SetWorkerAliasCall                    func(context.Context, string, string, int64, model.WorkerAlias) error
 	ReportTaskSnapshotsCall               func(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error)
 	UpsertWorkerCall                      func(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error)
 	WorkerConfigurationCall               func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 	ConfigurationProjectAccessCall        func(context.Context, string, string) error
 	SetWorkerConfigurationCall            func(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error)
 	SetWorkerConfigurationObservationCall func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
+}
+
+func (d *workerHTTPWriteDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
+}
+
+func (d *workerHTTPWriteDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	workerHTTPUnexpected(d.t, "SetWorkerReviewParticipation")
+	return nil
+}
+
+func (d *workerHTTPWriteDAO) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
+	if d.WorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "WorkerAlias")
+	}
+	return d.WorkerAliasCall(ctx, u, w)
+}
+func (d *workerHTTPWriteDAO) SetWorkerAlias(ctx context.Context, u, w string, expected int64, next model.WorkerAlias) error {
+	if d.SetWorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "SetWorkerAlias")
+	}
+	return d.SetWorkerAliasCall(ctx, u, w, expected, next)
 }
 
 func (d *workerHTTPWriteDAO) ReportTaskSnapshots(ctx context.Context, id string, v model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
@@ -181,6 +207,10 @@ func (d *workerHTTPWriteDAO) SetWorkerConfiguration(ctx context.Context, u, w st
 	}
 	return d.SetWorkerConfigurationCall(ctx, u, w, r, v)
 }
+func (d *workerHTTPWriteDAO) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	workerHTTPUnexpected(d.t, "SetWorkerConfigurationRaw")
+	return model.WorkerDesiredConfiguration{}, nil
+}
 func (d *workerHTTPWriteDAO) SetWorkerConfigurationObservation(ctx context.Context, u, w string, r int64, v model.WorkerConfigurationObservation) error {
 	if d.SetWorkerConfigurationObservationCall == nil {
 		workerHTTPUnexpected(d.t, "SetWorkerConfigurationObservation")
@@ -210,6 +240,7 @@ func (s *workerHTTPWriteScope) AdmitWorker(ctx context.Context, u, w string, d t
 }
 
 type workerHTTPReader struct {
+	WorkerAliasCall         func(context.Context, string, string) (model.WorkerAlias, error)
 	t                       *testing.T
 	WorkersCall             func(context.Context, string, time.Time, store.Page) (store.WorkerPage, error)
 	WorkerSummariesCall     func(context.Context, string, time.Time, store.Page) (store.WorkerSummaryPage, error)
@@ -217,11 +248,22 @@ type workerHTTPReader struct {
 	WorkerConfigurationCall func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
 
+func (d *workerHTTPReader) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
+}
+
 func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerPage, error) {
 	if d.WorkersCall == nil {
 		workerHTTPUnexpected(d.t, "Workers")
 	}
 	return d.WorkersCall(ctx, u, now, p)
+}
+func (d *workerHTTPReader) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
+	if d.WorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "WorkerAlias")
+	}
+	return d.WorkerAliasCall(ctx, u, w)
 }
 func (d *workerHTTPReader) WorkerSummaries(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerSummaryPage, error) {
 	if d.WorkerSummariesCall == nil {
@@ -246,6 +288,14 @@ type workerHTTPReadScope struct {
 	t              *testing.T
 	DAO            *workerHTTPReader
 	ObservedAtCall func(context.Context) (time.Time, error)
+}
+
+func (s *workerHTTPReadScope) UserCandidateDAO() store.UserCandidateReader {
+	workerHTTPUnexpected(s.t, "UserCandidateDAO")
+	return nil
+}
+func (s *workerHTTPReadScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (s *workerHTTPReadScope) CredentialDAO() store.CredentialReader {
@@ -487,6 +537,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(workerToolPathsHeader, "2")
 		request.Header.Set("X-Request-ID", "project-test")
 		if actor != nil {
 			f.handler.authenticate = true
@@ -668,7 +719,6 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	}
 	second := "d4444444-4444-4444-8444-444444444444"
 	secondBody := workerSnapshotReportBody()
-	secondBody["versions"].(map[string]any)["herdr"] = map[string]any{"state": "not_running", "checkedAt": "2026-10-29T00:00:00Z"}
 	secondSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: second, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, secondBody), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
 	f.report(t, second, secondBody, nil, []model.WorkerObservedTask{}, secondSnapshot)
 	count := 1

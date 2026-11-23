@@ -23,7 +23,7 @@ const install = async (page: Page) => {
       if (url.searchParams.get('limit') === '100') { state.projectReads++; await wait('projects'); }
       return send({ items: [{ ...project, name: state.projectName }], nextCursor: null });
     }
-    if (path === `/api/v1/me/workers/${target}/configuration`) { state.configReads++; await wait('config'); return send(configurationResource(state.revision), { 'Daynight-Worker-Configuration': '1' }); }
+    if (path === `/api/v1/me/workers/${target}/configuration`) { state.configReads++; await wait('config'); return send(configurationResource(state.revision), { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
     return route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': WORKER_USER } });
   });

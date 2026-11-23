@@ -36,6 +36,7 @@ export type BotLaunchIntent = {
 };
 export type BotCleanup = {
   deletionId: string; requestedVersion: string;
+  workerId?: string;
   stop: import("./session-api.js").BotDeletionStop | null;
   targets: import("./delete-files.js").BotDeletionTarget[];
   localCompleted: boolean;
@@ -43,6 +44,7 @@ export type BotCleanup = {
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
   observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
+  migration?: { state: "registration_pending"; manifestPath: string };
 };
 
 export const botUUID = (value: unknown, field: string): string => {

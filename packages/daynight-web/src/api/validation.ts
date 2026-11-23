@@ -43,11 +43,12 @@ export const id = (value: unknown): string => {
 
 export const nullableId = (value: unknown): string | null => value === null ? null : id(value);
 
-export const taskTypeFields = (data: Record<string, unknown>): { readonly type: TaskType; readonly parentId: string | null } => {
+export const taskTypeFields = (data: Record<string, unknown>): { readonly type: TaskType; readonly parentId: string | null; readonly parentTaskId?: string | null } => {
   if (data.type !== "task" && data.type !== "goal") return malformed();
   const parentId = nullableId(data.parentId);
-  if (data.type === "goal" && parentId !== null) return malformed();
-  return { type: data.type, parentId };
+  const parentTaskId = Object.hasOwn(data, "parentTaskId") ? nullableId(data.parentTaskId) : undefined;
+  if (data.type === "goal" && (parentId !== null || parentTaskId != null) || parentId !== null && parentTaskId != null) return malformed();
+  return { type: data.type, parentId, ...(parentTaskId === undefined ? {} : { parentTaskId }) };
 };
 
 export const timestamp = (value: unknown): string => {

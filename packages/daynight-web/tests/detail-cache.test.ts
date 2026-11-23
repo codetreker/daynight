@@ -36,6 +36,20 @@ it("stores only intrinsic complete content and exact bigint, without advancing t
   expect(materializeDetail(saved.detail, { ...scope.getAuthorizedProject(projectId)!.index.nodes.get(detail.id)!, ready: false, blockedBy: [taskId(2)] })).toMatchObject({ ready: false, blockedBy: [taskId(2)] });
 });
 
+it("admits and rereads Goal details without replacing synchronized acceptance edges", async () => {
+  const detail = body(1, { type: "goal", ready: false });
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const ticket = await scope.beginSync(projectId, signal());
+  const sync = taskSyncFromGraph(graphFixture([detail]), { versionForTask: () => detail.version, propertiesForTask: () => detail.properties });
+  await scope.applySync(ticket, { ...sync, tasks: sync.tasks.map((task) => ({ ...task, dependsOn: [taskId(2)] })) }, signal());
+  const current = await scope.beginSync(projectId, signal());
+  expect(await saveDetail(scope, current, detail, signal())).toMatchObject({ kind: "matching", detail: { dependsOn: [] } });
+  expect(await readCachedDetail(scope, current, detail.id, signal())).toMatchObject({ dependsOn: [] });
+  expect(scope.getAuthorizedProject(projectId)!.summaries.get(detail.id)?.dependsOn).toEqual([taskId(2)]);
+  await expect(saveDetail(scope, current, { ...detail, title: "Contradictory" }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(current.maxUpdatedAt);
+});
+
 it("does not rewrite matching repeated content and touches LRU only on an explicit cached read", async () => {
   const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
   vi.spyOn(Date, "now").mockReturnValue(100); await saveDetail(scope, ticket, detail, signal());
@@ -43,6 +57,37 @@ it("does not rewrite matching repeated content and touches LRU only on an explic
   expect((await record())!.lastUsedAt).toBe(100);
   expect(await readCachedDetail(scope, ticket, detail.id, signal())).toEqual((await record())!.detail);
   expect((await record())!.lastUsedAt).toBe(200);
+});
+
+it.each([
+  [{ paused: true }, true], [{ blocked: true }, true], [{ paused: true, blocked: true }, true],
+  [{ paused: false }, false], [{ blocked: false }, false], [{ paused: false, blocked: false }, false],
+])("validates and touches the stored representation without changing its size: %j", async (properties, paused) => {
+  const detail = body(1, { properties: { paused, future: { value: "汉字" } } });
+  const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  const stored = { ...saved.detail, properties: { ...properties, future: { value: "汉字" } } };
+  const original = { ...saved, detail: stored, byteSize: detailByteSize(stored) };
+  await (await inspect()).put("details", original);
+
+  vi.spyOn(Date, "now").mockReturnValue(200);
+  for (const time of [200, 300]) {
+    vi.mocked(Date.now).mockReturnValue(time);
+    expect(await readCachedDetail(scope, ticket, detail.id, signal())).toEqual(saved.detail);
+    expect(await record()).toEqual({ ...original, lastUsedAt: time });
+  }
+  await expect(saveDetail(scope, ticket, detail, signal())).resolves.toMatchObject({ kind: "matching", detail: saved.detail });
+  expect(await record()).toEqual({ ...original, lastUsedAt: 300 });
+});
+
+it("rejects a stored size calculated from normalized rather than original properties", async () => {
+  const detail = body(1, { properties: { paused: true } }); const scope = await seed([detail]);
+  const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  await (await inspect()).put("details", { ...saved, detail: { ...saved.detail, properties: { paused: true, blocked: true } } });
+  await expect(readCachedDetail(scope, ticket, detail.id, signal())).rejects.toMatchObject({ category: "corrupt" });
+  expect(await record()).toBeUndefined();
 });
 
 it("rejects old/newer and contradictory same-version bodies without changing summaries or watermark", async () => {
@@ -152,4 +197,13 @@ it("checks same-version detail properties against complete summaries while accep
   await expect(saveDetail(scope, ticket, { ...detail, properties: {} }, signal())).rejects.toMatchObject({ kind: "protocol" });
   expect(await record()).toEqual(saved);
   expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+});
+
+it('uses fresh Parent evidence without trusting shared cached detail fields', async () => {
+  const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await saveDetail(scope, ticket, detail, signal());
+  const incoming = { ...detail, parentTaskId: taskId(2) };
+  await expect(saveDetail(scope, ticket, incoming, signal())).resolves.toMatchObject({ kind: 'matching', detail: { parentTaskId: taskId(2) } });
+  expect(await readCachedDetail(scope, ticket, detail.id, signal())).not.toHaveProperty('parentTaskId');
+  expect((await record())!.detail).not.toHaveProperty('parentTaskId');
 });

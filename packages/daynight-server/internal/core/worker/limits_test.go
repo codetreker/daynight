@@ -33,7 +33,6 @@ func TestTelemetryFieldLimits(t *testing.T) {
 		{"os.release", MaxOSReleaseBytes, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Release = s }},
 		{"os.version", MaxOSVersionBytes, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Version = s }},
 		{"cpu.model", MaxCPUModelBytes, func(v *model.WorkerTelemetry, s string) { v.CPU.Value.Model = s }},
-		{"versions.herdr", MaxVersionBytes, func(v *model.WorkerTelemetry, s string) { v.Versions.Herdr.Value = &s }},
 		{"versions.codex", MaxVersionBytes, func(v *model.WorkerTelemetry, s string) { v.Versions.Codex.Value = &s }},
 		{"versions.copilot", MaxVersionBytes, func(v *model.WorkerTelemetry, s string) { v.Versions.Copilot.Value = &s }},
 		{"assistantHost.defaultCwd", MaxWorkingDirectoryBytes, func(v *model.WorkerTelemetry, s string) { v.AssistantHost.DefaultCwd = s }},
@@ -62,7 +61,7 @@ func TestTelemetryFieldLimits(t *testing.T) {
 }
 
 func boundedConfiguration() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: MinConcurrent, PollIntervalMs: MinPollIntervalMs, RecoveryLimit: MinRecoveryLimit}
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: MinConcurrent, PollIntervalMs: MinPollIntervalMs, RecoveryLimit: MinRecoveryLimit}
 }
 
 func TestConfigurationRangesAndCollections(t *testing.T) {

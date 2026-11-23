@@ -13,6 +13,11 @@ the grant.
 
 ## Decision
 
+The original Herdr scheduler and reservation admission are retired by the
+[Web coordination decision](../simplification/2026-11-17-web-only-worker-coordination.md).
+Historical reservation records remain untouched. The following records the
+original decision and its rationale.
+
 Frozen Herdr claims use an independent SQLite request reservation. It records the
 original Project, Task, claim, worktree, Worker, exact candidate version and
 native configuration. Shared-instance admission verifies the selected daemon and

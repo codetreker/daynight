@@ -169,7 +169,7 @@ func TestSessionBotArchiveAndCleanupSerializeOnBotLock(t *testing.T) {
 			parent := uuid.NewString()
 			hash := sha256.Sum256([]byte(parent))
 			now := time.Now().UTC()
-			mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'archive witness',$4,$5)`, parent, bot.OwnerUserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+			mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'archive witness',$4,$5)`, parent, bot.OwnerUserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			sessionBotDAOTransaction(t, database, func(dao store.SessionDAO, bots store.BotWriteDAO) error {
@@ -379,7 +379,7 @@ func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 	current := model.Principal{Kind: model.PATCredential, UserID: actor.UserID, CredentialID: uuid.NewString()}
 	for _, credential := range []model.Principal{parent, current} {
 		hash := sha256.Sum256([]byte(credential.CredentialID))
-		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'bot runtime',$4,$5)`, credential.CredentialID, credential.UserID, hash[:], now, now.Add(time.Hour))
+		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'bot runtime',$4,$5)`, credential.CredentialID, credential.UserID, hash[:], now, now.Add(time.Hour))
 	}
 	mustQueryExec(t, db, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,$3,$3,'{}','{}')`, actor.UserID, worker, now)
 	mustQueryExec(t, db, `INSERT INTO bots(id,owner_user_id,worker_id,name,request_fingerprint,requested_overrides,resolved_configuration,startup_result,session_id) VALUES($1,$2,$3,'Private Bot',$4,'{"args":[]}','{"provider":"codex"}','{}',$5)`, bot, actor.UserID, worker, strings.Repeat("a", 64), id)
@@ -495,11 +495,9 @@ func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 		if err := dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: op, Seq: 1, Hash: []byte("operation"), Actor: actor, Command: sp.Command{Kind: "send_message", Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{State: "accepted"}}); err != nil {
 			return err
 		}
-		if err := dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64)); err != nil {
-			return err
-		}
 		return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("b", 64), 10, "archive.json")
 	})
+	mustQueryExec(t, db, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,1,$2,1,$3)`, id, uuid.NewString(), strings.Repeat("c", 64))
 	mustQueryExec(t, db, `INSERT INTO session_events(session_id,event_seq,event) VALUES($1,1,'{}')`, id)
 	mustQueryExec(t, db, `INSERT INTO session_timeline(session_id,entry_id,entry_seq,revision,entry) VALUES($1,$2,1,1,'{}')`, id, uuid.NewString())
 	resource := uuid.NewString()

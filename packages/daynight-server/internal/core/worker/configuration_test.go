@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strconv"
@@ -19,8 +20,17 @@ type configurationDAO struct {
 	readErr, accessErr, desiredErr, observationErr error
 	accesses                                       []string
 	desiredWrites, observationWrites               int
+	rawWritten                                     json.RawMessage
+	rawArchive                                     bool
 	scopes                                         [][2]string
 	accessUsers                                    []string
+}
+
+func (*configurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	panic("unexpected alias read")
+}
+func (*configurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	panic("unexpected alias write")
 }
 
 func (d *configurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
@@ -43,6 +53,13 @@ func (d *configurationDAO) SetWorkerConfiguration(_ context.Context, user, worke
 	d.desiredWrites++
 	return model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(revision, 10), Value: value}, d.desiredErr
 }
+func (d *configurationDAO) SetWorkerConfigurationRaw(_ context.Context, user, worker string, revision int64, raw json.RawMessage, archive bool) (model.WorkerDesiredConfiguration, error) {
+	d.scopes = append(d.scopes, [2]string{user, worker})
+	d.desiredWrites++
+	d.rawWritten = append(json.RawMessage(nil), raw...)
+	d.rawArchive = archive
+	return model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(revision, 10), Raw: raw, ArchiveSessions: &archive}, d.desiredErr
+}
 func (d *configurationDAO) SetWorkerConfigurationObservation(_ context.Context, user, worker string, _ int64, _ model.WorkerConfigurationObservation) error {
 	d.scopes = append(d.scopes, [2]string{user, worker})
 	d.observationWrites++
@@ -50,11 +67,50 @@ func (d *configurationDAO) SetWorkerConfigurationObservation(_ context.Context, 
 }
 
 func configurationFixture() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, ArchiveSessions: new(true), MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 func configuredDAO(revision string) *configurationDAO {
 	return &configurationDAO{current: model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: revision, Value: configurationFixture()}, ObservationRevision: "0"}}
+}
+
+func TestRawStoredConfigurationReplacementAndProjectAccess(t *testing.T) {
+	ctx := context.Background()
+	principal := model.Principal{UserID: "user"}
+	value := configurationFixture()
+	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: configurationInputProjectA, NativeOverrides: map[string]json.RawMessage{}}}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["future"] = json.RawMessage(`{"nested":12345678901234567890}`)
+	fields["maxConcurrent"] = json.RawMessage(`"unsupported"`)
+	raw, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := false
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	d.current.Desired.Raw = raw
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Value = model.WorkerConfiguration{}
+	d.accessErr = model.ErrNotFound
+	value.ArchiveSessions = &archive
+	got, err := PutConfiguration(ctx, d, principal, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || len(d.accesses) != 0 {
+		t.Fatalf("complete replacement: %+v writes=%d access=%v err=%v", got, d.desiredWrites, d.accesses, err)
+	}
+	value.Projects[0].NativeOverrides["model"] = json.RawMessage(`"new"`)
+	_, err = PutConfiguration(ctx, d, principal, "worker", 7, value)
+	if err == nil || len(d.accesses) != 1 || d.desiredWrites != 1 {
+		t.Fatalf("changed project requires access: %v %d %v", d.accesses, d.desiredWrites, err)
+	}
+	_, err = PutConfiguration(ctx, d, principal, "worker", 6, value)
+	requireFault(t, err, "version_conflict")
 }
 
 func checkedConfigurationScope(t *testing.T, d *configurationDAO) *configurationDAO {
@@ -168,7 +224,11 @@ func TestPutConfigurationNormalizesStoredJSONBeforeNoopAndProjectAdmission(t *te
 				incoming.MaxConcurrent++
 			}
 			got, err := PutConfiguration(context.Background(), d, model.Principal{UserID: "user"}, "worker", 1, incoming)
-			if err != nil || !reflect.DeepEqual(got.Desired.Value, incoming) || len(d.accesses) != 0 {
+			var actual model.WorkerConfiguration
+			if err == nil {
+				actual, err = normalizeStoredConfiguration(got.Desired.Value)
+			}
+			if err != nil || !reflect.DeepEqual(actual, incoming) || len(d.accesses) != 0 {
 				t.Fatalf("equivalent stored project JSON caused admission: %+v accesses=%v %v", got, d.accesses, err)
 			}
 			if lostAccess {
@@ -186,9 +246,9 @@ func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T)
 	ctx, principal := context.Background(), model.Principal{UserID: "user"}
 	d := configuredDAO("3")
 	value := configurationFixture()
-	value.PreferPlatformSpecificTasks = true
+	value.PlatformTaskMode = model.PlatformTaskPrefer
 	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
-	if err != nil || got.Desired.Revision != "4" || !got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 1 {
+	if err != nil || got.Desired.Revision != "4" || got.Desired.Value.PlatformTaskMode != model.PlatformTaskPrefer || d.desiredWrites != 1 {
 		t.Fatalf("enabling preference did not create its desired revision: %+v %v", got, err)
 	}
 	d.current = got
@@ -196,10 +256,90 @@ func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T)
 	if err != nil || got.Desired.Revision != "4" || d.desiredWrites != 1 {
 		t.Fatalf("same preference changed configuration: %+v %v", got, err)
 	}
-	value.PreferPlatformSpecificTasks = false
+	value.PlatformTaskMode = model.PlatformTaskAll
 	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
-	if err != nil || got.Desired.Revision != "5" || got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 2 {
+	if err != nil || got.Desired.Revision != "5" || got.Desired.Value.PlatformTaskMode != model.PlatformTaskAll || d.desiredWrites != 2 {
 		t.Fatalf("disabling preference was lost: %+v %v", got, err)
+	}
+}
+
+func TestSudoCleanupOmissionAndBootstrap(t *testing.T) {
+	ctx, principal := context.Background(), model.Principal{UserID: "user"}
+	d := configuredDAO("3")
+	d.current.Desired.Value.EnableSudoCleanup = true
+	value := configurationFixture()
+	value.PreserveSudoCleanup = true
+	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableSudoCleanup || got.Desired.Revision != "3" || d.desiredWrites != 0 {
+		t.Fatalf("omitted no-op: %+v %v", got, err)
+	}
+	value.MaxConcurrent = 2
+	_, err = PutConfiguration(ctx, d, principal, "worker", 2, value)
+	requireFault(t, err, "version_conflict")
+	if d.desiredWrites != 0 {
+		t.Fatal("conflict wrote configuration")
+	}
+	got, err = PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableSudoCleanup || got.Desired.Value.PreserveSudoCleanup || got.Desired.Revision != "4" {
+		t.Fatalf("omitted update: %+v %v", got, err)
+	}
+	d.current = got
+	value.PreserveSudoCleanup = false
+	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
+	if err != nil || got.Desired.Value.EnableSudoCleanup || got.Desired.Revision != "5" {
+		t.Fatalf("explicit false: %+v %v", got, err)
+	}
+	d = &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
+	old := configurationFixture()
+	receipt, err := ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || receipt.Desired.Value.EnableSudoCleanup || receipt.Desired.Revision != "1" {
+		t.Fatalf("old bootstrap: %+v %v", receipt, err)
+	}
+	d = configuredDAO("7")
+	d.current.Desired.Value.EnableSudoCleanup = true
+	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || !receipt.Desired.Value.EnableSudoCleanup || d.desiredWrites != 0 {
+		t.Fatalf("late bootstrap changed desired: %+v %v", receipt, err)
+	}
+}
+
+func TestWindowsProcessCleanupOmissionAndBootstrap(t *testing.T) {
+	ctx, principal := context.Background(), model.Principal{UserID: "user"}
+	d := configuredDAO("3")
+	d.current.Desired.Value.EnableWindowsProcessCleanup = true
+	value := configurationFixture()
+	value.PreserveWindowsProcessCleanup = true
+	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableWindowsProcessCleanup || got.Desired.Revision != "3" || d.desiredWrites != 0 {
+		t.Fatalf("omitted no-op: %+v %v", got, err)
+	}
+	value.MaxConcurrent = 2
+	_, err = PutConfiguration(ctx, d, principal, "worker", 2, value)
+	requireFault(t, err, "version_conflict")
+	if d.desiredWrites != 0 {
+		t.Fatal("conflict wrote configuration")
+	}
+	got, err = PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableWindowsProcessCleanup || got.Desired.Value.PreserveWindowsProcessCleanup || got.Desired.Revision != "4" {
+		t.Fatalf("omitted update: %+v %v", got, err)
+	}
+	d.current = got
+	value.PreserveWindowsProcessCleanup = false
+	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
+	if err != nil || got.Desired.Value.EnableWindowsProcessCleanup || got.Desired.Revision != "5" {
+		t.Fatalf("explicit false: %+v %v", got, err)
+	}
+	d = &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
+	old := configurationFixture()
+	receipt, err := ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || receipt.Desired.Value.EnableWindowsProcessCleanup || receipt.Desired.Revision != "1" {
+		t.Fatalf("old bootstrap: %+v %v", receipt, err)
+	}
+	d = configuredDAO("7")
+	d.current.Desired.Value.EnableWindowsProcessCleanup = true
+	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || !receipt.Desired.Value.EnableWindowsProcessCleanup || d.desiredWrites != 0 {
+		t.Fatalf("late bootstrap changed desired: %+v %v", receipt, err)
 	}
 }
 
@@ -218,8 +358,10 @@ func TestPutConfigurationFailuresAndExhaustion(t *testing.T) {
 	requireFault(t, err, "configuration_not_initialized")
 	d = configuredDAO("1")
 	d.current.Desired.Value.Native.Args = nil
-	_, err = PutConfiguration(ctx, d, principal, "worker", 1, value)
-	requireFault(t, err, "invalid_input")
+	repaired, err := PutConfiguration(ctx, d, principal, "worker", 1, value)
+	if err != nil || repaired.Desired.Revision != "2" || d.desiredWrites != 1 {
+		t.Fatalf("valid replacement failed: %+v %v", repaired, err)
+	}
 	d = checkedConfigurationScope(t, configuredDAO(strconv.FormatInt(math.MaxInt64, 10)))
 	unchanged, err := PutConfiguration(ctx, d, principal, "worker", math.MaxInt64, value)
 	if err != nil || unchanged.Desired.Revision != strconv.FormatInt(math.MaxInt64, 10) || d.desiredWrites != 0 {
@@ -253,7 +395,9 @@ func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
 
 func compatibilityConfiguration() model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		PlatformTaskMode: model.PlatformTaskAll,
+		ArchiveSessions:  new(true),
+		MaxConcurrent:    3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{},
 	}
@@ -290,7 +434,9 @@ func TestExchangeConfigurationAssistantHostCompatibility(t *testing.T) {
 			if bootstrap {
 				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 					calls = append(calls, "desired")
-					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, compatibilityConfiguration()) {
+					expected := compatibilityConfiguration()
+					expected.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, expected) {
 						t.Errorf("configuration write = %s/%s revision=%d value=%+v context=%v", user, worker, revision, value, actual)
 					}
 					return model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}, nil
@@ -331,6 +477,7 @@ func TestExchangeConfigurationBootstrapAndIndependentObservationCAS(t *testing.T
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: configurationInputProjectA, NativeOverrides: map[string]json.RawMessage{}}}
 	d = checkedConfigurationScope(t, &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}})
 	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &value})
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
 	if err != nil || receipt.Desired.Revision != "1" || !reflect.DeepEqual(receipt.Desired.Value, value) || d.desiredWrites != 1 || len(d.accesses) != 1 || d.accesses[0] != configurationInputProjectA {
 		t.Fatalf("initial selected project configuration: %+v accesses=%v %v", receipt, d.accesses, err)
 	}
@@ -398,6 +545,12 @@ func (d *capacityConfigurationDAO) unexpected(method string) error {
 func (d *capacityConfigurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
 	return nil, d.unexpected("ReportTaskSnapshots")
 }
+func (d *capacityConfigurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	return model.WorkerAlias{}, d.unexpected("WorkerAlias")
+}
+func (d *capacityConfigurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	return d.unexpected("SetWorkerAlias")
+}
 func (d *capacityConfigurationDAO) UpsertWorker(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error) {
 	return model.WorkerSnapshot{}, d.unexpected("UpsertWorker")
 }
@@ -420,6 +573,9 @@ func (d *capacityConfigurationDAO) SetWorkerConfiguration(ctx context.Context, u
 		return model.WorkerDesiredConfiguration{}, d.unexpected("SetWorkerConfiguration")
 	}
 	return d.desired(ctx, user, worker, revision, value)
+}
+func (d *capacityConfigurationDAO) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	return model.WorkerDesiredConfiguration{}, d.unexpected("SetWorkerConfigurationRaw")
 }
 func (d *capacityConfigurationDAO) SetWorkerConfigurationObservation(ctx context.Context, user, worker string, revision int64, observation model.WorkerConfigurationObservation) error {
 	d.observationWrites++
@@ -513,9 +669,9 @@ const historicalProject = "eb000000-0000-4000-8000-000000000003"
 func historicalConfiguration(max int64, withProject bool) model.WorkerConfiguration {
 	value := model.WorkerConfiguration{
 		MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
-		PreferPlatformSpecificTasks: false,
-		Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
-		Projects:                    []model.WorkerProjectConfiguration{},
+		PlatformTaskMode: model.PlatformTaskAll,
+		Native:           model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+		Projects:         []model.WorkerProjectConfiguration{},
 	}
 	if withProject {
 		value.Projects = []model.WorkerProjectConfiguration{{ProjectID: historicalProject, NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`["--foo","bar"]`)}}}
@@ -632,8 +788,9 @@ const authorityUnknownProject = "ec000000-0000-4000-8000-000000000004"
 
 func authorityConfiguration(max int64, project string) model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		PreferPlatformSpecificTasks: false,
-		MaxConcurrent:               max, PollIntervalMs: 60000, RecoveryLimit: 3,
+		ArchiveSessions:  new(true),
+		PlatformTaskMode: model.PlatformTaskAll,
+		MaxConcurrent:    max, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
 	}
@@ -702,7 +859,11 @@ func TestConfigurationBootstrapCloudAuthority(t *testing.T) {
 				}
 				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 					calls = append(calls, "desired")
-					if actual != ctx || user != authorityUser || worker != authorityWorker || revision != tc.writeRevision || !reflect.DeepEqual(value, authorityConfiguration(max, authorityProject)) || d.desiredWrites != 1 {
+					expected := authorityConfiguration(max, authorityProject)
+					if tc.exchange {
+						expected.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+					}
+					if actual != ctx || user != authorityUser || worker != authorityWorker || revision != tc.writeRevision || !reflect.DeepEqual(value, expected) || d.desiredWrites != 1 {
 						t.Errorf("desired write differs: %s/%s revision=%d value=%+v writes=%d", user, worker, revision, value, d.desiredWrites)
 					}
 					return model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(tc.writeRevision, 10), UpdatedAt: tc.writeAt, Value: authorityConfiguration(max, authorityProject)}, nil
@@ -735,4 +896,331 @@ func TestConfigurationBootstrapCloudAuthority(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRawStoredReportAndBootstrapPreserveUnknownFields(t *testing.T) {
+	ctx := context.Background()
+	principal := model.Principal{UserID: "user"}
+	value := configurationFixture()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["future"] = json.RawMessage(`{"number":12345678901234567890}`)
+	fields["maxConcurrent"] = json.RawMessage(`"unknown"`)
+	raw, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := false
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	d.current.Desired.Raw = raw
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Value = model.WorkerConfiguration{}
+	receipt, err := ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "7"}})
+	if err != nil || d.desiredWrites != 0 || !receipt.ObservationAccepted {
+		t.Fatalf("report changed desired or failed: %+v %d %v", receipt, d.desiredWrites, err)
+	}
+	choice := &model.ToolPathChoice{Kind: "auto"}
+	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
+	if err != nil || receipt.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("bootstrap: %+v %d %v %v", receipt, d.desiredWrites, d.rawArchive, err)
+	}
+	var written map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &written); err != nil {
+		t.Fatal(err)
+	}
+	if string(written["future"]) != string(fields["future"]) || string(written["maxConcurrent"]) != `"unknown"` {
+		t.Fatalf("bootstrap changed unrelated facts: %s", d.rawWritten)
+	}
+	d.current.Desired = receipt.Desired
+	_, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
+	if err != nil || d.desiredWrites != 1 {
+		t.Fatalf("repeated bootstrap wrote again: %d %v", d.desiredWrites, err)
+	}
+}
+
+func TestLegacyPutPreservesUnsupportedHiddenFields(t *testing.T) {
+	value := configurationFixture()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["toolPaths"] = json.RawMessage(`{"codex":{"kind":"auto","future":true},"unknown":42}`)
+	fields["enableSudoCleanup"] = json.RawMessage(`{"future":true}`)
+	raw, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := false
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	d.current.Desired.Raw = raw
+	d.current.Desired.ArchiveSessions = &archive
+	value.ArchiveSessions = nil
+	value.PreserveToolPaths = true
+	value.PreserveSudoCleanup = true
+	value.PreserveArchiveSessions = true
+	got, err := PutConfiguration(context.Background(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "7" || d.desiredWrites != 0 {
+		t.Fatalf("unchanged hidden values: %+v %d %v", got, d.desiredWrites, err)
+	}
+	value.MaxConcurrent = 2
+	got, err = PutConfiguration(context.Background(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("legacy update: %+v %d %v", got, d.desiredWrites, err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"toolPaths", "enableSudoCleanup"} {
+		if string(saved[key]) != string(fields[key]) {
+			t.Fatalf("lost hidden %s: %s", key, d.rawWritten)
+		}
+	}
+}
+
+func TestRawCloudTelemetryUsesOnlyCurrentKnownChoice(t *testing.T) {
+	d := configuredDAO("7")
+	d.current.Desired.Raw = json.RawMessage(`{"toolPaths":{"codex":{"kind":"path","path":"/opt/codex","future":true}},"unknown":true}`)
+	v := toolTelemetryFixture()
+	v.Entries[0].ConfigurationSource = "cloud"
+	v.Entries[0].TargetRevision = workerValidationValue("7")
+	principal := model.Principal{UserID: "user"}
+	if err := ValidateToolPathTargets(t.Context(), d, principal, "worker", v); err != nil {
+		t.Fatal(err)
+	}
+	d.current.Desired.Raw = json.RawMessage(`{"toolPaths":{"codex":{"kind":"path","path":42,"future":true}}}`)
+	requireFault(t, ValidateToolPathTargets(t.Context(), d, principal, "worker", v), "invalid_input")
+	d.current.Desired.Raw = json.RawMessage(`{"toolPaths":false}`)
+	v.Entries[0].TargetRevision = workerValidationValue("6")
+	if err := ValidateToolPathTargets(t.Context(), d, principal, "worker", v); err != nil {
+		t.Fatalf("historical target: %v", err)
+	}
+	v.Entries[0].TargetRevision = workerValidationValue("7")
+	requireFault(t, ValidateToolPathTargets(t.Context(), d, principal, "worker", v), "invalid_input")
+}
+
+func TestUnknownStoredFieldRequiresCompleteReplacement(t *testing.T) {
+	for key, field := range map[string]json.RawMessage{"future": json.RawMessage(`{"value":1}`), "archiveSessions": json.RawMessage(`false`)} {
+		t.Run(key, func(t *testing.T) {
+			value := configurationFixture()
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields[key] = field
+			raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := configuredDAO("7")
+			d.current.Desired.Raw = raw
+			d.current.Desired.ArchiveSessions = value.ArchiveSessions
+			got, err := PutConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+			if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 {
+				t.Fatalf("stored %s must make PUT a replacement: %+v %d %v", key, got, d.desiredWrites, err)
+			}
+		})
+	}
+}
+
+func TestStoredProjectsRequireAccessWhenRetentionCannotBeProven(t *testing.T) {
+	project := model.WorkerProjectConfiguration{ProjectID: configurationInputProjectA, NativeOverrides: map[string]json.RawMessage{}}
+	entry := fmt.Sprintf(`{"projectId":%q,"nativeOverrides":{}}`, project.ProjectID)
+	cases := map[string]string{
+		"projects not array":             `{"projects":{}}`,
+		"invalid project identifier":     `{"projects":[{"projectId":"bad","nativeOverrides":{}}]}`,
+		"invalid identifier type":        `{"projects":[{"projectId":2,"nativeOverrides":{}}]}`,
+		"extra project member":           fmt.Sprintf(`{"projects":[{"projectId":%q,"nativeOverrides":{},"future":true}]}`, project.ProjectID),
+		"invalid overrides":              fmt.Sprintf(`{"projects":[{"projectId":%q,"nativeOverrides":{"agent":false}}]}`, project.ProjectID),
+		"duplicate project":              fmt.Sprintf(`{"projects":[%s,%s]}`, entry, entry),
+		"duplicate incompatible project": fmt.Sprintf(`{"projects":[%s,{"projectId":%q,"nativeOverrides":{"agent":false}}]}`, entry, project.ProjectID),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := configuredDAO("7")
+			d.accessErr = model.ErrNotFound
+			d.current.Desired.Raw = json.RawMessage(raw)
+			err := configurationProjects(t.Context(), d, "user", d.current.Desired, model.WorkerConfiguration{Projects: []model.WorkerProjectConfiguration{project}})
+			requireFault(t, err, "not_found")
+			if !reflect.DeepEqual(d.accesses, []string{project.ProjectID}) {
+				t.Fatalf("accesses: %v", d.accesses)
+			}
+		})
+	}
+}
+
+func TestRawBootstrapRejectsMalformedStoredTarget(t *testing.T) {
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: &model.ToolPathChoice{Kind: "auto"}}}
+	for name, raw := range map[string]string{"invalid object": `[]`, "invalid tool paths": `{"toolPaths":false}`} {
+		t.Run(name, func(t *testing.T) {
+			d := configuredDAO("7")
+			d.current.Desired.Raw = json.RawMessage(raw)
+			_, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+			requireFault(t, err, "invalid_input")
+			if d.desiredWrites != 0 {
+				t.Fatalf("wrote invalid target: %d", d.desiredWrites)
+			}
+		})
+	}
+}
+
+func TestRawBootstrapAdoptsMissingToolPaths(t *testing.T) {
+	d := configuredDAO("7")
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"future":{"unchanged":1}}`)
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: &model.ToolPathChoice{Kind: "auto"}}}
+	got, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("missing paths adoption: %+v %d %v", got, d.desiredWrites, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var paths map[string]json.RawMessage
+	if err := json.Unmarshal(fields["toolPaths"], &paths); err != nil {
+		t.Fatal(err)
+	}
+	if string(paths["codex"]) != `{"kind":"auto"}` || string(paths["copilot"]) != `null` || paths["herdr"] != nil || string(fields["future"]) != `{"unchanged":1}` {
+		t.Fatalf("unexpected result %s", d.rawWritten)
+	}
+}
+
+func TestTwoToolReplacementCorrectsLegacyRawWithoutChangingArchiveOrSudo(t *testing.T) {
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"}},"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	choice := &model.ToolPathChoice{Kind: "auto"}
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice, Copilot: choice}}
+	receipt, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+	if err != nil || d.desiredWrites != 0 || receipt.Desired.Revision != "7" {
+		t.Fatalf("report converted the raw target: %+v writes=%d error=%v", receipt, d.desiredWrites, err)
+	}
+	value := configurationFixture()
+	value.ToolPaths = model.WorkerToolPaths{Codex: choice, Copilot: choice}
+	value.PreserveSudoCleanup = true
+	value.PreserveArchiveSessions = true
+	got, err := PutConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("replacement failed: %+v writes=%d archive=%v error=%v", got, d.desiredWrites, d.rawArchive, err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := saved["agentControlMode"]; present || string(saved["enableSudoCleanup"]) != "true" || string(saved["toolPaths"]) != `{"codex":{"kind":"auto"},"copilot":{"kind":"auto"}}` {
+		t.Fatalf("replacement retained old fields or lost sudo: %s", d.rawWritten)
+	}
+}
+
+func TestCompleteReplacementPersistsLegacyNullAndMissingFields(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  string
+		paths string
+	}{
+		{"null mode", `"agentControlMode":null,`, `"toolPaths":{"codex":null,"copilot":null},`},
+		{"null old tool", "", `"toolPaths":{"codex":null,"copilot":null,"herdr":null},`},
+		{"missing tool paths", "", ""},
+	} {
+		for _, preserveSudo := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/preserveSudo=%v", tc.name, preserveSudo), func(t *testing.T) {
+				d := checkedConfigurationScope(t, configuredDAO("7"))
+				archive := false
+				d.current.Desired.ArchiveSessions = &archive
+				d.current.Desired.Raw = json.RawMessage(`{` + tc.mode + tc.paths + `"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+				value := configurationFixture()
+				value.ArchiveSessions = &archive
+				value.EnableSudoCleanup = true
+				value.PreserveSudoCleanup = preserveSudo
+				principal := model.Principal{UserID: "user"}
+				got, err := PutConfiguration(t.Context(), d, principal, "worker", 7, value)
+				if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 {
+					t.Fatalf("legacy fields were not replaced: %+v writes=%d error=%v", got, d.desiredWrites, err)
+				}
+				var written []byte
+				if preserveSudo {
+					written = d.rawWritten
+					if d.rawArchive {
+						t.Fatal("archive column changed")
+					}
+				} else {
+					written, err = json.Marshal(got.Desired.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got.Desired.Value.ArchiveSessions == nil || *got.Desired.Value.ArchiveSessions {
+						t.Fatal("archive value changed")
+					}
+				}
+				var saved map[string]json.RawMessage
+				if err := json.Unmarshal(written, &saved); err != nil {
+					t.Fatal(err)
+				}
+				if _, present := saved["agentControlMode"]; present || string(saved["toolPaths"]) != `{"codex":null,"copilot":null}` || string(saved["enableSudoCleanup"]) != "true" {
+					t.Fatalf("wrong replacement: %s", written)
+				}
+				d.current.Desired = got.Desired
+				_, err = PutConfiguration(t.Context(), d, principal, "worker", 7, value)
+				requireFault(t, err, "version_conflict")
+				got, err = PutConfiguration(t.Context(), d, principal, "worker", 8, value)
+				if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 {
+					t.Fatalf("equal replacement must be a no-op: %+v writes=%d error=%v", got, d.desiredWrites, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLegacyModeReplacementPreservesAbsentSudo(t *testing.T) {
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":null,"copilot":null},"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	value := configurationFixture()
+	value.PreserveSudoCleanup = true
+	value.PreserveArchiveSessions = true
+	got, err := PutConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("replacement: %+v writes=%d archive=%v error=%v", got, d.desiredWrites, d.rawArchive, err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := saved["agentControlMode"]; present {
+		t.Fatalf("old mode retained: %s", d.rawWritten)
+	}
+	if _, present := saved["enableSudoCleanup"]; present {
+		t.Fatalf("absent sudo choice invented: %s", d.rawWritten)
+	}
+}
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}
+func (*capacityConfigurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*capacityConfigurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
 }

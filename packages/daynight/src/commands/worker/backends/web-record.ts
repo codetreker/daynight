@@ -1,3 +1,4 @@
+import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import { parseSessionStartupReport } from "../../../session/startup.js";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
@@ -5,7 +6,7 @@ import { normalizeServerUrl } from "../../../config/server.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration } from "../types.js";
-import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, ExecutionSummary } from "./web-types.js";
+import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState } from "./web-types.js";
 
 const integer = (value: unknown, name: string, minimum = 0): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be a safe integer of at least ${minimum}.`);
@@ -62,20 +63,19 @@ const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
   return { repositoryPath: absolutePath(data.repositoryPath, "Repository path"), commonDirectory: absolutePath(data.commonDirectory, "Git common directory"), worktreePath: absolutePath(data.worktreePath, "Worktree path"), branch: text(data.branch, "Worktree branch") };
 };
-const parseExecutionSummary = (value: unknown): ExecutionSummary => { if (value !== null) throw new Error("Web execution summaries are derived from fresh remote inventory."); return value as never; };
 const parseWebExecution = (value: unknown): WebExecutionState => {
   const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown", "startupReport"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
   for (const key of ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "initialOperationId"]) id(data[key], key);
   for (const key of ["sessionId", "cleanupOperationId"]) nullable(data[key], entry => id(entry, key));
   version(data.executionGeneration); oneOf(data.launchSubmission, ["not-submitted", "unknown", "acknowledged"], "Controller launch submission");
   nullable(data.initialPrompt, entry => text(entry, "Initial prompt")); nullable(data.ticketPath, entry => absolutePath(entry, "Controller ticket"));
-  const proof = (value: unknown): void => { const hasJob = typeof value === "object" && value !== null && "jobObjectName" in value; const p = record(value, ["pid", "parentPid", "processGroupId", "startedAt", "commandHash", ...(hasJob ? ["jobObjectName"] : [])], "Process proof"); if (hasJob && (typeof p.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(p.jobObjectName))) throw new Error("Invalid Windows job identity."); integer(p.pid, "Process ID", 1); integer(p.parentPid, "Parent ID"); nullable(p.processGroupId, entry => integer(entry, "Process group", 1)); text(p.startedAt, "Process creation"); if (typeof p.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(p.commandHash)) throw new Error("Invalid process command proof."); };
+  const proof = (value: unknown): void => { const hasJob = typeof value === "object" && value !== null && "jobObjectName" in value; const p = record(value, ["pid", "parentPid", "processGroupId", "startedAt", "commandHash", ...(hasJob ? ["jobObjectName"] : [])], "Process proof"); if (hasJob && (typeof p.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(p.jobObjectName))) throw new Error("Invalid Windows job identity."); integer(p.pid, "Process ID", 1); integer(p.parentPid, "Parent ID"); nullable(p.processGroupId, entry => integer(entry, "Process group", 1)); if (!isProcessBirth(p.startedAt)) throw new Error("Invalid process birth identity."); if (typeof p.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(p.commandHash)) throw new Error("Invalid process command proof."); };
   if (data.controllerProcess !== null) proof(data.controllerProcess);
   if (!Array.isArray(data.nativeProcesses)) throw new Error("Native process evidence must be an array."); data.nativeProcesses.forEach(proof);
   data.restartAfterShutdown ??= false; bool(data.restartAfterShutdown, "Orderly controller restart");
   data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));
   data.summary ??= null; data.initialInputState ??= "unknown"; data.activity ??= "unknown";
-  nullable(data.summary, parseExecutionSummary);
+  if (data.summary !== null) throw new Error("Web execution summaries are derived from fresh remote inventory.");
   if (data.startupReport !== undefined) {
     const report = parseSessionStartupReport(data.startupReport);
     if (report.sessionId !== data.sessionId || report.executionGeneration !== data.executionGeneration || report.controllerInstanceId !== data.controllerInstanceId) throw new Error("Startup report does not match the Web execution.");
@@ -85,8 +85,9 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   return data as WebExecutionState;
 };
 const parseCleanup = (value: unknown): CleanupState => {
-  const data = record(value, ["kind", "startedAt", "deadline"], "Cleanup intent");
-  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline") };
+  const data = record(value, ["kind", "startedAt", "deadline", "discardRecording"], "Cleanup intent");
+  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"), discardRecording: bool(data.discardRecording, "Discard recording") };
+  if (result.kind !== "terminal" && result.discardRecording) throw new Error("Recording discard requires terminal cleanup.");
   if (result.deadline < result.startedAt || result.deadline - result.startedAt > 600_000) throw new Error("Cleanup deadline must be within ten minutes of its original start.");
   return result;
 };

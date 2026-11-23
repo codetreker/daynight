@@ -12,15 +12,25 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestRegisterToolRejectsInvalidBudgetClass(t *testing.T) {
+	fixture := newEntryFixture(t)
+	err := fixture.entry.RegisterTool(simpleTestTool("bad_budget", testObjectSchema()), BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		t.Fatal("invalid registration invoked handler")
+		return ToolResult{}, nil
+	})
+	if err == nil {
+		t.Fatal("invalid budget class was accepted")
+	}
+}
+
 func TestToolPublicationPreservesInternalDefinition(t *testing.T) {
 	for _, version := range []string{"2026-07-28", "2025-11-25"} {
 		t.Run(version, func(t *testing.T) {
 			fixture := newEntryFixture(t)
 			definition := &sdk.Tool{
 				Name: "publication_probe", Title: "Publication probe", Description: "Descriptive metadata",
-				InputSchema:  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
-				OutputSchema: standardOutputSchema(),
-				Annotations:  &sdk.ToolAnnotations{ReadOnlyHint: true},
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+				Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true},
 			}
 			before, err := json.Marshal(definition)
 			if err != nil {
@@ -32,7 +42,7 @@ func TestToolPublicationPreservesInternalDefinition(t *testing.T) {
 				t.Fatal(err)
 			}
 			after, err := json.Marshal(definition)
-			if err != nil || string(before) != string(after) || definition.OutputSchema == nil {
+			if err != nil || string(before) != string(after) {
 				t.Fatalf("registration changed internal definition: before=%s after=%s error=%v", before, after, err)
 			}
 			listed, err := fixture.client(t, version, "alice").ListTools(t.Context(), nil)
@@ -55,7 +65,6 @@ func TestToolPublicationPreservesInternalDefinition(t *testing.T) {
 			if err := json.Unmarshal(before, &expected); err != nil {
 				t.Fatal(err)
 			}
-			delete(expected, "outputSchema")
 			encoded, err := json.Marshal(published)
 			if err != nil || json.Unmarshal(encoded, &actual) != nil || !reflect.DeepEqual(expected, actual) {
 				t.Fatalf("published metadata changed: expected=%v actual=%s error=%v", expected, encoded, err)

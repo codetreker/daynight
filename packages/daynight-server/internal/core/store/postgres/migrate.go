@@ -7,232 +7,381 @@ import (
 	"errors"
 	"fmt"
 
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
+	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	migration115 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/115"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/001_projects.sql
+//go:embed schema/migrations/001_projects.sql
 var projectsSQL string
 
-//go:embed migrations/002_tasks.sql
+//go:embed schema/migrations/002_tasks.sql
 var tasksSQL string
 
-//go:embed migrations/003_task_properties.sql
+//go:embed schema/migrations/003_task_properties.sql
 var taskPropertiesSQL string
 
-//go:embed migrations/004_task_attachments.sql
+//go:embed schema/migrations/004_task_attachments.sql
 var taskAttachmentsSQL string
 
-//go:embed migrations/005_identity.sql
+//go:embed schema/migrations/005_identity.sql
 var identitySQL string
 
-//go:embed migrations/006_project_membership.sql
+//go:embed schema/migrations/006_project_membership.sql
 var projectMembershipSQL string
 
-//go:embed migrations/007_task_proposed.sql
+//go:embed schema/migrations/007_task_proposed.sql
 var taskProposedSQL string
 
-//go:embed migrations/008_task_proposed_default.sql
+//go:embed schema/migrations/008_task_proposed_default.sql
 var taskProposedDefaultSQL string
 
-//go:embed migrations/009_task_timing.sql
+//go:embed schema/migrations/009_task_timing.sql
 var taskTimingSQL string
 
-//go:embed migrations/010_project_settings.sql
+//go:embed schema/migrations/010_project_settings.sql
 var projectSettingsSQL string
 
-//go:embed migrations/011_task_agent_permission.sql
+//go:embed schema/migrations/011_task_agent_permission.sql
 var taskAgentPermissionSQL string
 
-//go:embed migrations/012_external_dependencies.sql
+//go:embed schema/migrations/012_external_dependencies.sql
 var externalDependenciesSQL string
 
-//go:embed migrations/013_task_required_platform.sql
+//go:embed schema/migrations/013_task_required_platform.sql
 var taskRequiredPlatformSQL string
 
-//go:embed migrations/014_task_status_assignment.sql
+//go:embed schema/migrations/014_task_status_assignment.sql
 var taskStatusAssignmentSQL string
 
-//go:embed migrations/015_task_sync.sql
+//go:embed schema/migrations/015_task_sync.sql
 var taskSyncSQL string
 
-//go:embed migrations/016_task_worker.sql
+//go:embed schema/migrations/016_task_worker.sql
 var taskWorkerSQL string
 
-//go:embed migrations/017_task_soft_delete.sql
+//go:embed schema/migrations/017_task_soft_delete.sql
 var taskSoftDeleteSQL string
 
-//go:embed migrations/018_device_authorization.sql
+//go:embed schema/migrations/018_device_authorization.sql
 var deviceAuthorizationSQL string
 
-//go:embed migrations/019_optional_token_expiry.sql
+//go:embed schema/migrations/019_optional_token_expiry.sql
 var optionalTokenExpirySQL string
 
-//go:embed migrations/020_worker_agent_control_mode.sql
+//go:embed schema/migrations/020_worker_agent_control_mode.sql
 var workerAgentControlModeSQL string
 
-//go:embed migrations/021_task_sessions.sql
+//go:embed schema/migrations/021_task_sessions.sql
 var taskSessionsSQL string
 
-//go:embed migrations/022_session_connection_credential.sql
+//go:embed schema/migrations/022_session_connection_credential.sql
 var sessionConnectionCredentialSQL string
 
-//go:embed migrations/023_session_transaction_ownership.sql
+//go:embed schema/migrations/023_session_transaction_ownership.sql
 var sessionTransactionOwnershipSQL string
 
-//go:embed migrations/024_test_sessions.sql
+//go:embed schema/migrations/024_test_sessions.sql
 var testSessionsSQL string
 
-//go:embed migrations/025_worker_snapshots.sql
+//go:embed schema/migrations/025_worker_snapshots.sql
 var workerSnapshotsSQL string
 
-//go:embed migrations/027_session_archives.sql
+//go:embed schema/migrations/027_session_archives.sql
 var sessionArchivesSQL string
 
-//go:embed migrations/028_task_assignment.sql
+//go:embed schema/migrations/028_task_assignment.sql
 var taskAssignmentSQL string
 
-//go:embed migrations/029_task_threads.sql
+//go:embed schema/migrations/029_task_threads.sql
 var taskThreadsSQL string
 
-//go:embed migrations/030_task_steps.sql
+//go:embed schema/migrations/030_task_steps.sql
 var taskStepsSQL string
 
-//go:embed migrations/031_terminal_sessions.sql
+//go:embed schema/migrations/031_terminal_sessions.sql
 var terminalSessionsSQL string
 
-//go:embed migrations/032_personal_project_ownership.sql
+//go:embed schema/migrations/032_personal_project_ownership.sql
 var personalProjectOwnershipSQL string
 
-//go:embed migrations/033_bots.sql
+//go:embed schema/migrations/033_bots.sql
 var botsSQL string
 
-//go:embed migrations/034_worker_configuration.sql
+//go:embed schema/migrations/034_worker_configuration.sql
 var workerConfigurationSQL string
 
-//go:embed migrations/035_team_invitations.sql
+//go:embed schema/migrations/035_team_invitations.sql
 var teamInvitationsSQL string
 
-//go:embed migrations/036_bot_defaults.sql
+//go:embed schema/migrations/036_bot_defaults.sql
 var botDefaultsSQL string
 
-//go:embed migrations/037_bot_session_binding.sql
+//go:embed schema/migrations/037_bot_session_binding.sql
 var botSessionBindingSQL string
 
-//go:embed migrations/038_oauth_family.sql
+//go:embed schema/migrations/038_oauth_family.sql
 var oauthFamilySQL string
 
-//go:embed migrations/039_oauth_clients.sql
+//go:embed schema/migrations/039_oauth_clients.sql
 var oauthClientsSQL string
 
-//go:embed migrations/040_oauth_authorizations.sql
+//go:embed schema/migrations/040_oauth_authorizations.sql
 var oauthAuthorizationsSQL string
 
-//go:embed migrations/041_private_transfers.sql
+//go:embed schema/migrations/041_private_transfers.sql
 var privateTransfersSQL string
 
-//go:embed migrations/042_oauth_cleanup_cursor.sql
+//go:embed schema/migrations/042_oauth_cleanup_cursor.sql
 var oauthCleanupCursorSQL string
 
-//go:embed migrations/045_bot_native_preferences.sql
+//go:embed schema/migrations/045_bot_native_preferences.sql
 var botNativePreferencesSQL string
 
-//go:embed migrations/046_task_cancelled.sql
+//go:embed schema/migrations/046_task_cancelled.sql
 var taskCancelledSQL string
 
-//go:embed migrations/047_login_scope.sql
+//go:embed schema/migrations/047_login_scope.sql
 var loginScopeSQL string
 
-//go:embed migrations/043_upload_chunks.sql
+//go:embed schema/migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
-//go:embed migrations/044_project_soft_delete.sql
+//go:embed schema/migrations/044_project_soft_delete.sql
 var projectSoftDeleteSQL string
 
-//go:embed migrations/048_webhook_management.sql
+//go:embed schema/migrations/048_webhook_management.sql
 var webhookManagementSQL string
 
-//go:embed migrations/049_webhook_subscriptions.sql
+//go:embed schema/migrations/049_webhook_subscriptions.sql
 var webhookSubscriptionsSQL string
 
-//go:embed migrations/050_webhook_capture.sql
+//go:embed schema/migrations/050_webhook_capture.sql
 var webhookCaptureSQL string
 
-//go:embed migrations/051_webhook_delivery.sql
+//go:embed schema/migrations/051_webhook_delivery.sql
 var webhookDeliverySQL string
 
-//go:embed migrations/052_webhook_redelivery.sql
+//go:embed schema/migrations/052_webhook_redelivery.sql
 var webhookRedeliverySQL string
 
-//go:embed migrations/053_webhook_signing_key_expiry.sql
+//go:embed schema/migrations/053_webhook_signing_key_expiry.sql
 var webhookSigningKeyExpirySQL string
 
-//go:embed migrations/054_worker_platform_preference.sql
+//go:embed schema/migrations/054_worker_platform_preference.sql
 var workerPlatformPreferenceSQL string
 
-//go:embed migrations/055_member_terminal_indexes.sql
+//go:embed schema/migrations/055_member_terminal_indexes.sql
 var memberTerminalIndexesSQL string
 
-//go:embed migrations/056_worker_prompts.sql
+//go:embed schema/migrations/056_worker_prompts.sql
 var workerPromptsSQL string
 
-//go:embed migrations/057_session_image_resources.sql
+//go:embed schema/migrations/057_session_image_resources.sql
 var sessionImageResourcesMigration string
 
-//go:embed migrations/058_session_archive_bundles.sql
+//go:embed schema/migrations/058_session_archive_bundles.sql
 var sessionArchiveBundlesMigration string
 
-//go:embed migrations/059_session_media_rates.sql
+//go:embed schema/migrations/059_session_media_rates.sql
 var sessionMediaRatesMigration string
 
-//go:embed migrations/060_task_proposed.sql
+//go:embed schema/migrations/060_task_proposed.sql
 var taskProposedStateSQL string
 
-//go:embed migrations/061_task_type_parent.sql
+//go:embed schema/migrations/061_task_type_parent.sql
 var taskTypeParentSQL string
 
-//go:embed migrations/062_task_resource_rows.sql
+//go:embed schema/migrations/062_task_resource_rows.sql
 var taskResourceRowsSQL string
 
-//go:embed migrations/063_task_assignment_all_index.sql
+//go:embed schema/migrations/063_task_assignment_all_index.sql
 var taskAssignmentAllIndexSQL string
 
-//go:embed migrations/064_microsoft_identity.sql
+//go:embed schema/migrations/064_microsoft_identity.sql
 var microsoftIdentitySQL string
 
-//go:embed migrations/065_release_worker_ownership.sql
+//go:embed schema/migrations/065_release_worker_ownership.sql
 var releaseWorkerOwnershipSQL string
 
-//go:embed migrations/066_credential_last_used.sql
+//go:embed schema/migrations/066_credential_last_used.sql
 var credentialLastUsedSQL string
 
-//go:embed migrations/067_api_oauth_lifetime.sql
+//go:embed schema/migrations/067_api_oauth_lifetime.sql
 var apiOAuthLifetimeSQL string
 
-//go:embed migrations/068_project_github.sql
+//go:embed schema/migrations/068_project_github.sql
 var projectGitHubSQL string
 
-//go:embed migrations/071_assistant_tasks.sql
+//go:embed schema/migrations/071_assistant_tasks.sql
 var assistantTasksSQL string
 
-//go:embed migrations/069_project_github_pending_prs.sql
+//go:embed schema/migrations/069_project_github_pending_prs.sql
 var projectGitHubPendingPRsSQL string
 
-//go:embed migrations/070_task_tags.sql
+//go:embed schema/migrations/070_task_tags.sql
 var taskTagsSQL string
 
-//go:embed migrations/073_project_github_sync.sql
+//go:embed schema/migrations/073_project_github_sync.sql
 var projectGitHubSyncSQL string
 
-//go:embed migrations/072_personal_in_progress.sql
+//go:embed schema/migrations/072_personal_in_progress.sql
 var personalInProgressSQL string
 
-//go:embed migrations/074_tag_color.sql
+//go:embed schema/migrations/074_tag_color.sql
 var tagColorSQL string
 
-//go:embed migrations/075_preview_sso.sql
+//go:embed schema/migrations/075_preview_sso.sql
 var previewSSOSQL string
+
+//go:embed schema/migrations/076_github_apps.sql
+var githubAppsSQL string
+
+//go:embed schema/migrations/077_github_app_cutover.sql
+var githubAppCutoverSQL string
+
+//go:embed schema/migrations/078_project_pull_requests_author_number.sql
+var projectPullRequestsAuthorNumberSQL string
+
+//go:embed schema/migrations/079_worker_sudo_cleanup.sql
+var workerSudoCleanupSQL string
+
+//go:embed schema/migrations/080_worker_archive_sessions.sql
+var workerArchiveSessionsSQL string
+
+//go:embed schema/migrations/081_worker_alias.sql
+var workerAliasSQL string
+
+//go:embed schema/migrations/082_worker_task_tag_filter.sql
+var workerTaskTagFilterSQL string
+
+//go:embed schema/migrations/086_usage_records.sql
+var usageRecordsSQL string
+
+//go:embed schema/migrations/087_task_blocked.sql
+var taskBlockedSQL string
+
+//go:embed schema/migrations/088_github_coverage.sql
+var githubCoverageSQL string
+
+//go:embed schema/migrations/089_session_archive_retention.sql
+var sessionArchiveRetentionSQL string
+
+//go:embed schema/migrations/090_dependency_types.sql
+var dependencyTypesSQL string
+
+//go:embed schema/migrations/091_goal_dependencies.sql
+var goalDependenciesSQL string
+
+//go:embed schema/migrations/092_session_archive_cleanup.sql
+var sessionArchiveCleanupSQL string
+
+//go:embed schema/migrations/093_github_repository_sources.sql
+var githubRepositorySourcesSQL string
+
+//go:embed schema/migrations/094_worker_review_participation.sql
+var workerReviewParticipationSQL string
+
+//go:embed schema/migrations/095_project_repository_version.sql
+var projectRepositoryVersionSQL string
+
+//go:embed schema/migrations/096_pr_review_assignment.sql
+var prReviewAssignmentSQL string
+
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
+
+//go:embed schema/migrations/100_bot_recovery.sql
+var botRecoverySQL string
+
+type githubRepositoryIdentityMigrationError struct {
+	projectID uuid.UUID
+	cause     error
+}
+
+func (e *githubRepositoryIdentityMigrationError) Error() string {
+	return fmt.Sprintf("migration 93: missing trustworthy GitHub repository identity for project %s", e.projectID)
+}
+func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
+
+//go:embed schema/migrations/097_webhook_event_actor.sql
+var webhookEventActorSQL string
+
+//go:embed schema/migrations/098_assistant_task_outcomes.sql
+var assistantTaskOutcomesSQL string
+
+//go:embed schema/migrations/101_assistant_task_item_lifecycle.sql
+var assistantTaskItemLifecycleSQL string
+
+//go:embed schema/migrations/102_assistant_task_retrospectives.sql
+var assistantTaskRetrospectivesSQL string
+
+//go:embed schema/migrations/103_assistant_task_metrics.sql
+var assistantTaskMetricsSQL string
+
+//go:embed schema/migrations/104_assistant_task_appendix_validations.sql
+var assistantTaskAppendixValidationsSQL string
+
+//go:embed schema/migrations/105_credential_descriptions.sql
+var credentialDescriptionsSQL string
+
+//go:embed schema/migrations/106_repository_default_branch.sql
+var repositoryDefaultBranchSQL string
+
+//go:embed schema/migrations/107_review_poll_indexes.sql
+var reviewPollIndexesSQL string
+
+//go:embed schema/migrations/108_pat_business_scopes.sql
+var patBusinessScopesSQL string
+
+//go:embed schema/migrations/109_oauth_business_scopes.sql
+var oauthBusinessScopesSQL string
+
+//go:embed schema/migrations/110_worker_lifecycle.sql
+var workerLifecycleSQL string
+
+//go:embed schema/migrations/111_credential_scope_activation.sql
+var credentialScopeActivationSQL string
+
+//go:embed schema/migrations/112_worker_windows_process_cleanup.sql
+var workerWindowsProcessCleanupSQL string
+
+//go:embed schema/migrations/113_webhook_endpoint_client_key.sql
+var webhookEndpointClientKeySQL string
+
+//go:embed schema/migrations/114_session_history_policy.sql
+var sessionHistoryPolicySQL string
+
+//go:embed schema/migrations/116_archive_upload_version.sql
+var archiveUploadVersionSQL string
+
+//go:embed schema/migrations/117_session_online_mode.sql
+var sessionOnlineModeSQL string
+
+//go:embed schema/migrations/118_browser_session_activity.sql
+var browserSessionActivitySQL string
+
+//go:embed schema/migrations/119_retire_step_webhook_bindings.sql
+var retireStepWebhookBindingsSQL string
+
+//go:embed schema/migrations/120_browser_session_management.sql
+var browserSessionManagementSQL string
+
+//go:embed schema/migrations/121_worker_platform_task_mode.sql
+var workerPlatformTaskModeSQL string
+
+//go:embed schema/migrations/122_archive_single_staging.sql
+var archiveSingleStagingSQL string
+
+//go:embed schema/migrations/123_task_ancestor_visibility.sql
+var taskAncestorVisibilitySQL string
+
+//go:embed schema/migrations/124_drop_task_steps.sql
+var dropTaskStepsSQL string
 
 type migration struct {
 	version         int64
@@ -317,6 +466,53 @@ var schemaMigrations = []migration{
 	{version: 73, sql: projectGitHubSyncSQL},
 	{version: 74, sql: tagColorSQL},
 	{version: 75, sql: previewSSOSQL},
+	{version: 76, sql: githubAppsSQL},
+	{version: 77, sql: githubAppCutoverSQL},
+	{version: 78, sql: projectPullRequestsAuthorNumberSQL},
+	{version: 79, sql: workerSudoCleanupSQL},
+	{version: 80, sql: workerArchiveSessionsSQL},
+	{version: 81, sql: workerAliasSQL},
+	{version: 82, sql: workerTaskTagFilterSQL},
+	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
+	{version: 86, sql: usageRecordsSQL},
+	{version: 87, sql: taskBlockedSQL},
+	{version: 88, sql: githubCoverageSQL},
+	{version: 89, sql: sessionArchiveRetentionSQL},
+	{version: 90, sql: dependencyTypesSQL},
+	{version: 91, sql: goalDependenciesSQL},
+	{version: 92, sql: sessionArchiveCleanupSQL},
+	{version: 93, sql: githubRepositorySourcesSQL},
+	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: projectRepositoryVersionSQL},
+	{version: 96, sql: prReviewAssignmentSQL},
+	{version: 97, sql: webhookEventActorSQL},
+	{version: 98, sql: assistantTaskOutcomesSQL},
+	{version: 99, sql: assistantTaskInboxesSQL},
+	{version: 100, sql: botRecoverySQL},
+	{version: 101, sql: assistantTaskItemLifecycleSQL},
+	{version: 102, sql: assistantTaskRetrospectivesSQL},
+	{version: 103, sql: assistantTaskMetricsSQL},
+	{version: 104, sql: assistantTaskAppendixValidationsSQL},
+	{version: 105, sql: credentialDescriptionsSQL},
+	{version: 106, sql: repositoryDefaultBranchSQL},
+	{version: 107, sql: reviewPollIndexesSQL},
+	{version: 108, sql: patBusinessScopesSQL},
+	{version: 109, sql: oauthBusinessScopesSQL},
+	{version: 110, sql: workerLifecycleSQL},
+	{version: 111, sql: credentialScopeActivationSQL},
+	{version: 112, sql: workerWindowsProcessCleanupSQL},
+	{version: 113, sql: webhookEndpointClientKeySQL},
+	{version: 114, sql: sessionHistoryPolicySQL},
+	{version: 115, sql: migration115.SQL(), transform: migration115.Apply, transformSource: migration115.TransformSource()},
+	{version: 116, sql: archiveUploadVersionSQL},
+	{version: 117, sql: sessionOnlineModeSQL},
+	{version: 118, sql: browserSessionActivitySQL},
+	{version: 119, sql: retireStepWebhookBindingsSQL},
+	{version: 120, sql: browserSessionManagementSQL},
+	{version: 121, sql: workerPlatformTaskModeSQL},
+	{version: 122, sql: archiveSingleStagingSQL},
+	{version: 123, sql: taskAncestorVisibilitySQL},
+	{version: 124, sql: dropTaskStepsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
@@ -368,6 +564,12 @@ func replayMigrations(ctx context.Context, conn *pgxpool.Conn, migrations []migr
 			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", next.version, next.checksum())
 			return err
 		}); err != nil {
+			var pgErr *pgconn.PgError
+			if next.version == 93 && errors.As(err, &pgErr) && pgErr.Code == "DN093" {
+				if id, parseErr := uuid.Parse(pgErr.Detail); parseErr == nil {
+					return &githubRepositoryIdentityMigrationError{projectID: id, cause: err}
+				}
+			}
 			return err
 		}
 	}

@@ -66,17 +66,25 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 	}
 	cursor := "00000000-0000-0000-0000-000000000000"
 	for {
-		rows, err := tx.Query(ctx, `SELECT s.id::text,COALESCE(s.project_id::text,''),s.owner_user_id::text,a.schema_version,a.object_path,a.sha256,a.byte_length FROM task_sessions s LEFT JOIN session_archives a ON a.session_id=s.id AND a.state='ready' WHERE s.id>$1::uuid ORDER BY s.id LIMIT 64`, cursor)
+		rows, err := tx.Query(ctx, `SELECT s.id::text,COALESCE(s.project_id::text,''),s.owner_user_id::text,a.schema_version,a.object_path,a.sha256,a.byte_length,r.expired_at IS NOT NULL
+ FROM task_sessions s LEFT JOIN session_archive_retention r ON r.session_id=s.id
+ LEFT JOIN session_archives a ON a.session_id=s.id AND a.state='ready' AND r.expired_at IS NULL
+ WHERE s.id>$1::uuid ORDER BY s.id LIMIT 64`, cursor)
 		if err != nil {
 			return err
 		}
-		batch := []store.StorageInventory{}
+		type inventoryRow struct {
+			value   store.StorageInventory
+			expired bool
+		}
+		batch := []inventoryRow{}
 		for rows.Next() {
 			v := store.StorageInventory{}
 			var version *int
 			var path, hash *string
 			var length *int64
-			if err = rows.Scan(&v.SessionID, &v.ProjectID, &v.OwnerID, &version, &path, &hash, &length); err != nil {
+			var expired bool
+			if err = rows.Scan(&v.SessionID, &v.ProjectID, &v.OwnerID, &version, &path, &hash, &length, &expired); err != nil {
 				rows.Close()
 				return err
 			}
@@ -87,7 +95,7 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 				}
 				v.Archive = &store.StorageArchive{SchemaVersion: *version, Path: *path, SHA256: *hash, ByteLength: *length}
 			}
-			batch = append(batch, v)
+			batch = append(batch, inventoryRow{value: v, expired: expired})
 		}
 		err = rows.Err()
 		rows.Close()
@@ -97,15 +105,21 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 		if len(batch) == 0 {
 			break
 		}
-		for _, v := range batch {
+		for _, item := range batch {
+			v := item.value
 			migration := store.ArchiveMigration{SessionID: v.SessionID}
-			err = tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,source_byte_length,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1`, v.SessionID).Scan(&migration.MigrationID, &migration.SourcePath, &migration.SourceHash, &migration.SourceLength, &migration.TargetPath, &migration.TargetHash, &migration.Phase)
+			err = tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,source_byte_length,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1 AND NOT $2::boolean`, v.SessionID, item.expired).Scan(&migration.MigrationID, &migration.SourcePath, &migration.SourceHash, &migration.SourceLength, &migration.TargetPath, &migration.TargetHash, &migration.Phase)
 			if err == nil {
 				v.Migration = &migration
 			} else if !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
-			resources, err := tx.Query(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),content FROM session_resources WHERE session_id=$1 ORDER BY resource_id`, v.SessionID)
+			// Expiration can outlive successful physical deletion before its final
+			// receipt. Only unreferenced reclamation rows cease to require bytes;
+			// independently retained originals still undergo full verification.
+			resources, err := tx.Query(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),content FROM session_resources resource WHERE session_id=$1
+ AND NOT ($2::boolean AND gc_pending AND NOT EXISTS(SELECT 1 FROM session_resource_references ref WHERE ref.session_id=resource.session_id AND ref.resource_id=resource.resource_id))
+ ORDER BY resource_id`, v.SessionID, item.expired)
 			if err != nil {
 				return err
 			}
@@ -131,7 +145,7 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 			if err != nil {
 				return err
 			}
-			objects, err := tx.Query(ctx, `SELECT 'session-archives',c.object_path,c.sha256,c.byte_length FROM session_archive_chunks c JOIN session_archive_files f USING(session_id,file_id) WHERE c.session_id=$1 AND NOT f.staging_released UNION ALL SELECT 'session-archives',object_path||'/content',sha256,byte_length FROM session_archive_files WHERE session_id=$1 AND state='complete' AND purpose='timeline'`, v.SessionID)
+			objects, err := tx.Query(ctx, `SELECT 'session-archives',c.object_path,c.sha256,c.byte_length FROM session_archive_chunks c JOIN session_archive_files f USING(session_id,file_id) WHERE c.session_id=$1 AND f.upload_version=1 AND NOT f.staging_released AND NOT $2::boolean UNION ALL SELECT 'session-archives',object_path||'/content',sha256,byte_length FROM session_archive_files WHERE session_id=$1 AND upload_version=1 AND state='complete' AND purpose='timeline' AND NOT $2::boolean`, v.SessionID, item.expired)
 			if err != nil {
 				return err
 			}
@@ -147,6 +161,47 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 			objects.Close()
 			if err != nil {
 				return err
+			}
+			files, err := tx.Query(ctx, `SELECT upload_version,file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,coalesce(successor_file_id::text,''),terminal_error FROM session_archive_files WHERE session_id=$1 AND upload_version<>1 AND NOT $2::boolean ORDER BY file_id`, v.SessionID, item.expired)
+			if err != nil {
+				return err
+			}
+			for files.Next() {
+				f := store.StorageArchiveFileV2{}
+				if err = files.Scan(&f.UploadVersion, &f.FileID, &f.Purpose, &f.SHA256, &f.ByteLength, &f.AcceptedOffset, &f.State, &f.Path, &f.Resource, &f.TimelineRevision, &f.StagingReleased, &f.SuccessorFileID, &f.TerminalError); err != nil {
+					files.Close()
+					return err
+				}
+				v.ArchiveFilesV2 = append(v.ArchiveFilesV2, f)
+			}
+			err = files.Err()
+			files.Close()
+			if err != nil {
+				return err
+			}
+			if !item.expired {
+				bundle := store.ArchiveBundle{SessionID: v.SessionID}
+				var historyPresent, timelinePresent bool
+				err = tx.QueryRow(ctx, `SELECT b.prepare_id::text,b.phase,b.revision,b.identity,b.resources,b.ledger,coalesce(b.history_id::text,''),coalesce(b.timeline_id::text,''),b.manifest_path,b.manifest_hash,b.manifest_length,
+ b.history_id IS NULL OR EXISTS (SELECT 1 FROM session_archive_files f WHERE f.session_id=b.session_id AND f.file_id=b.history_id AND f.purpose='history'),
+ b.timeline_id IS NULL OR EXISTS (SELECT 1 FROM session_archive_files f WHERE f.session_id=b.session_id AND f.file_id=b.timeline_id AND f.purpose='timeline')
+ FROM session_archive_bundles b WHERE b.session_id=$1`, v.SessionID).Scan(&bundle.PrepareID, &bundle.Phase, &bundle.Revision, &bundle.Identity, &bundle.Resources, &bundle.Ledger, &bundle.HistoryID, &bundle.TimelineID, &bundle.ManifestPath, &bundle.ManifestHash, &bundle.ManifestLength, &historyPresent, &timelinePresent)
+				if err == nil {
+					if !historyPresent || !timelinePresent {
+						return fmt.Errorf("Session %s archive bundle references a missing or mismatched file", v.SessionID)
+					}
+					v.ArchiveBundle = &bundle
+					if bundle.TimelineID != "" {
+						timeline := store.StorageArchiveTimeline{}
+						err = tx.QueryRow(ctx, `SELECT file_id::text,state,object_path,sha256,upload_version,byte_length,accepted_offset,timeline_revision FROM session_archive_files WHERE session_id=$1 AND file_id=$2 AND purpose='timeline'`, v.SessionID, bundle.TimelineID).Scan(&timeline.FileID, &timeline.State, &timeline.Path, &timeline.SHA256, &timeline.UploadVersion, &timeline.ByteLength, &timeline.AcceptedOffset, &timeline.TimelineRevision)
+						if err != nil {
+							return fmt.Errorf("Session %s current archive timeline: %w", v.SessionID, err)
+						}
+						v.ArchiveTimeline = &timeline
+					}
+				} else if !errors.Is(err, pgx.ErrNoRows) {
+					return err
+				}
 			}
 			images, err := tx.Query(ctx, `SELECT c.blob_path,c.sha256,c.byte_length,c.chunk_offset,u.upload_id::text,u.image_id::text,u.actor_id::text,u.spec,u.receipt,u.expires_at FROM session_image_chunks c JOIN session_image_uploads u USING(session_id,upload_id) WHERE c.session_id=$1 AND NOT u.storage_released`, v.SessionID)
 			if err != nil {

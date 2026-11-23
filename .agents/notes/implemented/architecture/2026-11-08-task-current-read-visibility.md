@@ -28,7 +28,9 @@ Archive-ready receipts still require final fence and content verification.
 Completed discovery checks visibility again after identity admission and retains
 cancelled flights across immediate reopening or claim replacement.
 
-Herdr retains its existing hidden-channel and control lease release policy.
+Herdr claim discovery now uses read-only history under the same visibility gate;
+the [terminal history decision](../simplification/2026-11-17-web-terminal-history.md)
+replaces its browser channel and control reader.
 Independent Test/Bot authority observation is unchanged. Application identity
 pause and native sixty-second suspension remain separate mechanisms. The
 [requirements](../../../../docs/spec/task-sessions.md#task-详情的完整-current-读取)

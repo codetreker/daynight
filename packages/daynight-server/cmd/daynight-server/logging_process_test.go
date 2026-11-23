@@ -307,6 +307,8 @@ func TestLoggingProcessRejectsS2SKeyBeforeStartup(t *testing.T) {
 	key := "private-s2s-shared-key-marker invalid"
 	values["DAYNIGHT_S2S_SHARED_KEY"] = key
 	values["DAYNIGHT_DATABASE_URL"] = "postgres://private-user:private-password@" + listener.Addr().String() + "/daynight?sslmode=disable"
+	values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT"] = "13"
+	values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT_PER_OWNER"] = "4"
 	server := startLoggingProcess(t, root, "server", values)
 	if err := server.wait(t); err == nil {
 		t.Fatal("invalid S2S shared key started the server")
@@ -378,6 +380,8 @@ func TestLoggingStartupFailureStopsBeforeDatabaseAndSurvivesCancellation(t *test
 			root := filepath.Join(testStorageRoot(t), "private-root-marker")
 			values := testEnvironment(t)
 			values["DAYNIGHT_DATABASE_URL"] = "postgres://private-user:private-password@" + listener.Addr().String() + "/daynight?sslmode=disable"
+			values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT"] = "13"
+			values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT_PER_OWNER"] = "4"
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			stderr := &failingStartupStderr{}
@@ -400,13 +404,15 @@ func TestLoggingStartupFailureStopsBeforeDatabaseAndSurvivesCancellation(t *test
 			}
 			file := loggingBytes(t, filepath.Join(root, "logs", "daynight-server.log"))
 			var startup, failure struct {
-				RunID    string `json:"run_id"`
-				Event    string `json:"event"`
-				Phase    string `json:"phase"`
-				Sink     string `json:"sink"`
-				Resource string `json:"resource"`
+				RunID           string `json:"run_id"`
+				Event           string `json:"event"`
+				Phase           string `json:"phase"`
+				Sink            string `json:"sink"`
+				Resource        string `json:"resource"`
+				ArchiveMax      int    `json:"session_archive_max_concurrent"`
+				ArchiveOwnerMax int    `json:"session_archive_max_concurrent_per_owner"`
 			}
-			if err := json.Unmarshal(file, &startup); err != nil || startup.Event != "configuration_loaded" {
+			if err := json.Unmarshal(file, &startup); err != nil || startup.Event != "configuration_loaded" || startup.ArchiveMax != 13 || startup.ArchiveOwnerMax != 4 {
 				t.Fatalf("file did not receive startup record after stderr failure: %s", file)
 			}
 			if err := json.Unmarshal(stderr.output.Bytes(), &failure); err != nil || failure.Event != "logging_failed" || failure.Phase != "write" || failure.Sink != "stderr" || failure.Resource != "stderr" || startup.RunID == "" || startup.RunID != failure.RunID {

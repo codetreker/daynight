@@ -35,7 +35,7 @@ it.each(["valid", "missing", "generation", "process"] as const)("Web orderly rec
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-    await lifecycle.recordStoppedControllerGeneration(file, source.ticket, { stateDirectory: path.dirname(file), deadline: Date.now() + 5000, jobLease: {} as never });
+    await lifecycle.recordStoppedControllerGeneration(file, source.ticket, { deadline: Date.now() + 5000, jobLease: {} as never });
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
     const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
     if (kind !== "valid") {
@@ -45,7 +45,7 @@ it.each(["valid", "missing", "generation", "process"] as const)("Web orderly rec
       if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
     }
-    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
     const launcher = { prepare: vi.fn(async (record: LocalTask) => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId })), launch: vi.fn(async (_record: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal) => {}), refreshGrant: vi.fn(async () => {}) };
     source.request.mockImplementation(async ticket => { if (ticket.executionGeneration === "1") throw new ControllerIpcOutcomeUnknownError("Original controller exited"); return { requestId: randomUUID(), ok: true, snapshot: { ...source.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeStopped: false, stoppedAt: null, error: null } }; });
     source.stopped.mockClear();
@@ -167,7 +167,7 @@ it("reconciles an unknown cleanup IPC outcome from the controller operation jour
     journal.recordOperation(operationId, "confirmed");
     expect((await restored.cleanup(reopened.getTask(first.task)!, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: reopened.getTask(first.task)! }, onExecutionStopped: () => {} } })).complete).toBe(true);
     expect(request.mock.calls.filter(([, action]) => action.kind === "cleanup")).toHaveLength(1);
-    expect(reopened.getTask(first.task)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
+    expect(reopened.getTask(first.task)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100, discardRecording: false });
   } finally { journal.close(); }
 });
 
@@ -226,9 +226,10 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   const source = await cleanupSource(f, task);
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
   const nativeSessionId = randomUUID();
-  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
+  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...source.snapshot.capabilities, send: true }, nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
   let phase: "active" | "cleanup" | "resuming" = "active";
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => snapshot.nativeStopped);
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => snapshot);
   vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue(undefined);
@@ -256,7 +257,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   };
   const options = { homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request };
   const backend = createWebExecutionBackend(options);
-  await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
+  await expect(backend.advance(source.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("Initial response was lost");
   expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
   vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Temporary worktree deviation."));
   await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Temporary worktree");

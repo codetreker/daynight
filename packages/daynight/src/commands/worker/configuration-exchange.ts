@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import type { Operation } from "../../api/operation.js";
 import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import type { WorkerReport } from "../../api/types.js";
 import type { WorkerPromptSource } from "./prompt-source.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
@@ -40,8 +40,8 @@ export type WorkerConfigurationExchange = {
   capture(report: WorkerReport): WorkerCloudReport;
   reportContext?(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
   isCurrent?(report: WorkerCloudReport): boolean;
-  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
-  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt, operation: Operation, syncId?: string): Promise<"persisted" | "ignored" | void>;
+  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  accept(sent: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt, operation: Operation, syncId?: string): Promise<"persisted" | "ignored" | void>;
   acceptanceOutcome?(sent: WorkerCloudReport): "persisted" | "ignored" | undefined;
   markNeedsRead?(): void;
   observe?(event: WorkerConfigurationExchangeEvent): void;
@@ -49,14 +49,14 @@ export type WorkerConfigurationExchange = {
 };
 
 type ExchangeManager = {
-  current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
+  current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly desiredRevision: string | null; readonly observationRevision: string; readonly synchronized: boolean };
   hasAuthority(): boolean;
   waitReady(signal?: AbortSignal): Promise<void>;
-  receive(desired: WorkerCloudDesired | null, revision?: string, signal?: AbortSignal, syncId?: string): Promise<void>;
+  receive(desired: ReceivedWorkerDesired | null, revision?: string, signal?: AbortSignal, syncId?: string, remoteObservation?: { readonly observationRevision: string; readonly json: string } | null): Promise<void>;
   report(bootstrap?: WorkerCloudValue | null, report?: WorkerReport): WorkerCloudReport;
   isCurrentReport(report: WorkerCloudReport): boolean;
   reportContext(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
-  acknowledge(report: WorkerCloudReport, receipt: WorkerCloudReceipt, signal?: AbortSignal, syncId?: string): Promise<"persisted" | "ignored">;
+  acknowledge(report: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt, signal?: AbortSignal, syncId?: string): Promise<"persisted" | "ignored">;
 };
 
 export type WorkerConfigurationBootstrapProvider = {
@@ -100,7 +100,7 @@ const immutable = <T>(value: T): T => {
 
 export const createWorkerConfigurationExchange = (options: {
   manager: ExchangeManager;
-  read(operation: Operation): Promise<WorkerCloudResource>;
+  read(operation: Operation): Promise<ReceivedWorkerConfigurationResource>;
   send: WorkerConfigurationExchange["send"];
   bootstrap?: WorkerConfigurationBootstrapProvider;
   prompts?: WorkerPromptSource;
@@ -113,7 +113,7 @@ export const createWorkerConfigurationExchange = (options: {
   const acknowledgements = new WeakMap<WorkerCloudReport, "persisted" | "ignored">();
   const source = (): WorkerConfigurationExchangeSource => {
     const current = manager.current();
-    return Object.freeze({ state: !manager.hasAuthority() ? "unread" : current.desired === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision });
+    return Object.freeze({ state: !manager.hasAuthority() ? "unread" : current.desiredRevision === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desiredRevision, observationRevision: current.observationRevision });
   };
   const prepareStage = async (syncId: string, phase: WorkerConfigurationExchangePhase, action: () => Promise<void>, received?: () => WorkerConfigurationReceivedAuthority | undefined): Promise<void> => {
     const previousSource = source();
@@ -133,24 +133,24 @@ export const createWorkerConfigurationExchange = (options: {
     source,
     waitReady: operation => manager.waitReady(operation.signal),
     prepare: async (operation, syncId = randomUUID()) => {
-      if (needsRead || !manager.current().synchronized || manager.current().desired === null) {
+      if (needsRead || !manager.current().synchronized || manager.current().desiredRevision === null) {
         needsRead = true;
         let received: WorkerConfigurationReceivedAuthority | undefined;
         await prepareStage(syncId, "authority-read", async () => {
           const resource = await options.read(operation);
           received = Object.freeze({ desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision });
-          await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId);
+          await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
           needsRead = false;
         }, () => received);
       }
-      if (manager.current().desired !== null) {
+      if (manager.current().desiredRevision !== null) {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       } else if (options.bootstrap !== undefined) {
         await prepareStage(syncId, "bootstrap-prepare", async () => { bootstrap = await options.bootstrap!.prepare(operation); });
       }
     },
-    capture: report => manager.report(manager.current().desired === null ? bootstrap : null, report),
+    capture: report => manager.report(manager.current().desiredRevision === null ? bootstrap : null, report),
     reportContext: report => manager.reportContext(report),
     isCurrent: report => manager.isCurrentReport(report),
     send: async (report, captured, operation, selectors) => {
@@ -166,11 +166,17 @@ export const createWorkerConfigurationExchange = (options: {
       try { outcome = await manager.acknowledge(captured, receipt, operation.signal, syncId); acknowledgements.set(captured, outcome); }
       catch (error) { if (requiresAuthorityRead(error)) needsRead = true; throw error; }
       const current = manager.current();
-      if (current.desired !== null) {
+      // An older receipt may be late, or the service may have rolled back.
+      // Only an authenticated read can distinguish them.
+      if (
+        BigInt(receipt.observationRevision) < BigInt(current.observationRevision)
+        || current.desiredRevision !== null && (receipt.desired === null || BigInt(receipt.desired.revision) < BigInt(current.desiredRevision))
+      ) needsRead = true;
+      if (current.desiredRevision !== null) {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       }
-      if (current.desired?.value.agentControlMode === undefined || current.desired?.value.toolPaths === undefined) needsRead = true;
+      if (current.desired?.value.toolPaths === undefined) needsRead = true;
       return outcome;
     },
     acceptanceOutcome: sent => acknowledgements.get(sent),
@@ -224,7 +230,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     const captured = configuration.capture(report);
     capturedContext = configuration.reportContext?.(captured);
     let sent: WorkerCloudReport;
-    try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") })); }
+    try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap"), archiveSessions: captured.bootstrap?.archiveSessions !== undefined || captured.observation?.items.some(item => item.key.kind === "archiveSessions") === true })); }
     catch (error) { configuration.markNeedsRead?.(); throw error; }
     emit("succeeded");
     if (configuration.isCurrent?.(captured) === false) return dropped();
@@ -233,7 +239,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     if (configuration.isCurrent?.(captured) === false) return dropped();
     const source = configuration.prompts;
     const promptCapture = source?.captureBatch() ?? null;
-    let receipt: WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults };
+    let receipt: ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults };
     try { receipt = await configuration.send(report, sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []); }
     catch (error) {
       remoteOutcome = failedConfigurationRequestOutcome(error);

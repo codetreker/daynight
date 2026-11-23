@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
@@ -19,6 +20,7 @@ func (h *botsHandler) withAttention(next httpx.AuthenticatedHandler) httpx.Authe
 				return
 			}
 			w.Header().Set(attentionHeader, "1")
+			r = r.WithContext(botcore.WithAttentionProjection(r.Context()))
 		}
 		next(w, r, principal)
 	}

@@ -633,3 +633,7 @@ func TestListInvalidInputDoesNotOpenSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func (s *fixture) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
+}

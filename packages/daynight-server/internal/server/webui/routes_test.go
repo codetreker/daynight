@@ -15,14 +15,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
 
-const uiTestShell = "<html><body>server test shell</body></html>\n"
+const uiTestShell = "<html><head>" + testMeta + "</head><body>server test shell</body></html>\n"
 const uiTestScriptPath = "/assets/app-12345678.js"
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	mux := http.NewServeMux()
-	New(testUIResources()).RegisterRoutes(mux, logger)
+	New(testUIResources(), testPreviewOrigin).RegisterRoutes(mux, logger)
 	return httpx.RequestLogging(logger, mux)
 }
 
@@ -59,7 +59,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
 		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
 	}
-	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/auth/complete?returnPath=%2Fprojects%3Fprivate-query%3Dvalue", "/projects", "/projects?private-query=value", "/shared-projects", "/my-tasks", "/my-tasks?private-query=value", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
+	for _, target := range []string{"/team-invitations", "/github-app-admin-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/auth/complete?returnPath=%2Fprojects%3Fprivate-query%3Dvalue", "/projects", "/projects?private-query=value", "/shared-projects", "/github-apps", "/github-apps/00000000-0000-4000-8000-000000000099", "/github-apps/00000000-0000-4000-8000-000000000099/admins", "/github-apps/00000000-0000-4000-8000-000000000099/teams", "/my-tasks", "/my-tasks?private-query=value", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/teams/00000000-0000-4000-8000-000000000099/github-apps", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("product entry did not return the server shell: %d", response.Code)
@@ -86,10 +86,10 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 		}
 	}
 	for _, target := range []string{
-		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/auth/complete/", "/auth/complete/private-child", "/auth/complete-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
+		"/unknown-private-page", "/github-app-admin-invitations/child", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/auth/complete/", "/auth/complete/private-child", "/auth/complete-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
 		"/my-tasks/", "/my-tasks/child", "/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
-		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/shared-projects/extra",
+		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/teams/id/github-apps/extra", "/shared-projects/extra", "/github-apps/", "/github-apps/id/extra", "/github-apps/id/admins/extra", "/github-apps/id/teams/extra",
 		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
 	} {
@@ -191,8 +191,8 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	for _, target := range []string{
-		"/", "/setup", "/login", "/auth/complete?returnPath=%2Fsetup", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/shared-projects", "/my-tasks", "/teams/00000000-0000-4000-8000-000000000099", "/projects/00000000-0000-4000-8000-000000000099",
-		"/teams/00000000-0000-4000-8000-000000000099/members",
+		"/", "/setup", "/github-app-admin-invitations", "/login", "/auth/complete?returnPath=%2Fsetup", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/shared-projects", "/github-apps", "/github-apps/00000000-0000-4000-8000-000000000099", "/github-apps/00000000-0000-4000-8000-000000000099/admins", "/github-apps/00000000-0000-4000-8000-000000000099/teams", "/my-tasks", "/teams/00000000-0000-4000-8000-000000000099", "/projects/00000000-0000-4000-8000-000000000099",
+		"/teams/00000000-0000-4000-8000-000000000099/members", "/teams/00000000-0000-4000-8000-000000000099/github-apps",
 		"/projects/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/settings",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001",

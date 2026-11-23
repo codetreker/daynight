@@ -12,7 +12,7 @@ const thread = (id = "thread-1", changes: Record<string, unknown> = {}) => ({
   id, isResolved: false, comments: { totalCount: 2, nodes: [{ replyTo: null, pullRequestReview: { id: "review-1" } }] }, ...changes,
 });
 const snapshot = (changes: Record<string, unknown> = {}, viewer: unknown = { id: "viewer-1" }, repositoryChanges: Record<string, unknown> = {}) => ({
-  data: { viewer, repository: { databaseId: 42, pullRequest: {
+  data: { viewer, repository: { fullDatabaseId: "42", pullRequest: {
     number: 11, state: "OPEN", isDraft: false, headRefOid: "head-11", baseRefName: "main",
     reviews: page(), reviewThreads: page(), ...changes,
   }, ...repositoryChanges } },
@@ -32,6 +32,14 @@ const fixture = (...responses: CommandResult[]) => {
 };
 
 describe("GitHub review snapshot transport", () => {
+  it("matches an exact int64 repository ID in the publication snapshot", async () => {
+    const { client } = fixture(response(snapshot({}, undefined, { fullDatabaseId: "9007199254740993" })));
+    await expect(client.getPullRequestReviewSnapshot({ ...repository, githubId: "9007199254740993" }, 11)).resolves.toMatchObject({ state: "open" });
+  });
+  it.each([null, 42, "0", "042", "-1", "9223372036854775808", "9007199254740993.0"])("rejects an invalid full database ID %s", async fullDatabaseId => {
+    const { client } = fixture(response(snapshot({}, undefined, { fullDatabaseId })));
+    await expect(client.getPullRequestReviewSnapshot(repository, 11)).rejects.toThrow("full database ID");
+  });
   it("reads authenticated identity, submitted/pending reviews, and all native thread forms without writes", async () => {
     const { client, calls } = fixture(response(snapshot({
       reviews: page([
@@ -108,7 +116,7 @@ describe("GitHub review snapshot transport", () => {
   });
 
   it.each([
-    ["wrong repository", { databaseId: 43 }], ["missing repository ID", { databaseId: null }], ["deleted PR", { pullRequest: null }],
+    ["wrong repository", { fullDatabaseId: "43" }], ["missing repository ID", { fullDatabaseId: null }], ["deleted PR", { pullRequest: null }],
   ])("rejects %s", async (_name, changes) => {
     const { client } = fixture(response(snapshot({}, { id: "viewer-1" }, changes)));
     await expect(client.getPullRequestReviewSnapshot(repository, 11)).rejects.toThrow();

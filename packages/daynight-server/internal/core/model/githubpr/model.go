@@ -9,7 +9,7 @@ type Connection struct {
 	ProjectID                                                         string
 	Version, Generation, Revision                                     int64
 	Enabled, SyncEnabled                                              bool
-	AppID, InstallationID, RepositoryID                               *int64
+	AppID, InstallationID, RepositoryID, LegacyRepositoryID           *int64
 	InstallationAccountLogin, RepositoryFullName                      *string
 	RepositoryPrivate                                                 *bool
 	PollIntervalMinutes                                               int32
@@ -34,9 +34,18 @@ func DefaultConnection(projectID string) Connection {
 	return Connection{ProjectID: projectID, Version: 1, PollIntervalMinutes: 5, AccessState: "unknown"}
 }
 
+// Author is a canonical saved author and its database ordering key.
+type Author struct {
+	ID             int64
+	Login, NameKey string
+	LoginAmbiguous bool
+}
+
 // PullRequestSummary deliberately excludes the potentially large description.
 type PullRequestSummary struct {
 	ProjectID                        string
+	RepositoryID                     int64
+	RepositoryFullName               string
 	Number, GitHubID                 int64
 	URL, Title                       string
 	AuthorID                         *int64
@@ -62,9 +71,10 @@ type PullRequest struct {
 // RepositoryObservation and InstallationObservation are remote identity
 // facts, independent of the transport used to obtain them.
 type RepositoryObservation struct {
-	ID       int64
-	FullName string
-	Private  bool
+	ID            int64
+	FullName      string
+	Private       bool
+	DefaultBranch *string
 }
 
 type InstallationObservation struct {

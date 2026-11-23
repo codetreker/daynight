@@ -34,7 +34,7 @@ func verifyCatalog(t *testing.T, f *httpFixture, actor httpActor) {
 	status, _, data := f.request(t, actor, http.MethodGet, "/api/v1/webhook-event-types", "")
 	mustStatus(t, status, 200, data)
 	catalog := jsonBody(t, data)
-	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 	items := catalog["items"].([]any)
 	if len(items) != len(keys) {
 		t.Fatalf("catalog=%s", data)
@@ -50,10 +50,25 @@ func verifyCatalog(t *testing.T, f *httpFixture, actor httpActor) {
 	}
 }
 
+func TestHTTPSubscriptions(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	// Invalid arrays must leave all four configuration tables empty before the
+	// positive cases create subscriptions in this schema.
+	t.Run("arrays_reject_invalid_values", func(t *testing.T) {
+		testHTTPSubscriptionArraysRejectInvalidValues(t, fixture.forCase(t))
+	})
+	t.Run("owner_eligibility", func(t *testing.T) {
+		testHTTPSubscriptionOwnerEligibility(t, fixture.forCase(t))
+	})
+	t.Run("many_independent_subscriptions_and_summary", func(t *testing.T) {
+		testHTTPManyIndependentSubscriptionsAndSummary(t, fixture.forCase(t))
+	})
+}
+
 // T02-A01: caller-owned production mux, real auth/PG and fixed catalog exercise
 // owner authorization, Team ownership and direct grant union through HTTP.
-func TestHTTPSubscriptionOwnerEligibility(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPSubscriptionOwnerEligibility(t *testing.T, f *httpFixture) {
+	t.Helper()
 	admin, member, other := f.actor(t), f.actor(t), f.actor(t)
 	team, owned, direct, denied := seedHTTPProjects(t, f, admin, member, other)
 	verifyCatalog(t, f, admin)
@@ -102,13 +117,13 @@ func TestHTTPSubscriptionOwnerEligibility(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_kind='team' AND owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_kind='team' AND owner_id=$1)`, team).Scan(&count, &receipts); err != nil || count != 1 || receipts != 1 {
 		t.Fatalf("team endpoint=%d receipt=%d err=%v", count, receipts, err)
 	}
-	t.Logf("T02-A01 HTTP personal membership=%s grant=%s team=%s denied=403 catalog=6", owned, direct, team)
+	t.Logf("T02-A01 HTTP personal membership=%s grant=%s team=%s denied=403 catalog=5", owned, direct, team)
 }
 
 // T02-A12: 51 identical project/event choices remain independently addressable
 // through create and replacement, and summary counts derive from real rows.
-func TestHTTPManyIndependentSubscriptionsAndSummary(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPManyIndependentSubscriptionsAndSummary(t *testing.T, f *httpFixture) {
+	t.Helper()
 	admin, member, other := f.actor(t), f.actor(t), f.actor(t)
 	_, _, project, _ := seedHTTPProjects(t, f, admin, member, other)
 	base := "/api/v1/me/webhooks"
@@ -194,8 +209,8 @@ func TestHTTPManyIndependentSubscriptionsAndSummary(t *testing.T) {
 }
 
 // Invalid arrays are rejected without creating or changing configuration.
-func TestHTTPSubscriptionArraysRejectInvalidValues(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPSubscriptionArraysRejectInvalidValues(t *testing.T, f *httpFixture) {
+	t.Helper()
 	actor, member, other := f.actor(t), f.actor(t), f.actor(t)
 	_, _, project, _ := seedHTTPProjects(t, f, actor, member, other)
 	base := "/api/v1/me/webhooks"
@@ -206,6 +221,7 @@ func TestHTTPSubscriptionArraysRejectInvalidValues(t *testing.T) {
 		{"event null", nil},
 		{"event scalar", "task.created"},
 		{"event mixed array", []any{"task.created", 17}},
+		{"retired event", []string{"task.step_updated"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := createFields(actor, "invalid array", "https://receiver.example/path")

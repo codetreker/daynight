@@ -45,6 +45,7 @@ if [[ -z "${DAYNIGHT_TEST_DATABASE_URL:-}" ]]; then
   node scripts/integration-runtime.mts postgres-planned "$run_root"
   database_id="$(timeout --signal=TERM --kill-after=5s 1m docker run --detach --pull=never --name "$database_container" \
     --label "daynight.api-integration=$(basename "$run_root")" \
+    --label "daynight.api-integration-role=postgres" \
     --cpus=1 --memory=1g --memory-swap=1g \
     -e POSTGRES_USER=daynight -e POSTGRES_PASSWORD=daynight -e POSTGRES_DB=daynight \
     -p 127.0.0.1::5432 postgres:18.6-bookworm)"
@@ -63,6 +64,33 @@ if [[ -z "${DAYNIGHT_TEST_DATABASE_URL:-}" ]]; then
   database_port="$(timeout --signal=TERM --kill-after=2s 5s docker inspect --format '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}' "$database_id")"
   export DAYNIGHT_TEST_DATABASE_URL="postgres://daynight:daynight@127.0.0.1:$database_port/daynight?sslmode=disable"
 fi
+
+redis_container="daynight-api-redis-$(basename "$run_root")"
+node scripts/integration-runtime.mts redis-planned "$run_root"
+redis_id="$(timeout --signal=TERM --kill-after=5s 1m docker run --detach --pull=missing --name "$redis_container" \
+  --label "daynight.api-integration=$(basename "$run_root")" \
+  --label "daynight.api-integration-role=redis" \
+  --cpus=1 --memory=128m --memory-swap=128m \
+  -p 127.0.0.1::6379 redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53 \
+  redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy noeviction)"
+node scripts/integration-runtime.mts redis "$run_root" "$redis_id" "$redis_container"
+ready=false
+ready_deadline=$((SECONDS + 20))
+while (( SECONDS < ready_deadline )); do
+  if timeout --signal=TERM --kill-after=2s 2s docker exec "$redis_id" redis-cli ping 2>/dev/null | grep -qx PONG; then ready=true; break; fi
+  sleep 0.1
+done
+if [[ "$ready" != true ]]; then
+  timeout --signal=TERM --kill-after=2s 5s docker logs "$redis_id" >&2 || true
+  printf '%s\n' 'Integration Redis did not become ready' >&2
+  exit 1
+fi
+redis_port="$(timeout --signal=TERM --kill-after=2s 5s docker inspect --format '{{(index (index .NetworkSettings.Ports "6379/tcp") 0).HostPort}}' "$redis_id")"
+if [[ ! "$redis_port" =~ ^[0-9]+$ ]] || (( redis_port < 1 || redis_port > 65535 )); then
+  printf '%s\n' 'Integration Redis port is invalid' >&2
+  exit 1
+fi
+export DAYNIGHT_TEST_REDIS_URL="redis://127.0.0.1:$redis_port/0"
 
 race=true
 if [[ -n "${CI:-}" ]] && [[ "${GITHUB_EVENT_NAME:-}" != push || "${GITHUB_REF:-}" != refs/heads/main ]]; then race=false; fi
@@ -96,6 +124,7 @@ if [[ "$decoder_source_before" != "$(decoder_source_fingerprint)" || "$decoder_h
 fi
 export DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR="$run_root/image-validator"
 export DAYNIGHT_INTEGRATION_NODE_PATH="$(node -p 'process.execPath')"
+export DAYNIGHT_INTEGRATION_CLI_PATH="$repository_root/packages/daynight/dist/main.js"
 
 fingerprint() {
   DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'
@@ -147,4 +176,4 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 node scripts/integration-runtime.mts auth "$run_root" "$DAYNIGHT_TEST_UNIAUTH_FIXTURE"
 export DAYNIGHT_INTEGRATION_SERVER_BINARY="$run_root/server"
 node scripts/integration-runtime.mts phase "$run_root" test
-GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow|TestServerAPICredentialUsageNormalFlow|TestServerAPIGitHubSyncNormalFlow)$' -v ./cmd/integration_tests
+GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow|TestServerAPICredentialUsageNormalFlow|TestServerAPIGitHubSyncNormalFlow|TestServerAPIUsageNormalFlow)$' -v ./cmd/integration_tests

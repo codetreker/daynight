@@ -140,12 +140,20 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			_, err := s.ListAppendix(ctx, actor, "task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"})
 			return err
 		}},
+		{"RelatedAppendix", []any{"task", core.RelatedAppendixInput{ProjectID: "project", EventType: "report", ItemCategory: "build"}}, func(s *Tasks) error {
+			_, err := s.RelatedAppendix(ctx, actor, "task", core.RelatedAppendixInput{ProjectID: "project", EventType: "report", ItemCategory: "build"})
+			return err
+		}},
 		{"AddAppendix", []any{core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"}}, func(s *Tasks) error {
 			_, err := s.AddAppendix(ctx, actor, core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"})
 			return err
 		}},
 		{"UpdateAppendix", []any{core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"}}, func(s *Tasks) error {
 			_, err := s.UpdateAppendix(ctx, actor, core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"})
+			return err
+		}},
+		{"ValidateAppendix", []any{core.AppendixValidationInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, OutcomeRecordID: "outcome"}}, func(s *Tasks) error {
+			_, err := s.ValidateAppendix(ctx, actor, core.AppendixValidationInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, OutcomeRecordID: "outcome"})
 			return err
 		}},
 		{"ListProposals", []any{"task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"}}, func(s *Tasks) error {
@@ -173,6 +181,7 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			_, err := s.SaveItem(ctx, actor, core.ItemInput{Mutation: core.Mutation{TaskID: "task", ID: "item"}, Key: "key", Episode: 2})
 			return err
 		}},
+		{"Metrics", []any{"task"}, func(s *Tasks) error { _, err := s.Metrics(ctx, actor, "task"); return err }},
 		{"ListRecords", []any{"task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"}}, func(s *Tasks) error {
 			_, err := s.ListRecords(ctx, actor, "task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"})
 			return err
@@ -206,6 +215,20 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			return err
 		}},
 		{"ClearAttention", []any{"bot"}, func(s *Tasks) error { return s.ClearAttention(ctx, actor, "bot") }},
+		{"EnableInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.EnableInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"DisableInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.DisableInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"RotateInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.RotateInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"InboxOperation", []any{"task", "operation"}, func(s *Tasks) error { _, err := s.InboxOperation(ctx, actor, "task", "operation"); return err }},
+		{"GetInbox", []any{"task"}, func(s *Tasks) error { _, err := s.GetInbox(ctx, actor, "task"); return err }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

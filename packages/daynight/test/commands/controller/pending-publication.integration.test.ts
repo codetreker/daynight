@@ -7,10 +7,12 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerTestDatabase, closeControllerTestDatabase } from "../../helpers/controller-sqlite.js";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
-import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { createLocalSessionContent } from "../../../src/commands/controller/local-content.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
+import { runSqliteImmediate } from "../../../src/platform/sqlite-access.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 
 const roots: string[] = [], connections: Database.Database[] = [];
 afterEach(async () => {
@@ -28,9 +30,9 @@ const fixture = async () => {
   const root = await mkdtemp(path.join(base, "h-")); roots.push(root);
   const file = path.join(root, "journal.sqlite"), sessionId = randomUUID();
   const db = openControllerTestDatabase({ file, allowCreate: true, onMigration: () => {} }); connections.push(db);
-  const budget = controllerMetadataBudget(file, db); let writeDepth = 0;
+  let writeDepth = 0;
   const content = openSessionContent(file, sessionId, db, {
-    assertWrite: additional => { if (!writeDepth || !db.inTransaction) throw new Error("Not the original publication transaction."); budget.assert(additional, true); },
+    assertWrite: () => { if (!writeDepth || !db.inTransaction) throw new Error("Not the original publication transaction."); },
     read: action => db.inTransaction ? action() : db.transaction(action).deferred(),
   });
   const write = <T>(action: () => T): T => db.transaction(() => { writeDepth++; try { return action(); } finally { writeDepth--; } }).immediate();
@@ -86,13 +88,14 @@ test("an outer rollback discards nested publications without consuming sequence 
   expect(f.content.timeline.nextSequence()).toBe("11");
 });
 
-test("retained migration artifacts consume metadata without becoming current SQL history", async () => {
+test("retained migration artifacts do not prevent current SQL publication", async () => {
   const f = await fixture();
   await mkdir(path.join(`${f.file}.pending-content`, "entries"), { mode: 0o700 });
-  const budget = controllerMetadataBudget(f.file, f.db), filename = path.join(`${f.file}.pending-content`, "entries", `${randomUUID()}.json`), file = await open(filename, "wx", 0o600);
-  try { await file.truncate(CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES - budget.bytes()); } finally { await file.close(); }
-  expect(() => f.write(() => f.content.timeline.save({ ...f.entry, revision: "2", text: "refused" }))).toThrow("metadata budget");
-  expect(f.content.timeline.get(f.entry.entryId)).toEqual(f.entry);
+  const filename = path.join(`${f.file}.pending-content`, "entries", `${randomUUID()}.json`), file = await open(filename, "wx", 0o600);
+  try { await file.truncate(137 * 1048576); } finally { await file.close(); }
+  const updated = { ...f.entry, revision: "2", text: "committed" };
+  f.write(() => f.content.timeline.save(updated));
+  expect(f.content.timeline.get(f.entry.entryId)).toEqual(updated);
   expect(readContent(f.file, f.sessionId, f.db).timeline.totals().entryCount).toBe(1);
 });
 
@@ -170,27 +173,41 @@ test("v7 migration preserves exact native unknown state and legacy source bytes"
   expect(await readFile(f.filename, "utf8")).toBe(f.original);
 });
 
-test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s source fails closed without changing native unknown state", async variant => {
-  const f = await legacyFixture();
-  if (variant === "ahead") await writeFile(f.filename, JSON.stringify({ ...f.entry, revision: "2", text: "uncommitted" }));
+test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s maps indexed bytes while retaining native unknown state", async variant => {
+  const f = await legacyFixture(), manifest = path.join(`${f.file}.pending-content`, "manifest.json");
+  const ahead = JSON.stringify({ ...f.entry, revision: "2", text: "uncommitted" });
+  const orphan = path.join(path.dirname(f.filename), `${"a".repeat(64)}.json`);
+  const orphanBody = JSON.stringify({ ...f.entry, entryId: randomUUID(), entrySeq: "2" });
+  if (variant === "ahead") await writeFile(f.filename, ahead);
   if (variant === "missing") await rm(f.filename);
-  if (variant === "missing-manifest") await rm(path.join(`${f.file}.pending-content`, "manifest.json"));
-  if (variant === "unindexed") await writeFile(path.join(path.dirname(f.filename), `${"a".repeat(64)}.json`), JSON.stringify({ ...f.entry, entryId: randomUUID(), entrySeq: "2" }));
-  expect(() => openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} })).toThrow("migration-failed");
-  const db = new Database(f.file, { readonly: true }); connections.push(db);
-  expect(db.pragma("user_version", { simple: true })).toBe(7);
+  if (variant === "missing-manifest") await rm(manifest);
+  if (variant === "unindexed") await writeFile(orphan, orphanBody);
+  const db = openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} }); connections.push(db);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
   expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
   expect(db.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: f.operation });
+  const rows = db.prepare("SELECT id,CAST(revision AS TEXT) AS revision,CAST(entry_seq AS TEXT) AS entry_seq,value,content_hash,byte_length FROM timeline_entries").all();
+  const body = variant === "ahead" ? ahead : f.original;
+  expect(rows).toEqual(variant === "missing" ? [] : [{ id: f.entry.entryId, revision: f.entry.revision, entry_seq: f.entry.entrySeq, value: body, content_hash: controllerPayloadHash(f.entry), byte_length: Buffer.byteLength(body) }]);
+  expect(db.prepare("SELECT entry_count,byte_length FROM timeline_totals").get()).toEqual({ entry_count: rows.length, byte_length: variant === "missing" ? 0 : Buffer.byteLength(body) });
+  if (variant === "missing") await expect(readFile(f.filename)).rejects.toMatchObject({ code: "ENOENT" });
+  else expect(await readFile(f.filename, "utf8")).toBe(body);
+  if (variant === "unindexed") expect(await readFile(orphan, "utf8")).toBe(orphanBody);
+  if (variant === "missing-manifest") await expect(readFile(manifest)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("v7 admission rollback retains its original state and retries only the unchanged source", async () => {
+test("v7 conversion remains committed after a subsequent transaction rolls back", async () => {
   const f = await legacyFixture();
-  expect(() => openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {}, onReady: () => { throw new Error("admission failed"); } })).toThrow("admission failed");
-  const observer = new Database(f.file, { readonly: true }); connections.push(observer);
-  expect(observer.pragma("user_version", { simple: true })).toBe(7);
-  expect(observer.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
-  expect(await readFile(f.filename, "utf8")).toBe(f.original);
   const db = openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} }); connections.push(db);
-  expect(readContent(f.file, f.sessionId, db).timeline.get(f.entry.entryId)).toEqual(f.entry);
-  expect(await readdir(path.join(`${f.file}.pending-content`, "entries"))).toHaveLength(2);
+  expect(() => runSqliteImmediate(db, () => {
+    db.prepare("UPDATE image_runtime_state SET value='uncommitted' WHERE key='native_provider:original'").run();
+    throw new Error("admission failed");
+  })).toThrow("admission failed");
+  closeControllerTestDatabase(db);
+  const observer = new Database(f.file, { readonly: true }); connections.push(observer);
+  expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+  expect(observer.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
+  expect(observer.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: f.operation });
+  expect(readContent(f.file, f.sessionId, observer).timeline.get(f.entry.entryId)).toEqual(f.entry);
+  expect(await readFile(f.filename, "utf8")).toBe(f.original);
 });

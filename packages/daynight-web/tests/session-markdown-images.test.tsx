@@ -7,7 +7,7 @@ import { SessionMarkdown } from '../src/features/task-agent-session/SessionMarkd
 import { SessionImageFrame } from '../src/features/task-agent-session/images/SessionImageFrame';
 import { SessionImageScope } from '../src/features/task-agent-session/images/SessionImageScope';
 import type { ImageAssetAdapter, ImageScope, VerifiedImageLease } from '../src/features/task-agent-session/images/image-types';
-import { ChatMarkdown } from '../src/ui/ChatMarkdown';
+import { ChatMarkdown } from '../src/ui/markdown/ChatMarkdown';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 const render = createLocaleRender('en');
@@ -315,12 +315,13 @@ describe('Session Markdown image bindings', () => {
 
   it('preserves instance-scoped footnotes and table regions with controlled images', async () => {
     const source = '![a](image:a)', text = `${source}\n\n| Result |\n| --- |\n| ok[^note] |\n\n[^note]: detail`;
-    render(<SessionMarkdown text={text} metadata={metadata(text, [[0, source.length]])} renderImage={draw} />);
+    const view = render(<SessionMarkdown text={text} metadata={metadata(text, [[0, source.length]])} renderImage={draw} />);
     await screen.findByText('Image 1');
     const region = screen.getByRole('region', { name: 'Markdown table' });
     expect(region).toHaveAttribute('tabindex', '0');
     const footnote = region.querySelector('a')!;
-    expect(footnote.getAttribute('href')).toMatch(/^#chat-markdown-.*-fn-note$/);
+    expect(footnote.getAttribute('href')).toMatch(/^#.*-fn-note$/);
+    expect(view.container.querySelector(`[id="${footnote.hash.slice(1)}"]`)).not.toBeNull();
     expect(document.getElementById(footnote.getAttribute('aria-describedby')!)).not.toBeNull();
   });
 });

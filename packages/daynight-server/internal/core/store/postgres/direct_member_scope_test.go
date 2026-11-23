@@ -58,6 +58,7 @@ func directMemberPrincipal(t *testing.T, db *Store, actor model.Principal, kind 
 }
 
 func TestDirectMemberScopeConcurrentEnsuresConvergeWithoutAdvancingMembership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, role := range []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole} {
 		t.Run(string(role), func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -120,6 +121,7 @@ func TestDirectMemberScopeConcurrentEnsuresConvergeWithoutAdvancingMembership(t 
 }
 
 func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, cause := range []string{"admin", "session", "pat", "oauth"} {
 		t.Run(cause, func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -206,6 +208,7 @@ func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
 }
 
 func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, model.OAuthCredential} {
 		t.Run(string(kind), func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -216,9 +219,6 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			target, _, _ := testAuthRecords(t, db)
 			mustQueryExec(t, db, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, target.ID)
 			before := readStoreTeam(t, db, target.ID, team.ID).Membership
-			expires := time.Now().UTC().Add(2 * time.Second)
-			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
-			mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
 			holder, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -227,6 +227,10 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if _, err := holder.Exec(ctx, `SELECT user_id FROM team_members WHERE team_id=$1 AND user_id=$2 FOR UPDATE`, team.ID, target.ID); err != nil {
 				t.Fatal(err)
 			}
+			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
+			// The row holder already occupies one connection. Warm one each for
+			// the member operation, revocation, and compatible reader/observer.
+			expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
 			done := make(chan error, 1)
 			go func() {
 				_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
@@ -251,18 +255,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if err != nil || c.Outcome != store.TransactionCommitted {
 				t.Fatalf("compatible Session credential reader blocked behind revocation: %#v %v", c, err)
 			}
-			for {
-				var expired bool
-				if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					break
-				}
-				if err := testutil.WaitThreadClock(ctx); err != nil {
-					t.Fatal(err)
-				}
-			}
+			testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -282,6 +275,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 }
 
 func TestDirectMemberScopeEligibilityFailureRollsBackMembershipButRetainsAccount(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx := t.Context()
 	target, _, _ := testAuthRecords(t, db)
@@ -304,6 +298,7 @@ func TestDirectMemberScopeEligibilityFailureRollsBackMembershipButRetainsAccount
 }
 
 func TestDirectMemberScopeLostFinalCommitAcknowledgementReturnsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool
@@ -345,6 +340,7 @@ func TestDirectMemberScopeLostFinalCommitAcknowledgementReturnsUnknown(t *testin
 }
 
 func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -355,8 +351,6 @@ func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *t
 	mustQueryExec(t, db, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, team.ID)
 	mustQueryExec(t, db, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'confirmation_required',1,now(),now())`, subscription, uuid.NewString(), project, target.ID)
 	before := authorizationReceiverRow(t, ctx, db, "webhook_subscriptions", "id", subscription)
-	expires := time.Now().UTC().Add(2 * time.Second)
-	mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
 	holder, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -365,28 +359,11 @@ func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *t
 	if _, err := holder.Exec(ctx, `SELECT id FROM webhook_subscriptions WHERE id=$1 FOR UPDATE`, subscription); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
-		done <- err
-	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT s.id::text,s.project_id::text", holder.Conn().PgConn().PID())
-	for {
-		var expired bool
-		if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		if err := testutil.WaitThreadClock(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	err = testutil.ReceiveQueryResult(t, ctx, done)
+	err = expireCredentialDuringRowWait(t, ctx, db.Pool, holder, "oauth_access_tokens", actor.CredentialID,
+		"SELECT s.id::text,s.project_id::text", func(ctx context.Context) error {
+			_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
+			return err
+		})
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 		t.Fatalf("expiry during eligibility wait admitted: %v", err)

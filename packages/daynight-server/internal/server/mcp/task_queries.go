@@ -45,6 +45,8 @@ type listInput struct {
 	ProjectID          string              `json:"projectId"`
 	Type               model.TaskType      `json:"type"`
 	ParentID           *string             `json:"parentId"`
+	ParentTaskID       *string             `json:"parentTaskId"`
+	TaskParentView     string              `json:"taskParentView"`
 	Limit              int                 `json:"limit"`
 	Cursor             *string             `json:"cursor"`
 	All                bool                `json:"all"`
@@ -60,6 +62,8 @@ type readyInput struct {
 	tagFilterInput
 	ProjectID          string              `json:"projectId"`
 	ParentID           *string             `json:"parentId"`
+	ParentTaskID       *string             `json:"parentTaskId"`
+	TaskParentView     string              `json:"taskParentView"`
 	Limit              int                 `json:"limit"`
 	AllowAgents        *bool               `json:"allowAgents"`
 	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
@@ -153,6 +157,7 @@ func queryBusinessLimit(raw json.RawMessage) error {
 	}
 	delete(fields, "projectId")
 	delete(fields, "view")
+	delete(fields, "taskParentView")
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
@@ -188,6 +193,10 @@ func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) err
 }
 
 func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService) (ToolResult, error) {
+	relations, err := taskParentView(in.TaskParentView)
+	if err != nil {
+		return ToolResult{}, err
+	}
 	if in.View == "" {
 		in.View = "summary"
 	}
@@ -195,7 +204,7 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{TagFilter: in.filter(), Type: in.Type, Parent: in.ParentID, All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
+	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{TagFilter: in.filter(), Type: in.Type, Parent: in.ParentID, ParentTask: in.ParentTaskID, All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -203,7 +212,7 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 		task := value.Item.Task
 		var item any
 		if in.View == "summary" {
-			summary := MapTaskSummary(task)
+			summary := MapTaskSummary(task, relations)
 			summary.BlockedByCount = value.Item.BlockedByCount
 			summary.TitleTruncated = summary.TitleTruncated || value.Item.TitleTruncated
 			item = struct {
@@ -214,7 +223,7 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 			item = struct {
 				taskListFull
 				Session sp.TaskSessionObservation `json:"session"`
-			}{taskListFull{TaskFull: MapTaskFull(task)}, value.Session}
+			}{taskListFull{TaskFull: MapTaskFull(task, relations)}, value.Session}
 		}
 		encoded, err := json.Marshal(item)
 		if err != nil {
@@ -227,6 +236,10 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 }
 
 func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks taskQueryService) (ToolResult, error) {
+	relations, err := taskParentView(in.TaskParentView)
+	if err != nil {
+		return ToolResult{}, err
+	}
 	if in.View == "" {
 		in.View = "summary"
 	}
@@ -234,7 +247,7 @@ func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks tas
 		in.Limit = 5
 	}
 	items, err := tasks.MCPReady(ctx, actor.Principal, in.ProjectID, taskcore.MCPReadyRequest{
-		TagFilter: in.filter(), Parent: in.ParentID, Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
+		TagFilter: in.filter(), Parent: in.ParentID, ParentTask: in.ParentTaskID, Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
 	})
 	if err != nil {
 		return ToolResult{}, err
@@ -242,9 +255,9 @@ func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks tas
 	data := readyData{Items: make([]any, 0, len(items)), Projection: in.View}
 	for _, item := range items {
 		if in.View == "full" {
-			data.Items = append(data.Items, MapTaskFull(item.Task))
+			data.Items = append(data.Items, MapTaskFull(item.Task, relations))
 		} else {
-			summary := MapTaskSummary(item.Task)
+			summary := MapTaskSummary(item.Task, relations)
 			summary.BlockedByCount = item.BlockedByCount
 			summary.TitleTruncated = summary.TitleTruncated || item.TitleTruncated
 			data.Items = append(data.Items, summary)

@@ -14,9 +14,6 @@ func claimWorkerMode(t *testing.T, current model.Task, owner model.Principal, de
 	t.Helper()
 	observed := current.UpdatedAt.Add(time.Second)
 	mode := descriptor.AgentControlMode
-	if mode == "" {
-		mode = model.AgentControlModeHerdr
-	}
 	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, UserID: owner.UserID,
 		Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: mode,
 		WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
@@ -59,12 +56,6 @@ func TestWorkerWebModeSurvivesSummaryReleaseAndReclaim(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(got, updated) || testWorker(t, got.Properties).AgentControlMode != model.AgentControlModeWeb {
 				t.Fatalf("summary replaced frozen web mode: %#v %v", got, err)
 			}
-			t.Run("Herdr resources refused", func(t *testing.T) {
-				f := workerMockWrite(t, updated, owner)
-				herdr := &model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}
-				_, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: worker.ClaimID, Herdr: &herdr})
-				requireFault(t, err, "invalid_input")
-			})
 			released := workerTestResult(updated)
 			released.Status, released.Ready, released.StartedAt, released.CompletedAt = model.TaskTodo, true, nil, nil
 			released.Properties = testWithWorker(t, updated.Properties, nil)
@@ -90,8 +81,8 @@ func TestWorkerFreshExecutionsSelectTheirRequestedControlMode(t *testing.T) {
 	fresh := workerDescriptor()
 	resumed := claimWorkerMode(t, current, owner, fresh)
 	worker := *testWorker(t, resumed.Properties)
-	if worker.Agent != model.AgentCodex || worker.AgentControlMode != model.AgentControlModeHerdr || worker.Herdr != nil || worker.NativeSessionID != nil {
-		t.Fatalf("new default execution inherited old provider, mode or resources: %#v", worker)
+	if worker.Agent != model.AgentCodex || worker.AgentControlMode != model.AgentControlModeWeb || worker.Herdr != nil || worker.NativeSessionID != nil {
+		t.Fatalf("new execution inherited old provider, mode or resources: %#v", worker)
 	}
 	withdrawn := workerTestResult(resumed)
 	withdrawn.Status, withdrawn.Ready, withdrawn.AllowAgents, withdrawn.StartedAt, withdrawn.CompletedAt = model.TaskTodo, true, false, nil, nil
@@ -120,5 +111,62 @@ func TestWorkerFreshExecutionsSelectTheirRequestedControlMode(t *testing.T) {
 	got, err = f.Tasks.SetStatus(f.Context, owner, claimed.ProjectID, claimed.ID, taskcore.SetTaskStatus{Version: claimed.Version, Status: model.TaskDone, ClaimID: &active.ClaimID})
 	if err != nil || !reflect.DeepEqual(got, completed) || testWorker(t, got.Properties).AgentControlMode != model.AgentControlModeWeb {
 		t.Fatalf("completion changed selected control mode: %#v %v", got, err)
+	}
+}
+
+func TestHistoricalHerdrUpdatesRefusedButManualDisposalRemainsAvailable(t *testing.T) {
+	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
+	worker := *testWorker(t, current.Properties)
+	worker.AgentControlMode = model.AgentControlModeHerdr
+	worker.Herdr = &model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}
+	current.Properties = testWithWorker(t, current.Properties, &worker)
+	phase := model.WorkerExecuting
+	native := "native-session"
+	for _, tc := range []struct {
+		name  string
+		input taskcore.UpdateWorker
+	}{
+		{"phase", taskcore.UpdateWorker{Phase: &phase}},
+		{"native", taskcore.UpdateWorker{NativeSessionID: pointer(&native)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := workerMockWrite(t, current, owner)
+			tc.input.Version, tc.input.ClaimID = current.Version, descriptor.ClaimID
+			_, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, tc.input)
+			requireFault(t, err, "invalid_input")
+		})
+	}
+	for _, tc := range []struct {
+		name    string
+		version int64
+		claim   string
+		caller  model.Principal
+		code    string
+	}{
+		{"stale version", current.Version + 1, descriptor.ClaimID, owner, "version_conflict"},
+		{"foreign claim", current.Version, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", owner, "claim_conflict"},
+		{"foreign owner", current.Version, descriptor.ClaimID, model.Principal{UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: owner.CredentialID, Kind: owner.Kind}, "forbidden"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := workerMockWrite(t, current, tc.caller)
+			_, err := f.Tasks.UpdateWorker(f.Context, tc.caller, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: tc.version, ClaimID: tc.claim, Phase: &phase})
+			requireFault(t, err, tc.code)
+		})
+	}
+	for _, operation := range []string{"release", "withdraw"} {
+		t.Run(operation, func(t *testing.T) {
+			want := workerTestResult(current)
+			want.Status, want.Ready, want.StartedAt, want.CompletedAt = model.TaskTodo, true, nil, nil
+			want.Properties = testWithWorker(t, current.Properties, nil)
+			if operation == "withdraw" {
+				want.AllowAgents = false
+			}
+			f := workerMockWrite(t, current, owner)
+			workerExpectUpdate(t, f, workerTestValues(want), want)
+			got, err := workerManagementInvoke(f, current, owner, operation, descriptor)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("manual %s: %#v %v", operation, got, err)
+			}
+		})
 	}
 }

@@ -113,7 +113,7 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
         return options ? content() : page(1901, 2000);
       }
       metrics.before++;
-      if (options?.holdBefore) await beforeGate;
+      if (window.botViewportOptions?.holdBefore) await beforeGate;
       const end = Number(cursor) - 1;
       return options?.scenario === 'persistent' ? persistentPage(Math.max(1, end - 99), end) : page(Math.max(1, end - 99), end);
     },

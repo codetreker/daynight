@@ -1,4 +1,6 @@
+import { isProcessBirth } from "./linux-process-proof.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
+import { replayStoppedControllerUsage } from "./usage/stopped.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -22,6 +24,7 @@ import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
 import { prepareControllerStorage } from "./storage-preparation.js";
+import { selectIndependentToolLaunch } from "./independent-tool-selection.js";
 
 const withIndependentStorage = async <T>(journalFile: string, action: (permit: ControllerStoragePermit) => Promise<T>, deadline?: number): Promise<T> => {
   const permit = acquireControllerStoragePermit(journalFile, deadline);
@@ -38,11 +41,11 @@ const withIndependentStorage = async <T>(journalFile: string, action: (permit: C
   return result!;
 };
 
-const prepareIndependentWriter = async (journalFile: string, stateDirectory: string, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+const prepareIndependentWriter = async (journalFile: string, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
   for (;;) {
     signal.throwIfAborted();
     try {
-      const prepared = await withIndependentStorage(journalFile, async permit => prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, permit));
+      const prepared = await withIndependentStorage(journalFile, async permit => prepareControllerStorage({ journalFile, mode: "writer", ticket }, permit));
       if (prepared.kind === "prepared") return;
     } catch (error) { if (!isControllerStorageLockHeld(error)) throw error; }
     await delay(250, undefined, { signal });
@@ -85,7 +88,7 @@ const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLa
     && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2_147_483_647
     && Number.isSafeInteger(value.parentPid) && value.parentPid >= 0
     && (value.processGroupId === null || Number.isSafeInteger(value.processGroupId) && value.processGroupId > 0)
-    && typeof value.startedAt === "string" && value.startedAt.trim() !== ""
+    && isProcessBirth(value.startedAt)
     && typeof value.commandHash === "string" && /^[a-f0-9]{64}$/.test(value.commandHash)
     && (value.jobObjectName === undefined || typeof value.jobObjectName === "string" && value.jobObjectName.trim() !== "" && !value.jobObjectName.includes("\0"));
   const same = (left: ProcessProof, right: ProcessProof): boolean => left.pid === right.pid && left.parentPid === right.parentPid
@@ -151,6 +154,8 @@ export const runIndependentController = async (input: IndependentControllerInput
       resume = await (await import("./resume.js")).acquireResume({ provider: input.provider, ...(input.resume.sessionId ? { sessionId: input.resume.sessionId } : {}) }, context, { serverUrl: config.serverUrl, serverToken: config.serverToken });
       context.stdout(`Resuming native context from Test Session: ${resume.ticket.sessionId}\n`);
     }
+    const toolLaunch = await selectIndependentToolLaunch({ provider: input.provider, homeDirectory: home, cwd, environment: process.env, signal: cancellation.signal, ...(resume ? { resumeTicket: resume.ticket } : {}) });
+    cancellation.signal.throwIfAborted();
     const executionId = randomUUID(), launchId = randomUUID(), controllerId = randomUUID(), controllerInstanceId = randomUUID();
     directory = controllerExecutionDirectory(home, executionId); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
     const registration = { protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId, controllerInstanceId, provider: input.provider, initialInput: input.prompt === null ? "none" as const : "prompt" as const };
@@ -171,9 +176,9 @@ export const runIndependentController = async (input: IndependentControllerInput
     const credentialFile = path.join(directory, "credential.json"); await writeControllerCredential(credentialFile, credential);
     const ipcEndpoint = await prepareControllerIpcEndpoint(home, launchId);
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
-    ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
+    ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, usageScope: "standalone_test", initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0, ...(toolLaunch ? { toolLaunch } : {}) }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
-    await prepareIndependentWriter(path.join(directory, "journal.sqlite"), resolveConfigurationPaths(home).stateDirectory, ticket, cancellation.signal);
+    await prepareIndependentWriter(path.join(directory, "journal.sqlite"), ticket, cancellation.signal);
     // Reconnect grants are valid for the first hello and survive a lost first connection.
     credential = await grant("reconnect"); await writeControllerCredential(credentialFile, credential);
     context.stdout(`Provider: ${input.provider}; starting in ${cwd}\nPress Ctrl+C to stop this Test Session.\n`);
@@ -415,8 +420,7 @@ export const runIndependentController = async (input: IndependentControllerInput
           let committed = false;
           try {
             stopped = await withIndependentStorage(journal, async permit => {
-              const stateDirectory = resolveConfigurationPaths(home).stateDirectory;
-              const result = await recordStoppedControllerGeneration(journal, ticket!, { stateDirectory, permit, deadline, ...(jobLease === undefined ? {} : { jobLease }) });
+              const result = await recordStoppedControllerGeneration(journal, ticket!, { permit, deadline, ...(jobLease === undefined ? {} : { jobLease }) });
               committed = true;
               remaining();
               return result;
@@ -433,6 +437,17 @@ export const runIndependentController = async (input: IndependentControllerInput
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };
         await persist("stop-proof.json", body);
+        // Usage has its own ACK and must remain retryable even if history fails.
+        let usagePending = false;
+        try {
+          const usage = await replayStoppedControllerUsage({ journalPath: journal, ticket, serverToken: config.serverToken });
+          usagePending = usage.retryable;
+          if (usage.pending > 0 && !usage.retryable) context.stderr(`Native execution stopped; usage is incomplete and cannot be replayed with the retained grant. Original journal retained in ${directory}.\n`);
+        } catch (error) {
+          usagePending = true;
+          if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and usage replay failed.");
+        }
+        if (usagePending) context.stderr(`Native execution stopped; usage upload is pending. Original journal retained in ${directory}.\nRetry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
         // Publish the upload intent before closing the live page so observers keep polling.
         await request(`/api/v1/test-sessions/${ticket.sessionId}/archive`, { ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, state: "pending", errorCode: null }, true).catch(() => {});
         try {
@@ -444,7 +459,9 @@ export const runIndependentController = async (input: IndependentControllerInput
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
         if (archived) {
           try {
-            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken, stateDirectory: resolveConfigurationPaths(home).stateDirectory });
+            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken,
+              onRetry: event => context.stderr(`Session archive capacity ${JSON.stringify(event)}\n`),
+            });
             context.stdout("Test Session stopped and archived. Read-only history is available on its page.\n");
           } catch (error) {
             if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and history archival failed.");

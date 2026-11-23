@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readAccountHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
-import { useAccountHistory, useMyTasksHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
+import { emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
+import { useMyTasksHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -10,6 +10,30 @@ const other = '00000000-0000-4000-8000-000000000002';
 const arrival = (state: unknown, path = '/account') => act(() => {
   history.replaceState(state, '', path);
   dispatchEvent(new PopStateEvent('popstate', { state }));
+});
+
+it('restores retired tabs in all nested history selections without changing attachment identities', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const legacy = { id: child, navigation: { tab: 'steps', path: 'docs/result.md' } };
+  const nested = { graphRootId: null, task: legacy };
+  const projectState = { version: 1, userId: user, pageKey: `project:${project}`, selection: { section: 'tasks', view: 'goals', projectGraphWitness: null, detail: { id: root, source: 'direct', insideProjectGraph: false, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const myState = { version: 1, userId: user, pageKey: 'my-tasks', selection: { projectPages: {}, detail: { projectId: project, id: root, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const resourceState = { version: 1, userId: user, pageKey: `resource:${project}/${root}`, selection: { goalChildren: nested, externalGoal: { id: root, witness: child, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const projectResult = readProjectHistory(projectState, user, project)!;
+  const myResult = readMyTasksHistory(myState, user)!;
+  const resourceResult = readResourceHistory(resourceState, user, project, root)!;
+  for (const detail of [projectResult.detail, myResult.detail, resourceResult.externalGoal]) {
+    expect(detail?.navigation).toEqual({ tab: 'overview', path: null });
+    expect(detail?.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  }
+  expect(resourceResult.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  expect(readProjectHistory(projectState, other, project)).toBeNull();
+  expect(readMyTasksHistory(myState, other)).toBeNull();
+  expect(readResourceHistory(resourceState, other, project, root)).toBeNull();
+  const invalid = { ...resourceState, selection: { ...resourceState.selection, goalChildren: { ...nested, task: { ...legacy, navigation: { tab: 'steps', path: '../private' } } } } };
+  expect(() => readResourceHistory(invalid, user, project, root)).toThrow();
 });
 
 describe('standalone resource reading history', () => {
@@ -28,7 +52,7 @@ describe('standalone resource reading history', () => {
     expect(readResourceHistory(state, user, project, root)).toEqual(selection);
     expect(readResourceHistory(state, other, project, root)).toBeNull();
     expect(readResourceHistory(state, user, project, child)).toBeNull();
-    expect(readResourceHistory(accountHistory(user, 'tokens'), user, project, root)).toBeNull();
+    expect(readResourceHistory(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration'), user, project, root)).toBeNull();
     for (const bad of [
       { ...state, selection: { ...selection, draft: 'secret' } },
       { ...state, selection: { ...selection, goalChildren: { ...selection.goalChildren, graphRootId: 'bad' } } },
@@ -133,7 +157,7 @@ describe('personal overview reading history', () => {
     const state = myTasksHistory(user, selection);
     expect(readMyTasksHistory(state, user)).toEqual(selection);
     expect(readMyTasksHistory(state, other)).toBeNull();
-    expect(readMyTasksHistory(accountHistory(user, 'profile'), user)).toBeNull();
+    expect(readMyTasksHistory(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'overview'), user)).toBeNull();
     for (const bad of [
       { ...selection, draft: 'secret' }, { ...selection, projectPages: { [project]: 0 } },
       { ...selection, projectPages: { bad: 2 } }, { ...selection, projectPages: { [project]: 1.5 } },
@@ -231,6 +255,238 @@ describe('Project reading history', () => {
     expect(readProjectHistory(projectHistory(user, project, description), user, project)).toEqual(description);
   });
 
+  it('restores Usage readers in project Goal modals and nested task history', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const usage = { ...selection, view: 'goals', detail: { ...selection.detail!,
+      navigation: { tab: 'usage', path: null },
+      goalChildren: { graphRootId: child, task: { id: child, navigation: { tab: 'usage', path: null } } },
+    } } as const;
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => result.current.select(selection));
+      const overview = history.state;
+      act(() => result.current.select(usage));
+      const saved = history.state;
+      expect(result.current.error).toBe(false);
+      expect(result.current.selection).toEqual(usage);
+      expect(readProjectHistory(projectHistory(user, project, usage), user, project)).toEqual(usage);
+      arrival(overview, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual(selection);
+      arrival(saved, `${path}?tab=tasks`);
+      expect(result.current.error).toBe(false);
+      expect(result.current.selection).toEqual(usage);
+
+      const personal = { projectPages: {}, detail: { projectId: project, id: root,
+        navigation: usage.detail.navigation, goalChildren: usage.detail.goalChildren } };
+      expect(readMyTasksHistory(myTasksHistory(user, personal), user)).toEqual(personal);
+      const resource = { goalChildren: usage.detail.goalChildren, externalGoal: { id: root, witness: child,
+        navigation: usage.detail.navigation, goalChildren: usage.detail.goalChildren } };
+      expect(readResourceHistory(resourceHistory(user, project, root, resource), user, project, root)).toEqual(resource);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('keeps a Goal address pending until its reader is admitted and closes it atomically behind the draft guard', () => {
+    history.replaceState(null, '', `${path}?tab=tasks&goalGraph=${root}#chain=${child}`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      expect(result.current.selection).toEqual({ section: 'tasks', view: 'goals', projectGraphWitness: null, detail: null });
+      expect(navigation.snapshot().view).toBeUndefined();
+      const linked = { section: 'tasks', view: 'goals', projectGraphWitness: root, detail: null } as const;
+      act(() => result.current.select(linked, true, undefined, 'goal'));
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${root}`);
+      expect(location.hash).toBe('');
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, linked));
+      const discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      act(() => result.current.select({ ...linked, projectGraphWitness: null }, true));
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${root}`);
+      expect(result.current.selection).toEqual(linked);
+      act(() => navigation.cancel());
+      expect(discard).not.toHaveBeenCalled();
+      act(() => result.current.select({ ...linked, projectGraphWitness: null }, true));
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=tasks');
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      expect(discard).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not normalize a missing tab into a valid Goal address before rejecting the original input', () => {
+    history.replaceState(null, '', `${path}?goalGraph=${root}`);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, { section: 'tasks', view: 'chains' }, scope));
+      expect(location.search).toBe(`?goalGraph=${root}`);
+      act(() => result.current.select(result.current.selection, true, undefined, 'goal-invalid'));
+      expect(location.search).toBe('?tab=tasks');
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['overview', 'tasks', 'prs', 'tags'] as const)('uses explicit %s over the preferred section on first render', section => {
+    history.replaceState(null, '', `${path}?other=retained&tab=${section}`);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const renders: string[] = [];
+    try {
+      const length = history.length;
+      const { result, unmount } = renderHook(() => {
+        const history = useProjectHistory(user, project, true, { section: 'tags', view: 'chains' }, scope);
+        renders.push(history.selection.section); return history;
+      });
+      expect(renders.every(value => value === section)).toBe(true);
+      expect(result.current.selection).toEqual({ section, view: 'chains', projectGraphWitness: null, detail: null });
+      expect(location.search).toBe(`?other=retained&tab=${section}`);
+      expect(history.length).toBe(length);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('normalizes a bare URL with the admitted same-document reading and preserves pending fragment and query', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const first = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => first.result.current.select(selection));
+      first.unmount();
+      act(() => navigation.setView(projectHistory(user, project, selection), { to: `${path}?other=retained#chain=${root}`, replace: true }));
+      const length = history.length, entryId = navigation.snapshot().entryId;
+      const replace = vi.spyOn(history, 'replaceState');
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      expect(result.current.selection).toEqual(selection);
+      expect(location.search).toBe('?other=retained&tab=tasks');
+      expect(location.hash).toBe(`#chain=${root}`);
+      expect(navigation.snapshot().entryId).toBe(entryId);
+      expect(history.length).toBe(length);
+      expect(replace).toHaveBeenCalledOnce();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('takes explicit URL over conflicting reading, retaining a matching reading but dropping incompatible nested resources', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => result.current.select(selection));
+      expect(result.current.selection).toEqual(selection);
+      const length = history.length;
+      act(() => navigation.setView(projectHistory(user, project, selection), { to: `${path}?tab=prs`, replace: true }));
+      const expected = { ...defaults, section: 'prs', projectGraphWitness: null, detail: null } as const;
+      expect(result.current.selection).toEqual(expected);
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, expected));
+      expect(history.length).toBe(length);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('keeps URL and reading unchanged when a draft blocks a section change and commits both after confirmation', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      const before = navigation.snapshot(), length = history.length, commit = vi.fn(), discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...result.current.selection, section: 'prs' } as const;
+      act(() => result.current.select(next, false, commit));
+      expect(navigation.snapshot()).toBe(before);
+      expect(location.search).toBe('?tab=tasks');
+      act(() => navigation.cancel());
+      expect(history.length).toBe(length); expect(commit).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled();
+      act(() => result.current.select(next, false, commit));
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=prs'); expect(result.current.selection).toEqual(next);
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, next));
+      expect(history.length).toBe(length + 1); expect(commit).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('consumes an unindexed native fragment without numbering it or retiring earlier application entries', () => {
+    history.replaceState(null, '', `${path}?tab=prs`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      const old = history.state, oldId = navigation.snapshot().entryId;
+      act(() => { history.pushState({ foreign: { offset: 7 }, __daynightNavigation: old.__daynightNavigation }, '', `${path}?tab=prs#chain=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      expect(navigation.snapshot().entryId).toBeNull();
+      const length = history.length, before = navigation.snapshot(), committed = vi.fn(), discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...selection, detail: null };
+      const replace = vi.spyOn(history, 'replaceState');
+      act(() => result.current.select(next, false, committed, true));
+      expect(navigation.snapshot()).toBe(before); expect(location.hash).toBe(`#chain=${root}`);
+      act(() => navigation.cancel());
+      expect(replace).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled(); expect(committed).not.toHaveBeenCalled();
+      act(() => result.current.select(next, false, committed, true));
+      act(() => navigation.confirm());
+      expect(replace).toHaveBeenCalledOnce(); expect(history.length).toBe(length);
+      expect(location.search).toBe('?tab=tasks'); expect(location.hash).toBe('');
+      expect(history.state).toEqual({ foreign: { offset: 7 } });
+      expect(navigation.snapshot()).toMatchObject({ entryId: null, view: projectHistory(user, project, next) });
+      expect(result.current.selection).toEqual(next);
+      expect(discard).toHaveBeenCalledOnce(); expect(committed).toHaveBeenCalledOnce();
+      release();
+      arrival(old, `${path}?tab=prs`);
+      expect(navigation.snapshot().entryId).toBe(oldId);
+      expect(result.current.selection.section).toBe('prs');
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('consumes a native chain query only after the draft decision and preserves unrelated state', () => {
+    history.replaceState(null, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => { history.pushState({ foreign: true }, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      const length = history.length, discard = vi.fn(), commit = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...selection, detail: null };
+      act(() => result.current.select(next, false, commit, 'chain'));
+      expect(location.search).toContain(`chain=${root}`); expect(commit).not.toHaveBeenCalled();
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=tasks&other=kept'); expect(location.hash).toBe('');
+      expect(history.length).toBe(length); expect(history.state).toEqual({ foreign: true });
+      expect(navigation.snapshot()).toMatchObject({ entryId: null, view: projectHistory(user, project, next) });
+      expect(discard).toHaveBeenCalledOnce(); expect(commit).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['history', 'access'] as const)('never revives a native fragment reading after %s retirement and rerender', kind => {
+    history.replaceState(null, '', `${path}?tab=prs`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    try {
+      const { result, rerender, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => { history.pushState({ foreign: true }, '', `${path}?tab=prs#chain=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      act(() => result.current.select(selection, false, undefined, true));
+      expect(result.current.selection).toEqual(selection);
+      act(() => {
+        if (kind === 'access') scope.suspendProject(project);
+        else for (const listener of listeners) listener({ projectId: project, historyChanged: true });
+      });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      rerender(); rerender();
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
   it('initializes, traverses and deduplicates without replaying commit callbacks', () => {
     history.replaceState(null, '', path);
     const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
@@ -246,117 +502,201 @@ describe('Project reading history', () => {
       expect(committed).toHaveBeenCalledTimes(1);
       act(() => result.current.select(selection, false, committed));
       expect(history.length).toBe(length + 1);
-      arrival(source, path); expect(result.current.selection).toEqual(initial);
-      arrival(destination, path); expect(result.current.selection).toEqual(selection);
+      arrival(source, `${path}?tab=overview`); expect(result.current.selection).toEqual(initial);
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection).toEqual(selection);
       expect(committed).toHaveBeenCalledTimes(1);
       const tags = { ...selection, section: 'tags', projectGraphWitness: null, detail: null } as const;
       act(() => result.current.select(tags));
       const tagsDestination = history.state;
-      arrival(destination, path); expect(result.current.selection).toEqual(selection);
-      arrival(tagsDestination, path); expect(result.current.selection).toEqual(tags);
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection).toEqual(selection);
+      arrival(tagsDestination, `${path}?tab=tags`); expect(result.current.selection).toEqual(tags);
       act(() => result.current.select({ ...selection, detail: null }));
       act(() => scope.suspendProject(project));
       expect(result.current.selection.detail).toBeNull();
-      arrival(destination, path); expect(result.current.selection.detail).toBeNull();
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection.detail).toBeNull();
       unmount();
     } finally { scope.dispose(); }
   });
+
+  it('carries only the currently displayed Goal through content retirement on the same render', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const goal = { ...selection, view: 'goals' } as const;
+    const carried = { ...goal, detail: null };
+    const renders: ProjectReading[] = [];
+    try {
+      const { result, unmount } = renderHook(() => {
+        const value = useProjectHistory(user, project, true, defaults, scope, id => id === root);
+        renders.push(value.selection); return value;
+      });
+      act(() => result.current.select(goal));
+      const old = history.state;
+      act(() => result.current.select({ ...goal, detail: { ...goal.detail!, id: child } }));
+      const start = renders.length;
+      act(retire);
+      expect(renders.slice(start)).not.toHaveLength(0);
+      expect(renders.slice(start).every(value => value.projectGraphWitness === root && value.detail === null)).toBe(true);
+      expect(result.current.selection).toEqual(carried);
+      expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, carried));
+      arrival(old, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('preserves the current chain usage member detail on content retirement without reviving an old entry', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    const renders: ProjectReading[] = [];
+    try {
+      const { result, unmount } = renderHook(() => {
+        const value = useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child);
+        renders.push(value.selection); return value;
+      });
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, id: root } }));
+      const old = history.state;
+      act(() => result.current.select(detail));
+      const count = history.length, start = renders.length;
+      act(() => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); });
+      expect(renders.slice(start)).not.toHaveLength(0);
+      expect(renders.slice(start).every(value => JSON.stringify(value) === JSON.stringify(detail))).toBe(true);
+      expect(result.current.selection).toEqual(detail);
+      expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, detail));
+      expect(history.length).toBe(count);
+      arrival(old, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['access-first', 'history-first', 'combined'])('never carries a chain usage detail across access retirement (%s)', order => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const emit = (event: Parameters<Parameters<typeof scope.subscribe>[0]>[0]) => { for (const listener of listeners) listener(event); };
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child));
+      act(() => result.current.select(detail));
+      act(() => {
+        if (order === 'combined') emit({ projectId: project, accessRevoked: true, historyChanged: true });
+        else if (order === 'access-first') { scope.suspendProject(project); emit({ projectId: project, historyChanged: true }); }
+        else { emit({ projectId: project, historyChanged: true }); scope.suspendProject(project); }
+      });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not carry a different detail or a different history entry for the same detail', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child));
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, id: root } }));
+      act(retire);
+      expect(result.current.selection.detail).toBeNull();
+      act(() => result.current.select(detail));
+      const old = history.state;
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, navigation: { tab: 'discussion', path: null } } }));
+      act(() => { history.replaceState(old, '', `${path}?tab=tasks`); dispatchEvent(new PopStateEvent('popstate', { state: old })); retire(); });
+      expect(result.current.selection.detail).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['access-first', 'history-first', 'combined'])('never carries a Goal across access retirement (%s)', order => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const emit = (event: Parameters<Parameters<typeof scope.subscribe>[0]>[0]) => { for (const listener of listeners) listener(event); };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, id => id === root));
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      act(() => {
+        if (order === 'combined') emit({ projectId: project, accessRevoked: true, historyChanged: true });
+        else if (order === 'access-first') { scope.suspendProject(project); emit({ projectId: project, historyChanged: true }); }
+        else { emit({ projectId: project, historyChanged: true }); scope.suspendProject(project); }
+      });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('respects a same-entry close and later admitted navigation during retirement', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const goal = { ...selection, view: 'goals', detail: null } as const;
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, id => id === root));
+      act(() => result.current.select(goal));
+      act(() => { result.current.select({ ...goal, projectGraphWitness: null }, true); retire(); });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      act(() => result.current.select(goal));
+      act(retire);
+      expect(result.current.selection).toEqual(goal);
+      act(() => result.current.select({ ...goal, section: 'overview', projectGraphWitness: null }));
+      expect(result.current.selection.section).toBe('overview');
+      act(retire);
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not carry an undisplayed Goal or across a scope or identity change', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const replacement = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    try {
+      const { result, rerender, unmount } = renderHook(({ cache, identity, displayed }) => useProjectHistory(identity, project, true, defaults, cache, () => displayed),
+        { initialProps: { cache: scope, identity: user, displayed: false } });
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      act(() => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      rerender({ cache: scope, identity: user, displayed: true });
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      rerender({ cache: replacement, identity: user, displayed: true });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      rerender({ cache: replacement, identity: other, displayed: true });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); replacement.dispose(); }
+  });
 });
-
-describe('account reading history', () => {
-  it('validates recognized state and isolates account and page scope', () => {
-    expect(readAccountHistory(undefined, user)).toBeNull();
-    expect(readAccountHistory(accountHistory(user, 'tokens'), user)).toBe('tokens');
-    expect(readAccountHistory(accountHistory(other, 'prompt'), user)).toBeNull();
-    expect(readAccountHistory({ ...accountHistory(user, 'prompt'), pageKey: 'worker' }, user)).toBeNull();
-    for (const bad of [null, {}, { ...accountHistory(user, 'tokens'), version: 2 },
-      { ...accountHistory(user, 'tokens'), userId: 'invalid' },
-      { ...accountHistory(user, 'tokens'), selection: { tab: 'unknown' } },
-      { ...accountHistory(user, 'tokens'), selection: { tab: 'tokens', draft: 'secret' } }]) {
-      expect(() => readAccountHistory(bad, user)).toThrow();
-    }
-  });
-
-  it('initializes each controlled visit and restores same-URL selections without duplicate entries', () => {
-    const navigation = browserNavigation(), length = history.length;
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-    expect(history.length).toBe(length);
-    const profile = history.state;
-    act(() => result.current.select('tokens'));
-    const tokens = history.state;
-    expect(result.current.tab).toBe('tokens');
-    expect(history.length).toBe(length + 1);
-    act(() => result.current.select('tokens'));
-    expect(history.length).toBe(length + 1);
-    arrival(profile);
-    expect(result.current.tab).toBe('profile');
-    arrival(tokens);
-    expect(result.current.tab).toBe('tokens');
-    act(() => navigation.navigate('/projects'));
-    act(() => navigation.navigate('/account'));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-  });
-
-  it('keeps hidden owners from reading or overwriting another page or identity', () => {
-    const navigation = browserNavigation();
-    const { result, rerender } = renderHook(({ active, identity }) => useAccountHistory(identity, active), { initialProps: { active: true, identity: user } });
-    act(() => result.current.select('prompt'));
-    rerender({ active: false, identity: user });
-    act(() => navigation.navigate('/projects', false, accountHistory(other, 'tokens')));
-    const foreign = navigation.snapshot().view;
-    act(() => result.current.select('profile'));
-    expect(result.current.tab).toBe('prompt');
-    expect(navigation.snapshot().view).toEqual(foreign);
-    rerender({ active: true, identity: user });
-    expect(navigation.snapshot().view).toEqual(foreign);
-    act(() => navigation.navigate('/account', false, accountHistory(other, 'tokens')));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-  });
-
-  it('keeps the selection on a native unnumbered same-page entry without writing it', () => {
-    const navigation = browserNavigation();
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    act(() => result.current.select('prompt'));
-    const replace = vi.spyOn(history, 'replaceState');
-    act(() => { history.pushState({ foreign: true }, '', '/account#native'); dispatchEvent(new PopStateEvent('popstate')); });
-    expect(result.current.tab).toBe('prompt');
-    expect(navigation.snapshot().entryId).toBeNull();
-    expect(history.state).toEqual({ foreign: true });
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it('resets the retained selection when the authenticated identity changes on a native entry', () => {
-    const { result, rerender } = renderHook(({ identity }) => useAccountHistory(identity, true), { initialProps: { identity: user } });
-    act(() => result.current.select('prompt'));
-    act(() => { history.pushState(null, '', '/account#native'); dispatchEvent(new PopStateEvent('popstate')); });
-    expect(result.current.tab).toBe('prompt');
-    rerender({ identity: other });
-    expect(result.current.tab).toBe('profile');
-    expect(history.state).toBeNull();
-  });
-
-  it('exposes malformed recognized state and does not replace it or accept a selection', () => {
-    const navigation = browserNavigation();
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    const state = { ...history.state, __daynightNavigation: { ...history.state.__daynightNavigation, view: { ...accountHistory(user, 'tokens'), selection: { tab: 'bad' } } } };
-    arrival(state);
-    expect(result.current.error).toBe(true);
-    act(() => result.current.select('prompt'));
-    expect(navigation.snapshot().view).toEqual(state.__daynightNavigation.view);
-    expect(history.state).toEqual(state);
-  });
-});
-
 
 describe('Worker reading history', () => {
   const worker = '00000000-0000-4000-8000-000000000011';
   const otherWorker = '00000000-0000-4000-8000-000000000012';
   const path = `/workers/${worker}`;
   it('validates the current Worker selection and isolates identity and resource', () => {
+    expect(readWorkerHistory(workerHistory(user, worker, 'system'), user, worker)).toBe('system');
     expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
     expect(readWorkerHistory(workerHistory(user, worker, 'prompt'), user, worker)).toBe('prompt');
     expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
@@ -378,24 +718,30 @@ describe('Worker reading history', () => {
     const { result, rerender } = renderHook(({ identity, active }) => useWorkerHistory(identity, worker, active), { initialProps: { identity: user, active: true } });
     expect(navigation.snapshot().view).toEqual(workerHistory(user, worker, 'overview'));
     const overview = history.state;
+    act(() => result.current.select('system'));
+    const system = history.state;
+    expect(result.current.section).toBe('system');
+    act(() => result.current.select('system'));
+    expect(history.length).toBe(length + 1);
     act(() => result.current.select('configuration'));
     const configuration = history.state;
     expect(result.current.section).toBe('configuration');
     act(() => result.current.select('configuration'));
-    expect(history.length).toBe(length + 1);
+    expect(history.length).toBe(length + 2);
     act(() => result.current.select('prompt'));
     const prompt = history.state;
     expect(result.current.section).toBe('prompt');
     act(() => result.current.select('prompt'));
-    expect(history.length).toBe(length + 2);
+    expect(history.length).toBe(length + 3);
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    arrival(system, path); expect(result.current.section).toBe('system');
     arrival(overview, path); expect(result.current.section).toBe('overview');
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(prompt, path); expect(result.current.section).toBe('prompt');
     rerender({ identity: user, active: false });
-    act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
+    act(() => navigation.navigate('/account', false, workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration')));
     act(() => result.current.select('overview'));
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'tokens'));
+    expect(navigation.snapshot().view).toEqual(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration'));
     rerender({ identity: other, active: true });
     act(() => navigation.navigate(path, false, workerHistory(user, worker, 'configuration')));
     expect(result.current.section).toBe('overview');

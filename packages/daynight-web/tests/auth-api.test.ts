@@ -2,7 +2,7 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole, updateTokenExpiry } from "../src/api/auth";
-import { ApiError, cancelAuthNetworkRequests, checkAttachmentPreview, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
+import { ApiError, cancelAuthNetworkRequests, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const userId = "20000000-0000-0000-0000-00000000000b";
@@ -302,21 +302,21 @@ describe("session and personal credentials API", () => {
   });
 
   it("lists only credential metadata and returns the created secret only from the create response", async () => {
-    const fetcher = mock(response({ items: [{ ...pat, token: "unexpected-list-secret" }] }));
-    expect(await listTokens(signal(), userId, vi.fn())).toEqual([pat]);
-    fetcher.mockResolvedValue(response({ ...pat, token: "opaque-created-token" }, 201));
-    expect(await createToken({ name: pat.name, expiresAt: time }, signal())).toEqual({ ...pat, token: "opaque-created-token" });
-    expect(fetcher.mock.calls[1]).toEqual(["/api/v1/me/tokens", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ name: pat.name, expiresAt: time }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    const fetcher = mock(response({ items: [{ ...pat, description: null, token: "unexpected-list-secret" }] }));
+    expect(await listTokens(signal(), userId, vi.fn())).toEqual([{ ...pat, description: null }]);
+    fetcher.mockResolvedValue(response({ ...pat, description: null, token: "opaque-created-token" }, 201));
+    expect(await createToken({ name: pat.name, expiresAt: time, expectedUserId: userId }, signal(), vi.fn())).toEqual({ ...pat, description: null, token: "opaque-created-token" });
+    expect(fetcher.mock.calls[1]).toEqual(["/api/v2/me/tokens", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ expectedUserId: userId, name: pat.name, expiresAt: time }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     })]);
-    fetcher.mockResolvedValue(response({ ...pat, token: "default-lifetime-token" }, 201));
-    await createToken({ name: "Default lifetime", expiresAt: null }, signal());
-    expect(fetcher.mock.calls[2]?.[1].body).toBe('{"name":"Default lifetime","expiresAt":null}');
+    fetcher.mockResolvedValue(response({ ...pat, description: null, token: "default-lifetime-token" }, 201));
+    await createToken({ name: "Default lifetime", expiresAt: null, expectedUserId: userId }, signal(), vi.fn());
+    expect(fetcher.mock.calls[2]?.[1].body).toBe(JSON.stringify({ expectedUserId: userId, name: 'Default lifetime', expiresAt: null }));
   });
 
   it("requires valid nullable usage metadata in list, create and expiry receipts", async () => {
-    const fetcher = mock(response({ items: [{ ...pat, lastUsedAt: time }] }));
-    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([{ ...pat, lastUsedAt: time }]);
+    const fetcher = mock(response({ items: [{ ...pat, description: null, lastUsedAt: time }] }));
+    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([{ ...pat, description: null, lastUsedAt: time }]);
     fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: time }));
     const input = { expiresAt: time, expectedExpiresAt: time, expectedUserId: userId };
     await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).resolves.toEqual({ ...pat, lastUsedAt: time });
@@ -325,18 +325,18 @@ describe("session and personal credentials API", () => {
       fetcher.mockResolvedValue(response({ items: [{ ...pat, lastUsedAt: bad }] }));
       await expect(listTokens(signal(), userId, vi.fn())).rejects.toMatchObject({ kind: "protocol" });
       fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad, token: "secret" }, 201));
-      await expect(createToken({ name: pat.name, expiresAt: null }, signal())).rejects.toMatchObject({ kind: "protocol" });
+      await expect(createToken({ name: pat.name, expiresAt: null, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
       fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad }));
       await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
     }
   });
 
   it("accepts names using the server's Unicode code point and control-character rules", async () => {
-    const fetcher = mock(response({ ...pat, token: "created-token" }, 201));
-    fetcher.mockImplementation(() => Promise.resolve(response({ ...pat, token: "created-token" }, 201)));
+    const fetcher = mock(response({ ...pat, description: null, token: "created-token" }, 201));
+    fetcher.mockImplementation(() => Promise.resolve(response({ ...pat, description: null, token: "created-token" }, 201)));
     for (const name of ["😀".repeat(100), "line\nname", "tab\tname"]) {
-      await createToken({ name, expiresAt: null }, signal());
-      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ name, expiresAt: null }));
+      await createToken({ name, expiresAt: null, expectedUserId: userId }, signal(), vi.fn());
+      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ expectedUserId: userId, name, expiresAt: null }));
     }
   });
 
@@ -346,7 +346,7 @@ describe("session and personal credentials API", () => {
   ])("rejects invalid credential input before network I/O %#", (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => createToken(input, signal())).toThrow(input.expiresAt === null ? ApiError : /^The server returned an invalid response\.$/);
+    expect(() => createToken({ ...input, expectedUserId: userId }, signal(), vi.fn())).toThrow(input.expiresAt === null ? ApiError : /^The server returned an invalid response\.$/);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -571,13 +571,13 @@ describe("auth API failures", () => {
 
   it("discards malformed secret-bearing success responses and network diagnostics", async () => {
     const secret = "sensitive-token-must-not-escape";
-    const fetcher = mock(response({ ...pat, token: `${secret}\n` }, 201));
-    const failure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
+    const fetcher = mock(response({ ...pat, description: null, token: `${secret}\n` }, 201));
+    const failure = await createToken({ name: "name", expiresAt: null, expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(failure).toMatchObject({ kind: "protocol", status: 201 });
     expect(String(failure)).not.toContain(secret);
     expect(failure).not.toHaveProperty("cause");
     fetcher.mockRejectedValue(new Error(secret));
-    const networkFailure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
+    const networkFailure = await createToken({ name: "name", expiresAt: null, expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(networkFailure).toMatchObject({ kind: "network", status: null });
     expect(networkFailure).not.toHaveProperty("cause");
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -588,21 +588,18 @@ describe("auth API failures", () => {
     const controller = new AbortController();
     const fetcher = mock(new Response());
     fetcher.mockImplementation(async () => { controller.abort(reason); throw new TypeError("transport detail"); });
-    await expect(createToken({ name: "name", expiresAt: null }, controller.signal)).rejects.toBe(reason);
+    await expect(createToken({ name: "name", expiresAt: null, expectedUserId: userId }, controller.signal, vi.fn())).rejects.toBe(reason);
   });
 });
 
 describe("shared unauthorized notifications", () => {
-  it("notifies on an actual 401 even when its JSON body is malformed, including attachment HEAD", async () => {
+  it("notifies on an actual 401 even when its JSON body is malformed, for malformed responses", async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeUnauthorized(listener);
     try {
-      const fetcher = mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
+      mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
       await expect(me(signal())).rejects.toMatchObject({ kind: "protocol", status: 401 });
       expect(listener).toHaveBeenCalledTimes(1);
-      fetcher.mockResolvedValue(new Response(null, { status: 401, headers: { "X-Request-ID": "head-1" } }));
-      await expect(checkAttachmentPreview(projectId, userId, "index.html", signal())).rejects.toMatchObject({ kind: "server", status: 401, code: "unauthenticated", requestId: "head-1" });
-      expect(listener).toHaveBeenCalledTimes(2);
     } finally { unsubscribe(); }
   });
 

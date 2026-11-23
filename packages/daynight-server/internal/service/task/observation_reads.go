@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
@@ -37,7 +38,7 @@ func (s *Observations) ObserveGet(ctx context.Context, principal model.Principal
 			return err
 		}
 		task = values[0]
-		result.Task = task
+		result.Task = s.projectTask(task)
 		result.Epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, projectID)
 		if err != nil {
 			return err
@@ -46,7 +47,7 @@ func (s *Observations) ObserveGet(ctx context.Context, principal model.Principal
 		if err != nil {
 			return err
 		}
-		selected, err = loadSelectedSources(ctx, snapshot, projectID, []model.Task{task})
+		selected, err = s.loadSources(ctx, snapshot, projectID, []model.Task{task})
 		return err
 	})
 	if err != nil {
@@ -64,7 +65,7 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
-	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{TagFilter: request.TagFilter, Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID})
+	selection, err := prepareListSelection(projectID, principal.UserID, request)
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
@@ -74,6 +75,12 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
 			return err
+		}
+		if request.CandidateWorkerID != nil {
+			selection, err = candidateListSelection(ctx, snapshot, principal, projectID, request)
+			if err != nil {
+				return err
+			}
 		}
 		if len(selection.Query.TagFilter.TagIDs) != 0 {
 			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, selection.Query.TagFilter); err != nil {
@@ -100,7 +107,7 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 		if err != nil {
 			return err
 		}
-		selected, err = loadSelectedSources(ctx, snapshot, projectID, tasks)
+		selected, err = s.loadSources(ctx, snapshot, projectID, tasks)
 		return err
 	})
 	if err != nil {
@@ -112,11 +119,23 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	}
 	result.Partial = partial
 	for _, task := range tasks {
-		result.Items = append(result.Items, ObservedTask{Task: task, Session: observations[task.ID]})
+		result.Items = append(result.Items, ObservedTask{Task: s.projectTask(task), Session: observations[task.ID]})
 	}
 	return result, nil
 }
 func (s *Observations) ObserveGraph(ctx context.Context, principal model.Principal, projectID, taskID string) (ObservedGraph, error) {
+	return s.observeGraph(ctx, principal, projectID, taskID, false)
+}
+func (s *Observations) ObserveGraphTaskOnly(ctx context.Context, principal model.Principal, projectID, taskID string) (ObservedGraph, error) {
+	return s.observeGraph(ctx, principal, projectID, taskID, true)
+}
+func (s *Observations) observeGraph(ctx context.Context, principal model.Principal, projectID, taskID string, taskOnly bool) (ObservedGraph, error) {
+	request := *s
+	request.readRequirements = nil
+	if !taskOnly {
+		request.readRequirements = []scopepolicy.Operation{scopepolicy.ProjectRead}
+	}
+	s = &request
 	projectID, err := observationIdentity(principal, projectID)
 	if err != nil {
 		return ObservedGraph{}, err
@@ -132,7 +151,11 @@ func (s *Observations) ObserveGraph(ctx context.Context, principal model.Princip
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
 			return err
 		}
-		project, err := snapshot.ProjectDAO().Project(ctx, projectID)
+		project := model.Project{ID: projectID}
+		var err error
+		if !taskOnly {
+			project, err = snapshot.ProjectDAO().Project(ctx, projectID)
+		}
 		if err != nil {
 			return err
 		}
@@ -152,7 +175,7 @@ func (s *Observations) ObserveGraph(ctx context.Context, principal model.Princip
 		for i, task := range graph.Tasks {
 			tasks[i] = executionIdentity{ID: task.ID, Version: task.Version}
 		}
-		selected, err = loadSelectedExecutionSources(ctx, snapshot, projectID, tasks)
+		selected, err = s.loadExecutionSources(ctx, snapshot, projectID, tasks)
 		return err
 	})
 	if err != nil {
@@ -168,6 +191,9 @@ func (s *Observations) ObserveGraph(ctx context.Context, principal model.Princip
 		if task.Status == model.TaskInProgress && result.Relations[task.ID] == "member" {
 			taskcore.AddSessionObservation(&result.Aggregation, result.Sessions[task.ID])
 		}
+	}
+	if !sessionProjectionAllowed(s.authorization) {
+		result.Aggregation.Complete = false
 	}
 	return result, nil
 }
@@ -218,7 +244,7 @@ func (s *Observations) ObservedMCPList(ctx context.Context, principal model.Prin
 		if err != nil {
 			return err
 		}
-		selected, err = loadSelectedSources(ctx, snapshot, projectID, tasks)
+		selected, err = s.loadSources(ctx, snapshot, projectID, tasks)
 		return err
 	})
 	if err != nil {
@@ -230,6 +256,7 @@ func (s *Observations) ObservedMCPList(ctx context.Context, principal model.Prin
 	}
 	result.Partial = partial
 	for _, item := range items {
+		item.Task = s.projectTask(item.Task)
 		result.Items = append(result.Items, ObservedMCPItem{Item: item, Session: observations[item.Task.ID]})
 	}
 	return result, nil

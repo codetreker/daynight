@@ -24,11 +24,20 @@ type previewFixture struct {
 
 func newPreviewFixture(t *testing.T) previewFixture {
 	t.Helper()
-	f := previewFixture{db: isolatedStore(t), now: time.Now().UTC().Truncate(time.Microsecond), state: hash("state"), code: hash("code"), preview: hash("preview")}
+	return newPreviewFixtureInStore(t, isolatedStore(t))
+}
+
+func newPreviewFixtureInStore(t *testing.T, db *postgres.Store) previewFixture {
+	t.Helper()
+	loginID := uuid.NewString()
+	f := previewFixture{
+		db: db, now: time.Now().UTC().Truncate(time.Microsecond),
+		state: hash("state:" + loginID), code: hash("code:" + loginID), preview: hash("preview:" + loginID),
+	}
 	user := model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}
-	f.session = model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("main"), CreatedAt: f.now, ExpiresAt: f.now.Add(time.Hour)}
+	f.session = model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("main:" + loginID), CreatedAt: f.now, ExpiresAt: f.now.Add(time.Hour)}
 	f.principal = model.Principal{Kind: model.SessionCredential, UserID: user.ID, CredentialID: f.session.ID}
-	f.login = model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: "https://daynight.cc/projects?x=%2F", ExpiresAt: f.now.Add(10 * time.Minute)}
+	f.login = model.PreviewSSOLogin{ID: loginID, ReturnURL: "https://daynight.cc/projects?x=%2F", ExpiresAt: f.now.Add(10 * time.Minute)}
 	identityScopeTest(t, f.db, func(s store.IdentityScope) error {
 		if _, err := s.IdentityDAO().UpsertUser(t.Context(), user, f.now); err != nil {
 			return err
@@ -176,9 +185,10 @@ func TestPreviewSSOConcurrentCodeConsumption(t *testing.T) {
 }
 
 func TestPreviewSSOFailuresAndCleanup(t *testing.T) {
+	db := isolatedStore(t)
 	for _, mode := range []string{"expired code", "expired session", "revoked session"} {
-		t.Run(mode, func(t *testing.T) {
-			f := newPreviewFixture(t)
+		if !t.Run(mode, func(t *testing.T) {
+			f := newPreviewFixtureInStore(t, db)
 			ctx := t.Context()
 			f.authorize(t)
 			switch mode {
@@ -208,7 +218,10 @@ func TestPreviewSSOFailuresAndCleanup(t *testing.T) {
 					t.Fatalf("expired cleanup: %d %v", count, err)
 				}
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, db.Pool)
 	}
 }
 

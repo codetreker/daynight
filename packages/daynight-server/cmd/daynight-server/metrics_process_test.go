@@ -96,6 +96,7 @@ func TestMetricsProcessLifecycle(t *testing.T) {
 		t.Run(map[bool]string{false: "disabled", true: "enabled"}[enabled], func(t *testing.T) {
 			values := processAPIEnvironmentAt(t, "127.0.0.1:0")
 			values["DAYNIGHT_PUBLIC_ORIGIN"] = "http://127.0.0.1:8787"
+			values["DAYNIGHT_PREVIEW_ORIGIN"] = "http://127.0.0.1:8789"
 			values["DAYNIGHT_UNIAUTH_CALLBACK_URL"] = values["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/auth/callback"
 			values["DAYNIGHT_METRICS_LISTEN_ADDR"] = ""
 			if enabled {
@@ -182,6 +183,7 @@ func TestMetricsProcessBindFailure(t *testing.T) {
 	defer occupied.Close()
 	values := processAPIEnvironmentAt(t, "127.0.0.1:0")
 	values["DAYNIGHT_PUBLIC_ORIGIN"] = "http://127.0.0.1:8787"
+	values["DAYNIGHT_PREVIEW_ORIGIN"] = "http://127.0.0.1:8789"
 	values["DAYNIGHT_UNIAUTH_CALLBACK_URL"] = values["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/auth/callback"
 	values["DAYNIGHT_METRICS_LISTEN_ADDR"] = occupied.Addr().String()
 	p := startMetricsProcess(t, values)

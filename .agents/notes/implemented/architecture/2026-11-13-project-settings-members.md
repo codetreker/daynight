@@ -19,7 +19,8 @@ outcomes. A stable result host outside the private unavailable area publishes th
 existing non-secret receipt or held result for its original actor and workspace.
 The [requirements](../../../../docs/spec/project-settings.md) and
 [design](../../../../docs/design/project-settings.md) own the current behavior and
-boundaries. This extends the [settings workspace decision](2026-11-13-project-settings-workspace.md).
+boundaries. The [section heading decision](../simplification/2026-11-20-member-section-heading.md)
+assigns page identity to the workspace. This extends the [settings workspace decision](2026-11-13-project-settings-workspace.md).
 
 ## Alternatives
 

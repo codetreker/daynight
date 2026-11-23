@@ -35,7 +35,7 @@ const exists = async (filename: string): Promise<boolean> => {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 };
 const journal = openControllerLifecycleStore(path.join(input.directory, "journal.sqlite"), ticket, {
-  contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(input.home).stateDirectory,
+  contentOwnedLocally: true,
 });
 // This identifier binds controlled Markdown input; no native model is invoked.
 const controlledNativeSessionId = randomUUID();
@@ -86,6 +86,7 @@ const syncHistory = (): Promise<void> => {
   if (historyWork) return historyWork;
   historyWork = (async () => {
     assert(relay.connected() && relay.imageHistorySupported(), "Real relay must support the history ledger.");
+    assert.equal(relay.currentOnlineMode(), "legacy", "Only a legacy Session can synchronize the active history ledger.");
     await relay.flush(10_000);
     const fence = relay.currentFence(); assert(fence);
     await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal,
@@ -101,6 +102,8 @@ const syncHistory = (): Promise<void> => {
 };
 const bridge = createControllerCaptureBridge({
   journal, beforeCapture: syncHistory, provider: () => null, writable: () => !stopping && relay.connected(),
+  relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(),
+  currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId,
   capture: async (action, body) => {
     assert(action === "submit" || action === "query", "Direct source capture cannot call legacy quota controls.");
     if (action === "submit") assert(journal.imageOccurrenceAcknowledged((body as { request: { occurrence: { imageId: string } } }).request.occurrence.imageId));
@@ -151,7 +154,11 @@ try {
     await delay(100);
   }
   assert(committed, "Controller stopped before immutable originals were committed.");
-  await timeline.drain(); await relay.flush(10_000); await syncHistory();
+  await timeline.drain(); await relay.flush(10_000);
+  const onlineMode = relay.currentOnlineMode();
+  assert(onlineMode, "The Controller must retain its negotiated online mode.");
+  if (onlineMode === "legacy") await syncHistory();
+  else assert.equal(events.filter(event => event.kind === "history-http-receipt").length, 0, "Relay capture cannot access the active history ledger.");
   for (const record of committed) {
     assert(record.request && record.receipt?.resource && record.sourceAdmission);
     assert.equal(record.receipt.attemptId, record.request.attemptId);
@@ -170,7 +177,7 @@ try {
     if (transport === "https") { assert.equal(request.tlsAuthorized, true); assert(request.peerCertificateSHA256); }
   }
   await persist("controller-committed.json", {
-    sessionId: ticket.sessionId, testExecutionId: ticket.testExecutionId, fence: relay.currentFence(),
+    sessionId: ticket.sessionId, testExecutionId: ticket.testExecutionId, fence: relay.currentFence(), onlineMode,
     sourceAcknowledgedThrough: journal.getLastAcknowledgedSequence(), captures: committed,
     requests, productionTargetCheckpoints: targets, events,
   });

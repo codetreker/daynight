@@ -43,12 +43,11 @@ view. This preserves both completed analysis and late native image receipts
 without guessing which body is newer. The
 [source decision](2026-11-05-session-image-sources.md) owns that projection flow.
 
-Journal v8 migrates only legacy content that exactly matches its SQL index.
-Missing, unindexed or advanced legacy files cannot prove the committed snapshot;
-migration refuses them while retaining the original database and files. Under
-that format, new candidates left by rollback remain invisible. Old
-committed candidates remain available to readers holding older WAL snapshots and
-count against the physical metadata budget. The v10 transition imports only
+The original v8 migration required legacy content to match its SQL index and
+refused missing, unindexed or advanced files. The later [local mapping decision](2026-11-16-controller-local-format-mapping.md)
+keeps the SQL index as the source selection boundary without auditing payload
+integrity. Under that format, new candidates left by rollback remain invisible. Old
+committed candidates remain available to readers holding older WAL snapshots until reader-safe retirement. The v10 transition imports only
 committed pointers and uses a successful reader barrier before retiring files;
 current-pointer checks alone do not prove the absence of an older reader.
 
@@ -86,12 +85,10 @@ without clearing the original writer identity or claiming a new commit.
 
 File and SQL failure boundaries are explicit. A candidate can survive a failed
 transaction without becoming history, and a lost commit response can be resolved
-by the original publication identity. Hash, length and entry identity failures
-remain visible instead of falling back to directory scanning or empty history.
+by the original publication identity. Ordinary readers expose hash, length and entry identity failures instead of
+falling back to directory scanning or empty history.
 
 Retaining candidates made physical metadata space grow even when logical history
-remained small. This cost motivates current-row SQL storage. Migration still
-counts retained and orphan files until reader-safe retirement; admission does not
-delete possibly referenced content to make room. SQL WAL supplies the snapshot
+remained small. This cost motivates current-row SQL storage. The [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission; migration still retains files until reader-safe retirement. SQL WAL supplies the snapshot
 lifetime for ordinary current-row updates. Native backend qualification and
 visual acceptance remain separate from these local storage guarantees.

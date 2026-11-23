@@ -2,31 +2,58 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	ghconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/github/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
+
+var _ githubAppStore = (*postgres.Store)(nil)
+
+// These interfaces are unused by lifecycle-only fixtures; an unexpected call
+// fails instead of manufacturing a database result.
+type unusedGitHubCapabilities struct {
+	store.GitHubAppStore
+	store.GitHubAppConfigStore
+	store.GitHubAppAdminStore
+	store.GitHubGrantStore
+	store.GitHubAppImpactStore
+	store.GitHubProjectAppStore
+	store.GitHubAppCredentialReader
+	store.GitHubAppWebhookStore
+	store.GitHubAppWorkWriter
+}
+
+func (unusedGitHubCapabilities) DueGitHubAppProjects(context.Context, time.Time, int) ([]string, error) {
+	return nil, nil
+}
 
 type githubAssemblyStore struct {
 	store.Transactions
-	scans chan struct{}
+	unusedGitHubCapabilities
+	scans      chan struct{}
+	adminReads *int
 }
 
-func (s githubAssemblyStore) DueGitHubProjects(ctx context.Context, id int64, _ time.Time, limit int) ([]string, error) {
-	if id != 42 || limit != 32 {
+var errAssemblyAdminRead = errors.New("controlled administrator store")
+
+func (s githubAssemblyStore) ReadGitHubAppAdmins(context.Context, func(store.GitHubAppAdminReader) error) error {
+	if s.adminReads != nil {
+		*s.adminReads++
+	}
+	return errAssemblyAdminRead
+}
+
+func (s githubAssemblyStore) DueGitHubAppProjects(ctx context.Context, _ time.Time, limit int) ([]string, error) {
+	if limit != 32 {
 		return nil, errors.New("unexpected scan parameters")
 	}
 	select {
@@ -35,33 +62,21 @@ func (s githubAssemblyStore) DueGitHubProjects(ctx context.Context, id int64, _ 
 	}
 	return nil, nil
 }
-func (s githubAssemblyStore) WriteGitHubSignals(context.Context, func(store.GitHubSignalWriter) error) (store.Completion, error) {
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
-}
-func githubTestConfig(t *testing.T) ghconfig.Config {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "key.pem")
-	data := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return ghconfig.Config{Enabled: true, AppID: 42, PrivateKeyFile: path, WebhookSecret: "secret"}
-}
 func TestGitHubProductionAssemblyStartsAndDrains(t *testing.T) {
 	scans := make(chan struct{}, 1)
-	db := githubAssemblyStore{scans: scans}
-	app := NewModules(config.Config{}, db, func(context.Context) error { return nil }, nil, nil)
-	c := githubTestConfig(t)
+	adminReads := 0
+	db := githubAssemblyStore{scans: scans, adminReads: &adminReads}
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, func(context.Context) error { return nil }, nil, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := app.assembleGitHub(db, c, logger); err != nil {
+	if err := app.assembleGitHub(db, logger); err != nil {
 		t.Fatal(err)
 	}
-	if app.GitHubManager == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.client == nil {
+	if app.GitHubApps == nil || app.GitHubConfig == nil || app.GitHubAdmins == nil || app.GitHubGrants == nil || app.GitHubProject == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.provider == nil {
 		t.Fatal("production dependencies not assembled")
+	}
+	_, err := app.GitHubAdmins.ListAdmins(context.Background(), model.Principal{}, "", coregithub.ListAppsInput{})
+	if !errors.Is(err, errAssemblyAdminRead) || adminReads != 1 {
+		t.Fatalf("administrator manager was not bound to the assembly store: reads=%d err=%v", adminReads, err)
 	}
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -105,6 +120,24 @@ func (r *controlledGithubRunner) Stop(ctx context.Context) error {
 }
 func (r *controlledGithubRunner) Failures() <-chan error { return r.failures }
 
+type controlledGitHubProvider struct {
+	release chan struct{}
+	called  chan struct{}
+}
+
+func (p *controlledGitHubProvider) Close(ctx context.Context) error {
+	select {
+	case p.called <- struct{}{}:
+	default:
+	}
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func TestGitHubDrainRetainsDatabaseAndCancelsWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -114,7 +147,8 @@ func TestGitHubDrainRetainsDatabaseAndCancelsWork(t *testing.T) {
 	}
 	backend.blockWebhookRuntime()
 	runner := &controlledGithubRunner{failures: make(chan error, 1), release: make(chan struct{})}
-	app.githubRuntime = &githubRuntime{runner: runner, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	provider := &controlledGitHubProvider{release: make(chan struct{}), called: make(chan struct{}, 2)}
+	app.githubRuntime = &githubRuntime{runner: runner, provider: provider, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if err := app.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +174,24 @@ func TestGitHubDrainRetainsDatabaseAndCancelsWork(t *testing.T) {
 	if closes != 0 {
 		t.Fatal("database closed before work drained")
 	}
+	select {
+	case <-provider.called:
+		t.Fatal("provider closed before runner drained")
+	default:
+	}
 	close(runner.release)
+	shortProvider, stopProvider := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer stopProvider()
+	if err := app.Close(shortProvider); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected provider timeout: %v", err)
+	}
+	backend.mu.Lock()
+	closes = backend.closes
+	backend.mu.Unlock()
+	if closes != 0 {
+		t.Fatal("database closed while provider still borrowed")
+	}
+	close(provider.release)
 	if err := app.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -184,38 +235,30 @@ func TestGitHubSupervisorRecordsFailureAndStartupFailure(t *testing.T) {
 	}
 }
 
-func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
-	c := githubTestConfig(t)
-	app := NewModules(config.Config{}, nil, func(context.Context) error { return nil }, nil, nil)
-	if err := app.assembleGitHub(nil, ghconfig.Config{}, slog.Default()); err != nil {
-		t.Fatalf("disabled assembly: %v", err)
-	}
-	if err := app.assembleGitHub(nil, c, slog.Default()); err == nil {
-		t.Fatal("missing work reader accepted")
-	}
-	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
-	c.PrivateKeyFile = filepath.Join(t.TempDir(), "missing.pem")
-	if err := app.assembleGitHub(db, c, slog.Default()); err == nil {
-		t.Fatal("missing key accepted")
-	}
-	if app.githubRuntime != nil {
-		t.Fatal("partial assembly published runtime")
-	}
-	if err := app.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+// This fixture has every runtime capability except administrator storage.
+type githubAssemblyWithoutAdminStore struct {
+	store.Transactions
+	store.GitHubAppStore
+	store.GitHubAppConfigStore
+	store.GitHubGrantStore
+	store.GitHubAppImpactStore
+	store.GitHubProjectAppStore
+	store.GitHubAppCredentialReader
+	store.GitHubAppWebhookStore
+	store.GitHubAppWorkReader
+	store.GitHubAppWorkWriter
 }
 
-func TestGitHubAssemblyRejectsInvalidAppID(t *testing.T) {
-	c := githubTestConfig(t)
-	c.AppID = 0
-	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
-	app := NewModules(config.Config{}, db, func(context.Context) error { return nil }, nil, nil)
-	if err := app.assembleGitHub(db, c, slog.Default()); err == nil {
-		t.Fatal("accepted invalid App ID")
+func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, func(context.Context) error { return nil }, nil, nil)
+	if err := app.assembleGitHub(nil, slog.Default()); err == nil {
+		t.Fatal("missing App store accepted")
 	}
-	if app.githubRuntime != nil {
-		t.Fatal("published incomplete runtime")
+	if err := app.assembleGitHub(githubAssemblyWithoutAdminStore{}, slog.Default()); err == nil {
+		t.Fatal("missing administrator store accepted")
+	}
+	if app.githubRuntime != nil || app.GitHubWebhook != nil {
+		t.Fatal("partial assembly published")
 	}
 	if err := app.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -225,8 +268,8 @@ func TestGitHubAssemblyRejectsInvalidAppID(t *testing.T) {
 func TestGitHubAssemblyExposesSupervisorFailureThroughReadiness(t *testing.T) {
 	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
 	baseErr := errors.New("database unavailable")
-	app := NewModules(config.Config{}, db, func(context.Context) error { return baseErr }, nil, nil)
-	if err := app.assembleGitHub(db, githubTestConfig(t), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, func(context.Context) error { return baseErr }, nil, nil)
+	if err := app.assembleGitHub(db, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Ready(context.Background()); !errors.Is(err, baseErr) {

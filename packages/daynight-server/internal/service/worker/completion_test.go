@@ -34,9 +34,9 @@ func TestUnconfirmedWorkerWritesDoNotReturnSuccess(t *testing.T) {
 		CPU:      model.WorkerProbe[model.WorkerCPU]{State: "error", CheckedAt: now, Code: &code},
 		Memory:   model.WorkerProbe[model.WorkerMemory]{State: "error", CheckedAt: now, Code: &code},
 		Disk:     model.WorkerProbe[model.WorkerDisk]{State: "error", CheckedAt: now, Code: &code},
-		Versions: model.WorkerVersions{Daynight: "1", Herdr: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: &code}, Codex: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: &code}, Copilot: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: &code}},
+		Versions: model.WorkerVersions{Daynight: "1", Codex: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: &code}, Copilot: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: &code}},
 	}}
-	configuration := model.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
+	configuration := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 	for _, outcome := range []store.TransactionOutcome{store.TransactionUnknown, store.TransactionNotCommitted} {
 		workers := NewWorkers(unconfirmedWriter{outcome})
 		if _, err := workers.Report(context.Background(), principal, id, report); err == nil || !strings.Contains(err.Error(), "transaction did not confirm commit") {

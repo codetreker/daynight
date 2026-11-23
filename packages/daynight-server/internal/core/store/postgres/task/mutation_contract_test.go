@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -72,21 +73,12 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		values.AllowAgents, values.AssignedTo, values.RequiredPlatform = true, &owner.UserID, &platform
 		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr/1","title":"Retained result"}]`)}
 	})
-	testutil.SeedStep(t, database.Pool, target.ID, "abcdef01", 0)
 	message := writerAppendThread(t, database, target.ID, owner.UserID, "Retained discussion")
 	attachment, created, err := database.PutAttachment(ctx, model.Attachment{
 		ProjectID: project.ID, TaskID: target.ID, Path: "retained.txt", ContentType: "text/plain", SizeBytes: 25,
 	})
 	if err != nil || !created {
 		t.Fatalf("attachment material fixture: %#v created=%t %v", attachment, created, err)
-	}
-	var beforeSteps []model.TaskStep
-	if err := writerRead(t, database, func(scope store.TaskReader) error {
-		var err error
-		beforeSteps, err = scope.TaskSteps(ctx, target.ID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 	var beforeEpoch string
 	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&beforeEpoch); err != nil {
@@ -109,10 +101,6 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		presence, err := scope.TaskPresence(ctx, project.ID, target.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("cancelled Task became absent or deleted: %#v %v", presence, err)
-		}
-		steps, err := scope.TaskSteps(ctx, target.ID)
-		if err != nil || !reflect.DeepEqual(steps, beforeSteps) {
-			t.Fatalf("cancellation changed or hid Steps: %#v %v", steps, err)
 		}
 		storedMessage, err := scope.ThreadMessage(ctx, target.ID, message.ID)
 		if err != nil || !reflect.DeepEqual(storedMessage, message) {
@@ -601,7 +589,7 @@ func writerWorkerPage(t *testing.T, database *postgres.Store, projectID string, 
 
 func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
-	owner, other, workerID := testutil.QueryID(2), testutil.QueryID(3), testutil.QueryID(5)
+	owner, other, workerID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", testutil.QueryID(3), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	writerTask(t, database, project.ID, 10, model.TaskTodo)
 	writerWorkerTask(t, database, project.ID, 11, testutil.WorkerClaim(11, owner, testutil.QueryID(6), model.WorkerActive), true, nil)
 	writerWorkerTask(t, database, project.ID, 12, testutil.WorkerClaim(12, other, workerID, model.WorkerActive), true, nil)
@@ -611,6 +599,7 @@ func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	writerWorkerTask(t, database, project.ID, 16, testutil.WorkerClaim(16, other, workerID, model.WorkerActive), true, nil)
 	second := writerWorkerTask(t, database, project.ID, 17, testutil.WorkerClaim(17, owner, workerID, model.WorkerActive), true, nil)
 	manual := writerWorkerTask(t, database, project.ID, 18, testutil.WorkerClaim(18, owner, workerID, model.WorkerActive), false, testutil.Pointer(model.PlatformWindows))
+	testutil.MustExec(t, database.Pool, `UPDATE tasks SET created_at='2026-01-01T00:00:00Z' WHERE id = ANY($1::uuid[])`, []string{first.ID, second.ID, manual.ID})
 	testutil.MustExec(t, database.Pool, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, first.ID, testutil.QueryID(14))
 	want := []string{first.ID, second.ID, manual.ID}
 	query := store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: owner, WorkerID: workerID}}
@@ -631,6 +620,12 @@ func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	}
 	if !slices.Equal(ids, want) {
 		t.Fatalf("ownership filter did not precede the page limit: %v want %v", ids, want)
+	}
+	for _, worker := range []store.WorkerQuery{{UserID: strings.ToUpper(owner), WorkerID: workerID}, {UserID: owner, WorkerID: strings.ToUpper(workerID)}} {
+		page := writerWorkerPage(t, database, project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &worker})
+		if len(page.Items) != 0 || page.HasMore {
+			t.Fatalf("case-insensitive worker match: %+v", page)
+		}
 	}
 	for _, test := range []struct {
 		query store.TaskQuery
@@ -716,11 +711,12 @@ func testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 func testTaskWorkerInventoryPreservesJSONDecodeFailure(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	target := writerTask(t, database, project.ID, 2, model.TaskTodo)
-	testutil.PutTaskProperty(t, database.Pool, target.ID, "worker", []byte(`{"workerId":123}`))
+	owner, workerID := testutil.QueryID(3), testutil.QueryID(4)
+	testutil.PutTaskProperty(t, database.Pool, target.ID, "worker", []byte(fmt.Sprintf(`{"state":"active","userId":%q,"workerId":%q,"phase":123}`, owner, workerID)))
 	var page store.TaskPage
 	err := writerRead(t, database, func(scope store.TaskReader) error {
 		var err error
-		page, err = scope.Tasks(context.Background(), project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: testutil.QueryID(3), WorkerID: testutil.QueryID(4)}})
+		page, err = scope.Tasks(context.Background(), project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: owner, WorkerID: workerID}})
 		return err
 	})
 	var failure *store.Error

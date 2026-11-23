@@ -27,7 +27,7 @@ owns storage, admission, telemetry, bounded operations and compatibility details
 The initial runtime delivery kept Herdr automatic until its distinct shell and
 instance ownership could consume these recipes; unsupported explicit targets
 failed visibly. The [Herdr launch decision](2026-11-12-herdr-frozen-tool-launch.md)
-extends admission to controlled mappings and frozen instance recovery.
+extended admission to controlled mappings and frozen instance recovery. The later [Web-only runtime decision](2026-11-17-worker-web-runtime-composition.md) removes that Herdr admission from the Worker composition.
 
 Copilot authority has an explicit versioned runtime profile. The original source,
 Worker Node and preload closure determine a private materialization key. A complete

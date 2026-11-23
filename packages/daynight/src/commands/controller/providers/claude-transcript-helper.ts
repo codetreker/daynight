@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureProcessProof, type ProcessProof } from "../process-proof.js";
-import { openClaudeTranscript, ClaudeTranscriptError, type ClaudeTranscriptIndexReservation, type ClaudeTranscriptOptions, type ClaudeTranscriptPage, type ClaudeTranscriptReader, type ClaudeTranscriptSnapshot } from "./claude-transcript.js";
+import { openClaudeTranscript, ClaudeTranscriptError, type ClaudeTranscriptIndexLease, type ClaudeTranscriptOptions, type ClaudeTranscriptPage, type ClaudeTranscriptReader, type ClaudeTranscriptSnapshot } from "./claude-transcript.js";
 
 const MAX_FRAME = 1_048_576;
 type Wire = Record<string, unknown>;
@@ -14,27 +14,28 @@ const bounded = <T>(promise: Promise<T>, ms: number, message: string): Promise<T
   const timer = setTimeout(() => reject(new ClaudeTranscriptError("closed", message)), ms);
   promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
-export type ClaudeTranscriptHelperOptions = Omit<ClaudeTranscriptOptions, "reserveIndex"> & {
-  /** Hold the Controller's shared metadata allowance until release or confirmed helper exit. */
-  readonly acquireIndexReservation: (additionalBytes: number, owner?: ProcessProof) => ClaudeTranscriptIndexReservation | Promise<ClaudeTranscriptIndexReservation>;
+export type ClaudeTranscriptHelperOptions = Omit<ClaudeTranscriptOptions, "acquireIndexLease"> & {
+  /** Hold the writer lease until release or confirmed helper exit. */
+  readonly acquireIndexLease: (owner?: ProcessProof) => ClaudeTranscriptIndexLease | Promise<ClaudeTranscriptIndexLease>;
   readonly onSpawn: (child: ChildProcess) => void;
+  readonly assertNativeDispatch?: () => void;
 };
 
-/** Owns one read-only helper and joins its readers before releasing outstanding metadata reservations. */
+/** Owns one read-only helper and joins its readers before releasing outstanding writer leases. */
 export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelperOptions): Promise<ClaudeTranscriptReader> => {
   options.signal?.throwIfAborted();
   await mkdir(options.indexDirectory, { recursive: true, mode: 0o700 });
   const ownedDirectory = await mkdtemp(path.join(options.indexDirectory, "claude-reader-"));
   let child: ChildProcess;
-  try { child = fork(fileURLToPath(import.meta.url), ["--daynight-claude-transcript-helper"], { execArgv: ["--max-old-space-size=128"], stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", windowsHide: true }); }
+  try { options.signal?.throwIfAborted(); options.assertNativeDispatch?.(); child = fork(fileURLToPath(import.meta.url), ["--daynight-claude-transcript-helper"], { execArgv: ["--max-old-space-size=128"], stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", windowsHide: true }); }
   catch (error) { await rm(ownedDirectory, { recursive: true, force: true }); throw error; }
   let sequence = 0, closed = false, closing: Promise<void> | null = null, active: string | null = null;
   let scheduledRequests = 0, requestTail: Promise<void> = Promise.resolve();
   let snapshot: ClaudeTranscriptSnapshot;
   let processProof: ProcessProof;
-  const reservations = new Map<string, ClaudeTranscriptIndexReservation>();
-  const reservationWork = new Set<Promise<void>>();
-  const pendingReservations = new Set<string>();
+  const leases = new Map<string, ClaudeTranscriptIndexLease>();
+  const leaseWork = new Set<Promise<void>>();
+  const pendingLeases = new Set<string>();
   const consumerWork = new Set<Promise<void>>();
   type Request = { resolve(value: unknown): void; reject(error: Error): void; consume?: (bytes: Uint8Array) => void | Promise<void>; chunk: number; inFlight: Promise<void> | null; failure?: Error; timer: NodeJS.Timeout };
   const requests = new Map<string, Request>();
@@ -56,29 +57,29 @@ export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelper
   child.on("message", raw => {
     const message = record(raw);
     try { checked(message); } catch { child.kill("SIGTERM"); return; }
-    if (message.kind === "reserve" && typeof message.id === "string" && typeof message.reservationId === "string" && Number.isSafeInteger(message.bytes) && Number(message.bytes) > 0) {
-      const id = message.reservationId;
+    if (message.kind === "acquire" && typeof message.id === "string" && typeof message.leaseId === "string") {
+      const id = message.leaseId;
       const request = requests.get(message.id);
-      if (!request || reservations.size > 0 || pendingReservations.size > 0) { child.kill("SIGTERM"); return; }
-      request.timer.refresh(); pendingReservations.add(id);
+      if (!request || leases.size > 0 || pendingLeases.size > 0) { child.kill("SIGTERM"); return; }
+      request.timer.refresh(); pendingLeases.add(id);
       const work = (async () => {
         try {
-          const permission = await options.acquireIndexReservation(Number(message.bytes), processProof);
-          if (!permission || typeof permission.release !== "function") throw new Error("Missing metadata reservation lease.");
-          reservations.set(id, permission);
-          if (exited) { await permission.release(); reservations.delete(id); return; }
-          send({ kind: "reserve-result", reservationId: id, ok: true });
-        } catch { if (child.connected) send({ kind: "reserve-result", reservationId: id, ok: false }); }
-        finally { pendingReservations.delete(id); request.timer.refresh(); }
+          const permission = await options.acquireIndexLease(processProof);
+          if (!permission || typeof permission.release !== "function") throw new Error("Missing index writer lease.");
+          leases.set(id, permission);
+          if (exited) { await permission.release(); leases.delete(id); return; }
+          send({ kind: "acquire-result", leaseId: id, ok: true });
+        } catch (cause) { request.failure = new ClaudeTranscriptError("closed", "Claude transcript index writer lease could not be acquired.", { cause }); if (child.connected) send({ kind: "acquire-result", leaseId: id, ok: false }); }
+        finally { pendingLeases.delete(id); request.timer.refresh(); }
       })();
-      reservationWork.add(work); void work.finally(() => reservationWork.delete(work)).catch(() => {}); return;
+      leaseWork.add(work); void work.finally(() => leaseWork.delete(work)).catch(() => {}); return;
     }
-    if (message.kind === "release" && typeof message.reservationId === "string") {
-      const id = message.reservationId, permission = reservations.get(id);
+    if (message.kind === "release" && typeof message.leaseId === "string") {
+      const id = message.leaseId, permission = leases.get(id);
       if (!permission) { child.kill("SIGTERM"); return; }
       if (active) requests.get(active)?.timer.refresh();
-      const work = (async () => { try { await permission.release(); reservations.delete(id); send({ kind: "release-result", reservationId: id, ok: true }); } catch { if (child.connected) send({ kind: "release-result", reservationId: id, ok: false }); } })();
-      reservationWork.add(work); void work.finally(() => reservationWork.delete(work)).catch(() => {}); return;
+      const work = (async () => { try { await permission.release(); leases.delete(id); send({ kind: "release-result", leaseId: id, ok: true }); } catch (cause) { const request = active && requests.get(active); if (request) request.failure = new ClaudeTranscriptError("closed", "Claude transcript index writer lease could not be released.", { cause }); if (child.connected) send({ kind: "release-result", leaseId: id, ok: false }); } })();
+      leaseWork.add(work); void work.finally(() => leaseWork.delete(work)).catch(() => {}); return;
     }
     if (typeof message.id !== "string") { child.kill("SIGTERM"); return; }
     const waiter = requests.get(message.id); if (!waiter) return;
@@ -134,12 +135,13 @@ export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelper
       try { await bounded(exit, 2000, "Claude transcript helper did not terminate."); }
       catch { child.kill("SIGKILL"); await bounded(exit, 2000, "Claude transcript helper termination remains unconfirmed."); }
     }
-    await Promise.all([...reservationWork]);
+    await Promise.all([...leaseWork]);
     await Promise.all([...consumerWork]);
     await requestTail;
-    for (const [id, permission] of reservations) { await permission.release(); reservations.delete(id); }
+    for (const [id, permission] of leases) { await permission.release(); leases.delete(id); }
     await rm(ownedDirectory, { recursive: true, force: true });
     options.signal?.removeEventListener("abort", shutdown);
+    if (child.exitCode !== 0) throw new ClaudeTranscriptError("closed", "Claude transcript helper did not confirm successful shutdown.");
   })();
   const shutdown = () => { void stop().catch(() => {}); };
   options.signal?.addEventListener("abort", shutdown, { once: true });
@@ -148,9 +150,12 @@ export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelper
     await new Promise<void>((resolve, reject) => { child.once("spawn", () => { try { options.onSpawn(child); resolve(); } catch (error) { reject(error); } }); child.once("error", reject); });
     if (!child.pid) throw new ClaudeTranscriptError("closed", "Claude transcript helper process identity is unavailable.");
     processProof = await captureProcessProof(child.pid);
-    const { acquireIndexReservation: _reserve, onSpawn: _spawn, signal: _signal, ...input } = options; void _reserve; void _spawn; void _signal;
+    const { acquireIndexLease: _acquire, onSpawn: _spawn, signal: _signal, assertNativeDispatch: _admission, ...input } = options; void _acquire; void _spawn; void _signal; void _admission;
     snapshot = await request<ClaudeTranscriptSnapshot>("open", { ...input, indexDirectory: ownedDirectory });
-  } catch (error) { await stop(); throw error; }
+  } catch (error) {
+    try { await stop(); } catch (close) { throw new AggregateError([error, close], "Claude transcript helper failed and shutdown was not confirmed."); }
+    throw error;
+  }
   return {
     get snapshot() { return { ...snapshot }; },
     nextPage: options => request<ClaudeTranscriptPage>("page", options ?? {}),
@@ -176,10 +181,10 @@ async function runHelper(): Promise<void> {
   process.on("message", raw => {
     const message = record(raw);
     try { checked(message); } catch { void stop(); return; }
-    if (["reserve-result", "release-result", "chunk-result"].includes(String(message.kind))) {
-      const key = message.kind === "chunk-result" ? `chunk:${String(message.id)}:${String(message.index)}` : `${message.kind === "reserve-result" ? "reserve" : "release"}:${String(message.reservationId)}`;
+    if (["acquire-result", "release-result", "chunk-result"].includes(String(message.kind))) {
+      const key = message.kind === "chunk-result" ? `chunk:${String(message.id)}:${String(message.index)}` : `${message.kind === "acquire-result" ? "acquire" : "release"}:${String(message.leaseId)}`;
       const waiter = waiters.get(key); if (!waiter) return; waiters.delete(key);
-      if (message.ok === true) waiter.resolve(); else waiter.reject(new ClaudeTranscriptError("limit_exceeded", "Claude transcript parent declined the indexed write or media chunk.")); return;
+      if (message.ok === true) waiter.resolve(); else waiter.reject(new ClaudeTranscriptError("closed", "Claude transcript parent declined the indexed write or media chunk.")); return;
     }
     if (message.kind === "cancel" && active?.id === message.id) { cancel(); return; }
     if (message.kind === "stop") { void stop(); return; }
@@ -189,10 +194,10 @@ async function runHelper(): Promise<void> {
       try {
         const value = record(message.value); let result: unknown;
         if (message.method === "open" && !reader) {
-          reader = await openClaudeTranscript({ ...value as unknown as ClaudeTranscriptOptions, signal: lifetime.signal, reserveIndex: async bytes => {
-            const reservationId = String(++sequence);
-            await wait(`reserve:${reservationId}`, { kind: "reserve", id: active!.id, reservationId, bytes });
-            return { release: async () => { await wait(`release:${reservationId}`, { kind: "release", reservationId }); } };
+          reader = await openClaudeTranscript({ ...value as unknown as ClaudeTranscriptOptions, signal: lifetime.signal, acquireIndexLease: async () => {
+            const leaseId = String(++sequence);
+            await wait(`acquire:${leaseId}`, { kind: "acquire", id: active!.id, leaseId });
+            return { release: async () => { await wait(`release:${leaseId}`, { kind: "release", leaseId }); } };
           } }); result = reader.snapshot;
         } else if (!reader) throw new Error("Claude transcript is not open.");
         else if (message.method === "page") result = await reader.nextPage(value);

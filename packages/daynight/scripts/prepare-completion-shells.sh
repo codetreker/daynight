@@ -49,7 +49,7 @@ else
   if [[ ! -x "$DAYNIGHT_TEST_ZSH" ]]; then
     (
       cd "$downloads"
-      timeout 120 apt-get download zsh zsh-common
+      timeout 240 apt-get download zsh zsh-common
       for package in zsh_*.deb zsh-common_*.deb; do
         dpkg-deb --extract "$package" "$DAYNIGHT_TEST_ZSH_ROOT"
       done

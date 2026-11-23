@@ -19,6 +19,7 @@ import (
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -27,13 +28,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
-	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
+func testTeamHTTPSessionPATAndIdentityPermissions(t *testing.T, fixture teamIntegrationFixture) {
+	h := fixture.forCase(t)
 	admin, member, outsider := h.Login(t, "team-admin"), h.Login(t, "team-member"), h.Login(t, "team-outsider")
 	cookies := []*http.Cookie{admin}
 	user := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 200)
@@ -68,8 +64,8 @@ func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
 	if !reflect.DeepEqual(got, team) {
 		t.Fatal("identity mismatch changed Team")
 	}
-	token := decodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"Team API","expiresAt":null}`, cookies, nil, h.Origin), 201)
-	pat := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Token}, "https://foreign.test"), 201)
+	token := h.MintBrowserPAT(t, cookies[0], identitycore.CreatePAT{Name: "Team API"})
+	pat := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Secret}, "https://foreign.test"), 201)
 	if pat.Membership.UserID != user.ID {
 		t.Fatal("PAT principal changed")
 	}
@@ -124,8 +120,8 @@ func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
 	}
 }
 
-func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
-	h := teamTestHandler(t)
+func testTeamHTTPStrictInputAndPagination(t *testing.T, fixture teamIntegrationFixture) {
+	h := teamTestHandler(t, fixture)
 	db := h.database
 	actor := h.principal.UserID
 	suffix := `,"expectedUserId":"` + actor + `"}`
@@ -183,8 +179,8 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	}
 }
 
-func TestTeamHTTPPageCountAndCursor(t *testing.T) {
-	h := teamTestHandler(t)
+func testTeamHTTPPageCountAndCursor(t *testing.T, fixture teamIntegrationFixture) {
+	h := teamTestHandler(t, fixture)
 	actor := h.principal.UserID
 	var teams []api.Team
 	for _, suffix := range []string{"one", "two"} {

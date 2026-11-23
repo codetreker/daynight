@@ -21,8 +21,8 @@ type IdentityScope interface {
 
 type IdentityDAO interface {
 	CleanupCredentials(context.Context, time.Time) error
-	// Login admission uses its post-lock database time for login expiry and the
-	// application clock for session and PAT expiry.
+	// Login admission uses its post-lock database time for login and browser
+	// session expiry; PAT expiry retains the supplied application clock.
 	CleanupLoginCredentials(context.Context, time.Time, time.Time) error
 	// AdmitLogin serializes capacity checks until the surrounding transaction
 	// ends. The returned time is sampled after the lock is acquired. A nonempty
@@ -61,6 +61,15 @@ type IdentityDAO interface {
 	ConsumeDevice(context.Context, string) error
 }
 
+// PATManagementDAO is the transaction-bound capability for account metadata.
+// An IdentityDAO provided by the production identity scope also implements it.
+type PATManagementDAO interface {
+	FreshPATTime(context.Context, time.Time) (time.Time, error)
+	ListAllPATs(context.Context, string) ([]model.PersonalAccessToken, error)
+	ComparePATDescription(context.Context, string, string, *string, *string) (bool, error)
+	PATExists(context.Context, string, string) (bool, error)
+}
+
 type PersonalTeamDAO interface {
 	InsertPersonalTeam(context.Context, string, string, time.Time) (bool, error)
 	InsertPersonalOwner(context.Context, string, string, time.Time) error
@@ -93,5 +102,9 @@ type PreviewSSODAO interface {
 	SetPreviewAuthorization(context.Context, string, model.Principal, []byte, time.Time) error
 	RedeemPreviewSSO(context.Context, []byte, []byte, []byte, time.Time) (model.PreviewSSOLogin, model.Session, error)
 	CompletePreviewSSO(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
+	// TakePreviewSSORetry consumes an unexpired login. An unbound login requires
+	// both its ID and matching state; a bound login requires its original live
+	// main session and a matching state when one is supplied.
+	TakePreviewSSORetry(context.Context, string, []byte, model.Principal, time.Time) (model.PreviewSSOLogin, error)
 	AuthenticatePreview(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
 }

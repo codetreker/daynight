@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { ApiError } from "../../../src/api/client.js";
 import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
 import type { BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import type { SessionSnapshot } from "../../../src/session/protocol.js";
@@ -242,6 +243,16 @@ describe("Bot deletion receipts", () => {
   const receipt = () => ({ deletionId: id(40), stop: { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(7), controllerInstanceId: id(8), stopProof: { recordId: id(41), previousControllerInstanceId: id(8), stoppedAt: "2026-01-01T00:00:00Z" } }, result: { state: "completed" as const, code: null } });
   const deleting = (value: BotRecord): BotRecord => ({ ...value, observed: deleted() });
 
+  it("reports cleanup through the current host while preserving the original creation Worker DTO", async () => {
+    const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result } };
+    const fixture = await listen((request, response) => {
+      expect(request.url).toBe(`/api/v1/me/workers/${id(99)}/bots/${id(3)}/deletion-complete`);
+      response.end(JSON.stringify(expected));
+    });
+    const api = createBotSessionApi({ owner: { ...fixture.record.owner, workerId: id(99) }, serverToken: "fixture-token", recovery: {} as never });
+    expect(await api.completeDeletion(deleting(fixture.record), receipt(), signal())).toEqual(expected);
+  });
+
   it.each(["pending", "failed", "completed"])("confirms only the worker stage when server cleanup is %s", async state => {
     const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result, serverCleanup: { state, code: state === "failed" ? "server_cleanup_failed" : null } } };
     const requests: { method: string; url: string; body: unknown }[] = [];
@@ -303,7 +314,8 @@ describe("Bot deletion receipts", () => {
     if (mismatch === "claim") completion.stop.claimId = id(90);
     if (mismatch === "failed code") completion.result = { state: "failed", code: " " };
     if (mismatch === "completed code") completion.result.code = "cleanup_failed";
-    await expect(fixture.api.completeDeletion(value, completion, signal())).rejects.toThrow();
+    const failure = await fixture.api.completeDeletion(value, completion, signal()).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(ApiError);
     expect(requests).toBe(0);
   });
 
@@ -320,7 +332,7 @@ describe("Bot deletion receipts", () => {
       if (mismatch === "principal") response.setHeader("Daynight-User-ID", id(90));
       response.end(JSON.stringify(mismatch === "active" ? definition() : responseBot));
     });
-    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).rejects.toThrow();
+    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).rejects.toMatchObject({ outcomeUnconfirmed: true, phase: "protocol", status: 200 });
   });
 
   it("preserves a never-started proof for the registered original execution", async () => {
@@ -336,7 +348,8 @@ describe("Bot deletion receipts", () => {
   it("rejects canceled deletion before sending its receipt", async () => {
     let requests = 0;
     const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify(deleted())); });
-    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), AbortSignal.abort())).rejects.toThrow();
+    const failure = await fixture.api.completeDeletion(deleting(fixture.record), receipt(), AbortSignal.abort()).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(ApiError);
     expect(requests).toBe(0);
   });
 
@@ -350,10 +363,33 @@ describe("Bot deletion receipts", () => {
     expect(requests).toBe(0);
   });
 
-  it("keeps a lost deletion response unknown without automatic replay", async () => {
-    let requests = 0;
-    const fixture = await listen(request => { requests++; request.socket.destroy(); });
-    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).rejects.toThrow();
-    expect(requests).toBe(1);
+  it.each(["disconnect", "cancelled", "truncated", "invalid-json"])("keeps a %s deletion response unknown without changing or replaying its receipt", async failure => {
+    const bodies: unknown[] = [];
+    const cancellation = new AbortController();
+    const fixture = await listen((request, response, body) => {
+      bodies.push(body);
+      if (failure === "disconnect") { request.socket.destroy(); return; }
+      if (failure === "cancelled") { cancellation.abort(new Error("Cancelled after receipt submission")); response.destroy(); return; }
+      if (failure === "truncated") { response.setHeader("Content-Length", "4096"); response.setHeader("Connection", "close"); }
+      response.end('{"id":');
+    });
+    const value = deleting(fixture.record), completion = receipt(), before = structuredClone({ value, completion });
+    const error = await fixture.api.completeDeletion(value, completion, cancellation.signal).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ outcomeUnconfirmed: true, phase: failure === "disconnect" || failure === "cancelled" ? "request" : failure === "truncated" ? "response" : "protocol" });
+    expect(bodies).toEqual([completion]); expect({ value, completion }).toEqual(before);
+  });
+
+  it.each([[401, "unauthenticated"], [403, "forbidden"], [409, "session_conflict"], [500, "internal_error"]] as const)("retains HTTP %s without treating an error response as proof the receipt was not applied", async (status, code) => {
+    const bodies: unknown[] = [];
+    const fixture = await listen((_request, response, body) => {
+      bodies.push(body); response.statusCode = status;
+      response.end(JSON.stringify({ error: { code, message: "Completion unavailable", requestId: "completion-response" } }));
+    });
+    const value = deleting(fixture.record), completion = receipt(), before = structuredClone({ value, completion });
+    const failure = await fixture.api.completeDeletion(value, completion, signal()).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status, phase: "response", code, outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(bodies).toEqual([completion]); expect({ value, completion }).toEqual(before);
   });
 });

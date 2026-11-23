@@ -1,20 +1,24 @@
+import type { ReviewerPage } from "./reviewer.js";
+import type { WorkerPromptKey, WorkerPromptResource } from "./worker-configuration.js";
+import { parseGoalDependencies, parseGoalDependencyReceipt, validGoalRevision } from "./goal-dependencies.js";
+import type { GoalDependencies, GoalDependencyEdit, GoalDependencyReceipt } from "./goal-dependencies.js";
 import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
 import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
-import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
+import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseReceivedWorkerConfigurationReportReceipt, parseReceivedWorkerConfigurationResource } from "./worker-configuration.js";
 import { parseObservedTask, parseObservedTaskGraph, parseTaskSessionObservation, taskObservationPartial, unsupportedSessionObservation } from "./task-observation.js";
 import type { ObservedTask, ObservedTaskGraph, TaskObservationList } from "./task-observation.js";
 import { createTaskSessionClient } from "./task-session.js";
 import type { TaskSessionClient } from "./task-session.js";
 import { parseTaskWorkPage } from "./task-work.js";
 import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
-import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
+import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp, fields as receiptFields, id as receiptId, resourceVersion as receiptVersion } from "./validation.js";
+import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
 import { WORKER_CONFIGURATION_REPORT_BYTES, workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
-import { parseMonitoringRead, parseMonitoringReceipt } from "./worker-monitoring.js";
-import type { MonitoringRead, MonitoringReceipt } from "./worker-monitoring.js";
-import type { Observation } from "../commands/worker/monitoring/types.js";
+import { parseMonitoringReceipt } from "./worker-monitoring.js";
+import type { DirectReceipt } from "./worker-monitoring.js";
+import type { DirectObservation } from "../commands/worker/monitoring/types.js";
 import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
@@ -25,10 +29,10 @@ import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { botIdentity, botIdentityHeaders } from "./bot-identity.js";
 import { isTaskCreationStatus, isTaskStatus } from "../task/status.js";
-import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
-import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
@@ -36,10 +40,12 @@ import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import { parseProjectRepositoryPreview, parseProjectRepositoryReceipt, parseProjectRepositoryError } from "./project-repository.js";
+import type { ProjectRepositoryPreview, ProjectRepositoryReceipt } from "./types.js";
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
-import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly promptSelectors?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly workerPlatformTaskMode?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
 export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
@@ -48,7 +54,7 @@ export class ApiError extends Error {
   readonly phase: ApiPhase;
   readonly projectId?: string;
   readonly taskId?: string;
-  readonly stepId?: string;
+
   readonly serverMessage?: string;
   readonly status?: number;
   readonly code?: string;
@@ -58,6 +64,7 @@ export class ApiError extends Error {
   readonly details?: ErrorDetails;
   readonly outcomeUnconfirmed: boolean;
   readonly confirmedRefusal: boolean;
+  readonly scopeStatus?: "insufficient_scope";
   readonly confirmedMutationId?: string;
 
   constructor(context: Context, phase: ApiPhase, options: {
@@ -66,10 +73,11 @@ export class ApiError extends Error {
     readonly serverError?: ServerError;
     readonly outcomeUnconfirmed?: boolean;
     readonly confirmedRefusal?: boolean;
+    readonly scopeStatus?: "insufficient_scope";
     readonly confirmedMutationId?: string;
     readonly responseRequestId?: string;
   }) {
-    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`, context.stepId === undefined ? "" : ` step=${context.stepId}`].join("");
+    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`].join("");
     const server = options.serverError;
     const reason = server === undefined
       ? options.cause instanceof OperationError ? options.cause.message : phase === "protocol" || phase === "pagination" ? "Invalid server response." : "Local HTTP request failed."
@@ -82,7 +90,6 @@ export class ApiError extends Error {
     this.phase = phase;
     if (context.projectId !== undefined) this.projectId = context.projectId;
     if (context.taskId !== undefined) this.taskId = context.taskId;
-    if (context.stepId !== undefined) this.stepId = context.stepId;
     if (context.sentRequestId !== undefined) this.sentRequestId = context.sentRequestId;
     if (options.responseRequestId !== undefined) this.responseRequestId = options.responseRequestId;
     if (options.status !== undefined) this.status = options.status;
@@ -90,6 +97,7 @@ export class ApiError extends Error {
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
+    if (options.scopeStatus !== undefined) this.scopeStatus = options.scopeStatus;
     if (options.confirmedMutationId !== undefined) this.confirmedMutationId = options.confirmedMutationId;
   }
 }
@@ -151,6 +159,8 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 export type ApiClient = TaskSessionClient & {
   withExpectedUserId(userId: string): ApiClient;
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
+  showGoalDependencies(projectId: string, goalId: string, query?: { readonly limit?: number; readonly cursor?: string }): Promise<GoalDependencies>;
+  editGoalDependencies(projectId: string, goalId: string, input: GoalDependencyEdit): Promise<GoalDependencyReceipt>;
   listTags(projectId: string, query?: TagListQuery): Promise<TagPage>;
   getTag(projectId: string, tagId: string): Promise<Tag>;
   createTag(projectId: string, name: string, color?: string): Promise<Tag>;
@@ -163,13 +173,6 @@ export type ApiClient = TaskSessionClient & {
   deleteBot(botId: string, input: DeleteBotInput): Promise<Bot>;
   listWorkers(): Promise<WorkerList>;
   getWorker(workerId: string): Promise<WorkerDetailResponse>;
-  listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
-  addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
-  deleteTaskStep(projectId: string, taskId: string, stepId: string, input: DeleteTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  updateTaskStep(projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  setTaskStepStatus(projectId: string, taskId: string, stepId: string, input: SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  moveTaskStep(projectId: string, taskId: string, stepId: string, input: MoveTaskStepInput, options: MoveTaskStepOptions): Promise<StepsResource>;
-  getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(requirePrincipal?: boolean): Promise<User>;
@@ -190,13 +193,16 @@ export type ApiClient = TaskSessionClient & {
   revokeTeamInvitation(userId: string, teamId: string, invitationId: string, requestId: string): Promise<TeamInvitationRevokeReceipt>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
+  previewProjectRepository(userId: string, projectId: string, repoUrl: string): Promise<ProjectRepositoryPreview>;
+  setProjectRepository(userId: string, projectId: string, preview: ProjectRepositoryPreview, treatUnverifiedAsSwitch: boolean, requestId: string): Promise<ProjectRepositoryReceipt>;
   previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
-  readWorkerMonitoring(workerId: string, requestId: string): Promise<MonitoringRead>;
-  writeWorkerMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, requestId: string): Promise<MonitoringReceipt>;
-  getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
-  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  writeWorkerMonitoring(workerId: string, observation: DirectObservation, requestId: string): Promise<DirectReceipt>;
+  listReviewerPage(workerId: string, cursor?: string): Promise<ReviewerPage>;
+  getReviewerPrompt(key: WorkerPromptKey, userId: string, workerId: string): Promise<WorkerPromptResource>;
+  getWorkerConfiguration(workerId: string): Promise<ReceivedWorkerConfigurationResource>;
+  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
   getProject(projectId: string, userId?: string): Promise<Project>;
   getProjectAccess(projectId: string): Promise<ProjectAccess>;
@@ -217,6 +223,7 @@ export type ApiClient = TaskSessionClient & {
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput, options?: { readonly tagOnlyPreviousIds: readonly string[] }): Promise<Task>;
+  updateTaskReceipt(projectId: string, taskId: string, input: UpdateTaskInput): Promise<{ readonly projectId: string; readonly taskId: string; readonly version: bigint }>;
   deleteTask(projectId: string, taskId: string, input: DeleteTaskInput): Promise<void>;
   setTaskStatus(projectId: string, taskId: string, input: SetTaskStatusInput): Promise<Task>;
   claimWorkerTask(projectId: string, taskId: string, input: ClaimWorkerTaskInput): Promise<Task>;
@@ -258,6 +265,11 @@ const safeInvitationCause = (input: unknown, seen = new WeakSet<object>(), depth
   return result;
 };
 
+// Webhook events record the Bot that performed a Task or Thread write so
+// an assistant's inbox can suppress its own changes. Only these writes carry
+// the Bot identity; reads and other resources never send it.
+const botWriteOperations = new Set(["task.create", "task.update", "task.delete", "task.set-status", "worker.complete", "task.set-property", "task.remove-property", "task.thread.post"]);
+
 const attachmentPrefix = (projectId: string, taskId: string): string => `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/attachments`;
 const encodeAttachmentPath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
 
@@ -269,24 +281,48 @@ export const createApiClient = (options: {
   readonly fetch?: typeof globalThis.fetch;
   readonly workerControlMode?: { supported: boolean };
   readonly workerToolPaths?: WorkerToolPathsCapability;
+  readonly workerArchiveSessions?: WorkerToolPathsCapability;
+  readonly workerPlatformTaskMode?: WorkerToolPathsCapability;
   readonly onToolPathsBudget?: (result: NonNullable<ToolPathsReportBudget>) => void | Promise<void>;
+  readonly botId?: string;
 }): ApiClient => {
   const origin = new URL(options.serverUrl);
   if (!/^https?:$/.test(origin.protocol) || origin.username !== "" || origin.password !== "" || origin.pathname !== "/" || origin.search !== "" || origin.hash !== "") throw new Error("serverUrl must be an HTTP(S) service origin without credentials, path, query or fragment.");
   const serverToken = options.serverToken === undefined ? undefined : validateServerToken(options.serverToken);
   const expectedUserId = options.expectedUserId === undefined ? undefined : resourceId(options.expectedUserId);
+  const botId = options.botId === undefined ? undefined : botIdentity(options.botId);
   if (serverToken !== undefined) validateTokenTransport(origin.origin);
   const operation = options.operation;
   const workerControlMode = options.workerControlMode ?? { supported: false };
   const workerToolPaths = options.workerToolPaths ?? { supported: false };
+  const workerArchiveSessions = options.workerArchiveSessions ?? { supported: false };
+  const workerPlatformTaskMode = options.workerPlatformTaskMode ?? { supported: false };
+  if (workerPlatformTaskMode.serverOrigin !== origin.origin || expectedUserId !== undefined && workerPlatformTaskMode.userId !== expectedUserId) workerPlatformTaskMode.supported = false;
+  let platformModePrincipal = expectedUserId;
+  const platformModeSupported = () => workerPlatformTaskMode.supported && workerPlatformTaskMode.serverOrigin === origin.origin && platformModePrincipal !== undefined && workerPlatformTaskMode.userId === platformModePrincipal;
+  const confirmPlatformMode = (header: string | null, principal: string | undefined) => {
+    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker platform task mode capability.");
+    if (principal === undefined) { workerPlatformTaskMode.supported = false; return; }
+    platformModePrincipal = principal;
+    Object.assign(workerPlatformTaskMode, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
+  };
+  if (workerArchiveSessions.serverOrigin !== origin.origin || expectedUserId !== undefined && workerArchiveSessions.userId !== expectedUserId) workerArchiveSessions.supported = false;
+  let archivePrincipal = expectedUserId;
+  const archiveSupported = () => workerArchiveSessions.supported && workerArchiveSessions.serverOrigin === origin.origin && archivePrincipal !== undefined && workerArchiveSessions.userId === archivePrincipal;
+  const confirmArchive = (header: string | null, principal: string | undefined) => {
+    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker archive sessions capability.");
+    if (principal === undefined) { workerArchiveSessions.supported = false; return; }
+    archivePrincipal = principal;
+    Object.assign(workerArchiveSessions, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
+  };
   let toolPathsPrincipal = expectedUserId;
   if (workerToolPaths.serverOrigin !== origin.origin || expectedUserId !== undefined && workerToolPaths.userId !== expectedUserId) workerToolPaths.supported = false;
   const toolPathsSupported = () => workerToolPaths.supported && workerToolPaths.serverOrigin === origin.origin && toolPathsPrincipal !== undefined && workerToolPaths.userId === toolPathsPrincipal;
   const confirmToolPaths = (header: string | null, principal: string | undefined) => {
-    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
+    if (header !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server.");
     if (principal === undefined) { workerToolPaths.supported = false; return; }
     toolPathsPrincipal = principal;
-    Object.assign(workerToolPaths, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
+    Object.assign(workerToolPaths, { supported: header === "2", serverOrigin: origin.origin, userId: principal });
   };
   const projectToolReport = (input: WorkerReport, supported: boolean): WorkerReport => {
     if (supported) return input;
@@ -311,15 +347,10 @@ export const createApiClient = (options: {
     };
   };
   const fetch = options.fetch ?? globalThis.fetch;
-  let stepsPrincipal = expectedUserId;
-  const bindStepsPrincipal = (principal: string): void => {
-    if (stepsPrincipal !== undefined && stepsPrincipal !== principal) throw new ProtocolError("The authenticated Steps response principal changed during the operation.");
-    stepsPrincipal = principal;
-  };
   const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
 
-  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly platformTaskModeHeader: string | null; readonly historyDirectoryHeader: string | null; readonly taskReturnHeader: string | null; readonly taskProjectionHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
     | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
@@ -421,7 +452,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerControlMode === true ? { "Daynight-Worker-Control-Mode": "1" } : {}), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.operation.startsWith("task.") || ["worker.claim", "worker.update", "worker.complete", "worker.release", "worker.withdraw"].includes(context.operation) ? { "Daynight-Task-Relations": "task-parent-v1" } : {}), ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), ...(context.workerPlatformTaskMode === true ? { "Daynight-Worker-Platform-Task-Mode": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -500,7 +531,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), platformTaskModeHeader: response.headers.get("Daynight-Worker-Platform-Task-Mode"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), taskReturnHeader: response.headers.get("Daynight-Return"), taskProjectionHeader: response.headers.get("Daynight-Projection"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       if (invitationIdentityMismatch) jsonObjectSources(source);
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
@@ -508,15 +539,18 @@ export const createApiClient = (options: {
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = mode.kind === "json" && mode.parseError !== undefined ? mode.parseError(value) : parseServerError(value);
+        if (context.workerToolPaths === true && status === 400 && serverError.code === "invalid_input" && serverError.message === "Unsupported Worker tool paths protocol.") serverError = { ...serverError, message: "The server does not support Worker tool paths version 2; upgrade the server." };
         if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
         if (secret !== undefined) {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
           serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
         }
         if (context.operation === "worker.configuration" && status === 404 && principalId !== undefined) confirmToolPaths(responseContext.toolPathsHeader, principalId);
+        if (context.workerArchiveSessions === true && status === 404 && principalId !== undefined) confirmArchive(responseContext.archiveSessionsHeader, principalId);
+        if (context.workerPlatformTaskMode === true && status === 404 && principalId !== undefined) confirmPlatformMode(responseContext.platformTaskModeHeader, principalId);
         if (context.workerControlMode === true && status === 404 && principalId !== undefined) workerControlMode.supported = responseContext.controlModeHeader === "1";
         const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
-        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
+        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(status === 403 && serverError.code === "forbidden" && response.headers.get("Daynight-Scope-Status") === "insufficient_scope" ? { scopeStatus: "insufficient_scope" as const } : {}), ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
       if (secret !== undefined) {
@@ -625,6 +659,8 @@ export const createApiClient = (options: {
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
     if (filters.type !== undefined && filters.type !== "task" && filters.type !== "goal") throw new Error("Task type must be task or goal.");
     const parentId = taskParentInput(filters.parentId);
+    const parentTaskId = filters.parentTaskId === undefined ? undefined : resourceId(filters.parentTaskId);
+    if (parentId !== undefined && parentTaskId !== undefined) throw new Error("parentId and parentTaskId are mutually exclusive.");
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
@@ -638,9 +674,17 @@ export const createApiClient = (options: {
       if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
       workerId = parsed;
     }
+    let candidateWorkerId: string | undefined;
+    if (filters.candidateWorkerId !== undefined) {
+      if (typeof filters.candidateWorkerId !== "string") throw new Error("Candidate worker ID filter must be a hyphenated UUID.");
+      const parsed = canonicalId(filters.candidateWorkerId);
+      if (parsed === null) throw new Error("Candidate worker ID filter must be a hyphenated UUID.");
+      if (filters.automaticCandidate !== true || workerId !== undefined) throw new Error("Candidate worker ID requires automaticCandidate and cannot be combined with workerId.");
+      candidateWorkerId = parsed;
+    }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
     const tags = normalizeTaskTagFilter(filters);
-    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -648,6 +692,7 @@ export const createApiClient = (options: {
     if (
       (task.type !== (filters.type ?? "task"))
       || (filters.parentId !== undefined && task.parentId !== taskParentInput(filters.parentId))
+      || (filters.parentTaskId !== undefined && task.parentTaskId !== resourceId(filters.parentTaskId))
       || (filters.automaticCandidate === true && task.type !== "task")
       || (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
       || (filters.status !== undefined && task.status !== filters.status)
@@ -680,10 +725,12 @@ export const createApiClient = (options: {
     (error.code === "unsupported" || error.code === "upgrade_required") && (error.status === 400 || error.status === 404 || error.status === 501)
     || error.code === "invalid_input" && error.status === 400 && /unknown.*(?:query|parameter)|(?:query|parameter).*unknown|include.*(?:unsupported|not supported)/i.test(error.serverMessage ?? "")
   );
-  const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
-  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.worktreeId === canonicalId(descriptor.worktreeId);
+  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === descriptor.agentControlMode && worker.worktreeId === canonicalId(descriptor.worktreeId);
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
+    if (action === "worker.claim" && (!("agentControlMode" in input) || input.agentControlMode !== "web")) throw new Error("New worker claims require Web control mode.");
+    if (action === "worker.claim" && "taskTagFilterKey" in input && input.taskTagFilterKey !== undefined && (typeof input.taskTagFilterKey !== "string" || !/^[0-9a-f]{64}$/.test(input.taskTagFilterKey))) throw new Error("taskTagFilterKey must be a lowercase SHA-256 digest.");
+    if ((action === "worker.claim" || action === "worker.update") && Object.hasOwn(input, "herdr")) throw new Error("herdr is no longer accepted in worker claim requests.");
     const project = resourceId(projectId), task = resourceId(taskId);
     taskVersion(input.version);
     return exchange({ operation: action, projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}${suffix}`, method, { kind: "json", parse: (value) => {
@@ -692,44 +739,6 @@ export const createApiClient = (options: {
       if ((result.version !== input.version + 1n && !(sameValue && result.version === input.version)) || !matches(result, worker)) throw new ProtocolError("Task does not match the requested worker operation.");
       return result;
     } }, [200], { kind: "json", value: input }, true);
-  };
-
-  const updateStep = async (action: "update" | "set-status", projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput | SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource> => {
-    const context: Context = { operation: `task.step.${action}`, sentRequestId: options.requestId };
-    try {
-      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-      const target = { ...context, projectId: project, taskId: task, stepId: step };
-      try {
-        taskVersion(input.version);
-        let normalized: UpdateTaskStepInput | SetTaskStepStatusInput;
-        if (action === "update") {
-          const fields = input as UpdateTaskStepInput;
-          if (fields.title === undefined && fields.description === undefined) throw new Error("Provide at least one Step title or description.");
-          if (fields.title !== undefined && !isNonemptyText(fields.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
-          if (fields.description !== undefined && !isText(fields.description)) throw new Error("Step description must be Unicode text without NUL.");
-          normalized = { version: fields.version, ...(fields.title === undefined ? {} : { title: fields.title }), ...(fields.description === undefined ? {} : { description: fields.description }) };
-        } else {
-          const fields = input as SetTaskStepStatusInput;
-          if (!["todo", "in_progress", "done", "skipped"].includes(fields.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
-          normalized = { version: fields.version, status: fields.status };
-        }
-        const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-        if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-        const pathname = resourcePath("projects", project, "tasks", task, "steps", step) + (action === "set-status" ? "/status" : "");
-        return await exchange(target, pathname, action === "update" ? "PATCH" : "PUT", {
-          kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-          parse: (value) => parseStepsResource(value, project, task),
-          confirmMutation: (result) => confirmUpdatedTaskStep(result, step, normalized, previous),
-        }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(target, "prepare", { cause });
-      }
-    } catch (cause) {
-      if (cause instanceof ApiError) throw cause;
-      throw new ApiError(context, "prepare", { cause });
-    }
   };
 
   const accountPrincipal = (): ((metadata: JsonResponseMetadata) => string) => {
@@ -745,7 +754,7 @@ export const createApiClient = (options: {
   return {
     withExpectedUserId: userId => createApiClient({ ...options, expectedUserId: userId }),
     ...createTaskSessionClient(
-      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
+      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse: (value, metadata) => { if (input.historyDirectoryVersion === 1 && metadata.historyDirectoryHeader !== "1") throw new ProtocolError("The server did not confirm Task history directory version 1."); return parse(value); }, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
       (input, body, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId, sentRequestId: body.requestId }, input.path, "POST", { kind: "json", parse: (value, metadata) => parse(value, metadata.locationHeader), requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }, [202], { kind: "json", value: body, maxBytes: 2 * 1_048_576 }, true),
     ),
     webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
@@ -763,10 +772,22 @@ export const createApiClient = (options: {
       } catch (error) {
         if (!(error instanceof ApiError)) throw new ApiError(context, "protocol", { cause: safeInvitationCause(error) });
         const code = error.code;
-        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "webhook_project_ineligible", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
+        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "webhook_project_ineligible", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "endpoint_exists", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
         const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
         throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
       }
+    },
+    showGoalDependencies: (projectId, goalId, query = {}) => {
+      const project = resourceId(projectId), goal = resourceId(goalId), limit = query.limit ?? 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Goal dependency limit must be from 1 to 50.");
+      if (query.cursor !== undefined && !isNonemptyText(query.cursor)) throw new Error("Cursor must be nonempty Unicode text without NUL.");
+      const params = new URLSearchParams({ limit: String(limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
+      return exchange({ operation: "goal-dependencies.show", projectId: project, taskId: goal }, `${resourcePath("projects", project, "tasks", goal, "goal-dependencies")}?${params}`, "GET", { kind: "json", parse: value => parseGoalDependencies(value, goal, limit) }, [200]);
+    },
+    editGoalDependencies: (projectId, goalId, input) => {
+      const project = resourceId(projectId), goal = resourceId(goalId);
+      if (!validGoalRevision(input.ifRevision)) throw new Error("Goal dependency revision must be a canonical positive int64 string.");
+      return exchange({ operation: "goal-dependencies.edit", projectId: project, taskId: goal }, resourcePath("projects", project, "tasks", goal, "goal-dependencies"), "PATCH", { kind: "json", parse: value => parseGoalDependencyReceipt(value, goal, input.ifRevision), confirmMutation: result => result.goalId }, [200], { kind: "json", value: input });
     },
     listTags: async (projectId, input = {}) => {
       const project = resourceId(projectId), context = { operation: "tag.list", projectId: project };
@@ -878,9 +899,8 @@ export const createApiClient = (options: {
     listWorkers: async () => {
       const principal = accountPrincipal();
       let observedAt: string | undefined;
-      const items = await list<WorkerSummary>({ operation: "worker.list", workerToolPaths: true }, "/me/workers", (value, metadata) => {
+      const items = await list<WorkerSummary>({ operation: "worker.list" }, "/me/workers", (value, metadata) => {
         principal(metadata);
-        if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
         const page = parseWorkerPage(value);
         observedAt = page.observedAt;
         return page;
@@ -889,120 +909,7 @@ export const createApiClient = (options: {
     },
     getWorker: (workerId) => {
       const target = resourceId(workerId), principal = accountPrincipal();
-      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability."); return parseWorkerDetail(value, target, metadata.toolPathsHeader === "1"); } }, [200]);
-    },
-    listTaskSteps: (projectId, taskId, options) => {
-      const project = resourceId(projectId), task = resourceId(taskId);
-      return exchange({ operation: "task.step.list", projectId: project, taskId: task, ...(options === undefined ? {} : { sentRequestId: options.requestId }) }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {
-        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-        parse: (value) => parseStepsResource(value, project, task),
-      }, [200], undefined, true);
-    },
-    getTaskStep: (projectId, taskId, stepId) => {
-      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-      return exchange({ operation: "task.step.show", projectId: project, taskId: task, stepId: step }, resourcePath("projects", project, "tasks", task, "steps", step), "GET", {
-        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-        parse: (value) => parseStepResource(value, project, task, step),
-      }, [200], undefined, true);
-    },
-    addTaskStep: async (projectId, taskId, input, options) => {
-      const context: Context = { operation: "task.step.add", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(input.id);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          if (!isNonemptyText(input.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
-          if (input.description !== undefined && !isText(input.description)) throw new Error("Step description must be Unicode text without NUL.");
-          if (input.status !== undefined && !["todo", "in_progress", "done", "skipped"].includes(input.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
-          if (input.before !== undefined && input.after !== undefined) throw new Error("before and after are mutually exclusive.");
-          const anchor = (value: string): string => { const id = canonicalStepId(value); if (id === null) throw new Error("Step anchor must contain exactly eight hexadecimal characters."); return id; };
-          const normalized: AddTaskStepInput = { version: input.version, id: step, title: input.title,
-            ...(input.description === undefined ? {} : { description: input.description }), ...(input.status === undefined ? {} : { status: input.status }),
-            ...(input.before === undefined ? {} : { before: anchor(input.before) }), ...(input.after === undefined ? {} : { after: anchor(input.after) }) };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          const pathname = resourcePath("projects", project, "tasks", task, "steps");
-          return await exchange(target, pathname, "POST", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value, response) => {
-              if (response.locationHeader !== `/api/v1${pathname}/${step}`) throw new ProtocolError("Step Location does not match the submitted identity.");
-              return parseStepsResource(value, project, task);
-            },
-            confirmMutation: (result) => confirmAddedTaskStep(result, normalized, previous),
-          }, [201], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
-    },
-    updateTaskStep: (projectId, taskId, stepId, input, options) => updateStep("update", projectId, taskId, stepId, input, options),
-    setTaskStepStatus: (projectId, taskId, stepId, input, options) => updateStep("set-status", projectId, taskId, stepId, input, options),
-    moveTaskStep: async (projectId, taskId, stepId, input, options) => {
-      const context: Context = { operation: "task.step.move", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          if ([input.before, input.after, input.position].filter((value) => value !== undefined).length !== 1) throw new Error("Exactly one Step position is required.");
-          if (input.position !== undefined && input.position !== "first" && input.position !== "last") throw new Error("Step position must be first or last.");
-          const anchor = (value: string): string => {
-            const id = canonicalStepId(value);
-            if (id === null || id === step) throw new Error("Step anchor must be another eight-hex Step ID.");
-            return id;
-          };
-          const normalized: MoveTaskStepInput = { version: input.version,
-            ...(input.before === undefined ? {} : { before: anchor(input.before) }),
-            ...(input.after === undefined ? {} : { after: anchor(input.after) }),
-            ...(input.position === undefined ? {} : { position: input.position }) };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step, "position"), "PUT", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value) => parseStepsResource(value, project, task),
-            confirmMutation: (result) => confirmMovedTaskStep(result, step, normalized, previous),
-          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
-    },
-    deleteTaskStep: async (projectId, taskId, stepId, input, options) => {
-      const context: Context = { operation: "task.step.delete", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          const normalized: DeleteTaskStepInput = { version: input.version };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step), "DELETE", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value) => parseStepsResource(value, project, task),
-            confirmMutation: (result) => confirmDeletedTaskStep(result, step, normalized, previous),
-          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
+      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server."); return parseWorkerDetail(value, target, true); } }, [200]);
     },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -1183,6 +1090,30 @@ export const createApiClient = (options: {
         return project;
       }, (project) => project.id), (project) => project.id, { teamId: team }, true, user);
     },
+    previewProjectRepository: (userId, projectId, repoUrl) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      return exchange({ operation: "project.repository-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/repository/preview`, "POST", {
+        kind: "json", readOnly: true, requirePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectRepositoryPreview(value, project, repoUrl),
+      }, [200], { kind: "json", value: { repoUrl, expectedUserId: user } }, true);
+    },
+    setProjectRepository: (userId, projectId, preview, treatUnverifiedAsSwitch, requestId) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      const observed = parseProjectRepositoryPreview(preview, project, preview.repoUrl);
+      if (treatUnverifiedAsSwitch !== (observed.classification === "unverified")) throw new Error("An unverified repository requires explicit confirmation as a switch.");
+      return exchange({ operation: "project.set-repository", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}/repository`, "PATCH", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectRepositoryReceipt(value, project, observed), parseError: parseProjectRepositoryError, confirmMutation: (result) => result.projectId,
+        classifyRefusal: (status, error, responseId) => {
+          if (responseId !== requestId || error.requestId !== requestId) return false;
+          return status === 401 && error.code === "unauthenticated" || status === 400 && error.code === "invalid_input" || status === 403 && error.code === "forbidden" || status === 404 && error.code === "not_found" || status === 409 && ["identity_mismatch", "version_conflict", "version_exhausted", "project_repository_conflict"].includes(error.code);
+        },
+      }, [200], { kind: "json", value: { repoUrl: observed.repoUrl, expectedUserId: user, repositoryVersion: observed.repositoryVersion, ownershipVersion: observed.ownershipVersion, classification: observed.classification, targetGitHubRepositoryId: observed.targetGitHubRepositoryId, treatUnverifiedAsSwitch } }, true);
+    },
     previewProjectTransfer: (userId, projectId, targetTeamId) => {
       const user = resourceId(userId), project = resourceId(projectId), target = resourceId(targetTeamId);
       return exchange({ operation: "project.transfer-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/transfer-preview`, "POST", {
@@ -1195,7 +1126,7 @@ export const createApiClient = (options: {
       const user = resourceId(userId), project = resourceId(projectId), target = resourceId(preview.targetTeam.id), source = resourceId(preview.ownership.teamId);
       taskVersion(preview.ownership.version); taskVersion(preview.targetTeam.version);
       if (preview.sourceTeam.id !== source) throw new Error("Transfer preview has inconsistent source ownership.");
-      return exchange({ operation: "project.transfer", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}/transfer`, "POST", {
+      return exchange({ operation: "project.transfer", projectId: project, sentRequestId: requestId, confirmGoalDependencyRemoval: true }, `/projects/${encodeURIComponent(project)}/transfer`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
         parse: (value) => parseProjectTransferReceipt(value, project, user, preview), confirmMutation: (result) => result.projectId,
@@ -1226,7 +1157,7 @@ export const createApiClient = (options: {
     },
     deleteProject: (userId, projectId, requestId) => {
       const user = resourceId(userId), project = resourceId(projectId);
-      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
+      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId, confirmGoalDependencyRemoval: true }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
         kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
         onPrincipal: (actual, success) => { if (!success && actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
         decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
@@ -1239,54 +1170,77 @@ export const createApiClient = (options: {
     },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], reportBody(projectToolReport(input, false)), true);
+      return exchange({ operation: "worker.report", workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: (value, response) => { if (response.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server."); return parseWorkerReportReceipt(value); } }, [200], reportBody(input), true);
     },
-    readWorkerMonitoring: (workerId, requestId) => {
+    writeWorkerMonitoring: (workerId, observation, requestId) => {
       const worker = resourceId(workerId);
       if (canonicalId(requestId) !== requestId) throw new Error("Monitoring request ID must be a canonical UUID.");
-      return exchange({ operation: "worker.monitoring.read", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "GET", {
+      return exchange({ operation: "worker.monitoring.write", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
-        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringRead,
-      }, [200], undefined, true);
+        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringReceipt,
+        confirmedFailure: (status, error) => status === 503 && error.code === "monitoring_unavailable",
+      }, [200], { kind: "json", value: observation, maxBytes: 256 * 1024 }, true);
     },
-    writeWorkerMonitoring: (workerId, expectedRevision, observation, requestId) => {
+    listReviewerPage: async (workerId, cursor) => {
       const worker = resourceId(workerId);
-      if (canonicalId(requestId) !== requestId || expectedRevision !== null && canonicalId(expectedRevision) !== expectedRevision) throw new Error("Monitoring request and revision IDs must be canonical UUIDs.");
-      return exchange({ operation: "worker.monitoring.write", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "PUT", {
-        kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
-        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: value => parseMonitoringReceipt(value, observation),
-      }, [200], { kind: "json", value: { expectedRevision, observation }, maxBytes: 256 * 1024 }, true);
+      if (cursor !== undefined && (typeof cursor !== "string" || cursor === "")) throw new Error("Invalid reviewer cursor.");
+      const query = new URLSearchParams({ limit: "100", ...(cursor === undefined ? {} : { cursor }) });
+      const { parseReviewerPage } = await import("./reviewer.js");
+      let authenticated = false;
+      try {
+        return await exchange({ operation: "reviewer.list" }, `/me/workers/${encodeURIComponent(worker)}/review-pull-requests?${query}`, "GET", {
+          kind: "json", requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: () => { authenticated = true; }, parse: parseReviewerPage,
+        }, [200], undefined, true);
+      } catch (error) {
+        if (error instanceof ApiError && error.phase === "response" && error.status === 404 && !authenticated) throw new Error("The server does not support reviewer polling.", { cause: error });
+        throw error;
+      }
+    },
+    getReviewerPrompt: async (key, userId, workerId) => {
+      const { parseReviewerPrompt } = await import("./reviewer.js");
+      const user = resourceId(userId), worker = resourceId(workerId);
+      const pathname = key.scope === "project" ? `/me/projects/${encodeURIComponent(resourceId(key.projectId))}/reviewer-prompt` : key.scope === "worker" ? `/me/workers/${encodeURIComponent(worker)}/reviewer-prompt` : "/me/reviewer-prompt";
+      return exchange({ operation: "reviewer.prompt" }, pathname, "GET", { kind: "json", requirePrincipal: true, checkPrincipalOnError: true, parse: value => parseReviewerPrompt(value, key, user, worker) }, [200], undefined, true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerControlMode: true, workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
+      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerToolPaths: true, workerArchiveSessions: true, workerPlatformTaskMode: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
         parse: (value, response) => {
           if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
-          const resource = parseWorkerCloudResource(value, { controlMode: response.controlModeHeader === "1", toolPaths: response.toolPathsHeader === "1" });
+          if (response.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server.");
+          if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1") throw new ProtocolError("Invalid Worker archive sessions capability.");
+          if (response.platformTaskModeHeader !== null && response.platformTaskModeHeader !== "1") throw new ProtocolError("Invalid Worker platform task mode capability.");
+          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: false, toolPaths: true, archiveSessions: response.archiveSessionsHeader === "1", platformTaskMode: response.platformTaskModeHeader === "1" });
+          confirmPlatformMode(response.platformTaskModeHeader, response.principalId);
+          confirmArchive(response.archiveSessionsHeader, response.principalId);
           confirmToolPaths(response.toolPathsHeader, response.principalId);
-          workerControlMode.supported = response.controlModeHeader === "1";
           return resource;
         },
       }, [200], undefined, true);
     },
     reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
-      const worker = resourceId(workerId), supported = workerControlMode.supported, toolsSupported = toolPathsSupported();
-      const capabilities = { controlMode: supported, toolPaths: toolsSupported };
+      const worker = resourceId(workerId), supported = false, toolsSupported = true;
+      const archive = archiveSupported(), platformTaskMode = platformModeSupported();
+      if (!archive && configuration.bootstrap?.archiveSessions === false) throw new ProtocolError("The server does not support disabling Worker session archives.");
+      // Do not acknowledge ledger records that would be omitted from this wire projection.
+      // A fresh authority read resolves a changed or unconfirmed service capability.
+      if (configuration.observation?.items.some(item => item.key.kind === (platformTaskMode ? "preferPlatformSpecificTasks" : "platformTaskMode"))) throw new ProtocolError("Worker platform task mode capability changed; refresh configuration before reporting.");
+      const capabilities = { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archive, platformTaskMode };
       const parsed = parseWorkerCloudReport(projectWorkerCloudReport(configuration, capabilities), capabilities);
       const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, ...(supported ? { workerControlMode: true as const } : {}), ...(toolsSupported ? { workerToolPaths: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, workerToolPaths: true, ...(archive ? { workerArchiveSessions: true as const } : {}), ...(platformTaskMode ? { workerPlatformTaskMode: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
         decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
         parse: (value, response) => {
           if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
           const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1" || toolsSupported && response.toolPathsHeader !== "1") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
-          const receipt = parseWorkerCloudReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1" });
-          workerControlMode.supported = supported && response.controlModeHeader === "1";
+          if (response.toolPathsHeader !== "2") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
+          if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1" || archive && response.archiveSessionsHeader !== "1") { workerArchiveSessions.supported = false; throw new ProtocolError("The server did not confirm the requested Worker archive sessions capability."); }
+          if (response.platformTaskModeHeader !== null && response.platformTaskModeHeader !== "1" || platformTaskMode && response.platformTaskModeHeader !== "1") { workerPlatformTaskMode.supported = false; throw new ProtocolError("The server did not confirm the requested Worker platform task mode capability."); }
+          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: false, toolPaths: true, archiveSessions: archive && response.archiveSessionsHeader === "1", platformTaskMode });
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;
@@ -1339,11 +1293,13 @@ export const createApiClient = (options: {
       const project = resourceId(projectId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
       const parentId = taskParentInput(input.parentId);
+      const parentTaskId = input.parentTaskId === undefined ? undefined : resourceId(input.parentTaskId);
+      if (parentTaskId !== undefined && (parentId !== undefined || input.type === "goal")) throw new Error("parentTaskId conflicts with parentId and Goal creation.");
       const goal = input.type === "goal";
       const tagIds = normalizeTaskTagIds(input.tagIds ?? []);
       return exchange({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", { kind: "json", ...(goal && assignedTo === undefined ? { requirePrincipal: true } : {}), parse: (value, metadata) => {
         const task = parseTask(value, project);
-        if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null)) throw new ProtocolError("Task does not confirm the requested type and parent.");
+        if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null) || parentTaskId !== undefined && task.parentTaskId !== parentTaskId) throw new ProtocolError("Task does not confirm the requested type and parent.");
         if (task.status !== (input.status ?? (goal ? "todo" : "proposed"))) throw new ProtocolError("Task does not confirm the requested initial status.");
         if (task.assignedTo !== (assignedTo === undefined ? (goal ? metadata.principalId : null) : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
         confirmTaskTagIds(task, tagIds);
@@ -1352,6 +1308,7 @@ export const createApiClient = (options: {
         title: input.title,
         ...(input.type === undefined ? {} : { type: input.type }),
         ...(parentId === undefined ? {} : { parentId }),
+        ...(parentTaskId === undefined ? {} : { parentTaskId }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -1447,7 +1404,7 @@ export const createApiClient = (options: {
       const pathname = resourcePath("projects", project, "tasks", task, "properties", name);
       return exchange({ operation: "task.remove-property", projectId: project, taskId: task }, pathname, "DELETE", { kind: "json", parse: (value) => {
         const result = parseTaskPropertyResource(value, project, task);
-        if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name)) throw new ProtocolError("Task does not confirm the requested property removal.");
+        if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name) || ((name === "blocked" || name === "paused") && (Object.hasOwn(result.properties, "blocked") || Object.hasOwn(result.properties, "paused")))) throw new ProtocolError("Task does not confirm the requested property removal.");
         return result;
       } }, [200], { kind: "json", value: { version: input.version } }, true);
     },
@@ -1456,11 +1413,13 @@ export const createApiClient = (options: {
       if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
       const normalized = taskFilterQuery(input);
       const parentId = taskParentInput(input.parentId);
+      const parentTaskId = input.parentTaskId === undefined ? undefined : resourceId(input.parentTaskId);
       const tags = normalizeTaskTagFilter(input);
       const filters = {
         ...tags,
         ...(input.type === undefined ? {} : { type: input.type }),
         ...(parentId === undefined ? {} : { parentId }),
+        ...(parentTaskId === undefined ? {} : { parentTaskId }),
         ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.ready === undefined ? {} : { ready: input.ready }),
@@ -1511,7 +1470,7 @@ export const createApiClient = (options: {
               const parsed = parseTaskSearchPage(value, project);
               const raw = value as { items: { assignedTo: string | null }[] };
               const assignment = filters.assignedTo === "me" ? principal : filters.assignedTo === "unassigned" ? null : filters.assignedTo;
-              if (parsed.items.some((item, index) => item.type !== (filters.type ?? "task") || parentId !== undefined && item.parentId !== parentId || filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
+              if (parsed.items.some((item, index) => item.type !== (filters.type ?? "task") || parentId !== undefined && item.parentId !== parentId || parentTaskId !== undefined && item.parentTaskId !== parentTaskId || filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
               return parsed;
             },
           }, [200], { kind: "json", value: { query: input.query, ...filters, limit: 100, ...(cursor === null ? {} : { cursor }) } }, true);
@@ -1596,6 +1555,41 @@ export const createApiClient = (options: {
         ...(tagIds === undefined ? {} : { tagIds }),
       });
     },
+    updateTaskReceipt: (projectId, taskId, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      const assignedTo = taskAssignmentInput(input.assignedTo), parentId = taskParentInput(input.parentId);
+      const tagIds = input.tagIds === undefined ? undefined : normalizeTaskTagIds(input.tagIds);
+      const version = input.version;
+      taskVersion(version);
+      return exchange({ operation: "task.update", projectId: project, taskId: task, taskReceipt: true }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", { kind: "json", parse: (value, metadata) => {
+        let resultVersion: bigint;
+        if (metadata.taskReturnHeader === "receipt-v1") {
+          const receipt = receiptFields(value, ["projectId", "taskId", "version"]);
+          if (receiptId(receipt.projectId) !== project || receiptId(receipt.taskId) !== task) throw new ProtocolError("Task receipt does not match the requested resource.");
+          resultVersion = receiptVersion(receipt.version);
+        } else if (metadata.taskReturnHeader === null) {
+          const result = parseTask(value, project, task);
+          if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
+          if (parentId !== undefined && result.parentId !== parentId) throw new ProtocolError("Task does not confirm the requested parent.");
+          if (tagIds !== undefined) confirmTaskTagIds(result, tagIds);
+          resultVersion = result.version;
+        } else throw new ProtocolError("Unsupported Task receipt response.");
+        if (resultVersion !== version && resultVersion !== version + 1n) throw new ProtocolError("Task does not confirm the submitted version.");
+        return { projectId: project, taskId: task, version: resultVersion };
+      }, confirmMutation: result => result.taskId }, [200], { kind: "json", value: {
+        version,
+        ...(parentId === undefined ? {} : { parentId }),
+        ...(assignedTo === undefined ? {} : { assignedTo }),
+        ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
+        ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
+        ...(input.externalDependsOn === undefined ? {} : { externalDependsOn: input.externalDependsOn }),
+        ...(input.properties === undefined ? {} : { properties: input.properties }),
+        ...(tagIds === undefined ? {} : { tagIds }),
+      } }, true);
+    },
     deleteTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       taskVersion(input.version);
@@ -1606,14 +1600,15 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (!isTaskStatus(input.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
       taskVersion(input.version);
+      if (input.cancelDescendants !== undefined && (typeof input.cancelDescendants !== "boolean" || input.status !== "cancelled")) throw new Error("cancelDescendants is only valid for cancellation.");
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);
         if (result.status !== input.status || (result.version !== input.version && result.version !== input.version + 1n)) throw new ProtocolError("Task does not match the requested status or version.");
         return result;
-      } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
+      } }, [200], { kind: "json", value: { version: input.version, status: input.status, ...(input.cancelDescendants === undefined ? {} : { cancelDescendants: input.cancelDescendants }) } }, true);
     },
     claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
-    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
     completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== undefined && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
     releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => canonicalId(input.claimId) !== null && worker === undefined && !Object.hasOwn(task.properties, "sessionStartup") && task.status === "todo" && task.startedAt === null && task.completedAt === null),
     withdrawWorkerClaim: (projectId, taskId, input) => {
@@ -1638,16 +1633,23 @@ export const createApiClient = (options: {
     },
     getTaskGraph: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return request({ operation: "task.graph", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value) => parseTaskGraph(value, project, task));
+      return request({ operation: "task.graph", projectId: project, taskId: task, taskProjection: true }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value, metadata) => {
+        if (metadata.taskProjectionHeader !== null && metadata.taskProjectionHeader !== "task-only-v1") throw new ProtocolError();
+        return parseTaskGraph(value, project, task, metadata.taskProjectionHeader === "task-only-v1");
+      });
     },
     getObservedTaskGraph: async (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      const context = { operation: "task.graph", projectId: project, taskId: task };
+      const context = { operation: "task.graph", projectId: project, taskId: task, taskProjection: true as const };
       const path = `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`;
-      try { return await request(context, `${path}&include=session`, "GET", value => parseObservedTaskGraph(value, project, task)); }
+      const parse = (value: unknown, metadata: JsonResponseMetadata): ObservedTaskGraph => {
+        if (metadata.taskProjectionHeader !== null && metadata.taskProjectionHeader !== "task-only-v1") throw new ProtocolError();
+        return parseObservedTaskGraph(value, project, task, metadata.taskProjectionHeader === "task-only-v1");
+      };
+      try { return await request(context, `${path}&include=session`, "GET", parse); }
       catch (error) {
         if (!observationUnsupported(error)) throw error;
-        return request(context, path, "GET", value => parseObservedTaskGraph(value, project, task));
+        return request(context, path, "GET", parse);
       }
     },
   };

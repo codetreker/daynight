@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 describe("task execution presentation", () => {
-  it.each(["en", "zh-CN"] as const)("updates the strict warning boundary without replacing graph controls or layout in %s", async (locale) => {
+  it.each(["en", "zh-CN"] as const)("updates the strict warning boundary and geometry without replacing graph controls in %s", async (locale) => {
     const layout = vi.spyOn(layoutModule, "layoutGraph");
     const view = renderWithLocale(canvas(snapshot(3_599_000)), { locale, taskCache: true });
     await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(2));
@@ -76,6 +76,9 @@ describe("task execution presentation", () => {
     expect(card.querySelector(".task-duration")).toHaveAttribute("datetime", "PT3600.000S");
     view.rerender(canvas(snapshot(3_601_000)));
     expect(card).toHaveClass("task-node-stuck", "task-node-selected");
+    expect(card.closest<HTMLElement>(".react-flow__node")!.style.height).toBe("124px");
+    expect(viewport(view.container).style.transform).toBe(transform);
+    expect(details).toHaveFocus();
     expect(card.querySelector(".task-stuck-label")).toHaveTextContent(locale === "en" ? "Possibly stuck" : "可能卡住了");
     expect(card.querySelector(".task-stuck-label svg")).toHaveAttribute("aria-hidden", "true");
     expect(card.querySelector(".task-shared-label")).toBeNull();
@@ -94,10 +97,10 @@ describe("task execution presentation", () => {
     expect([...view.container.querySelectorAll(".react-flow__edge-path")]).toEqual(edges);
     expect(edges.map((edge) => edge.getAttribute("d"))).toEqual(routes);
     expect(viewport(view.container).style.transform).toBe(transform);
-    expect(layout).toHaveBeenCalledTimes(1);
+    expect(layout).toHaveBeenCalledTimes(3);
     for (const node of nodes) {
-      expect(node.style.width).toBe("220px");
-      expect(node.style.height).toBe("96px");
+      expect(node.style.width).toBe("240px");
+      expect(node.style.height).toBe("102px");
     }
     expect(card.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
   });
@@ -165,7 +168,7 @@ describe("task execution presentation", () => {
       expect(description).toBeTruthy();
       expect(document.getElementById(description)).toHaveTextContent(start);
       expect(row).toHaveAccessibleDescription(new RegExp(start.replaceAll(".", "\\.")));
-      expect(row.closest(".task-row")).toHaveTextContent("Paused");
+      expect(row.closest(".task-row")).toHaveTextContent("Blocked");
       fireEvent.click(row);
     }
     expect(select.mock.calls).toEqual([[item.id, first], [item.id, second]]);

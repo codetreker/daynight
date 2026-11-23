@@ -1,3 +1,4 @@
+import { expandTeamDelete } from "./helpers/teamDelete";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { waitForState } from "./helpers/waitForState";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +41,24 @@ const getByScope = (name: string) => {
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each(["en", "zh-CN"] as const)("shows only the workspace name while retaining its type in %s", async (locale) => {
+    window.history.replaceState(null, "", `/teams/${a}`);
+    install(); createLocaleRender(locale)(<AuthenticatedApp />);
+    const chinese = locale === "zh-CN";
+    const label = chinese ? "切换 Team: 团队,   Alpha  " : "Switch Team: Team,   Alpha  ";
+    const control = await screen.findByRole("button", { name: chinese ? "切换 Team: 团队, Alpha" : "Switch Team: Team, Alpha" }, { timeout: 10000 });
+    expect(control).toHaveAttribute("aria-label", label);
+    expect(control).toHaveAttribute("title", label);
+    expect(control.querySelector(".team-switch-text")?.textContent).toBe("  Alpha  ");
+    expect(control.querySelector(".team-switch-text")?.children).toHaveLength(1);
+
+    act(() => navigate(`/teams/${personal}`));
+    const personalLabel = chinese ? "切换 Team: 个人空间, 个人" : "Switch Team: Personal space, Personal";
+    const personalControl = await screen.findByRole("button", { name: personalLabel }, { timeout: 10000 });
+    expect(personalControl).toHaveAttribute("title", personalLabel);
+    expect(personalControl.querySelector(".team-switch-text")?.textContent).toBe(chinese ? "个人" : "Personal");
+    expect(personalControl.querySelector(".team-switch-text")?.children).toHaveLength(1);
+  });
   it.each([[`/teams/${a}`, a], ["/projects", personal]])("keeps the paginated Team directory independent of shared projects on %s", async (path, teamId) => {
     window.history.replaceState(null, "", path);
     const second = { ...project, id: "00000000-0000-4000-8000-000000000006", name: "Team second", ownership: { teamId, version: 1n } };
@@ -358,13 +377,15 @@ describe("Team workspace navigation", () => {
     expect(within(selector).getByRole("menuitemradio", { name: "Personal" })).toHaveAttribute("href", `/teams/${personal}`);
     fireEvent.click(within(selector).getByRole("menuitem", { name: "Retry" })); await within(selector).findByRole("menuitemradio", { name: "Beta" });
   });
-  it("shows a usable Team control when the narrow sidebar is collapsed", async () => {
+  it("opens Team selection from the narrow navigation drawer", async () => {
     mockSidebarMediaQuery(true); install(); render(<AuthenticatedApp />);
     await findByScope("Personal");
+    expect(screen.queryByRole("button", { name: "Switch Team: Personal space, Personal" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const control = screen.getByRole("button", { name: "Switch Team: Personal space, Personal" });
     fireEvent.click(control);
     expect(control).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByRole("dialog", { name: "Workspace navigation" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Workspace navigation" })).toBeInTheDocument();
     expect(await screen.findByRole("menuitemradio", { name: "Alpha" })).toBeInTheDocument();
   });
   it("restores a remembered Team by exact ID even when it is absent from the first picker page", async () => {
@@ -677,7 +698,7 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); const heading = await screen.findByRole("heading", { name: "Team settings" });
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     const confirmation = within(dialog).getByLabelText("Enter the Team name to confirm") as HTMLTextAreaElement;
     fireEvent.change(confirmation, { target: { value: "  Alpha  " } }); confirmation.focus(); confirmation.setSelectionRange(2, 5);
@@ -703,7 +724,7 @@ describe("Team workspace navigation", () => {
       if (url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 4) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
       return undefined;
     });
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" }); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
     await waitForState(() => expect(deletes).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
     await waitForState(() => expect(reads).toBeGreaterThanOrEqual(4)); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
@@ -720,7 +741,7 @@ describe("Team workspace navigation", () => {
     });
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
     act(() => navigate(`/teams/${a}/settings`));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     const name = within(dialog).getByLabelText("Enter the Team name to confirm");
     fireEvent.change(name, { target: { value: "  Alpha  " } });
@@ -755,7 +776,7 @@ describe("Team workspace navigation", () => {
     });
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
     act(() => navigate(`/teams/${a}/settings`));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -790,7 +811,7 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 });
-    fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -1044,7 +1065,7 @@ describe("Team workspace navigation", () => {
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(response({ items: [], nextCursor: null }, current));
       throw new Error(`Unexpected request ${url}`);
     }));
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" })); await waitForState(() => expect(reads).toBe(3));
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" })); await waitForState(() => expect(reads).toBe(3));
     current = bob; act(() => { localStorage.setItem("daynight.activeUser", JSON.stringify(bob)); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
     await act(async () => old.resolve(response({ error: { code: "not_found", message: "missing", requestId: "rq-a" } }, userId, 404)));
     expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(screen.getByRole("heading", { name: "Team settings" })).toBeInTheDocument();
@@ -1089,7 +1110,7 @@ describe("Team workspace navigation", () => {
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
     install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
     render(<AuthenticatedApp />); await findByScope("Personal");
-    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const drawer = screen.getByRole("dialog", { name: "Workspace navigation" });
     const focus = within(drawer).getByRole("link", { name: "My Workers" }); focus.focus();
     const workspace = document.querySelector(".workspace")!;
@@ -1232,6 +1253,8 @@ describe("Team selection at cold workspace entries", () => {
     render(<AuthenticatedApp />);
     await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
     expect(selector()).toHaveAttribute("aria-label", "Switch Team: Loading Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.textContent).toBe("Loading Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.children).toHaveLength(1);
     for (const name of ["Projects", "Team settings"]) {
       const link = within(screen.getByRole("complementary", { name: "Workspace navigation" })).getByRole("link", { name });
       expect(link).toHaveAttribute("aria-disabled", "true"); expect(link).not.toHaveAttribute("href");
@@ -1259,6 +1282,8 @@ describe("Team selection at cold workspace entries", () => {
     expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${a}`))).toBe(false);
     await act(async () => pending.resolve(json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500)));
     const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(selector()?.querySelector(".team-switch-text")?.textContent).toBe("Unable to load Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.children).toHaveLength(1);
     expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
     expect(localStorage.getItem(savedKey)).toBe(a);
     expect(screen.getByRole("heading", { name: "Shared during restoration" })).toBeInTheDocument();

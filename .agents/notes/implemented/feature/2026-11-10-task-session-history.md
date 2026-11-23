@@ -13,6 +13,14 @@ the client.
 
 ## Decision
 
+The [storage contract decision](../architecture/2026-11-18-session-storage-contracts.md)
+defines separately negotiated body-only retention and expiry requirements.
+The complete-entry behavior below remains the existing reader contract for
+available live sources and legacy archives; it does not assert that the new
+retention capability is enabled. The [retention persistence decision](../architecture/2026-11-19-task-archive-retention.md)
+owns first-success recording and protected deadline calculations; directory and
+cleanup consumers retain their own implementation requirements.
+
 Task Session history uses shared domain and service operations behind HTTP, MCP
 and CLI adapters. Explicit Session identity is preserved across every read. The
 Controller exposes raw journal entries through negotiated content requests;
@@ -54,12 +62,12 @@ Markdown, reasoning and retained bindings. They project only six metadata
 fields; the preview name accepts the unified image limit of 1024 UTF-8 bytes.
 Explicit image failures and unresolved projections retain partial coverage.
 
-Successful MCP reads use ordinary runtime encoding; protocol tests validate
-structured results against internal output definitions. The original public
-strict schemas supported client validation and type discovery. The
-[private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
-records why discovery now omits them. The dedicated history budget does not
-restore the shared output validation or generic admission removed by the
+Successful MCP reads use ordinary runtime encoding; protocol tests directly
+assert structured results. The original public strict schemas supported client
+validation and type discovery. The [private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
+records why discovery omits them; the [output schema removal decision](../simplification/2026-11-16-remove-mcp-output-schemas.md)
+records the later removal of internal definitions. The dedicated history budget
+does not restore the shared output validation or generic admission removed by the
 [canonical resource reads decision](../simplification/2026-11-09-canonical-resource-pages.md).
 The [history specification](../../../../docs/spec/task-session-history.md) and
 [design](../../../../docs/design/task-session-history.md) own current contracts.
@@ -80,8 +88,8 @@ Server-side projection preserves the existing authorized archive reader and
 bounded public responses, at the cost of cold full-archive materialization.
 
 **Restore shared MCP output admission.** That would change unrelated read tools.
-The history use case owns its budget, while protocol tests validate result
-fixtures against internal definitions.
+The history use case owns its budget, while protocol tests directly assert
+structured results.
 
 ## Consequences
 

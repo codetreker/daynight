@@ -8,14 +8,10 @@ import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/
 import { writeDurableJson } from "../../../platform/durable-json.js";
 import { runRepositoryGit } from "../../../repository/git.js";
 import { startOwnedRepositoryGit } from "../../../repository/git-owned.js";
-import { decodeStrictSessionJson } from "../../../session/v2/values.js";
+import { decodeStrictJson } from "../../../strict-json.js";
 import { sameResourceOwner } from "../resource-owner.js";
 import { parseWebTaskV1 } from "../backends/web-record.js";
 import type { LocalTask as WebTask } from "../backends/web-types.js";
-import { isHerdrNeverStarted, parseHerdrLifecycleRecord } from "../herdr/lifecycle-store.js";
-import type { HerdrLifecycleRecord } from "../herdr/lifecycle-types.js";
-import type { HerdrRetainedResource } from "../herdr/resource-types.js";
-import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { readRegistrationIndex } from "../worktree-scan.js";
 import { ambiguousMissingGitTargets, resolveGitDirectory, resolveGitFile } from "../worktree-paths.js";
 import type { ResourceOwner } from "../types.js";
@@ -27,19 +23,7 @@ export type MigrationSources = {
   listSchedules(): Promise<readonly ResourceOwner[]> | readonly ResourceOwner[];
   /** Complete validated Web records from both unfinished and completed store listings. */
   listWebTasks(): Promise<readonly WebTask[]> | readonly WebTask[];
-  /** Complete original Herdr lifecycles from the lifecycle store. */
-  listHerdrLifecycles(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
-  /**
-   * Bindings from every workspace pane in tasks.listResources(operation) and
-   * every pendingStops().context.cwd. An unavailable or partial observation,
-   * workspace without panes, missing cwd, or inconsistent cwd must throw. An
-   * adapter's error fallback to an empty list is not a complete observation.
-   */
-  listHerdrBindings(): Promise<readonly { owner: ResourceOwner; cwd: string }[]> | readonly { owner: ResourceOwner; cwd: string }[];
-  /** Verified never-started retirements from the same lifecycle store's listRetired(). */
-  listHerdrRetired(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
-  /** Complete retained-resource projections from the original Herdr archive. */
-  listHerdrResources(): Promise<readonly HerdrRetainedResource[]> | readonly HerdrRetainedResource[];
+
 };
 export type MigrationCheckpoint = "manifest-published" | "unlocked" | "sidecar-removed" | "format-published";
 export type MigrationOptions = {
@@ -60,7 +44,7 @@ const ownerOf = (value: ResourceOwner): ResourceOwner => {
 };
 const markerOwner = (marker: string): ResourceOwner => {
   if (!marker.startsWith(prefix)) throw new Error("Not a Worker ownership marker.");
-  const value: unknown = decodeStrictSessionJson(Buffer.from(marker.slice(prefix.length)), 32768);
+  const value: unknown = decodeStrictJson(Buffer.from(marker.slice(prefix.length)), 32768);
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid Worker ownership marker.");
   return ownerOf(value as ResourceOwner);
 };
@@ -101,7 +85,7 @@ const inspectSidecar = async (admin: string, owner: ResourceOwner, marker: strin
       || after.mtimeNs !== before.mtimeNs || current.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || current.ctimeNs !== before.ctimeNs) throw new Error("Worktree identity sidecar changed while reading.");
     contents = bytes.toString("utf8");
   } finally { await handle.close(); }
-  const value: unknown = decodeStrictSessionJson(Buffer.from(contents), 32768);
+  const value: unknown = decodeStrictJson(Buffer.from(contents), 32768);
   if (!exactObject(value, ["version", "owner", "markerSha256", "directories"]) || value.version !== 1
     || !exactObject(value.owner, fields) || !sameResourceOwner(ownerOf(value.owner as ResourceOwner), owner)
     || typeof value.markerSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.markerSha256)
@@ -149,7 +133,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino) throw new Error("Worktree format changed during read.");
-      const value = decodeStrictSessionJson(readFileSync(fd), 16384);
+      const value = decodeStrictJson(readFileSync(fd), 16384);
       if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1 || (value as Record<string, unknown>).version !== 1) throw new Error("Unknown worktree format.");
       if (durable) fsyncSync(fd);
     } finally { closeSync(fd); }
@@ -201,9 +185,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
   };
   const collect = async () => {
     operation.check();
-    const [schedules, rawWeb, rawHerdr, legacyHerdr, rawRetired, resources] = await Promise.all([
-      sources.listSchedules(), sources.listWebTasks(), sources.listHerdrLifecycles(), sources.listHerdrBindings(), sources.listHerdrRetired(), sources.listHerdrResources(),
-    ]);
+    const [schedules, rawWeb] = await Promise.all([sources.listSchedules(), sources.listWebTasks()]);
     const values: WorktreeManifest[] = [];
     const identities = new Map<string, ResourceOwner>(), worktreeIds = new Map<string, ResourceOwner>();
     const observe = (input: ResourceOwner): ResourceOwner => {
@@ -236,9 +218,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       values.push({ schemaVersion: 1, ...owner, directoryName });
     };
     const web = rawWeb.map(task => parseWebTaskV1(structuredClone(task)));
-    const herdr = rawHerdr.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
-    const retired = rawRetired.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
-    const lifecycleOwners = new Map<string, { owner: ResourceOwner; record: HerdrLifecycleRecord }>();
+    const unbound: ResourceOwner[] = [];
     for (const task of web) {
       const owner = observe(task); recordBackend(owner);
       const binding = task.resources.worktree;
@@ -247,6 +227,9 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
           if (task.cleanup?.kind !== "terminal") throw new Error("Completed Web execution has no confirmed terminal cleanup.");
           if (!await sameDirectory(root, task.repositoryPath)) throw new Error("Retired Web execution belongs to another repository.");
           await retire(owner, null);
+        } else {
+          if (await resolveGitDirectory(root, task.repositoryPath) !== canonicalRoot) throw new Error("Web execution belongs to another repository.");
+          unbound.push(owner);
         }
         continue;
       }
@@ -263,52 +246,51 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
         add(owner, await targetName(binding.worktreePath));
       }
     }
-    for (const record of herdr) {
-      const owner = observe({ ...record.owner, claimId: record.claimId });
-      canonicalWorktreeId(record.sessionId); recordBackend(owner);
-      lifecycleOwners.set(claim(owner), { owner, record });
-    }
-    const retiredKeys = new Set<string>();
-    for (const evidence of retired) {
-      const owner = observe({ ...evidence.owner, claimId: evidence.claimId }), original = lifecycleOwners.get(claim(owner));
-      if (!original || !sameResourceOwner(original.owner, owner) || !isDeepStrictEqual(original.record, evidence) || !isHerdrNeverStarted(evidence) || retiredKeys.has(claim(owner))) throw new Error("Herdr retirement does not match the original lifecycle.");
-      retiredKeys.add(claim(owner));
-    }
-    const resourceKeys = new Set<string>();
-    for (const resource of resources) {
-      const owner = observe(resource.owner), original = lifecycleOwners.get(claim(owner));
-      canonicalWorktreeId(resource.sessionId);
-      if (!original || !sameResourceOwner(original.owner, owner) || resource.sessionId !== original.record.sessionId || resource.worktreePath !== original.record.cwd || resourceKeys.has(claim(owner))) throw new Error("Herdr resource does not match its original lifecycle.");
-      if (retiredKeys.has(claim(owner))) throw new Error("Never-started retirement conflicts with a retained Herdr resource.");
-      resourceKeys.add(claim(owner));
-      if (resource.worktreeDeleted) {
-        if (!hasConfirmedHerdrResourceDeletion(resource)) throw new Error("Herdr resource deletion lacks confirmed original evidence.");
-        retiredKeys.add(claim(owner));
+    // A Git marker or manifest describes ownership, but cannot establish that
+    // its original execution was Web. Only journal-derived candidates may be
+    // published or modified; matching retained evidence still detects conflicts.
+    const manifests = store.list();
+    for (const existing of manifests) {
+      const retired = retiredOwners.get(claim(existing));
+      if (retired && sameResourceOwner(retired.owner, existing)) throw new Error("Retired execution still has a worktree ownership source.");
+      const waiting = unbound.find(owner => owner.worktreeId === existing.worktreeId || claim(owner) === claim(existing));
+      if (waiting) {
+        if (!sameResourceOwner(waiting, existing)) throw new Error("Conflicting worktree owners or locations.");
+        add(waiting, existing.directoryName);
+      }
+      for (const value of values) {
+        if (existing.worktreeId === value.worktreeId || claim(existing) === claim(value) || existing.directoryName === value.directoryName) {
+          if (!sameManifest(existing, value)) throw new Error("Conflicting worktree owners or locations.");
+        }
       }
     }
-    for (const { owner, record } of lifecycleOwners.values()) {
-      if (retiredKeys.has(claim(owner))) await retire(owner, record.cwd);
-      else add(owner, await targetName(record.cwd));
-    }
-    const legacy = new Map<string, { owner: ResourceOwner; cwd: string }>();
-    for (const binding of legacyHerdr) {
-      const owner = observe(binding.owner), original = lifecycleOwners.get(claim(owner)), prior = legacy.get(claim(owner));
-      if (retiredOwners.has(claim(owner)) || backendClaims.has(claim(owner)) && !original
-        || original && original.record.cwd !== binding.cwd || prior && (!sameResourceOwner(prior.owner, owner) || prior.cwd !== binding.cwd)) throw new Error("Legacy Herdr binding conflicts with original execution evidence.");
-      legacy.set(claim(owner), { owner, cwd: binding.cwd });
-      add(owner, await targetName(binding.cwd));
-    }
-    for (const value of store.list()) add(value, value.directoryName);
     const index = await readRegistrationIndex(repo, readers, operation);
     for (const entry of index.entries) {
+      for (const owner of unbound) {
+        const expected = await resolveGitFile(path.join(namespace, owner.taskId), ".git");
+        if (entry.physicalPointer?.path !== expected.path) continue;
+        if (entry.errors.length) throw entry.errors[0];
+        if (entry.marker === null) {
+          if (!manifests.some(value => sameResourceOwner(value, owner) && value.directoryName === owner.taskId)) throw new Error("Unbound Web worktree target has an unowned Git registration.");
+        } else if (!entry.owner || !sameResourceOwner(owner, entry.owner)) throw new Error("Conflicting worktree owners or locations.");
+      }
+      if (!entry.owner) continue;
+      if (retiredOwners.has(claim(entry.owner)) && sameResourceOwner(retiredOwners.get(claim(entry.owner))!.owner, entry.owner)) throw new Error("Retired execution still has a worktree ownership source.");
+      const waiting = unbound.find(owner => owner.worktreeId === entry.owner!.worktreeId || claim(owner) === claim(entry.owner!));
+      if (waiting) {
+        if (!sameResourceOwner(waiting, entry.owner)) throw new Error("Conflicting worktree owners or locations.");
+        add(waiting, waiting.taskId);
+      }
+      const value = values.find(candidate => candidate.worktreeId === entry.owner!.worktreeId || claim(candidate) === claim(entry.owner!));
+      if (!value) continue;
       if (entry.errors.length) throw entry.errors[0];
-      if (!entry.managed) continue;
-      if (entry.owner === null || entry.physicalPointer === null || entry.common === null) throw new Error("Incomplete Worker Git registration.");
-      const expected = await resolveGitFile(path.join(namespace, entry.owner.taskId), ".git");
-      if (entry.physicalPointer.path !== expected.path || await realpath(entry.common) !== canonicalCommon) throw new Error("Worker registration points outside its original repository or task path.");
-      add(entry.owner, entry.owner.taskId);
+      const expected = await resolveGitFile(path.join(namespace, value.directoryName), ".git");
+      if (!sameResourceOwner(entry.owner, value) || entry.physicalPointer === null || entry.physicalPointer.path !== expected.path
+        || entry.common === null || await realpath(entry.common) !== canonicalCommon) throw new Error("Worker registration conflicts with its original Web owner or location.");
     }
     for (const input of schedules) {
+      const matching = web.find(task => claim(task) === claim(input));
+      if (!matching) continue;
       const owner = observe(input);
       if (retiredOwners.has(claim(owner))) continue;
       const found = values.find(value => value.worktreeId === owner.worktreeId || claim(value) === claim(owner));
@@ -317,7 +299,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     }
     const checkParent = await directory(path.dirname(namespace));
     const checkNamespace = checkParent === null ? null : await directory(namespace);
-    const associated: { manifest: WorktreeManifest; entry: typeof index.entries[number] | null }[] = [];
+    const associated: { manifest: WorktreeManifest; entry: typeof index.entries[number] | null; source: { serverOrigin: string; workerId: string; executionId: string | null; generation: string | null } }[] = [];
     for (const manifest of values) {
       operation.check();
       const leaf = path.join(namespace, manifest.directoryName);
@@ -327,6 +309,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       const matches = index.entries.filter(entry => entry.physicalPointer?.path === pointer.path);
       if (matches.length > 1) throw new Error("Ambiguous worktree registrations.");
       const entry = matches[0] ?? null;
+      if (entry?.errors.length) throw entry.errors[0];
       if (entry === null) {
         if (leafIdentity !== null && (await readdir(leaf)).length) throw new Error("Nonempty worktree has no associated Git registration.");
       } else {
@@ -348,15 +331,25 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
         }
         await inspectSidecar(entry.directory, manifest, entry.marker);
       }
-      associated.push({ manifest, entry });
+      const task = web.find(value => sameResourceOwner(value, manifest));
+      if (!task) throw new Error("Worktree has no original Web execution.");
+      associated.push({ manifest, entry, source: { serverOrigin: task.serverOrigin, workerId: task.workerId,
+        executionId: task.webExecution?.executionId ?? null, generation: task.webExecution?.executionGeneration ?? null } });
     }
     if (await realpath(root) !== canonicalRoot || await directory(root) !== rootIdentity || await realpath(common) !== canonicalCommon || await directory(common) !== commonIdentity) throw new Error("Repository changed during migration.");
     return associated;
   };
   const initial = await collect();
   ensureDurableDirectory(parent); ensureDurableDirectory(manifestDir);
+  const unchanged = (entries: Awaited<ReturnType<typeof collect>>): void => {
+    for (const original of initial) {
+      const current = entries.find(item => sameManifest(item.manifest, original.manifest));
+      if (!current || !isDeepStrictEqual(current.source, original.source)) throw new Error("Original Web execution identity changed during migration.");
+    }
+  };
   for (const { manifest } of initial) {
-    operation.check(); store.publish(manifest); await options.checkpoint?.("manifest-published", manifest);
+    operation.check(); unchanged(await collect());
+    store.publish(manifest); await options.checkpoint?.("manifest-published", manifest);
   }
   for (const { manifest } of initial) {
     const found = store.read(manifest.worktreeId);
@@ -371,7 +364,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
   for (const { manifest } of initial) {
     operation.check();
     const observed = await collect();
-    covered(observed);
+    unchanged(observed); covered(observed);
     const current = observed.find(item => sameManifest(item.manifest, manifest));
     if (!current) throw new Error("Worktree source changed during migration.");
     const entry = current.entry;
@@ -389,7 +382,9 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       if (outcome.kind !== "success") throw outcome.error;
       await options.checkpoint?.("unlocked", manifest);
     }
-    const after = (await collect()).find(item => sameManifest(item.manifest, manifest));
+    const rechecked = await collect();
+    unchanged(rechecked);
+    const after = rechecked.find(item => sameManifest(item.manifest, manifest));
     if (!after || after.entry?.directory !== entry.directory || after.entry.marker !== null) throw new Error("Worktree registration changed before sidecar removal.");
     const sidecar = path.join(entry.directory, "daynight-identity.json");
     const data = await inspectSidecar(entry.directory, manifest, null);
@@ -401,7 +396,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     await options.checkpoint?.("sidecar-removed", manifest);
   }
   const final = await collect();
-  covered(final);
+  unchanged(final); covered(final);
   for (const { manifest, entry } of final) {
     const published = store.read(manifest.worktreeId);
     if (published === null || !sameManifest(published, manifest)) throw new Error("Worktree source is not covered by a published manifest.");

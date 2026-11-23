@@ -110,10 +110,22 @@ func TestTaskProposedDefaultMigrationPreservesExistingResources(t *testing.T) {
 	}
 }
 
-// Historical schemas predate typed resources and their ready predicate.
+// Historical schemas predate dependency types and typed resources.
+const historicalTaskDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
+ WHERE d.project_id = t.project_id AND d.task_id = t.id ORDER BY d.depends_on_task_id)`
+
+const historicalTaskExternalDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
+ WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.external ORDER BY d.depends_on_task_id)`
+
+const historicalTaskDependencyUnsatisfied = `NOT EXISTS (SELECT 1 FROM tasks p
+ WHERE p.project_id = d.project_id AND p.id = d.depends_on_task_id AND p.status IN ('done', 'cancelled'))`
+
+const historicalTaskBlockedBy = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
+ WHERE d.project_id = t.project_id AND d.task_id = t.id AND ` + historicalTaskDependencyUnsatisfied + ` ORDER BY d.depends_on_task_id)`
+
 const historicalTaskReady = `(t.status = 'todo' AND NOT EXISTS (
  SELECT 1 FROM task_dependencies d WHERE d.project_id = t.project_id AND d.task_id = t.id
- AND ` + pg.TaskDependencyUnsatisfied + `))`
+ AND ` + historicalTaskDependencyUnsatisfied + `))`
 
 // Pre-timing rows have unknown execution intervals and gain the explicit legacy permission during migration.
 func snapshotTaskBeforeTiming(t *testing.T, database *Store, projectID, id string) model.Task {
@@ -121,7 +133,7 @@ func snapshotTaskBeforeTiming(t *testing.T, database *Store, projectID, id strin
 	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT
 		t.id::text, t.project_id::text, t.title, t.description, t.status, t.version,
 		t.created_at, t.updated_at, NULL::timestamptz, NULL::timestamptz, true, NULL::text, t.properties, `+
-		pg.TaskDependsOn+`, ARRAY[]::text[], `+pg.TaskBlockedBy+`, `+historicalTaskReady+`
+		historicalTaskDependsOn+`, ARRAY[]::text[], `+historicalTaskBlockedBy+`, `+historicalTaskReady+`
 		FROM tasks t WHERE t.project_id = $1 AND t.id = $2`, projectID, id))
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +157,7 @@ func scanHistoricalTask(row pgx.Row) (model.Task, error) {
 }
 
 const historicalTaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
- t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, NULL::text, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + historicalTaskReady
+ t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, NULL::text, t.properties, ` + historicalTaskDependsOn + `, ` + historicalTaskExternalDependsOn + `, ` + historicalTaskBlockedBy + `, ` + historicalTaskReady
 
 func snapshotHistoricalTask(t *testing.T, database *Store, projectID, id string) model.Task {
 	t.Helper()
@@ -157,7 +169,7 @@ func snapshotHistoricalTask(t *testing.T, database *Store, projectID, id string)
 }
 
 const historicalPlatformTaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
- t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + historicalTaskReady
+ t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.properties, ` + historicalTaskDependsOn + `, ` + historicalTaskExternalDependsOn + `, ` + historicalTaskBlockedBy + `, ` + historicalTaskReady
 
 type statusMigrationRow struct {
 	ID        string
@@ -195,7 +207,7 @@ func statusMigrationRelatedFacts(t *testing.T, database *Store) map[string]strin
 	for name, query := range map[string]string{
 		"projects":     `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"attachments":  `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY task_id,path),'[]'::jsonb)::text FROM task_attachments t`,
-		"dependencies": `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY project_id,task_id,depends_on_task_id),'[]'::jsonb)::text FROM task_dependencies t`,
+		"dependencies": `SELECT coalesce(jsonb_agg(to_jsonb(t)-'dependency_type'-'goal_edge_id' ORDER BY project_id,task_id,depends_on_task_id),'[]'::jsonb)::text FROM task_dependencies t`,
 		"ledger":       `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=13`,
 	} {
 		var value string
@@ -394,7 +406,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 
 func cancellationMigrationRows(t *testing.T, database *Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id')::text FROM tasks t ORDER BY id`)
+	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id'-'ancestor_deleted_at')::text FROM tasks t ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +429,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 	t.Helper()
 	facts := statusMigrationRelatedFacts(t, database)
 	for name, query := range map[string]string{
-		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
+		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"properties": `SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name)::text FROM task_properties p`,
 		"ledger":     `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<46`,
 	} {
@@ -451,6 +463,10 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 	}
 	if !reflect.DeepEqual(cancellationMigrationRows(t, database), before) || !reflect.DeepEqual(cancellationMigrationFacts(t, database), related) {
 		t.Fatal("cancellation migration changed existing task data or related resources")
+	}
+	var repositoryVersion int64
+	if err := pool.QueryRow(t.Context(), `SELECT repository_version FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
+		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
 	}
 	var nonnull int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM tasks WHERE cancelled_at IS NOT NULL`).Scan(&nonnull); err != nil || nonnull != 0 {

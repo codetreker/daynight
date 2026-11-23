@@ -1,13 +1,15 @@
 import { awaitAbortable } from '../../../daynight/src/api/abort';
-import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
+import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { id, malformed, record, string, timestamp } from './parse';
 import { parseConfigurationRevision } from './worker-configuration';
 
-export type PromptTarget =
+export type PromptPurpose = 'worker' | 'reviewer';
+export type PromptTarget = (
   | { readonly scope: 'user' }
   | { readonly scope: 'project'; readonly projectId: string }
-  | { readonly scope: 'worker'; readonly workerId: string };
+  | { readonly scope: 'worker'; readonly workerId: string }
+) & { readonly purpose?: PromptPurpose };
 export type PromptResource = {
   readonly scope: PromptTarget['scope']; readonly scopeId: string; readonly revision: string;
   readonly text: string; readonly updatedAt: string | null;
@@ -17,6 +19,7 @@ export type PromptAdmission = { readonly userId: string; readonly onPrincipalMis
 
 export const PROMPT_REQUEST_BYTES = 1024 * 1024;
 export const PROMPT_RESPONSE_BYTES = 6 * 1024 * 1024 + 4096;
+export const REVIEWER_PROMPT_TEXT_BYTES = 32 * 1024;
 
 export const isPromptText = (value: unknown): value is string =>
   typeof value === 'string' && value.isWellFormed() && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/u.test(value);
@@ -24,11 +27,15 @@ export const isPromptText = (value: unknown): value is string =>
 export const promptSubmissionBytes = (submission: PromptSubmission): number =>
   new TextEncoder().encode(JSON.stringify(submission)).byteLength;
 
+export const promptTextTooLarge = (target: PromptTarget, text: string): boolean =>
+  target.purpose === 'reviewer' && new TextEncoder().encode(text).byteLength > REVIEWER_PROMPT_TEXT_BYTES;
+
 const targetPath = (target: PromptTarget, userId: string): { url: string; scopeId: string } => {
+  const reviewer = target.purpose === 'reviewer';
   switch (target.scope) {
-    case 'user': return { url: '/api/v1/me/worker-prompt', scopeId: userId };
-    case 'project': { const scopeId = requestId(target.projectId); return { url: `/api/v1/me/projects/${scopeId}/worker-prompt`, scopeId }; }
-    case 'worker': { const scopeId = requestId(target.workerId); return { url: `/api/v1/me/workers/${scopeId}/prompt`, scopeId }; }
+    case 'user': return { url: `/api/v1/me/${reviewer ? 'reviewer' : 'worker'}-prompt`, scopeId: userId };
+    case 'project': { const scopeId = requestId(target.projectId); return { url: `/api/v1/me/projects/${scopeId}/${reviewer ? 'reviewer' : 'worker'}-prompt`, scopeId }; }
+    case 'worker': { const scopeId = requestId(target.workerId); return { url: `/api/v1/me/workers/${scopeId}/${reviewer ? 'reviewer-prompt' : 'prompt'}`, scopeId }; }
     default: throw new ApiError('protocol');
   }
 };
@@ -38,7 +45,7 @@ export const parsePromptResource = (value: unknown, target: PromptTarget, userId
   if (Object.keys(data).length !== keys.length || keys.some(key => !Object.hasOwn(data, key))) return malformed();
   const expectedId = targetPath(target, requestId(userId)).scopeId;
   const scopeId = id(data.scopeId), revision = parseConfigurationRevision(data.revision, true), text = string(data.text);
-  if (data.scope !== target.scope || scopeId !== expectedId || !isPromptText(text) || new TextEncoder().encode(text).byteLength > PROMPT_REQUEST_BYTES) return malformed();
+  if (data.scope !== target.scope || scopeId !== expectedId || !isPromptText(text) || new TextEncoder().encode(text).byteLength > PROMPT_REQUEST_BYTES || promptTextTooLarge(target, text)) return malformed();
   const updatedAt = data.updatedAt === null ? null : timestamp(data.updatedAt);
   if (revision === '0' ? text !== '' || updatedAt !== null : updatedAt === null) return malformed();
   return { scope: target.scope, scopeId, revision, text, updatedAt };
@@ -73,7 +80,7 @@ const decodePromptJson = async (response: Response, signal: AbortSignal): Promis
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    return decodeStrictSessionJson(bytes, PROMPT_RESPONSE_BYTES);
+    return decodeStrictJson(bytes, PROMPT_RESPONSE_BYTES);
   } finally {
     signal.removeEventListener('abort', cancel);
     try { if (!cancelled) await awaitAbortable(reader.cancel().catch(() => undefined), signal); }
@@ -96,7 +103,7 @@ export const saveWorkerPrompt = async (target: PromptTarget, submission: PromptS
   if (expectedUserId !== userId || !isPromptText(submission.text)) throw new ApiError('protocol');
   const revision = parseConfigurationRevision(submission.revision, true);
   const input = { expectedUserId, revision, text: submission.text };
-  if (promptSubmissionBytes(input) > PROMPT_REQUEST_BYTES) throw new ApiError('protocol', null, 'payload_too_large');
+  if (promptSubmissionBytes(input) > PROMPT_REQUEST_BYTES || promptTextTooLarge(target, input.text)) throw new ApiError('protocol', null, 'payload_too_large');
   const { url } = targetPath(target, userId);
   const response = await request(url, signal, {
     method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(input),

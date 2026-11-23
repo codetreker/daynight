@@ -13,8 +13,10 @@ own behavior.
 
 ## Decision
 
-The shared Markdown renderer classifies each original image reference through
-`resolveAttachmentReference()` using the caller's root or document base. Only
+The document adapter classifies each original image reference through
+`resolveAttachmentReference()` using the caller's root or document base; the
+[shared Markdown architecture](../architecture/2026-11-17-shared-markdown-document.md)
+passes the normalized source separately from the checked display URL. Only
 attachment-relative images receive local failure feedback and ordinary Retry.
 URL construction continues to preserve encoded path segments, directory semantics,
 query and fragment. Task and Goal descriptions supply an attachment-root base;
@@ -51,5 +53,6 @@ semantics. The original reference and existing classifier preserve that distinct
 Image failures have an explicit recovery action without transferring ownership
 from the image to its surrounding reader. Requests keep normal browser image
 loading and caching semantics, and a failed retry remains a visible local error.
-There is no new product API, authentication recovery action or preview origin.
-The selected-image preview retains its existing independent error and retry UI.
+The [default preview decision](../architecture/2026-11-16-default-task-preview.md)
+adds a new-tab SSO action and Task-origin URLs without changing retry ownership.
+The selected-image preview retains its independent error and retry UI.

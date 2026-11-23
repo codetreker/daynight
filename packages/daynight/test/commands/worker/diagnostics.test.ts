@@ -5,6 +5,7 @@ import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnos
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { WorkerConfigurationDiagnosticMetadata } from "../../../src/commands/worker/configuration-diagnostics.js";
+import { WindowsProcessProofError } from "../../../src/commands/controller/windows-process-proof.js";
 
 const directories: string[] = [];
 const sinks: Awaited<ReturnType<typeof createWorkerDiagnostics>>[] = [];
@@ -124,6 +125,25 @@ it("retains a claim-scoped cause without inventing a missing local task", async 
   expect(record).not.toHaveProperty("agent");
 });
 
+it("records bounded process proof context and the original cause without extra process or Session data", async () => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "d-")); directories.push(home);
+  const output: string[] = [];
+  const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "worker", platform: "windows", log: text => { output.push(text); } });
+  const cause = Object.assign(new WindowsProcessProofError("open-process", 87, "Win32"), { inventory: "private-process-inventory", nativeSession: "private-native-session" });
+  const error = new Error("Session confirmation failed.", { cause });
+  logger.emit({ kind: "error", message: "Process proof failed.", error });
+  await logger.flush();
+  const text = await readFile(logger.filename, "utf8");
+  expect(JSON.parse(text).error.cause).toEqual({ name: cause.name, message: cause.message, stage: "open-process", domain: "Win32", code: 87 });
+  for (const result of [text, output.join("")]) {
+    expect(result).not.toContain("private-process-inventory");
+    expect(result).not.toContain("private-native-session");
+  }
+  expect(error.cause).toBe(cause);
+});
+
 
 const realFiles: WorkerDiagnosticFiles = {
   ensureDirectory: async directory => { await mkdir(directory, { recursive: true, mode: 0o700 }); },
@@ -152,6 +172,41 @@ const gate = () => {
   releaseGates.push(release);
   return { promise, release };
 };
+
+it("keeps routine configuration stages in JSONL while presenting exceptional and application events", async () => {
+  const f = await sinkFixture();
+  const base = {
+    source: { state: "initialized", generation: "generation", desiredRevision: "10", observationRevision: "1" },
+    remote: "not_sent", local: "not_attempted", occurrences: 0, nextAttemptAt: null,
+  } as const;
+  const routine: WorkerConfigurationDiagnosticMetadata[] = [];
+  for (const syncId of ["sync-1", "sync-2"]) {
+    routine.push(
+      { ...base, phase: "report-send", status: "started", syncId, reportId: `report-${syncId}`, recordIds: [`record-${syncId}`] },
+      { ...base, phase: "receipt-accept", status: "succeeded", syncId, reportId: `report-${syncId}`, recordIds: [`record-${syncId}`], requestId: `request-${syncId}`, remote: "confirmed", local: syncId === "sync-1" ? "ignored" : "persisted", observationAccepted: false },
+    );
+  }
+  for (const configuration of routine) f.sink.emit({ kind: "worker-configuration-stage", message: "routine", configuration });
+  expect(f.output).toEqual([]);
+  const visible: { kind: string; status: WorkerConfigurationDiagnosticMetadata["status"] }[] = [
+    { kind: "worker-configuration-stage", status: "discarded" },
+    { kind: "worker-configuration-failed", status: "failed" },
+    { kind: "worker-configuration-summary", status: "summary" },
+    { kind: "worker-configuration-recovered", status: "recovered" },
+    { kind: "worker-configuration-aligned", status: "aligned" },
+    { kind: "worker-configuration-application", status: "started" },
+    { kind: "worker-configuration-application", status: "succeeded" },
+  ];
+  for (const { kind, status } of visible) f.sink.emit({ kind, message: status, configuration: { ...base, phase: "report-send", status } });
+  f.sink.emit({ kind: "worker-configuration-stage", message: "missing metadata" });
+  await f.sink.flush();
+  expect(f.output).toHaveLength(visible.length + 1);
+  for (const [index, { kind, status }] of visible.entries()) expect(f.output[index]).toContain(` ${kind} ${status} `);
+  expect(f.output.at(-1)).toContain("worker-configuration-stage missing metadata");
+  const written = await records(f.sink.filename);
+  expect(written.map(record => record.kind)).toEqual([...routine.map(() => "worker-configuration-stage"), ...visible.map(event => event.kind), "worker-configuration-stage"]);
+  expect(written.slice(0, routine.length).map(record => record.configuration)).toEqual(routine);
+});
 
 it("projects configuration source and result facts into redacted JSONL without extra payload", async () => {
   const token = "configuration-diagnostic-secret", projectId = "fb1a3e30-f945-4c48-ab0f-55be117e098e";
@@ -439,6 +494,7 @@ it("joins the default stderr callback and later error event before closing its l
     expect(reported).toContain("diagnostic-sink-blocked");
     await expect(f.sink.close()).rejects.toBe(failure);
     expect(process.stderr.listenerCount("error")).toBe(listenersBefore);
+    expect(f.sink.isClosed()).toBe(true);
   } finally {
     write.mockRestore();
     if (callback !== undefined && process.stderr.listenerCount("error") > listenersBefore) process.stderr.emit("error", outputFailure);
@@ -465,10 +521,12 @@ it("keeps a real append handle owned until its delayed write and close complete"
   await vi.advanceTimersByTimeAsync(60_000);
   expect(completed).toBe(false);
   expect(released).toBe(false);
+  expect(f.sink.isClosed()).toBe(false);
   expect(await readFile(f.sink.filename, "utf8")).toBe("");
   release.release();
   await closing;
   expect(released).toBe(true);
+  expect(f.sink.isClosed()).toBe(true);
   expect((await records(f.sink.filename)).map(record => record.kind)).toEqual(["held-write"]);
 });
 

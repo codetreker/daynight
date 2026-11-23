@@ -34,6 +34,11 @@ describe("worker ownership detail reads", () => {
   it.each(["codex", "claude", "copilot"])("accepts explicit Web claims for %s", (agent) => {
     const value = { ...task, properties: { ...task.properties, worker: { ...worker, agent, agentControlMode: "web", herdr: null } } };
     expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
+    const { herdr: _herdr, ...withoutHerdr } = worker;
+    const without = { ...task, properties: { ...task.properties, worker: { ...withoutHerdr, agent, agentControlMode: "web" } } };
+    const parsed = parseTaskDetail(without, projectId, taskId);
+    expect(parsed).toEqual(without);
+    expect(readWorkerClaim(parsed.properties)).toMatchObject({ agent, agentControlMode: "web", herdr: null });
   });
   it("retains Claude Herdr and existing Copilot Herdr claims", () => {
     for (const agent of ["claude", "copilot"]) {

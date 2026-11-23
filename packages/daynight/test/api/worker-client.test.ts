@@ -13,8 +13,8 @@ const worktreeId = "66666666-6666-6666-6666-666666666666";
 const userId = "77777777-7777-7777-7777-777777777777";
 const newClaimId = "88888888-8888-8888-8888-888888888888";
 const time = "2026-10-24T12:34:56.123456789Z";
-const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId } as const;
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "web", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "task", parentId: null,
   id: taskId, projectId, title: "Claimed task", description: "", tags: [], properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
@@ -53,20 +53,53 @@ afterEach(async () => {
 });
 
 describe("worker protocol negotiation", () => {
-  it("advertises the extended schema for current Herdr read and claim responses", async () => {
+  it("advertises the extended schema for historical reads and Web claim responses", async () => {
     const headers: (string | string[] | undefined)[] = [];
     const origin = await listen((request, response) => {
       headers.push(request.headers["daynight-worker-protocol"]);
-      respond(response, task(claim()));
+      respond(response, task(headers.length === 1 ? { ...claim(), agentControlMode: "herdr" } : claim()));
     });
     const client = api(origin);
     await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
-    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "web" } } });
     expect(headers).toEqual(["2", "2"]);
   });
 });
 
 describe("in-process worker task API", () => {
+  it("sends an applied filter digest with the claim and preserves deterministic refusals", async () => {
+    const bodies: unknown[] = [];
+    const key = "a".repeat(64);
+    const origin = await listen((_request, response, body) => {
+      bodies.push(body);
+      if (bodies.length === 1) respond(response, task(claim()));
+      else respond(response, { error: { code: "claim_conflict", message: "changed", requestId: "claim-test" } }, 409);
+    });
+    const client = api(origin);
+    const input = { ...descriptor, version: 1n, taskTagFilterKey: key };
+    await expect(client.claimWorkerTask(projectId, taskId, input)).resolves.toHaveProperty("properties.worker.claimId", claimId);
+    await expect(client.claimWorkerTask(projectId, taskId, input)).rejects.toMatchObject({ status: 409, code: "claim_conflict", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(bodies).toEqual([input, input]);
+  });
+
+  it("preserves the service's unsupported-filter refusal without retrying", async () => {
+    let count = 0;
+    const origin = await listen((_request, response) => {
+      count++;
+      respond(response, { error: { code: "worker_task_tag_filter_unsupported", message: "missing filter proof", requestId: "claim-test" } }, 409);
+    });
+    await expect(api(origin).claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).rejects.toMatchObject({ status: 409, code: "worker_task_tag_filter_unsupported", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(count).toBe(1);
+  });
+
+  it.each([null, "", "A".repeat(64), "a".repeat(63), "g".repeat(64)])("rejects invalid claim digest %s before dispatch", (taskTagFilterKey) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, taskTagFilterKey } as never)).toThrow("taskTagFilterKey must be a lowercase SHA-256 digest.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("requires the exact startup report in a confirmed update receipt", async () => {
     const startupReport = { schemaVersion: 1 as const, source: "worker" as const, sessionId: taskId, claimId,
       executionGeneration: "1", controllerInstanceId: workerId, revision: "1", observedAt: time,
@@ -85,7 +118,11 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
+    const webClaim = { ...claim(), agentControlMode: "web" as const };
+    const { herdr: _herdr, ...newWebClaim } = webClaim;
+    const claimed = task(webClaim, max);
+    const updated = task({ ...webClaim, phase: "executing", nativeSessionId: "native" });
+    const responses = [{ ...claimed, properties: { ...claimed.properties, worker: newWebClaim } }, { ...updated, properties: { ...updated.properties, worker: { ...newWebClaim, phase: "executing", nativeSessionId: "native" } } }, task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -93,9 +130,9 @@ describe("in-process worker task API", () => {
       respond(response, result);
     });
     const client = api(origin);
-    const initial: ClaimWorkerTaskInput = { ...descriptor, version: max - 1n };
-    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: claim() } });
-    const update = { version: 1n, claimId, phase: "executing", herdr: { paneId: "p", session: "w", workspaceId: "ws" }, nativeSessionId: "native" } as const;
+    const initial: ClaimWorkerTaskInput = { ...descriptor, agentControlMode: "web", version: max - 1n };
+    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: newWebClaim } });
+    const update = { version: 1n, claimId, phase: "executing", nativeSessionId: "native" } as const;
     await client.updateWorkerClaim(projectId, taskId, update);
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true });
@@ -110,6 +147,16 @@ describe("in-process worker task API", () => {
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
     expect(requests[3]!.body).toEqual({ version: 1n, claimId, stoppedConfirmed: true });
     expect(requests[4]!.body).toEqual({ version: 1n, claimId });
+  });
+
+  it.each([null, undefined, { session: "w", workspaceId: "ws", paneId: "p" }])("rejects herdr=%j in new claim and update inputs before dispatch", (herdr) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(() => client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([true, false, undefined, null])("rejects deprecated continuityConfirmed=%s before any worker write", (continuityConfirmed) => {
@@ -337,6 +384,19 @@ describe("in-process worker task API", () => {
 
     expect(() => client.listTasks(projectId, { workerId: invalidWorkerId } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
     expect(() => client.listTaskPage(projectId, { workerId: invalidWorkerId, limit: 1 } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("validates candidate worker identity and its query scope before dispatch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    for (const candidateWorkerId of ["invalid", null, false]) {
+      expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, candidateWorkerId } as never)).toThrow("Candidate worker ID filter must be a hyphenated UUID.");
+    }
+    expect(() => client.listTaskPage(projectId, { limit: 1, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
+    expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, workerId, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
     expect(fetch).not.toHaveBeenCalled();
   });
 

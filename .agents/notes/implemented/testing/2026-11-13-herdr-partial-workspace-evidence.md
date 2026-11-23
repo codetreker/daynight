@@ -19,6 +19,8 @@ readiness proof was not obtained.
 
 ## Decision
 
+The [platform validation retirement](2026-11-18-retire-herdr-platform-validation.md) supersedes the dedicated fixture and checker described here. The original decisions and rationale remain below as history.
+
 The isolated real-platform fixture handles an unbound Windows readiness failure
 only after observing the exact execution owner, workspace, pane, terminal and
 original layout intent. It verifies the current layout and process root before

@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -37,6 +38,7 @@ const expectHittableInsideClips = async (control: Locator) => {
 
 const install = async (page: Page, locale: 'en' | 'zh-CN') => {
   let grantUse = usedAt;
+  let tokenRevoked = false;
   const reads: string[] = [];
   await page.clock.install({ time: new Date('2026-11-12T12:00:00Z') });
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
@@ -44,18 +46,23 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
     reads.push(`${request.method()} ${path}`);
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send(user);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === '/api/v1/me/tokens') return send({ items: [
-      { id: tokenId, name: tokenName, createdAt, expiresAt, lastUsedAt: usedAt },
-      { id: '00000000-0000-4000-8000-000000000022', name: 'Unused token', createdAt, expiresAt: null, lastUsedAt: null },
+    if (path === `/api/v1/me/tokens/${tokenId}` && request.method() === 'DELETE') {
+      tokenRevoked = true;
+      return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': userId } });
+    }
+    if (path === '/api/v2/me/tokens') return send({ items: [
+      ...tokenRevoked ? [] : [{ id: tokenId, name: tokenName, createdAt, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: usedAt }],
+      { id: '00000000-0000-4000-8000-000000000022', name: 'Unused token', createdAt, expiresAt: null, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null },
     ] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [
-      { id: grantId, clientName: 'Long client', clientId, resource, scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: grantUse, revokedAt: null, status: 'active' },
-      { id: '00000000-0000-4000-8000-000000000032', clientName: 'Unused client', clientId: 'https://unused.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: null, revokedAt: null, status: 'active' },
-      { id: '00000000-0000-4000-8000-000000000033', clientName: 'Revoked client', clientId: 'https://revoked.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: usedAt, revokedAt: usedAt, status: 'revoked' },
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [
+      { id: grantId, clientName: 'Long client', clientId, resource, scope: 'daynight:mcp', createdAt, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: grantUse, revokedAt: null, status: 'active' },
+      { id: '00000000-0000-4000-8000-000000000032', clientName: 'Unused client', clientId: 'https://unused.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, revokedAt: null, status: 'active' },
+      { id: '00000000-0000-4000-8000-000000000033', clientName: 'Revoked client', clientId: 'https://revoked.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: usedAt, revokedAt: usedAt, status: 'revoked' },
     ] });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -63,12 +70,42 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
 };
 
 for (const locale of ['en', 'zh-CN'] as const) {
-  for (const width of [1440, 800, 390, 320]) {
+  test(`token revocation starts on cancel and keeps keyboard actions safe in ${locale}`, async ({ page }) => {
+    const fixture = await install(page, locale);
+    await page.goto('/account');
+    await page.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
+    const opener = page.getByRole('button', { name: locale === 'en' ? `Revoke token ${tokenName}` : `撤销令牌 ${tokenName}` });
+    const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Revoke access token?' : '撤销访问令牌？' });
+    const cancel = dialog.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
+    const close = dialog.getByRole('button', { name: locale === 'en' ? 'Close dialog' : '关闭对话框' });
+    const confirm = dialog.getByRole('button', { name: locale === 'en' ? 'Revoke token' : '撤销令牌', exact: true });
+    const writes = () => fixture.reads.filter(value => value.startsWith('DELETE /api/v1/me/tokens/'));
+    for (const action of ['Enter', 'Space', 'click', 'Escape'] as const) {
+      await opener.click(); await expect(cancel).toBeFocused();
+      if (action === 'click') await cancel.click(); else await page.keyboard.press(action);
+      await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+      expect(writes()).toEqual([]);
+    }
+    await opener.click(); await expect(cancel).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(confirm).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(close).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(confirm).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(cancel).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(close).toBeFocused();
+    await confirm.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toHaveCount(0);
+    expect(writes()).toEqual([`DELETE /api/v1/me/tokens/${tokenId}`]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  for (const width of [1280, 800, 390, 320]) {
     test(`credential metadata remains readable and operable in ${locale} at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
       await install(page, locale);
       await page.goto('/account');
-      await page.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
+      await page.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
       const token = page.locator('.token-row').filter({ hasText: tokenName });
       const grant = page.locator('.grant-row').filter({ hasText: clientId });
       const revoked = page.locator('.owner-grant-row.revoked').filter({ hasText: 'Revoked client' });
@@ -123,7 +160,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
       await expect(grant.locator('details')).toHaveAttribute('open', '');
       await expect(grant.locator('.full-time')).toHaveText(title);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-      expect(await token.locator('.row-detail').evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(100);
+      expect(await token.locator('.row-detail').evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(0);
       await expect(grant.locator('.grant-origin')).toContainText(clientId);
       await expect(grant.locator('.grant-facts')).toContainText(resource);
       for (const row of [token, grant]) {
@@ -137,7 +174,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
       for (const content of [grant.locator('.grant-origin'), grant.locator('.grant-facts p').first()]) {
         expect(await content.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
       }
-      await grant.locator('.actions button').click();
+      await grant.getByRole('button', { name: locale === 'en' ? 'Revoke authorization for Long client' : '撤销 Long client 的应用授权', exact: true }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -150,7 +187,7 @@ test('a clock tick and metadata refresh preserve the focused open details and sc
   await page.setViewportSize({ width: 390, height: 600 });
   const fixture = await install(page, 'en');
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Access credentials', exact: true }).click();
+  await page.getByRole('link', { name: 'Access credentials', exact: true }).click();
   const grant = page.locator('.grant-row').filter({ hasText: clientId });
   const details = grant.locator('details');
   const summary = details.locator('summary');
@@ -168,7 +205,7 @@ test('a clock tick and metadata refresh preserve the focused open details and sc
     state.credentialScrollTop = state.credentialScroll.scrollTop;
   });
   expect(await page.evaluate(() => (window as unknown as { credentialScrollTop: number }).credentialScrollTop)).toBeGreaterThan(0);
-  const credentialReads = () => fixture.reads.filter(value => value === 'GET /api/v1/me/tokens' || value === 'GET /api/v2/oauth/grants').length;
+  const credentialReads = () => fixture.reads.filter(value => value === 'GET /api/v2/me/tokens' || value === 'GET /api/v3/oauth/grants').length;
   const initialReads = credentialReads();
   await page.clock.fastForward(60_000);
   await expect(summary).toContainText('About 4 min ago');

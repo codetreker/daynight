@@ -11,14 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
-	"github.com/google/uuid"
 )
-
-// Store supplies independent snapshots and live Project write transactions.
-type Store interface {
-	store.ProjectWriter
-	store.SnapshotReader
-}
 
 // Remote supplies current GitHub facts. Each actual request must invoke the
 // checkpoint bound to its context by remote.WithRequestCheckpoint.
@@ -27,24 +20,8 @@ type Remote interface {
 	VerifyAccess(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	ResolveRepository(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	ListOpen(context.Context, int64, string, string, func([]githubpr.Observation) error) error
+	ListAll(ctx context.Context, installationID, repositoryID int64, owner, repo string, visit func([]remote.PullSummary) error) (bool, error)
 	PullRequest(context.Context, int64, string, string, int64) (githubpr.Observation, error)
-}
-
-type Executor struct {
-	db     Store
-	remote Remote
-	appID  int64
-	log    *slog.Logger
-}
-
-func NewExecutor(db Store, r Remote, appID int64, logger *slog.Logger) (*Executor, error) {
-	if db == nil || r == nil || appID <= 0 {
-		return nil, errors.New("github executor requires store, remote and app ID")
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Executor{db, r, appID, logger}, nil
 }
 
 var errLease = errors.New("github sync lease lost")
@@ -52,61 +29,26 @@ var errUnknown = errors.New("github sync transaction outcome unknown")
 var errTransaction = errors.New("github sync transaction failed")
 var errCheckpoint = errors.New("github sync checkpoint failed")
 var errAccessStop = errors.New("github access check stopped work")
+var errObservationConflict = errors.New("github observation conflicts with confirmed state")
 
 type run struct {
-	e          *Executor
+	remote     Remote
+	appID      int64
+	snapshot   store.SnapshotReader
+	write      func(context.Context, func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error)
 	project    string
 	lease      store.GitHubLease
 	connection githubpr.Connection
 	kind       string
 	log        *slog.Logger
+	confirmed  map[int64]*githubpr.PullRequest
 }
 
-// Execute attempts one bounded access or hint job, or one complete poll. The
-// caller owns its context and may call it again after the persisted next time.
-func (e *Executor) Execute(ctx context.Context, project string) error {
-	return e.ExecuteWithClaimContext(ctx, ctx, project)
-}
-
-// ExecuteWithClaimContext cancels admission independently from already claimed
-// work, allowing shutdown to stop new claims before draining existing work.
-func (e *Executor) ExecuteWithClaimContext(ctx, claimCtx context.Context, project string) error {
-	if project == "" {
-		return errors.New("github project ID is required")
-	}
-	r := &run{e: e, project: project, lease: store.GitHubLease{Token: uuid.NewString()}}
-	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token)
-	claimed, err := r.claim(claimCtx)
-	if err != nil || !claimed {
-		return err
-	}
-	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token, "generation", r.lease.Generation, "installation_id", *r.connection.InstallationID, "repository_id", *r.connection.RepositoryID, "trigger", r.kind)
-	if r.kind == core.WorkAccess && r.connection.AccessHintID != nil {
-		r.log = r.log.With("hint_id", *r.connection.AccessHintID)
-		if r.connection.AccessDeliveryID != nil {
-			r.log = r.log.With("delivery_id", *r.connection.AccessDeliveryID)
-		}
-	}
-	started := time.Now()
-	r.log.InfoContext(ctx, "github sync started", "phase", "claim")
-	err = r.execute(ctx)
-	if err != nil {
-		var re *remote.Error
-		attrs := []any{"phase", "stop", "result_code", fail(err).Code, "duration_ms", time.Since(started).Milliseconds()}
-		if errors.As(err, &re) {
-			attrs = append(attrs, "remote_status", re.Status, "github_request_id", re.RequestID)
-		}
-		r.log.WarnContext(ctx, "github sync stopped", attrs...)
-	} else {
-		r.log.InfoContext(ctx, "github sync completed", "phase", "finish", "duration_ms", time.Since(started).Milliseconds())
-	}
-	return err
-}
-func (r *run) tx(ctx context.Context, fn func(context.Context, store.GitHubWriteDAO) error) (store.Completion, error) {
+func (r *run) tx(ctx context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {
 	c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	started := time.Now()
-	completion, err := r.e.db.WriteProject(c, r.project, func(s store.ProjectWriteScope) error { return fn(c, s.GitHubDAO()) })
+	completion, err := r.write(c, fn)
 	r.log.DebugContext(ctx, "github project transaction", "phase", "publish", "result_code", string(completion.Outcome), "duration_ms", time.Since(started).Milliseconds())
 	return completion, err
 }
@@ -122,61 +64,8 @@ func committed(c store.Completion, err error) error {
 	}
 	return nil
 }
-func (r *run) claim(ctx context.Context) (bool, error) {
-	var selected bool
-	completion, err := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
-		conn, e := d.Connection(c)
-		if e != nil {
-			return e
-		}
-		now, e := d.ObservedAt(c)
-		if e != nil {
-			return e
-		}
-		pendingDue, e := d.HasDuePending(c, now)
-		if e != nil {
-			return e
-		}
-		kind := core.WorkKind(conn, r.e.appID, now, pendingDue)
-		if kind == "" {
-			return nil
-		}
-		r.connection = conn
-		r.kind = kind
-		r.lease.Generation = conn.Generation
-		ok, e := d.Claim(c, store.GitHubClaim{AppID: *conn.AppID, Generation: conn.Generation, Token: r.lease.Token, Kind: kind, Until: now.Add(core.LeaseDuration)})
-		selected = ok
-		return e
-	})
-	if completion.Outcome == store.TransactionUnknown && selected {
-		// Only an observation of this exact claim permits continuing an uncertain claim.
-		c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
-		defer cancel()
-		var valid bool
-		readErr := r.e.db.ReadSnapshot(c, func(s store.SnapshotScope) error {
-			conn, e := s.GitHubDAO().Connection(c, r.project)
-			if e != nil {
-				return e
-			}
-			now, e := s.ObservedAt(c)
-			if e != nil {
-				return e
-			}
-			valid = conn.Enabled && conn.SyncEnabled && conn.Generation == r.lease.Generation && conn.ClaimToken != nil && *conn.ClaimToken == r.lease.Token && conn.ClaimUntil != nil && conn.ClaimUntil.After(now)
-			return nil
-		})
-		if readErr == nil && valid {
-			return true, nil
-		}
-		return false, errors.Join(errUnknown, err, readErr)
-	}
-	if e := committed(completion, err); e != nil {
-		return false, e
-	}
-	return selected, nil
-}
 func (r *run) renew(ctx context.Context) error {
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		if _, e := d.Connection(c); e != nil {
 			return e
 		}
@@ -196,7 +85,7 @@ func (r *run) renew(ctx context.Context) error {
 	return committed(c, e)
 }
 func (r *run) runtime(ctx context.Context, change func(*store.GitHubRuntimeWrite, githubpr.Connection, time.Time)) error {
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		conn, e := d.Connection(c)
 		if e != nil {
 			return e
@@ -220,7 +109,7 @@ func (r *run) runtime(ctx context.Context, change func(*store.GitHubRuntimeWrite
 }
 func (r *run) execute(ctx context.Context) error {
 	ctx = r.checkpointContext(ctx)
-	if *r.connection.AppID != r.e.appID {
+	if *r.connection.AppID != r.appID {
 		return r.runtime(ctx, func(w *store.GitHubRuntimeWrite, c githubpr.Connection, now time.Time) {
 			core.AccessUnavailable(w, c, now, "app_changed", true)
 			w.ReleaseClaim = true

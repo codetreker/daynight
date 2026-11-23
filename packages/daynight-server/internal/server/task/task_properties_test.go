@@ -132,11 +132,11 @@ func TestTaskHTTPPatchPausePreservesActiveWorkerAcrossConflict(t *testing.T) {
 		t.Run(map[bool]string{true: "pause", false: "unpause"}[value], func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			expected := maps.Clone(task.Properties)
-			expected["paused"] = rawProperty(t, value)
+			expected["blocked"] = rawProperty(t, value)
 			result := propertyResult(task, expected)
 			h.Tasks.UpdateFunc = func(ctx context.Context, p model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
 				requirePropertyCall(t, ctx, p, projectID, id)
-				want := model.TaskPropertiesPatch{"paused": rawProperty(t, value)}
+				want := model.TaskPropertiesPatch{"blocked": rawProperty(t, value)}
 				if input.Version != task.Version || input.Properties == nil || !reflect.DeepEqual(input.Properties, want) {
 					t.Fatalf("pause patch changed: %#v", input)
 				}
@@ -144,7 +144,9 @@ func TestTaskHTTPPatchPausePreservesActiveWorkerAcrossConflict(t *testing.T) {
 			}
 			response := propertyExtendedRequest(h, http.MethodPatch, propertyTaskPath(task), jsonBody(t, map[string]any{"version": task.Version, "properties": map[string]any{"paused": value}}))
 			actual := decodeResponse[api.Task](t, response, http.StatusOK)
-			if !reflect.DeepEqual(model.TaskProperties(actual.Properties), expected) || actual.Status != string(task.Status) || !reflect.DeepEqual(actual.StartedAt, task.StartedAt) {
+			wireExpected := maps.Clone(expected)
+			wireExpected["paused"] = rawProperty(t, value)
+			if !reflect.DeepEqual(model.TaskProperties(actual.Properties), wireExpected) || actual.Status != string(task.Status) || !reflect.DeepEqual(actual.StartedAt, task.StartedAt) {
 				t.Fatalf("pause response changed service execution data: %#v", actual)
 			}
 		})
@@ -152,7 +154,7 @@ func TestTaskHTTPPatchPausePreservesActiveWorkerAcrossConflict(t *testing.T) {
 	h := newHTTPFixture(t, io.Discard)
 	h.Tasks.UpdateFunc = func(ctx context.Context, p model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
 		requirePropertyCall(t, ctx, p, projectID, id)
-		if input.Version != task.Version || input.Properties == nil || string(input.Properties["paused"]) != "false" {
+		if input.Version != task.Version || input.Properties == nil || string(input.Properties["blocked"]) != "false" {
 			t.Fatalf("stale pause input changed: %#v", input)
 		}
 		return model.Task{}, &model.Fault{Code: "version_conflict", Message: "Task changed."}

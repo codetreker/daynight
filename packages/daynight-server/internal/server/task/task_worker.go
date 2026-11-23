@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 
@@ -17,10 +19,10 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
+func workerRoutes(mux httpx.RouteRegistrar, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
-	mux.HandleFunc("POST "+path, auth.Require(handler.claimWorker))
-	mux.HandleFunc("PATCH "+path, auth.Require(handler.updateWorker))
+	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "claim"), handler.claimWorker)))
+	mux.HandleFunc("PATCH "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "update"), handler.updateWorker)))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST, PATCH")))
 	for _, operation := range []struct {
 		path    string
@@ -29,7 +31,7 @@ func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentica
 		{"release", handler.releaseWorker},
 		{"withdraw", handler.withdrawWorker},
 	} {
-		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(operation.handler))
+		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", operation.path), operation.handler)))
 		mux.HandleFunc(path+"/"+operation.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	}
 }
@@ -48,7 +50,12 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		httpx.WriteError(w, request, logger, "worker_claim", phase, httpx.InvalidInput("worker claim operations do not accept query parameters"))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, allowed...)
+	var fields map[string]json.RawMessage
+	if phase == "claim" || phase == "update" {
+		fields, err = decodeWorkerClaimObject(w, request, allowed)
+	} else {
+		fields, err = httpx.DecodeObject(w, request, allowed...)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
@@ -82,12 +89,30 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	writeTaskMutation(w, request, logger, "worker_claim", http.StatusOK, "", task)
 }
 
+const retiredHerdrMessage = "Herdr is no longer supported. Upgrade your Daynight client."
+
+func decodeWorkerClaimObject(w http.ResponseWriter, request *http.Request, allowed []string) (map[string]json.RawMessage, error) {
+	body, err := httpx.ReadJSONBodyLimit(w, request, httpx.MaxJSONBody, transport.JSONBodyReadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := jsonobject.Decode(body, "request body", allowed...)
+	if err != nil {
+		var unknown *jsonobject.UnknownFieldError
+		if errors.As(err, &unknown) && unknown.Field == "herdr" {
+			return nil, httpx.InvalidInput(retiredHerdrMessage)
+		}
+		return nil, httpx.InvalidInput(err.Error())
+	}
+	return fields, nil
+}
+
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
+	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "taskTagFilterKey"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "herdr", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
+	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
 }
 
 func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -128,14 +153,17 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (taskcore.WorkerDe
 
 func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.WorkerAgentControlMode, error) {
 	if _, exists := fields["agentControlMode"]; !exists {
-		return model.AgentControlModeHerdr, nil
+		return "", httpx.InvalidInput("agentControlMode is required and must be web.")
 	}
 	mode, err := httpx.RequiredString(fields, "agentControlMode")
 	if err != nil {
 		return "", err
 	}
-	if mode != string(model.AgentControlModeHerdr) && mode != string(model.AgentControlModeWeb) {
-		return "", httpx.InvalidInput("agentControlMode must be herdr or web.")
+	if mode != string(model.AgentControlModeWeb) {
+		if mode == string(model.AgentControlModeHerdr) {
+			return "", httpx.InvalidInput(retiredHerdrMessage)
+		}
+		return "", httpx.InvalidInput("agentControlMode must be web.")
 	}
 	return model.WorkerAgentControlMode(mode), nil
 }
@@ -151,30 +179,14 @@ func claimWorkerInput(fields map[string]json.RawMessage) (taskcore.ClaimWorker, 
 	if err != nil {
 		return taskcore.ClaimWorker{}, err
 	}
-	return input, nil
-}
-
-func nullableWorkerHerdr(fields map[string]json.RawMessage) (**model.WorkerHerdr, error) {
-	raw, exists := fields["herdr"]
-	if !exists {
-		return nil, nil
-	}
-	var value *model.WorkerHerdr
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return &value, nil
-	}
-	values, err := jsonobject.Decode(raw, "herdr", "session", "workspaceId", "paneId")
+	input.TaskTagFilterKey, err = httpx.OptionalString(fields, "taskTagFilterKey")
 	if err != nil {
-		return nil, httpx.InvalidInput(err.Error())
+		return taskcore.ClaimWorker{}, err
 	}
-	value = &model.WorkerHerdr{}
-	for key, destination := range map[string]*string{"session": &value.Session, "workspaceId": &value.WorkspaceID, "paneId": &value.PaneID} {
-		*destination, err = httpx.RequiredString(values, key)
-		if err != nil {
-			return nil, err
-		}
+	if err = taskcore.ValidateTaskTagFilterKey(input.TaskTagFilterKey); err != nil {
+		return taskcore.ClaimWorker{}, err
 	}
-	return &value, nil
+	return input, nil
 }
 
 func nullableWorkerSession(fields map[string]json.RawMessage) (**string, error) {
@@ -208,10 +220,6 @@ func updateWorkerInput(fields map[string]json.RawMessage) (taskcore.UpdateWorker
 	if phase != nil {
 		value := model.WorkerPhase(*phase)
 		input.Phase = &value
-	}
-	input.Herdr, err = nullableWorkerHerdr(fields)
-	if err != nil {
-		return taskcore.UpdateWorker{}, err
 	}
 	input.NativeSessionID, err = nullableWorkerSession(fields)
 	if err != nil {

@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +19,7 @@ type privateTransferDAO struct {
 	authorized                 bool
 	authorityKind, authorityID string
 	credentialExpiry           *time.Time
+	principal                  model.Principal
 }
 
 func (s *Store) WritePrivateTransfer(ctx context.Context, operation func(store.PrivateTransferDAO) error) (store.Completion, error) {
@@ -54,6 +57,8 @@ func (d *privateTransferDAO) Stats(ctx context.Context) (store.PrivateTransferSt
 }
 
 func (d *privateTransferDAO) Authorize(ctx context.Context, principal model.Principal, kind, authorityID, projectID, taskID string) error {
+	d.authorized = false
+	d.principal = model.Principal{}
 	if model.RequirePrincipal(principal) != nil || (kind != "pat" && kind != "oauth") || string(principal.Kind) != kind || (kind == "pat" && principal.CredentialID != authorityID) {
 		return model.Unauthenticated(nil)
 	}
@@ -92,7 +97,46 @@ func (d *privateTransferDAO) Authorize(ctx context.Context, principal model.Prin
 	}
 	d.authorized = true
 	d.authorityKind, d.authorityID, d.credentialExpiry = kind, authorityID, expiry
-	return d.recheckAuthority(ctx)
+	if err := d.recheckAuthority(ctx); err != nil {
+		d.authorized = false
+		return err
+	}
+	d.principal = principal
+	return nil
+}
+
+// The policy is read after the existing authority and project locks. Those
+// locks serialize credential edits and preserve the original grant binding.
+func (d *privateTransferDAO) CurrentTransferAuthorization(ctx context.Context, principal model.Principal) (model.CredentialAuthorization, error) {
+	if !d.authorized || d.principal != principal {
+		return model.CredentialAuthorization{}, model.Unauthenticated(nil)
+	}
+	var ids []scopepolicy.ScopeID
+	var version *int64
+	var profile string
+	var err error
+	auth := model.CredentialAuthorization{Principal: principal}
+	kind := scopepolicy.PAT
+	if d.authorityKind == "oauth" {
+		kind = scopepolicy.MCP
+		auth.Profile = model.ScopedMCPProfile
+		err = d.tx.QueryRow(ctx, `SELECT scope,business_scopes,scope_version FROM oauth_grants WHERE id=$1 AND user_id=$2`, d.authorityID, principal.UserID).Scan(&profile, &ids, &version)
+	} else {
+		auth.Profile = model.ScopedPATProfile
+		err = d.tx.QueryRow(ctx, `SELECT business_scopes,scope_version FROM personal_access_tokens WHERE id=$1 AND user_id=$2`, d.authorityID, principal.UserID).Scan(&ids, &version)
+	}
+	if err != nil {
+		return model.CredentialAuthorization{}, pg.QueryError("read transfer credential policy", err)
+	}
+	if ids == nil || version == nil || (kind == scopepolicy.MCP && profile != "daynight:mcp") {
+		return model.CredentialAuthorization{}, fmt.Errorf("invalid transfer credential policy")
+	}
+	policy, err := scopepolicy.NewPolicy(kind, ids, *version)
+	if err != nil {
+		return model.CredentialAuthorization{}, fmt.Errorf("invalid transfer credential policy: %w", err)
+	}
+	auth.Policy = &policy
+	return auth, nil
 }
 
 // LockProjectLifecycle follows the transfer row lock and retains the Task lock

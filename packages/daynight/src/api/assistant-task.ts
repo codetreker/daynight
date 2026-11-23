@@ -3,6 +3,7 @@ import { validateServerToken, validateTokenTransport } from "../config/server-to
 import type { Operation } from "./operation.js";
 import { fields, malformed, text, timestamp } from "./validation.js";
 import * as P from "./assistant-task-parse.js";
+import { botIdentityHeaders } from "./bot-identity.js";
 import type * as T from "./assistant-task-types.js";
 export * from "./assistant-task-types.js";
 export * from "./assistant-task-parse.js";
@@ -47,7 +48,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
       if (controller.signal.aborted) throw new AssistantTaskApiError(false, "request_cancelled");
       dispatched = true;
       response = await Promise.race([(options.fetch ?? globalThis.fetch)(new URL(`/api/v1${path}`, origin), {
-        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...(botId === undefined ? {} : { "X-Daynight-Bot-Id": botId }), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
+        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...botIdentityHeaders(botId), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
         ...(payload === undefined ? {} : { body: payload }), redirect: "manual", cache: "no-store", signal: controller.signal,
       }), aborted]);
       const principal = response.headers.get("Daynight-User-ID");
@@ -105,13 +106,14 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
   };
   const taskPath = (taskId: string) => `/assistant-tasks/${P.assistantTaskId(taskId)}`;
   const entryPath = (taskId: string, collection: string, id: string) => `${taskPath(taskId)}/${collection}/${P.assistantTaskId(id)}`;
-  const queryPath = (path: string, query: T.AssistantTaskQuery = {}) => {
+  const queryPath = (path: string, query: T.AssistantTaskEventQuery = {}) => {
     const params = new URLSearchParams();
     if (query.limit !== undefined) { if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200) throw new Error("limit must be an integer from 1 to 200."); params.set("limit", String(query.limit)); }
-    for (const key of ["cursor", "state", "itemId", "targetBotId"] as const) if (query[key] !== undefined) params.set(key, key.endsWith("Id") ? P.assistantTaskId(query[key]) : text(query[key], true));
+    if (query.type !== undefined && query.excludeType !== undefined) throw new Error("type and excludeType cannot be combined.");
+    for (const key of ["cursor", "state", "itemId", "targetBotId", "type", "excludeType"] as const) if (query[key] !== undefined) params.set(key, key.endsWith("Id") ? P.assistantTaskId(query[key]) : text(query[key], true));
     return params.size === 0 ? path : `${path}?${params}`;
   };
-  const list = <V>(path: string, query: T.AssistantTaskQuery | undefined, parse: (value: unknown) => V) => request(queryPath(path, query), "GET", undefined, v => P.parseAssistantTaskPage(v, parse));
+  const list = <V>(path: string, query: T.AssistantTaskEventQuery | undefined, parse: (value: unknown) => V) => request(queryPath(path, query), "GET", undefined, v => P.parseAssistantTaskPage(v, parse));
   return {
     getTask: (taskId: string) => request(taskPath(taskId), "GET", undefined, v => P.parseAssistantTask(v, taskId, ownerId)),
     listTasks: (query?: T.AssistantTaskQuery) => list("/assistant-tasks", query, v => P.parseAssistantTask(v, undefined, ownerId)),
@@ -129,22 +131,35 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
       });
     },
     getClaimOperation: (taskId: string, operationId: string, expected?: T.AssistantTaskClaimExpectation) => request(entryPath(taskId, "claim-operations", operationId), "GET", undefined, v => P.parseAssistantTaskClaimResult(v, taskId, operationId, expected)),
+    getInbox: (taskId: string) => request(`${taskPath(taskId)}/inbox`, "GET", undefined, P.parseAssistantTaskInbox),
+    enableInbox: (taskId: string, input: T.AssistantTaskInboxInput) => request(`${taskPath(taskId)}/inbox/enable`, "POST", input, v => P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "enable", true)),
+    rotateInbox: (taskId: string, input: T.AssistantTaskInboxInput & { mode: T.AssistantTaskInboxRotateMode }) => request(`${taskPath(taskId)}/inbox/rotate`, "POST", input, v => P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "rotate", true)),
+    disableInbox: (taskId: string, input: T.AssistantTaskInboxInput): Promise<T.AssistantTaskInboxResult> => request(`${taskPath(taskId)}/inbox/disable`, "POST", input, v => { const { token: _token, ...result } = P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "disable"); return result; }),
+    getInboxOperation: (taskId: string, operationId: string): Promise<T.AssistantTaskInboxResult> => request(entryPath(taskId, "inbox-operations", operationId), "GET", undefined, v => { const { token: _token, ...result } = P.parseAssistantTaskInboxResult(v, taskId, operationId); return result; }),
     getManual: (taskId: string, version?: string) => request(`${taskPath(taskId)}/manual${version === undefined ? "" : `/versions/${P.assistantTaskInteger(version)}`}`, "GET", undefined, v => P.parseAssistantTaskManual(v, taskId, version)),
     listManuals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/manual/versions`, query, v => P.parseAssistantTaskManual(v, taskId)),
     rollback: (taskId: string, input: { ifVersion: string; manualVersion: string }) => request(`${taskPath(taskId)}/manual/rollback`, "POST", input, v => P.parseAssistantTaskManual(v, taskId)),
     listAppendix: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/appendix`, query, v => P.parseAssistantTaskAppendix(v, taskId)),
+    relatedAppendix: (taskId: string, query: T.AssistantTaskRelatedQuery = {}) => {
+      const params = new URLSearchParams();
+      if (query.projectId !== undefined) params.set("projectId", P.assistantTaskId(query.projectId));
+      for (const key of ["eventType", "itemCategory"] as const) if (query[key] !== undefined) params.set(key, text(query[key], true));
+      return request(`${taskPath(taskId)}/appendix/related${params.size === 0 ? "" : `?${params}`}`, "GET", undefined, v => P.parseAssistantTaskRelatedAppendices(v, taskId));
+    },
     addAppendix: (taskId: string, input: T.AddAssistantTaskAppendixInput) => request(`${taskPath(taskId)}/appendix`, "POST", input, v => P.parseAssistantTaskAppendix(v, taskId, input.id)),
     updateAppendix: (taskId: string, id: string, input: T.UpdateAssistantTaskAppendixInput) => request(entryPath(taskId, "appendix", id), "PATCH", input, v => P.parseAssistantTaskAppendix(v, taskId, id)),
     deleteAppendix: (taskId: string, id: string, ifVersion: string) => request(entryPath(taskId, "appendix", id), "DELETE", { ifVersion }, v => P.parseAssistantTaskAppendix(v, taskId, id)),
+    validateAppendix: (taskId: string, id: string, input: T.ValidateAssistantTaskAppendixInput) => request(`${entryPath(taskId, "appendix", id)}/validations`, "POST", input, v => { const result = P.parseAssistantTaskAppendix(v, taskId, id); if (result.validation === undefined) return malformed(); return result; }),
     listProposals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/proposals`, query, v => P.parseAssistantTaskProposal(v, taskId)),
     propose: (taskId: string, input: T.ProposeAssistantTaskInput): Promise<T.AssistantTaskProposalResult> => request(`${taskPath(taskId)}/proposals`, "POST", input, v => { const d = fields(v, ["proposal", "rejectedMatches"]); if (!Array.isArray(d.rejectedMatches)) return malformed(); return { proposal: P.parseAssistantTaskProposal(d.proposal, taskId, input.id), rejectedMatches: d.rejectedMatches.map(x => P.parseAssistantTaskProposal(x, taskId)) }; }),
     decide: (taskId: string, id: string, input: T.DecideAssistantTaskInput) => request(`${entryPath(taskId, "proposals", id)}/decision`, "POST", input, v => P.parseAssistantTaskProposal(v, taskId, id)),
     listItems: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/items`, query, v => P.parseAssistantTaskItem(v, taskId)),
     getItem: (taskId: string, id: string) => request(entryPath(taskId, "items", id), "GET", undefined, v => P.parseAssistantTaskItem(v, taskId, id)),
     saveItem: (taskId: string, input: T.SaveAssistantTaskItemInput, id?: string) => request(id === undefined ? `${taskPath(taskId)}/items` : entryPath(taskId, "items", id), id === undefined ? "POST" : "PATCH", input, v => P.parseAssistantTaskItem(v, taskId, id ?? input.id)),
+    getMetrics: (taskId: string) => request(`${taskPath(taskId)}/metrics`, "GET", undefined, P.parseAssistantTaskMetrics),
     listRecords: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/records`, query, v => P.parseAssistantTaskRecord(v, taskId)),
-    addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => P.parseAssistantTaskRecord(v, taskId, input.id)),
-    listEvents: (taskId?: string, query?: T.AssistantTaskQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),
+    addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => { const result = P.parseAssistantTaskRecord(v, taskId, input.id); if (result.kind !== input.kind || result.outcome !== input.outcome || result.actionRecordId !== input.actionRecordId) return malformed(); return result; }),
+    listEvents: (taskId?: string, query?: T.AssistantTaskEventQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),
     addEvent: (taskId: string, input: T.AddAssistantTaskEventInput) => request(`${taskPath(taskId)}/events`, "POST", input, v => P.parseAssistantTaskEvent(v, taskId, input.id)),
     ackEvent: (taskId: string, id: string, input: { operationId: string; state?: "delivered" | "expired" }) => request(`${entryPath(taskId, "events", id)}/ack`, "POST", input, v => { const event = P.parseAssistantTaskEvent(v, taskId, id); if (event.ackOperationId !== input.operationId) return malformed(); return event; }),
     clearAttention: (targetBotId: string) => request("/assistant-task-events/attention", "POST", { targetBotId }, v => { const d = fields(v, ["targetBotId"]); if (P.assistantTaskId(d.targetBotId) !== targetBotId) return malformed(); return { targetBotId }; }),

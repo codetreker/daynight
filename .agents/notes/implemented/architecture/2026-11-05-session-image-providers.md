@@ -63,7 +63,7 @@ Claude's persisted Read result uses `toolUseResult`, while the live SDK exposes
 bounded logical-string signature and the complete native record's schema before
 discarding the redundant bytes. It retains the authoritative content block's
 offset, occurrence and failure state. Unknown or unmatched copies remain subject
-to the original metadata budget. This comparison only identifies a documented
+to the per-record and page limits. This comparison only identifies a documented
 copy within one record; it cannot establish input acceptance or merge distinct
 image occurrences.
 
@@ -121,11 +121,15 @@ with one committed current body row and preserves the same guarantee. The Provid
 current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata
-store. Wire spools charge actual bytes to the shared media ledger and retain their
-charge until readers stop and removal is durable. Transcript index writers retain
-a process-bound reservation across crashes; recovery must prove that the original
-writer stopped before admitting another writer. None of these private adapters
-creates an independent upload or public resource protocol.
+store. Wire spools retain their files until readers stop and removal is durable.
+The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes the shared cumulative media accounting; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes spool growth estimates without changing file lifetime. Transcript index writers
+retain a process-bound reservation across crashes; recovery must prove that the
+original writer stopped before admitting another writer. None of these private
+adapters creates an independent upload or public resource protocol.
 
 An image modality in a model catalog does not prove geometry. Codex binds the
 actual thread backend before applying a profile; Copilot combines its model

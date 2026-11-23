@@ -18,9 +18,8 @@ or recovery reserves capacity before invalidating old evidence. Notices and
 observations are fenced by owner, execution and cleanup attempt.
 
 Web observes existing Controller and recorded provider process proofs, including
-a journal reread after the Controller stops. Native Herdr uses its committed stop
-proof; legacy Herdr retains the original binding and stop result in the current
-Worker. The runtime coalesces changes with a revision wake so a notice during a
+a journal reread after the Controller stops. The coordinator only manages Web executions; the earlier Herdr stop paths are
+retired as explained in the [Web coordination decision](../simplification/2026-11-17-web-only-worker-coordination.md). The runtime coalesces changes with a revision wake so a notice during a
 round is not lost. [Archive priority](../bug-fix/2026-11-11-worker-archive-priority.md)
 continues to preserve the original file and archive responsibilities. The [Worker design](../../../../docs/design/daynight-worker.md)
 owns the operational contract.

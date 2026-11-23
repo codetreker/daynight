@@ -9,8 +9,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 )
 
-func TestTeamHTTPMetadataLimitsPreserveRows(t *testing.T) {
-	h := teamTestHandler(t)
+func testTeamHTTPMetadataLimitsPreserveRows(t *testing.T, fixture teamIntegrationFixture) {
+	h := teamTestHandler(t, fixture)
 	actor := h.principal.UserID
 	for _, name := range []string{strings.Repeat("a", 256), strings.Repeat("😀", 256)} {
 		created := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", jsonBody(t, api.CreateTeamRequest{Name: name, ExpectedUserID: actor})), 201)

@@ -8,12 +8,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 )
 
 type ListRequest struct {
-	TagFilter store.TagFilter
-	Type      model.TaskType
-	Parent    *string
+	TagFilter  store.TagFilter
+	Type       model.TaskType
+	Parent     *string
+	ParentTask *string
 	model.PageRequest
 	AssignedTo         *string
 	Status             *model.TaskStatus
@@ -22,6 +24,8 @@ type ListRequest struct {
 	PlatformSpecific   *bool
 	AutomaticCandidate bool
 	WorkerID           *string
+	CandidateWorkerID  *string
+	CandidateTagFilter *model.TagNameFilter
 }
 
 type ListSelection struct {
@@ -72,12 +76,33 @@ func ResourceFilter(kind model.TaskType, parent *string) (model.TaskType, *strin
 	return kind, &value, nil
 }
 
+func ParentTaskFilter(kind model.TaskType, parent, parentTask *string) (*string, error) {
+	if parentTask == nil {
+		return nil, nil
+	}
+	if parent != nil {
+		return nil, invalidInput("parentId and parentTaskId cannot be combined.")
+	}
+	if kind == model.TaskTypeGoal {
+		return nil, invalidInput("Goal cannot have a parent.")
+	}
+	value, err := model.CanonicalID(*parentTask)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
 func SelectList(projectID, principalUserID string, request ListRequest) (ListSelection, error) {
 	filter, err := NormalizeTagFilter(request.TagFilter)
 	if err != nil {
 		return ListSelection{}, err
 	}
 	kind, parent, err := ResourceFilter(request.Type, request.Parent)
+	if err != nil {
+		return ListSelection{}, err
+	}
+	parentTask, err := ParentTaskFilter(kind, parent, request.ParentTask)
 	if err != nil {
 		return ListSelection{}, err
 	}
@@ -91,7 +116,29 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	scope := query.ListScope{TagFilterIdentity: TagFilterIdentity(filter), Type: kind, Parent: parent, Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, AssignedTo: assignedTo}
+	scope := query.ListScope{TagFilterIdentity: TagFilterIdentity(filter), Type: kind, Parent: parent, ParentTask: parentTask, Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, AssignedTo: assignedTo}
+	var candidateFilter *model.TagNameFilter
+	if request.CandidateWorkerID != nil {
+		if !request.AutomaticCandidate || request.WorkerID != nil || request.CandidateTagFilter == nil {
+			return ListSelection{}, invalidInput("candidateWorkerId requires automaticCandidate and cannot be combined with workerId.")
+		}
+		workerID, err := model.CanonicalID(*request.CandidateWorkerID)
+		if err != nil {
+			return ListSelection{}, err
+		}
+		normalized, err := tag.NormalizeNameFilter(*request.CandidateTagFilter)
+		if err != nil {
+			return ListSelection{}, err
+		}
+		digest, err := tag.NameFilterDigest(normalized)
+		if err != nil {
+			return ListSelection{}, err
+		}
+		candidateFilter = &normalized
+		scope.CandidateWorkerID, scope.CandidateWorkerUserID, scope.CandidateTagFilterIdentity = &workerID, &principalUserID, digest
+	} else if request.CandidateTagFilter != nil {
+		return ListSelection{}, invalidInput("Candidate tag filter requires candidateWorkerId.")
+	}
 	var worker *store.WorkerQuery
 	if request.WorkerID != nil {
 		workerID, err := model.CanonicalID(*request.WorkerID)
@@ -109,7 +156,7 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	return ListSelection{Scope: scope, Query: store.TaskQuery{TagFilter: filter, Type: request.Type, Parent: parent, Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, Worker: worker, AssignedTo: assignedTo}}, nil
+	return ListSelection{Scope: scope, Query: store.TaskQuery{TagFilter: filter, CandidateTagFilter: candidateFilter, Type: request.Type, Parent: parent, ParentTask: parentTask, Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, Worker: worker, AssignedTo: assignedTo}}, nil
 }
 
 // ReadFault classifies a task read refusal without hiding unrelated failures.

@@ -4,7 +4,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerOperation, ControllerOutboxEvent, ControllerSnapshot } from "../lifecycle-store.js";
 import type { SessionContent } from "../content/session-content.js";
 import type { SourceTimelineEntry } from "../../../session/controller-protocol.js";
-import { canonicalImageJson, imageId, parseImageCaptureRequest, parseDirectCaptureSubmission, parseImageError, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
+import { canonicalImageJson, imageId, parseStoredImageCaptureRequest, parseStoredDirectCaptureSubmission, parseStoredImageError, parseStoredImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
 import { parseTimelineEntry, type MessagePart, type TimelineEntry } from "../../../session/protocol.js";
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
@@ -12,7 +12,6 @@ import { controllerJournalFormat } from "../journal-format.js";
 import { isOutboxFailure } from "../outbox-diagnostic.js";
 import { withOutboxTransactionOutcome } from "../outbox-store.js";
 import { nativeEntryId } from "../native-identity.js";
-import type { controllerMetadataBudget } from "./metadata-budget.js";
 import { restoreCanonicalInputIntent } from "./input-intent.js";
 import type { CommittedImageProjectionSlot, NativeImageProjectionState, NativeInputPublicationIdentity, NativeInputPublicationQuery, NativeInputPublicationReceipt, NativeInputPublicationRequest, NativeInputPublicationResult, NativePublicationEntry } from "./native-publication-types.js";
 
@@ -29,7 +28,6 @@ type Context = {
   projectTimeline(entry: SourceTimelineEntry): ControllerOutboxEvent | null;
   publishTimelineSnapshot(entry: TimelineEntry): ControllerOutboxEvent;
   registerImageOccurrence(occurrence: ImageOccurrence, source: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean };
-  metadataBudget: Pick<ReturnType<typeof controllerMetadataBudget>, "assert">;
 };
 
 type Saved = { receipt: NativeInputPublicationReceipt; slots: readonly CommittedImageProjectionSlot[] };
@@ -45,9 +43,9 @@ const imagePart = (part: MessagePart | undefined): part is NativeImageProjection
 const parseCaptureState = (value: unknown): NativeImageProjectionState => {
   const state = value as NativeImageProjectionState;
   if (!state || typeof state !== "object" || Object.keys(state).filter(key => key !== "resumeReserved" && key !== "submissionRefusal").sort().join(",") !== "attemptId,index,part,phase,request,submission,waitingForSource" || !Number.isSafeInteger(state.index) || state.index < 0 || typeof state.waitingForSource !== "boolean" || !["new", "preparing", "submit", "query", "settled"].includes(state.phase) || state.waitingForSource && state.phase !== "new" || state.resumeReserved !== undefined && (!["source", "submission"].includes(state.resumeReserved) || state.phase !== "query") || state.submissionRefusal !== undefined && state.phase !== "query") throw new Error("Native publication capture state is corrupt.");
-  const request = parseImageCaptureRequest(state.request), part = parseImagePart(state.part), submission = state.submission === null ? null : parseDirectCaptureSubmission(state.submission);
+  const request = parseStoredImageCaptureRequest(state.request), part = parseStoredImagePart(state.part), submission = state.submission === null ? null : parseStoredDirectCaptureSubmission(state.submission);
   imageId(state.attemptId);
-  if (state.submissionRefusal !== undefined) parseImageError(state.submissionRefusal);
+  if (state.submissionRefusal !== undefined) parseStoredImageError(state.submissionRefusal);
   if (part.imageId !== request.occurrence.imageId || (state.phase === "submit" || state.resumeReserved === "submission") && !submission || state.resumeReserved === "source" && submission || submission && (!same(submission.request, request) || submission.attemptId !== state.attemptId)) throw new Error("Native publication capture progress is inconsistent.");
   return { ...state, request, part, submission };
 };
@@ -63,7 +61,7 @@ export const nativeInputPublicationFailure = (result: NativeInputPublicationResu
 
 /** Native association facts and their visible content share the journal commit. */
 export const createNativeInputPublication = (context: Context) => {
-  const { db, ticket, content: sessionContent, metadataBudget } = context;
+  const { db, ticket, content: sessionContent } = context;
   const load = (operationId: string): Saved | null => {
     const row = db.prepare("SELECT request_hash,value FROM native_input_publications WHERE operation_id=?").get(operationId) as { request_hash: string; value: string } | undefined;
     if (!row) return null;
@@ -139,7 +137,7 @@ export const createNativeInputPublication = (context: Context) => {
     } else {
       if (requireExisting) conflict("Native publication cannot establish the source of an existing original image.");
       state = { request: { captureId: nativeEntryId(expectedImageId, "capture"), attemptId: nativeEntryId(expectedImageId, "attempt"), occurrence, nativeSource, locator: original ? { kind: "resource", resourceId: original.resourceId } : { kind: "native", ...nativeSource } }, attemptId: nativeEntryId(expectedImageId, "attempt"), index, waitingForSource: false, phase: "new", part, submission: null };
-      const encoded = JSON.stringify(state); metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
+      const encoded = JSON.stringify(state);
       db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`native_provider:${key}`, encoded);
     }
     return { key, label: state.part.label, ...(original ? { original } : {}), state };
@@ -197,7 +195,7 @@ export const createNativeInputPublication = (context: Context) => {
           const event = changed ?? context.publishTimelineSnapshot(published);
           for (const item of slots) context.registerImageOccurrence(item.state.request.occurrence, item.state.request.nativeSource);
           const receipt: NativeInputPublicationReceipt = { identity: request.identity, requestSha256: hash, publicationRevision: published.revision, sourceSequence: event.sequence, originalSlots: slots.flatMap(item => item.original ? [{ ...item.original, index: item.state.index }] : []) };
-          const saved: Saved = { receipt, slots }, encoded = JSON.stringify(saved); metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
+          const saved: Saved = { receipt, slots }, encoded = JSON.stringify(saved);
           db.prepare("INSERT INTO native_input_publications VALUES(?,?,?,?,?,?)").run(request.identity.operationId, request.identity.provider, request.identity.nativeSessionId, request.identity.nativeMessageId, hash, encoded);
           for (const original of receipt.originalSlots) db.prepare("INSERT INTO native_input_publication_images VALUES(?,?,?,?)").run(request.identity.operationId, original.imageId, original.resourceId, original.index);
           return committed(saved, request.identity);

@@ -44,6 +44,24 @@ const expectNoOverflow = async (page: Page) => {
   for (const rect of bounds) { expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(width + 1); }
 };
 
+test('xs selection preserves touch typography and target rules', async ({ browser }) => {
+  for (const coarse of [false, true]) {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch: coarse });
+    try {
+      const page = await context.newPage(); await page.goto(`http://127.0.0.1:14301${fixture}`);
+      for (const root of [16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        const responsive = await metrics(page.getByTestId('xs-responsive'));
+        const target = await metrics(page.getByTestId('xs-responsive-target'));
+        const container = await metrics(page.getByTestId('xs-container'));
+        expect(responsive.fontSize).toBe(`${Math.max(root, 16)}px`); expect(responsive.height).toBe(44);
+        expect(target.fontSize).toBe(`${coarse ? Math.max(root, 16) : root * 0.875}px`); expect(target.height).toBe(44);
+        expect(container.fontSize).toBe(`${coarse ? Math.max(root, 16) : root * 0.75}px`); expect(container.height).toBe(44);
+      }
+    } finally { await context.close(); }
+  }
+});
+
 for (const locale of ['en', 'zh']) {
   test(`keeps ${locale} variants, states and long labels aligned across viewport widths`, async ({ page }, info) => {
     await page.goto(`${fixture}?locale=${locale}`);
@@ -125,7 +143,7 @@ test('uses the named container rather than viewport or a nearer unrelated contai
   await page.goto(fixture);
   await expectPopupGeometry(page.getByTestId('wide-container'), 38);
   await expectPopupGeometry(page.getByTestId('narrow-container'), 44);
-  expect((await metrics(page.getByTestId('narrow-container'))).fontSize).toBe('12px');
+  expect((await metrics(page.getByTestId('narrow-container'))).fontSize).toBe('14px');
   expect(await page.getByTestId('container-wide').evaluate(element => getComputedStyle(element).containerName)).toBe('bot-reading native-select-region');
   await expectPopupGeometry(page.getByTestId('responsive'), 38);
   await page.setViewportSize({ width: 768, height: 900 });
@@ -192,4 +210,129 @@ test('remains usable at actual 200% browser page zoom', async ({ playwright }, i
       await screenshot(page, info, 'browser-200-percent-render');
     } finally { await context.close(); }
   } finally { await rm(profile, { recursive: true, force: true }); }
+});
+
+const triggerMetrics = (trigger: Locator) => trigger.evaluate(element => {
+  const rect = element.getBoundingClientRect(), style = getComputedStyle(element), arrow = element.querySelector('svg')!.getBoundingClientRect();
+  return { height: rect.height, fontSize: style.fontSize, border: style.borderColor, background: style.backgroundColor, color: style.color,
+    outline: style.outlineColor, outlineWidth: style.outlineWidth, arrowWidth: arrow.width, arrowHeight: arrow.height,
+    arrowCenter: Math.abs((arrow.top + arrow.bottom - rect.top - rect.bottom) / 2), arrowCount: element.querySelectorAll('svg').length };
+});
+
+test('shares trigger presentation across densities, native disabled states and either feature import order', async ({ page }, info) => {
+  await page.goto(fixture);
+  const observations: unknown[] = [];
+  for (const order of ['common-first', 'common-last'] as const) {
+    await page.evaluate(order => {
+      document.querySelectorAll('style[data-order-probe]').forEach(element => element.remove());
+      const { common, features } = window.selectionFixtureStyles;
+      for (const source of order === 'common-first' ? [common, features] : [features, common]) {
+        const style = document.createElement('style'); style.dataset.orderProbe = order; style.textContent = source; document.head.append(style);
+      }
+    }, order);
+    for (const [density, height, fontSize] of [['compact', 24, '14px'], ['filter', 32, '14px'], ['form', 38, '14px']] as const) {
+      for (const state of ['normal', 'expanded', 'pending', 'invalid', 'disabled', 'fieldset']) {
+        const control = page.getByTestId(`trigger-${density}-${state}`), actual = await triggerMetrics(control);
+        expect(actual).toMatchObject({ height, fontSize, arrowWidth: 10, arrowHeight: 10, arrowCount: 1 });
+        expect(actual.arrowCenter).toBeLessThanOrEqual(1);
+        if (state === 'expanded') expect(actual).toMatchObject({ background: 'rgb(238, 241, 248)', border: 'rgb(82, 100, 155)' });
+        if (state === 'pending') expect(actual.border).toBe('rgb(212, 160, 74)');
+        if (state === 'invalid') expect(actual.border).toBe('rgb(223, 157, 150)');
+        if (state === 'disabled' || state === 'fieldset') await expect(control).toBeDisabled();
+        observations.push({ order, density, state, ...actual });
+      }
+    }
+    const hover = page.getByTestId('trigger-filter-normal');
+    await hover.hover(); expect((await triggerMetrics(hover)).background).toBe('rgb(240, 243, 247)');
+    await page.mouse.move(0, 0);
+    const summary = page.getByTestId('trigger-summary');
+    await summary.focus();
+    expect(await triggerMetrics(summary)).toMatchObject({ height: 32, fontSize: '14px', outlineWidth: '3px', outline: 'rgb(52, 64, 84)' });
+    await page.keyboard.press('Enter'); await expect(summary.locator('..')).toHaveAttribute('open', '');
+    await page.keyboard.press('Space'); await expect(summary.locator('..')).not.toHaveAttribute('open', '');
+  }
+  for (const width of [801, 800, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await triggerMetrics(page.getByTestId('trigger-responsive'))).toMatchObject({ height: width <= 800 ? 44 : 32, fontSize: width <= 800 ? '16px' : '14px' });
+    expect(await triggerMetrics(page.getByTestId('trigger-container'))).toMatchObject({ height: 44, fontSize: '14px' });
+  }
+  await info.attach('shared-trigger-matrix', { body: JSON.stringify(observations), contentType: 'application/json' });
+});
+
+test('retains shared trigger focus and disabled contrast in forced colors', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active' }); await page.goto(fixture);
+  const normal = page.getByTestId('trigger-filter-normal'); await normal.focus();
+  expect((await triggerMetrics(normal)).outlineWidth).toBe('3px');
+  for (const state of ['normal', 'pending', 'invalid', 'disabled', 'fieldset']) {
+    const actual = await triggerMetrics(page.getByTestId(`trigger-filter-${state}`));
+    expect(actual.color).not.toBe(actual.background); expect(actual.border).not.toBe('rgba(0, 0, 0, 0)');
+  }
+});
+
+
+test('scales shared roles with root preference and preserves the touch floor', async ({ page }) => {
+  await page.goto(fixture);
+  const trigger = page.getByTestId('trigger-filter-normal');
+  await expect(trigger.locator('.select-trigger__count')).toHaveCSS('font-size', '12px');
+  await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+  await expect(trigger).toHaveCSS('font-size', '17.5px');
+  await expect(trigger.locator('.select-trigger__count')).toHaveCSS('font-size', '15px');
+  for (const control of [page.getByTestId('compact-normal'), page.getByTestId('trigger-compact-normal')]) {
+    const geometry = await control.evaluate(element => {
+      const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+      const label = element.querySelector('.select-trigger__label');
+      const count = element.querySelector('.select-trigger__count');
+      return { height: box.height, lineHeight: parseFloat(style.fontSize) * 1.5, labelHeight: label?.getBoundingClientRect().height, countHeight: count?.getBoundingClientRect().height, countLine: count ? parseFloat(getComputedStyle(count).fontSize) * 1.5 : 0 };
+    });
+    expect(geometry.height - 2).toBeGreaterThanOrEqual(geometry.lineHeight);
+    if (geometry.labelHeight !== undefined) expect(geometry.labelHeight).toBeGreaterThanOrEqual(geometry.lineHeight);
+    if (geometry.countHeight !== undefined) expect(geometry.countHeight).toBeGreaterThanOrEqual(geometry.countLine);
+  }
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '20px');
+  await page.evaluate(() => { document.documentElement.style.fontSize = '12px'; });
+  await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '16px');
+});
+
+for (const coarse of [false, true]) test(`preserves touch text and geometry at root sizes 12 and 24 with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch: coarse });
+  try {
+    const page = await context.newPage(); await page.goto(`http://127.0.0.1:14301${fixture}`);
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      const normal = `${root * .875}px`, touch = `${Math.max(root, 16)}px`, count = `${root * .75}px`;
+      for (const id of ['responsive', 'trigger-responsive', 'text-responsive']) await expect(page.getByTestId(id)).toHaveCSS('font-size', touch);
+      for (const id of ['responsive-target', 'trigger-responsive-target', 'text-coarse']) await expect(page.getByTestId(id)).toHaveCSS('font-size', coarse ? touch : normal);
+      for (const id of ['compact-normal', 'trigger-compact-normal', 'text-ordinary']) await expect(page.getByTestId(id)).toHaveCSS('font-size', normal);
+      const option = page.getByTestId('responsive').locator('option').first();
+      await expect(option).toHaveCSS('font-size', touch);
+      const trigger = page.getByTestId('trigger-responsive-target');
+      await expect(trigger.locator('.select-trigger__count')).toHaveCSS('font-size', count);
+      for (const id of ['responsive', 'responsive-target', 'trigger-responsive', 'trigger-responsive-target', 'narrow-container', 'trigger-container']) {
+        const element = page.getByTestId(id);
+        const measurement = await element.evaluate(node => {
+          const box = node.getBoundingClientRect(), style = getComputedStyle(node);
+          const badge = node.querySelector('.select-trigger__count');
+          return { height: box.height, lineHeight: Number.parseFloat(style.fontSize) * 1.5, badgeHeight: badge?.getBoundingClientRect().height, badgeLine: badge ? Number.parseFloat(getComputedStyle(badge).fontSize) * 1.5 : 0 };
+        });
+        expect(measurement.height).toBeGreaterThanOrEqual(44);
+        expect(measurement.height - 2).toBeGreaterThanOrEqual(measurement.lineHeight);
+        if (measurement.badgeHeight !== undefined) expect(measurement.badgeHeight).toBeGreaterThanOrEqual(Math.max(20, measurement.badgeLine));
+      }
+    }
+  } finally { await context.close(); }
+});
+
+test('cancels the native popup without changing its value', async ({ page }) => {
+  await page.goto(fixture);
+  const control = page.getByTestId('interactive');
+  await control.focus();
+  await page.keyboard.press('Space');
+  await expect.poll(() => control.evaluate(element => element.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => control.evaluate(element => element.matches(':open'))).toBe(false);
+  await expect(control).toHaveValue('a');
+  await expect(control).toBeFocused();
+  await expect(page.getByTestId('changes')).toHaveText('0');
 });

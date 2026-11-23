@@ -20,6 +20,13 @@ type configurationCalls struct {
 	want, seen []string
 }
 
+func (*configurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	panic("unexpected alias read")
+}
+func (*configurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	panic("unexpected alias write")
+}
+
 func (c *configurationCalls) take(name string, ctx context.Context) {
 	c.t.Helper()
 	index := len(c.seen)
@@ -66,6 +73,14 @@ func (s configurationReadScope) WorkerDAO() store.WorkerReader {
 	s.calls.take("read dao", nil)
 	return s.dao
 }
+func (s configurationReadScope) UserCandidateDAO() store.UserCandidateReader {
+	configurationUnexpected(s.calls.t, "UserCandidateDAO")
+	return nil
+}
+func (s configurationReadScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s configurationReadScope) CredentialDAO() store.CredentialReader {
 	configurationUnexpected(s.calls.t, "CredentialDAO")
 	return nil
@@ -155,6 +170,10 @@ func (d *configurationDAO) ConfigurationProjectAccess(context.Context, string, s
 }
 func (d *configurationDAO) SetWorkerConfiguration(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 	configurationUnexpected(d.calls.t, "SetWorkerConfiguration")
+	return model.WorkerDesiredConfiguration{}, nil
+}
+func (d *configurationDAO) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	configurationUnexpected(d.calls.t, "SetWorkerConfigurationRaw")
 	return model.WorkerDesiredConfiguration{}, nil
 }
 func (d *configurationDAO) SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error {
@@ -405,7 +424,7 @@ const (
 
 func authorityConfiguration(project string, maximum int64) model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		PreferPlatformSpecificTasks: false, MaxConcurrent: maximum, PollIntervalMs: 60000, RecoveryLimit: 3,
+		PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: maximum, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
 	}
@@ -609,3 +628,10 @@ func (s configurationReadScope) TagDAO() store.TagReader {
 }
 
 func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

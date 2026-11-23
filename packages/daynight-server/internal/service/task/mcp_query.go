@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
@@ -27,7 +26,7 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 	}
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.requireRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
@@ -48,6 +47,7 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 			}
 		}
 		for i, item := range page.Items {
+			item.Task = s.projectTask(item.Task)
 			more := i+1 < len(page.Items) || page.HasMore
 			cursor, err := page.CursorAfter(selection, item.Task)
 			if err != nil {
@@ -85,7 +85,7 @@ func (s *Tasks) MCPReady(ctx context.Context, principal model.Principal, project
 	var items []store.TaskPriorityItem
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.requireRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
@@ -113,6 +113,9 @@ func (s *Tasks) MCPReady(ctx context.Context, principal model.Principal, project
 	}
 	if refusal != nil {
 		return nil, refusal
+	}
+	for i := range items {
+		items[i].Task = s.projectTask(items[i].Task)
 	}
 	return items, nil
 }

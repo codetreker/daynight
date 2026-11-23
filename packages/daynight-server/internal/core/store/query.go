@@ -28,7 +28,9 @@ type WorkerQuery struct {
 
 type TaskQuery struct {
 	TagFilter          TagFilter
+	CandidateTagFilter *model.TagNameFilter
 	Type               model.TaskType
+	ParentTask         *string
 	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
 	Page               Page
@@ -59,6 +61,7 @@ type TaskPriorityPosition struct {
 type TaskPriorityQuery struct {
 	TagFilter          TagFilter
 	Type               model.TaskType
+	ParentTask         *string
 	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus

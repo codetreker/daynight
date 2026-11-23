@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
@@ -20,6 +21,26 @@ type writerFunc func(context.Context, []model.CredentialUsageEvent) (store.Compl
 
 func (f writerFunc) WriteCredentialUsage(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
 	return f(ctx, events)
+}
+
+type testWrites struct {
+	mu     sync.Mutex
+	calls  int
+	events []model.CredentialUsageEvent
+}
+
+func (w *testWrites) record(events []model.CredentialUsageEvent) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	w.events = append(w.events, events...)
+	return w.calls
+}
+
+func (w *testWrites) snapshot() (int, []model.CredentialUsageEvent) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls, append([]model.CredentialUsageEvent(nil), w.events...)
 }
 
 type testClock struct {
@@ -138,50 +159,32 @@ func TestStopTimeoutJoinsOriginalWork(t *testing.T) {
 	}
 }
 
-func TestUnknownRetriesSameEventAndReportsExhaustion(t *testing.T) {
-	clock := &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	attempts := make(chan []model.CredentialUsageEvent, 4)
+func TestUnknownIsNotReplayed(t *testing.T) {
 	cause := errors.New("commit outcome unavailable")
+	writes := &testWrites{}
 	writer := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
-		attempts <- events
+		writes.record(events)
 		return store.Completion{Outcome: store.TransactionUnknown}, cause
 	})
-	r, err := New(writer, logger(), clock.read)
+	r, err := New(writer, logger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := event(1, clock.read())
-	if _, err := r.Record(request(context.Background(), "req"), want); err != nil {
+	if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
 		t.Fatal(err)
-	}
-	for i := 0; i < usage.MaxAttempts; i++ {
-		got := wait(t, attempts)
-		if len(got) != 1 || got[0] != want {
-			t.Fatalf("attempt %d: %+v", i, got)
-		}
-		// Wait until completion schedules its retry before advancing monotonic time.
-		deadline := time.Now().Add(5 * time.Second)
-		for r.Snapshot().Failed < uint64(i+1) {
-			if time.Now().After(deadline) {
-				t.Fatal("completion not observed")
-			}
-			time.Sleep(time.Millisecond)
-		}
-		clock.advance(time.Second)
-		notify(r.wake)
 	}
 	ctx, cancel := bounded(t)
 	defer cancel()
 	err = r.Drain(ctx)
+	calls, _ := writes.snapshot()
 	var de *DrainError
-	if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, cause) {
-		t.Fatalf("drain: %v", err)
+	if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, cause) || calls != 1 {
+		t.Fatalf("drain: %v, calls: %d", err, calls)
 	}
-	s := r.Snapshot()
-	if s.Unknown != 3 || s.Abandoned != 1 {
+	if s := r.Snapshot(); s.Unknown != 1 || s.Abandoned != 1 {
 		t.Fatalf("snapshot: %+v", s)
 	}
 }
@@ -378,40 +381,64 @@ func TestCommittedCleanupErrorAndCancellation(t *testing.T) {
 		}
 	})
 	t.Run("cancel work", func(t *testing.T) {
-		started := make(chan struct{}, 1)
-		canceled := make(chan struct{}, 1)
-		w := writerFunc(func(ctx context.Context, _ []model.CredentialUsageEvent) (store.Completion, error) {
-			select {
-			case started <- struct{}{}:
-			default:
+		synctest.Test(t, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			canceled := make(chan struct{}, 1)
+			w := writerFunc(func(ctx context.Context, _ []model.CredentialUsageEvent) (store.Completion, error) {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				select {
+				case canceled <- struct{}{}:
+				default:
+				}
+				return store.Completion{Outcome: store.TransactionNotCommitted}, ctx.Err()
+			})
+			r, err := New(w, logger(), nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-			<-ctx.Done()
-			select {
-			case canceled <- struct{}{}:
-			default:
+			work, cancelWork := context.WithCancel(context.Background())
+			if err := r.Start(work); err != nil {
+				cancelWork()
+				t.Fatal(err)
 			}
-			return store.Completion{Outcome: store.TransactionNotCommitted}, ctx.Err()
+			t.Cleanup(func() {
+				cancelWork()
+				join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+				defer cancel()
+				err := r.Stop(join)
+				var de *DrainError
+				if err != nil && (!errors.As(err, &de) || !de.Drained()) {
+					t.Errorf("cleanup stop: %v", err)
+				}
+				select {
+				case <-r.workerDone:
+				default:
+					t.Error("cleanup: worker did not exit")
+				}
+				select {
+				case <-r.diagnosticDone:
+				default:
+					t.Error("cleanup: diagnostics did not exit")
+				}
+			})
+			if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			wait(t, started)
+			r.CancelWork()
+			wait(t, canceled)
+			join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			err = r.Drain(join)
+			var de *DrainError
+			if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("drain: %v", err)
+			}
 		})
-		r, err := New(w, logger(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Start(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
-			t.Fatal(err)
-		}
-		wait(t, started)
-		r.CancelWork()
-		wait(t, canceled)
-		join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		err = r.Drain(join)
-		var de *DrainError
-		if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, context.Canceled) {
-			t.Fatalf("drain: %v", err)
-		}
 	})
 }
 
@@ -564,4 +591,194 @@ func TestDiagnosticSQLStateAndDrainError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLockConflictRetryAndDrain(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failures int
+	}{
+		{"recovers", 1},
+		{"exhausted", usage.MaxAttempts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cause := &store.Error{DatabaseFailure: true, SQLState: "55P03", Cause: errors.New("lock unavailable")}
+				writes := &testWrites{}
+				clock := &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+				w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+					calls := writes.record(events)
+					if len(events) != 1 {
+						t.Errorf("batch: %+v", events)
+					}
+					if calls <= tc.failures {
+						return store.Completion{Outcome: store.TransactionNotCommitted}, cause
+					}
+					return store.Completion{Outcome: store.TransactionCommitted}, nil
+				})
+				h := &captureHandler{records: make(chan slog.Record, 8)}
+				r, err := New(w, slog.New(h), clock.read)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					r.CancelWork()
+					r.sampler.Seal()
+					for range usage.MaxAttempts + 1 {
+						clock.advance(usage.RetryInterval)
+						notify(r.wake)
+						synctest.Wait()
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					err := r.Drain(ctx)
+					var de *DrainError
+					if err != nil && (!errors.As(err, &de) || !de.Drained()) {
+						t.Errorf("cleanup drain: %v", err)
+					}
+				})
+				want := event(1, clock.read())
+				if _, err := r.Record(request(context.Background(), "req"), want); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				for i := 1; i < tc.failures+1 && i < usage.MaxAttempts; i++ {
+					calls, _ := writes.snapshot()
+					if calls != i {
+						t.Fatalf("calls before retry %d: %d", i, calls)
+					}
+					clock.advance(usage.RetryInterval)
+					notify(r.wake)
+					synctest.Wait()
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err = r.Drain(ctx)
+				if tc.failures == usage.MaxAttempts {
+					var de *DrainError
+					if !errors.As(err, &de) || de.Unpersisted != 1 || !errors.Is(err, cause) {
+						t.Fatalf("drain: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("drain: %v", err)
+				}
+				wantCalls := tc.failures + 1
+				if wantCalls > usage.MaxAttempts {
+					wantCalls = usage.MaxAttempts
+				}
+				calls, written := writes.snapshot()
+				if calls != wantCalls {
+					t.Fatalf("calls: %d, want %d", calls, wantCalls)
+				}
+				for _, got := range written {
+					if got != want {
+						t.Fatalf("event: %+v, want %+v", got, want)
+					}
+				}
+				found := false
+				for len(h.records) > 0 {
+					rec := <-h.records
+					var state, code string
+					rec.Attrs(func(a slog.Attr) bool {
+						if a.Key == "sqlstate" {
+							state = a.Value.String()
+						}
+						if a.Key == "error_code" {
+							code = a.Value.String()
+						}
+						return true
+					})
+					if state == "55P03" && code == usage.CodeWriteFailed.String() {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("missing lock conflict diagnostic")
+				}
+			})
+		})
+	}
+}
+
+func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{"cancelled", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.Canceled)},
+		{"deadline", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.DeadlineExceeded)},
+		{"mixed failure", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, errors.New("batch close failed"))},
+		{"cleanup", &store.TransactionError{Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				writes := &testWrites{}
+				w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+					calls := writes.record(events)
+					if calls == 1 {
+						return store.Completion{Outcome: store.TransactionNotCommitted}, tc.cause
+					}
+					return store.Completion{Outcome: store.TransactionCommitted}, nil
+				})
+				r, err := New(w, logger(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err = r.Drain(ctx)
+				calls, _ := writes.snapshot()
+				if !errors.Is(err, tc.cause) || calls != 2 {
+					t.Fatalf("drain: %v, calls: %d", err, calls)
+				}
+			})
+		})
+	}
+}
+
+type lockSQLState struct{}
+
+func (lockSQLState) Error() string    { return "lock unavailable" }
+func (lockSQLState) SQLState() string { return "55P03" }
+
+func TestRepeatedDriverLockConflictCanRecover(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		writes := &testWrites{}
+		lock := lockSQLState{}
+		w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+			calls := writes.record(events)
+			if calls == 1 {
+				return store.Completion{Outcome: store.TransactionNotCommitted}, &store.Error{DatabaseFailure: true, SQLState: "55P03", Cause: &store.TransactionError{Outcome: store.TransactionNotCommitted, Cause: errors.Join(lock, lock)}}
+			}
+			return store.Completion{Outcome: store.TransactionCommitted}, nil
+		})
+		r, err := New(w, logger(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = r.Drain(ctx)
+		calls, _ := writes.snapshot()
+		if err != nil || calls != 2 {
+			t.Fatalf("drain: %v, calls: %d", err, calls)
+		}
+	})
 }

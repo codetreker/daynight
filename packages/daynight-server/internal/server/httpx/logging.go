@@ -9,11 +9,13 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
 	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 
+	assistanttask "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -43,6 +45,9 @@ func ValidRequestID(value string) bool {
 }
 
 func ErrorKind(err error) string {
+	if fault, ok := err.(*model.Fault); ok && fault.Code == "lifecycle_unavailable" {
+		return fault.Code
+	}
 	// Monitoring failures classify the Redis operation explicitly while retaining
 	// its cause, including deadline or network errors, for diagnosis.
 	if fault, ok := KnownFault(err); ok && (fault.Code == "monitoring_unavailable" || fault.Code == "monitoring_write_outcome_unknown") {
@@ -108,7 +113,16 @@ func runtimeComponent(err error) *RuntimeError {
 	return runtimeComponent(errors.Unwrap(err))
 }
 
+type redactedOperationDiagnosticsKey struct{}
+
+// WithRedactedOperationDiagnostics prevents operation errors from exposing stored or submitted content.
+func WithRedactedOperationDiagnostics(ctx context.Context) context.Context {
+	return context.WithValue(ctx, redactedOperationDiagnosticsKey{}, true)
+}
+
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
+	candidateSearch := component == "member_candidate_search"
+	redacted := ctx.Value(redactedOperationDiagnosticsKey{}) == true
 	diagnostic := "operation failed"
 	kind, code := ErrorKind(err), "internal_error"
 	if component == "task_search" {
@@ -120,7 +134,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var configurationError *configvalue.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
-	if failure := runtimeComponent(err); failure != nil {
+	if failure := runtimeComponent(err); failure != nil && !candidateSearch && !redacted {
 		component, phase = failure.Component, failure.Phase
 	}
 	var identityFailure *model.IdentityProviderError
@@ -137,11 +151,11 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	case errors.As(err, &runtimeFailure):
 		diagnostic = runtimeFailure.Error()
 	}
-	if component == "task_search" {
+	if component == "task_search" || component == "member_candidate_search" {
 		// Search failures may contain query parameters or driver diagnostics.
 		diagnostic = "search operation failed"
 	}
-	if component == "personal_tasks" {
+	if component == "personal_tasks" || (component == "github" && (phase == "authors" || phase == "statistics")) {
 		// Query and driver diagnostics may contain caller or stored content.
 		diagnostic = "read operation failed"
 	}
@@ -153,6 +167,26 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	}
 	if errors.As(err, &gatewayFailure) && ValidRequestID(gatewayFailure.RequestID) {
 		upstreamID = gatewayFailure.RequestID
+	}
+	if redacted {
+		diagnostic = "operation failed"
+		if fault, ok := err.(*model.Fault); ok && fault.Code == "write_outcome_unknown" {
+			code = fault.Code
+		}
+	}
+	if candidateSearch || redacted {
+		// Only stable classifications may leave a redacted boundary.
+		upstreamID = ""
+		switch kind {
+		case "canceled", "deadline", "database", "protocol", "network", "internal", "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "version_conflict", "timeout", "write_outcome_unknown":
+		default:
+			kind = "internal"
+		}
+		switch code {
+		case "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "version_conflict", "timeout", "write_outcome_unknown", "internal_error":
+		default:
+			code = "internal_error"
+		}
 	}
 	attrs := []any{"type", "operation_error", "component", component,
 		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID}
@@ -307,11 +341,24 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 // RequestLoggingWithMetrics observes the same response and handler lifecycle as logging.
 func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *RequestMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		// The public assistant task inbox logs only an allowlist of server-derived
+		// fields. Its senders are unauthenticated, so their X-Request-ID is not
+		// adopted, and this middleware writes the route's single record in place
+		// of the completion and interruption records, which carry the sender's
+		// method and failure details. Owning the record here keeps it present for
+		// rejections before dispatch and for aborted handlers.
+		var inbox *InboxRecord
+		if strings.HasPrefix(request.URL.Path, assistanttask.InboxPathPrefix) {
+			inbox = &InboxRecord{}
+		}
 		id := request.Header.Get("X-Request-ID")
-		if !ValidRequestID(id) {
+		if inbox != nil || !ValidRequestID(id) {
 			id = rand.Text()
 		}
 		request = request.WithContext(requestid.With(request.Context(), id))
+		if inbox != nil {
+			request = request.WithContext(context.WithValue(request.Context(), inboxRecordKey{}, inbox))
+		}
 		request = request.WithContext(usage.WithCollector(request.Context(), &usage.Collector{}))
 		if request.Body != nil && request.Body != http.NoBody {
 			body := &trackedRequestBody{ReadCloser: request.Body}
@@ -345,6 +392,10 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 				}
 				metrics.observe(request, recorder, start, outcome)
 			}
+			if value != nil && inbox != nil {
+				inbox.log(logger, request.Context(), id, recorder.Status, true)
+				panic(http.ErrAbortHandler)
+			}
 			if value != nil {
 				if value == http.ErrAbortHandler {
 					logger.ErrorContext(request.Context(), "request aborted", "type", "request_error", "component", "server",
@@ -363,8 +414,49 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 		if status == 0 {
 			status = http.StatusOK
 		}
+		if inbox != nil {
+			inbox.log(logger, request.Context(), id, status, false)
+			return
+		}
 		logger.InfoContext(request.Context(), "request completed", "type", "http_request", "component", "server",
 			"phase", "response", "request_id", id, "method", request.Method, "route", request.Pattern,
 			"status", status, "duration", time.Since(start))
 	})
+}
+
+// InboxRecord holds the handler-derived fields of a public assistant task inbox
+// request. The request logging middleware writes them with the server-generated
+// request ID and the status as the request's only log record.
+type InboxRecord struct {
+	InboxID, Classification string
+	Bytes                   int
+}
+
+type inboxRecordKey struct{}
+
+// InboxRecordFrom returns the record of an inbox request, or nil outside the
+// inbox path or the request logging middleware.
+func InboxRecordFrom(ctx context.Context) *InboxRecord {
+	record, _ := ctx.Value(inboxRecordKey{}).(*InboxRecord)
+	return record
+}
+
+// log writes the allowlisted fields only. An interrupted handler keeps its
+// abort semantics; its record omits a status that was never written.
+func (r *InboxRecord) log(logger *slog.Logger, ctx context.Context, id string, status int, interrupted bool) {
+	attributes := []any{"type", "operation", "component", "assistant_task_inbox", "bytes", r.Bytes, "request_id", id}
+	if status != 0 {
+		attributes = append(attributes, "status", status)
+	}
+	if r.InboxID != "" {
+		attributes = append(attributes, "inbox_id", r.InboxID)
+	}
+	if r.Classification != "" {
+		attributes = append(attributes, "classification", r.Classification)
+	}
+	if interrupted {
+		logger.ErrorContext(ctx, "assistant task inbox request interrupted", attributes...)
+		return
+	}
+	logger.InfoContext(ctx, "assistant task inbox request", attributes...)
 }

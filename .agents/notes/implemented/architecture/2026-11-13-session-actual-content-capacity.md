@@ -38,6 +38,10 @@ archive](2026-11-05-session-image-archives.md) and [image protocol](2026-11-05-s
 decisions; their original identity, source, reference and recovery rationale
 remains applicable.
 
+The later [online relay decision](2026-11-23-session-online-relay.md)
+changes this online requirement for executions bound to relay mode; the
+legacy path retains the behavior described above.
+
 ## Alternatives
 
 **Keep global future reservations or change the safety watermark.** Both make
@@ -58,5 +62,9 @@ Each publication reads current facts and measures canonical metadata, trading
 some short-transaction work for a single source of truth. Temporary files and
 control records do not consume logical content capacity but remain subject to
 real storage failures and their original cleanup barriers. Compatibility
-receipts do not promise that later writes will succeed. Controller-local media
-and physical limits remain independent of the service's content policy.
+receipts do not promise that later writes will succeed. Controller-local metadata
+admission remains independent of the service's content policy. The
+[Controller media ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+separately supersedes its cumulative media reservations; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes Controller disk predictions without changing the service content policy.

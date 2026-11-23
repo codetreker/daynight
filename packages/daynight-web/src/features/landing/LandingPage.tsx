@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { AccountSyncNotice } from "../auth/AccountSyncNotice";
 import { AccountRefreshNotice } from "../auth/AccountRefreshNotice";
 import { useLayoutEffect } from "react";
@@ -6,17 +7,19 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { LandingDemo } from "./LandingDemo";
 import { demoTasks, taskIds, taskState } from "./demo";
 import { useNavigationIdentity } from "./useNavigationIdentity";
+import { useLandingHeader } from "./useLandingHeader";
 import "../../styles/landing.css";
 
 const Arrow = ({ diagonal = false }: { readonly diagonal?: boolean }) => <span className="arrow" aria-hidden="true">{diagonal ? "↗" : "→"}</span>;
 const Brand = () => {
   const { messages: { landing } } = useI18n();
-  return <a className="brand" href="/" aria-label={landing.navigation.home}><span className="mark" aria-hidden="true" />daynight</a>;
+  return <a className="brand" href="/" aria-label={landing.navigation.home}><BrandMark className="mark" surface="light" />daynight</a>;
 };
 
 export const LandingPage = () => {
   const { locale, messages: { landing: m } } = useI18n();
   const identity = useNavigationIdentity();
+  const { pageRef, headerRef } = useLandingHeader();
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     document.title = m.metadata.title;
@@ -42,9 +45,9 @@ export const LandingPage = () => {
   const heroTasks = ["requirements", "design", "api", "email"] as const;
   const setupCommands = ["npm install --global @codetreker/daynight", "daynight skill install"];
 
-  return <div className="landing-page" data-locale={locale}>
+  return <div className="landing-page" data-locale={locale} ref={pageRef}>
     <a className="skip-link" href="#main">{m.navigation.main}</a>
-    <header className="site-header"><div className="wrap header-inner"><Brand /><nav className="header-nav" aria-label={m.navigation.label}><a className="value-link" href="#why">{m.navigation.why}</a><a href="#demo">{m.navigation.demo}</a></nav><div className="header-actions"><LanguageSelector /><a className="nav-start" href={entry.href}>{entry.label} <span aria-hidden="true">↗</span></a></div></div><AccountRefreshNotice />{identity === "error" && <p className="identity-notice wrap" role="status">{m.navigation.identityFailed} <a href="/projects">{m.navigation.workspace} →</a></p>}</header>
+    <header className="site-header" ref={headerRef}><div className="wrap header-inner"><Brand /><nav className="header-nav" aria-label={m.navigation.label}><a className="value-link" href="#why">{m.navigation.why}</a><a href="#demo">{m.navigation.demo}</a></nav><div className="header-actions"><LanguageSelector /><a className="nav-start" href={entry.href}>{entry.label} <span aria-hidden="true">↗</span></a></div></div><AccountRefreshNotice />{identity === "error" && <p className="identity-notice wrap" role="status">{m.navigation.identityFailed} <a href="/projects">{m.navigation.workspace} →</a></p>}</header>
     <AccountSyncNotice /><main id="main">
       <section className="hero"><div className="wrap"><div className="hero-grid"><div><p className="hero-tag">{m.hero.tag}</p><h1>{m.hero.title[0]}<br /><span>{m.hero.title[1]}</span></h1><p className="hero-copy">{m.hero.body}</p><div className="actions"><a className="button primary" href="#demo" onClick={focusDemo}>{m.hero.demo}<Arrow diagonal /></a><a className="button secondary" href="/setup">{m.hero.start}<Arrow /></a></div><p className="hero-note">{m.hero.note}</p></div><div className="hero-visual" role="img" aria-label={m.hero.previewLabel}><div className="mini-window" aria-hidden="true"><div className="mini-bar"><span>daynight / {m.hero.window}</span><span className="window-dots"><i /><i /><i /></span></div><div className="mini-body"><div className="mini-project"><strong>{m.demo.project}</strong><span>{m.demo.example}</span></div><div className="mini-progress">{taskIds.map((id) => <i key={id} className={taskState(id)} />)}</div><div className="mini-flow">{heroTasks.map((id) => <div key={id} className={`mini-task ${demoTasks[id].status === "in_progress" ? "active" : taskState(id) === "blocked" ? "blocked" : ""}`}><span className="task-symbol">{taskState(id) === "done" ? "✓" : taskState(id) === "running" ? "◔" : "⌁"}</span><span className="mini-task-label">{m.demo.tasks[id].title}</span><span className="status-text">{taskState(id) === "done" ? m.hero.confirmed : m.demo.states[taskState(id)]}</span></div>)}</div><div className="mini-foot"><span>{m.hero.shared}</span><span>{m.hero.project}</span></div></div></div><div className="floating-note"><span className="note-dot" />{m.hero.floating}</div></div></div><div className="agent-line"><span>{m.hero.agents}</span><div className="agent-name">Codex</div><div className="agent-name">Claude Code</div><div className="agent-name">GitHub Copilot <small>CLI</small></div></div></div></section>
       <section className="why" id="why"><div className="wrap why-grid"><div><p className="eyebrow">{m.why.eyebrow}</p><h2 className="section-heading">{m.why.title[0]}<br />{m.why.title[1]}</h2><p className="body-copy">{m.why.body}</p></div><div className="pain-list">{m.why.items.map((item, index) => <div className="pain-item" key={index}><span className="pain-number" aria-hidden="true">{(index + 1).toString().padStart(2, "0")}</span><div><h3>{item.title}</h3><p>{item.body}</p></div></div>)}</div></div></section>

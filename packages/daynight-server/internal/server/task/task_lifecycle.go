@@ -21,7 +21,7 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		httpx.WriteError(w, request, logger, "task", "set_status", httpx.InvalidInput("task status does not accept query parameters"))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version", "status", "claimId")
+	fields, err := httpx.DecodeObject(w, request, "version", "status", "claimId", "cancelDescendants")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "set_status", err)
 		return
@@ -42,10 +42,23 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		httpx.WriteError(w, request, logger, "task", "set_status", err)
 		return
 	}
+	input.CancelDescendants, err = httpx.OptionalBool(fields, "cancelDescendants")
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task", "set_status", err)
+		return
+	}
+	values := taskcore.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID}
+	if input.CancelDescendants != nil {
+		values.CancelDescendants = *input.CancelDescendants
+		values.CancelDescendantsPresent = true
+	}
 
 	var metadata service.TaskWriteMetadata
-	task, err := h.tasks.SetStatus(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, taskcore.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID})
+	task, err := h.tasks.SetStatus(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, values)
 	if err != nil {
+		if writeGoalOutcomeUnknown(w, request, logger, "set_status", err) {
+			return
+		}
 		httpx.WriteError(w, request, logger, "task", "set_status", err)
 		return
 	}

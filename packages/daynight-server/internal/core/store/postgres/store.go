@@ -3,6 +3,10 @@ package postgres
 import (
 	"context"
 	"errors"
+	"log/slog"
+
+	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	migration115 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/115"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -14,6 +18,11 @@ type Store struct {
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	return OpenWithLogger(ctx, databaseURL, slog.Default())
+}
+
+func OpenWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger) (*Store, error) {
+	ctx = migration083.WithLogger(ctx, logger)
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, databaseFailure("configuration", err)
@@ -24,7 +33,18 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
 		pool.Close()
+		var identity *githubRepositoryIdentityMigrationError
+		if errors.As(err, &identity) {
+			return nil, databaseFailure(identity.Error(), err)
+		}
+		var worker *migration115.WorkerPropertyError
+		if errors.As(err, &worker) {
+			return nil, databaseFailure(worker.Error(), err)
+		}
 		var cause *pgconn.PgError
+		if errors.As(err, &cause) && cause.Code == "DN120" {
+			return nil, databaseFailure(cause.Message+" ("+cause.Detail+")", err)
+		}
 		if errors.As(err, &cause) && cause.Code == "P1047" {
 			return nil, databaseFailure("migration requires active login transactions to be consumed or expired", err)
 		}

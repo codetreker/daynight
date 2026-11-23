@@ -16,7 +16,6 @@ const api = () => ({
   list: vi.fn<AttachmentApi["list"]>().mockResolvedValue(page([a, b])),
   put: vi.fn<AttachmentApi["put"]>().mockResolvedValue(a),
   remove: vi.fn<AttachmentApi["remove"]>().mockResolvedValue(undefined),
-  checkPreview: vi.fn<AttachmentApi["checkPreview"]>().mockResolvedValue(undefined),
   readText: vi.fn<AttachmentApi["readText"]>().mockImplementation(async (_project, _task, path) => `Text: ${path}`),
 });
 const deferred = <T,>() => {
@@ -297,69 +296,49 @@ describe("attachment writes and identity", () => {
   });
 });
 
-describe("native preview checks", () => {
-  it.each(["html", "pdf"] as const)("waits for inventory and availability before marking a pending %s selection ready", async (extension) => {
+describe("native preview identity", () => {
+  it.each(["html", "pdf"] as const)("publishes %s directly after inventory admission and reloads locally", async (extension) => {
     const transport = api();
     const item = file(`preview.${extension}`, extension === "html" ? "text/html" : "application/pdf");
     const inventory = deferred<AttachmentPage>();
-    const availability = deferred<void>();
     transport.list.mockReturnValueOnce(inventory.promise);
-    transport.checkPreview.mockReturnValueOnce(availability.promise);
-    const { result } = renderHook(() => useAttachments(project, task, transport));
+    const { result } = renderHook(() => useAttachments(project, task, transport, { requireCompleteInventory: true }));
     act(() => result.current.select(item.path));
-    expect(result.current.preview).toMatchObject({ path: item.path, status: "loading", text: null, error: null });
-    expect(transport.checkPreview).not.toHaveBeenCalled();
-    await act(async () => { inventory.resolve(page([item])); });
     expect(result.current.preview.status).toBe("loading");
-    expect(transport.checkPreview).toHaveBeenCalledOnce();
-    await act(async () => { availability.resolve(); });
-    expect(result.current.preview).toMatchObject({ path: item.path, status: "ready", text: null, error: null });
+    await act(async () => { inventory.resolve(page([item])); });
+    expect(result.current.preview).toMatchObject({ path: item.path, status: "ready", text: null, nativeSource: { updatedAt: time, reloadRevision: 0 } });
+    act(() => result.current.retryPreview());
+    expect(result.current.preview).toMatchObject({ nativeSource: { updatedAt: time, reloadRevision: 1 } });
     expect(transport.list).toHaveBeenCalledOnce();
     expect(transport.readText).not.toHaveBeenCalled();
   });
-  it.each(["html", "pdf"] as const)("checks %s availability before preview, exposes failure, and retries locally", async (extension) => {
+
+  it.each([false, true])("publishes PUT metadata once while inventory is pending (complete inventory %s)", async (requireCompleteInventory) => {
     const transport = api();
-    const item = file(`preview.${extension}`, extension === "html" ? "text/html" : "application/pdf");
-    const pending = deferred<void>();
-    const failure = new ApiError("server", 500, "server", "preview-error");
-    transport.list.mockResolvedValue(page([item]));
-    transport.checkPreview.mockReturnValueOnce(pending.promise);
-    const { result } = renderHook(() => useAttachments(project, task, transport));
+    const item = file("index.html", "text/html");
+    const updated = { ...item, updatedAt: "2026-10-21T01:00:00Z" };
+    const inventory = deferred<AttachmentPage>();
+    transport.list.mockResolvedValueOnce(page([item])).mockReturnValueOnce(inventory.promise);
+    transport.put.mockResolvedValueOnce(updated);
+    const sources: string[] = [];
+    const { result } = renderHook(() => {
+      const state = useAttachments(project, task, transport, { requireCompleteInventory });
+      if (state.preview.status === "ready" && state.preview.nativeSource) {
+        const source = JSON.stringify(state.preview.nativeSource);
+        if (sources.at(-1) !== source) sources.push(source);
+      }
+      return state;
+    });
     await waitFor(() => expect(result.current.complete).toBe(true));
     act(() => result.current.select(item.path));
-    expect(result.current.preview).toMatchObject({ path: item.path, status: "loading", text: null, error: null });
-    expect(transport.checkPreview.mock.calls[0]?.slice(0, 3)).toEqual([project, task, item.path]);
-    await act(async () => { pending.reject(failure); });
-    expect(result.current.preview).toMatchObject({ path: item.path, status: "error", text: null, error: failure });
-    act(() => result.current.retryPreview());
     await waitFor(() => expect(result.current.preview.status).toBe("ready"));
-    expect(result.current.preview).toMatchObject({ path: item.path, text: null, error: null });
-    expect(transport.checkPreview).toHaveBeenCalledTimes(2);
-    expect(transport.readText).not.toHaveBeenCalled();
-    expect(transport.list).toHaveBeenCalledTimes(1);
-  });
-  it("aborts and ignores late HEAD checks when switching files or unmounting", async () => {
-    const transport = api();
-    const html = file("index.html", "text/html");
-    const pending = deferred<void>();
-    transport.list.mockResolvedValue(page([html, a]));
-    transport.checkPreview.mockReturnValueOnce(pending.promise);
-    const { result, unmount } = renderHook(() => useAttachments(project, task, transport));
-    await waitFor(() => expect(result.current.complete).toBe(true));
-    act(() => result.current.select(html.path));
-    const first = transport.checkPreview.mock.calls[0]![3];
-    act(() => result.current.select(a.path));
-    expect(first.aborted).toBe(true);
-    await waitFor(() => expect(result.current.preview.status).toBe("ready"));
-    await act(async () => { pending.resolve(); });
-    expect(result.current.preview).toMatchObject({ path: a.path, text: `Text: ${a.path}` });
-    const active = deferred<void>();
-    transport.checkPreview.mockReturnValueOnce(active.promise);
-    act(() => result.current.select(html.path));
-    const activeSignal = transport.checkPreview.mock.calls.at(-1)![3];
-    unmount();
-    expect(activeSignal.aborted).toBe(true);
-    await act(async () => { active.reject(new Error("late HEAD failure")); });
+    await act(async () => { expect(await result.current.put(item.path, new File(["new"], "index.html"))).toBe(true); });
+    expect(result.current.selected).toEqual(updated);
+    expect(result.current.complete).toBe(false);
+    expect(result.current.preview.nativeSource).toEqual({ updatedAt: updated.updatedAt, reloadRevision: 1 });
+    await act(async () => { inventory.resolve(page([updated])); });
+    expect(result.current.complete).toBe(true);
+    expect(sources).toEqual([JSON.stringify({ updatedAt: time, reloadRevision: 0 }), JSON.stringify({ updatedAt: updated.updatedAt, reloadRevision: 1 })]);
   });
 });
 

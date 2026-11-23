@@ -18,6 +18,8 @@ later child receives its PID. Rejecting that history makes a valid run fail.
 
 ## Decision
 
+The [platform validation retirement](2026-11-18-retire-herdr-platform-validation.md) supersedes the dedicated fixture and checker described here. The original decisions and rationale remain below as history.
+
 The real-platform fixture retains the original daemon identity and a history of
 owned PID/birth identities. Every traversed ancestor must match a retained birth
 in the current inventory. A child's birth must be no earlier than its current

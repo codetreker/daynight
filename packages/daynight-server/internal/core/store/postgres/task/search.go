@@ -47,9 +47,9 @@ const searchClosure = `WITH RECURSIVE chain(id) AS (
  UNION
  SELECT neighbor.id FROM chain member
  CROSS JOIN LATERAL (
-  SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
+  SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND dependency_type='task' AND NOT external
   UNION
-  SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
+  SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND dependency_type='task' AND NOT external
  ) neighbor
  JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND type='task' AND effective_deleted_at IS NULL OFFSET 0) live ON true
 ) `
@@ -76,7 +76,7 @@ func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids
 	}
 	rows, err = s.tx.Query(ctx, searchClosure+`SELECT d.task_id::text, d.depends_on_task_id::text
  FROM task_dependencies d JOIN chain a ON a.id=d.task_id JOIN chain b ON b.id=d.depends_on_task_id
- WHERE d.project_id=$1 AND NOT d.external`, projectID, ids)
+ WHERE d.project_id=$1 AND d.dependency_type='task' AND NOT d.external`, projectID, ids)
 	if err != nil {
 		return graph, searchError("read task search context edges", err)
 	}
@@ -95,7 +95,7 @@ func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids
 }
 
 func (s *searchSnapshot) Titles(ctx context.Context, projectID string, ids []string) (map[string]string, error) {
-	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM task_resource_rows WHERE project_id=$1 AND type='goal' AND effective_deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
+	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM task_resource_rows WHERE project_id=$1 AND effective_deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
 	if err != nil {
 		return nil, searchError("read task search titles", err)
 	}

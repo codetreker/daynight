@@ -111,6 +111,9 @@ func TestMCPInstallationManual(t *testing.T) {
 				"codex mcp login daynight", "codex mcp list",
 				"claude mcp add --transport http daynight '" + origin + "/mcp'",
 				"claude mcp login daynight", "claude mcp get daynight",
+				"copilot mcp add --transport http daynight '" + origin + "/mcp'",
+				"/mcp get daynight", "/mcp auth daynight", "1.0.112",
+				"copilot --log-level debug --log-dir <isolated-directory>",
 				"daynight:mcp", "account holder", "--no-browser", "team_list", "Authorization: Bearer <PAT>",
 			} {
 				if !strings.Contains(manual, required) {

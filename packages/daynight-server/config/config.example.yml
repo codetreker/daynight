@@ -3,6 +3,7 @@
 server:
   listen_address: "127.0.0.1:8787"
   public_origin: "https://daynight.example.com" # required
+  preview_origin: "https://preview.daynight.example.com" # required; same-site HTTPS origin
   startup_timeout: 10s
   shutdown_timeout: 10s
   allow_http_test_origin: false
@@ -11,7 +12,10 @@ database:
   url: "postgres://daynight:replace-me@postgres/daynight?sslmode=require" # required
 
 storage:
+  backend: "local" # or azure-blob; see README for identity and Azurite configuration
   root: "storage"
+  archive_staging_topology_verified: false
+  archive_upload_v2_enabled: false
 
 monitoring:
   redis_url: ""
@@ -36,14 +40,12 @@ mcp:
 oauth:
   preregistered_clients: {}
 
-github:
-  enabled: false
-  app_id: 0
-  private_key_file: ""
-  webhook_secret: "" # keep private
-
 webhook:
   enabled: false
+
+session:
+  archive_max_concurrent: 20
+  archive_max_concurrent_per_owner: 5
 
 task_sync:
   overlap: 10s

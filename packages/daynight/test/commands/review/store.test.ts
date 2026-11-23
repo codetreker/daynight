@@ -87,6 +87,26 @@ describe("observed snapshots and review revisions", () => {
 });
 
 describe("persistent attempts, sessions and recovery", () => {
+  it("retains a possibly published final attempt until process exclusion and an atomic readback decision", () => {
+    const { store, file, initialize, observe, reserve, prepare, launch } = fixture();
+    initialize(); observe(); const review = reserve(1); prepare(review);
+    store.captureReviewPublisher(review.id, "viewer");
+    launch(review);
+    const attempt = { reviewId: review.id, attempt: 1 };
+    store.recordProcess(attempt, { pid: 12345, identity: "running" });
+    expect(store.retainPossiblePublication(review.id, "interrupted", 45)).toMatchObject({ status: "interrupted", processId: 12345 });
+    expect(store.getReviewPublication(review.id)?.phase).toBe("pending");
+    expect(() => store.recoverPossiblePublication(review.id, { processesExcluded: false, operationsStopped: true } as never, 46)).toThrow();
+    expect(store.recoverPossiblePublication(review.id, stopped, 47)).toMatchObject({ status: "running", processId: null, attemptCount: 1 });
+    const sql = connect(file);
+    sql.exec("CREATE TRIGGER reject_failure BEFORE UPDATE OF status ON reviews WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'rejection failed'); END");
+    expect(() => store.rejectAndRetryPublication(attempt, stopped, { error: "no matching publication", retryAt: 60 }, 50)).toThrow("rejection failed");
+    expect(store.getReviewPublication(review.id)?.phase).toBe("pending");
+    expect(store.getReview(review.id)?.status).toBe("running");
+    sql.exec("DROP TRIGGER reject_failure");
+    expect(store.rejectAndRetryPublication(attempt, stopped, { error: "no matching publication", retryAt: 60 }, 50)).toMatchObject({ status: "failed", attemptCount: 1 });
+    expect(store.getReviewPublication(review.id)?.phase).toBe("prepared");
+  });
   it("clears only the exactly excluded current process and keeps the running attempt intent", () => {
     const { store, initialize, observe, reserve, prepare, launch } = fixture();
     initialize(); observe(); const review = reserve(); prepare(review); launch(review);

@@ -113,8 +113,18 @@ func (c *Capturer) schedule(at time.Time, p wm.Policy) ([]time.Time, error) {
 }
 
 // CaptureBatch freezes the audience once for one source operation and never
-// opens a separate transaction. Errors abort the caller's source write.
-func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) (failure error) {
+// opens a separate transaction. Errors abort the caller's source write. The
+// actor is stored with every captured event and never rendered.
+func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
+	return c.capture(ctx, dao, actor, facts, false)
+}
+
+// CaptureStatusBatch captures a multi-Task status operation using one audience snapshot.
+func (c *Capturer) CaptureStatusBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
+	return c.capture(ctx, dao, actor, facts, true)
+}
+
+func (c *Capturer) capture(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact, statuses bool) (failure error) {
 	phase, eventID := "source", ""
 	var project, request, deliveryID, endpointID, ownerKind, ownerID string
 	var adapterVersion int64
@@ -123,17 +133,21 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 			c.Logger.ErrorContext(ctx, "webhook capture failed", "component", "webhook", "phase", phase, "event_id", eventID, "delivery_id", deliveryID, "endpoint_id", endpointID, "owner_kind", ownerKind, "owner_id", ownerID, "project_id", project, "origin_request_id", request, "adapter_version", adapterVersion, "schema_version", 1, "error_kind", "capture_failed")
 		}
 	}()
-	if len(facts) < 1 || len(facts) > 2 || dao == nil {
+	if len(facts) < 1 || (!statuses && len(facts) > 2) || dao == nil {
 		return fmt.Errorf("invalid webhook capture batch")
 	}
 	types := make([]string, 0, len(facts))
 	project = facts[0].ProjectID
+	if err := actor.Validate(); err != nil {
+		return err
+	}
 	if c.RequestID != nil {
 		request = c.RequestID(ctx)
 		if len(request) > 128 {
 			return fmt.Errorf("invalid webhook request ID")
 		}
 	}
+	seenTasks := make(map[string]bool)
 	for _, f := range facts {
 		if f.ProjectID != project {
 			return fmt.Errorf("webhook batch has multiple projects")
@@ -141,12 +155,22 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 		if _, err := protocol.Render("00000000-0000-4000-8000-000000000000", f); err != nil {
 			return fmt.Errorf("validate webhook fact: %w", err)
 		}
-		for _, t := range types {
-			if t == f.Type {
-				return fmt.Errorf("duplicate webhook fact type")
+		if statuses {
+			if f.Type != protocol.StatusChanged || seenTasks[f.TaskID] {
+				return fmt.Errorf("invalid multi-task status batch")
 			}
+			seenTasks[f.TaskID] = true
+			if len(types) == 0 {
+				types = append(types, f.Type)
+			}
+		} else {
+			for _, t := range types {
+				if t == f.Type {
+					return fmt.Errorf("duplicate webhook fact type")
+				}
+			}
+			types = append(types, f.Type)
 		}
-		types = append(types, f.Type)
 	}
 	phase = "freeze"
 	audience, err := dao.FreezeAudience(ctx, project, types)
@@ -191,7 +215,7 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 		hash := sha256.Sum256(body)
 		phase = "capture"
 		subject := "tasks/" + f.TaskID
-		event := store.WebhookCapturedEvent{ID: eventID, EventType: f.Type, Source: "urn:daynight:project:" + project, Subject: subject, ProjectID: project, TaskID: f.TaskID, WireVersion: 1, SchemaVersion: 1, FactCodecVersion: 1, OccurredAt: f.OccurredAt, RecordedAt: recorded, OriginRequestID: requestID, FactBytes: body, FactSHA256: hash[:]}
+		event := store.WebhookCapturedEvent{ID: eventID, EventType: f.Type, Source: "urn:daynight:project:" + project, Subject: subject, ProjectID: project, TaskID: f.TaskID, WireVersion: 1, SchemaVersion: 1, FactCodecVersion: 1, OccurredAt: f.OccurredAt, RecordedAt: recorded, OriginRequestID: requestID, FactBytes: body, FactSHA256: hash[:], Actor: actor}
 		if f.Type != protocol.ThreadPosted {
 			v := f.TaskVersion
 			event.TaskVersion = &v

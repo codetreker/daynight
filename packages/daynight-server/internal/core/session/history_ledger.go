@@ -198,6 +198,9 @@ func (op *ArchiveOperation) validateHistoryWriter(r *record, t task) error {
 	if op.principal.Kind != model.PATCredential || op.principal.UserID != r.Owner || !r.Consumed || !bytes.Equal(hash[:], r.GrantHash) || op.historyWriter.Fence != r.Snapshot.ControllerFence || r.Snapshot.ContentRevision != sp.ContentRevision || !active(t, r) || r.Snapshot.Lifecycle != "active" || r.Live == nil || r.ConnectionExpiry == nil || !op.execution.now().Before(*r.ConnectionExpiry) {
 		return conflict()
 	}
+	if r.OnlineMode == "relay" {
+		return fault("component_unsupported", "Online relay Sessions do not support active history ledgers.")
+	}
 	return nil
 }
 
@@ -207,9 +210,14 @@ func (op *ArchiveOperation) prepareHistoryLedger(ctx context.Context, writer Act
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
 		if err := op.validateHistoryWriter(r, t); err != nil {
+			return err
+		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
 			return err
 		}
 		dao, err := archiveDAO(tx)
@@ -246,6 +254,8 @@ func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer Acti
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.bundleAccess(ctx, func(_ *operationTx, _ *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if bundle.Phase != "active" {

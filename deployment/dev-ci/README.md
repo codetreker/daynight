@@ -5,8 +5,8 @@ UniAuth fixture in a disposable Docker Compose project. It uses the
 [localhost Dockerfile](../localhost/Dockerfile) and
 [TCP gateway configuration](../localhost/nginx.conf), with the same frontend
 build, embedded Go assets, strict loopback server listener and nonroot runtime
-as the normal deployment. Trusted same-origin executable HTML previews retain
-their existing iframe, relative-resource and keyboard behavior.
+as the normal deployment. Attachment previews use Task-specific origins and retain
+ordinary iframe and relative-resource behavior.
 
 For an npm mirror, export `DAYNIGHT_NPM_REGISTRY` before invoking the runner;
 its build argument and default are shared with the
@@ -59,7 +59,18 @@ and callback in the real UniAuth fixture, which runs as a sidecar in the gateway
 network namespace. A second loopback-published port maps to the same port inside
 that namespace, so both the browser and the Go server reach one fixture URL.
 The runner records the fixture's generated application credentials in a private
-environment file, starts the authenticated server and waits for `/readyz`.
+environment file, starts the authenticated server and waits for `/readyz`. The
+required preview origin uses a distinct numeric loopback port under explicit HTTP
+test mode. The controlled Node test client sends configured preview and Task Host
+authorities through the existing gateway listener for SSO and preview reads; it
+verifies the old preview GET redirect. This virtual routing does not publish a
+second preview listener or prove production Domain Cookies. Use separate same-site
+HTTPS DNS hosts for browser SSO scope validation.
+
+Gateway and Server readiness probes use numeric loopback URLs and an explicit
+`Host: localhost`. They continue to select the main namespace when the public
+origin uses a random published port, including an internal port that happens to
+match the configured preview port.
 
 The gateway also publishes a separate ephemeral host-loopback port for metrics,
 forwarding TCP to the server's `127.0.0.1:8788` listener. Find it during a run

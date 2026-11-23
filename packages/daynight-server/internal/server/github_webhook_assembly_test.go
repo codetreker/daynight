@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,23 +19,32 @@ import (
 	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
 )
 
-type githubAssemblySignals struct{ received *store.GitHubPRSignal }
+type githubAssemblySignals struct {
+	received *store.GitHubAppPRSignal
+	appID    string
+}
 
-func (s *githubAssemblySignals) WriteGitHubSignals(_ context.Context, fn func(store.GitHubSignalWriter) error) (store.Completion, error) {
+func (s *githubAssemblySignals) ReadGitHubAppWebhook(_ context.Context, id string) (store.GitHubAppWebhookSnapshot, error) {
+	s.appID = id
+	return store.GitHubAppWebhookSnapshot{GitHubAppID: 42, CredentialVersion: 3, Secret: []byte("assembly-secret")}, nil
+}
+func (s *githubAssemblySignals) WriteGitHubAppSignals(_ context.Context, id string, version int64, fn func(store.GitHubAppSignalWriter) error) (store.Completion, error) {
+	if id != s.appID || version != 3 {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, errors.New("unexpected identity")
+	}
 	err := fn(s)
 	return store.Completion{Outcome: store.TransactionCommitted}, err
 }
-func (s *githubAssemblySignals) SignalPullRequest(_ context.Context, p store.GitHubPRSignal) (int64, error) {
+func (s *githubAssemblySignals) SignalPullRequest(_ context.Context, p store.GitHubAppPRSignal) (int64, error) {
 	s.received = &p
 	return 1, nil
 }
-func (s *githubAssemblySignals) SignalAccess(context.Context, store.GitHubAccessSignal) (int64, error) {
+func (s *githubAssemblySignals) SignalAccess(context.Context, store.GitHubAppAccessSignal) (int64, error) {
 	return 0, nil
 }
 
 func TestGitHubWebhookProductionRouteAssembly(t *testing.T) {
 	cfg := configuredTestConfig()
-	cfg.GitHub.WebhookSecret = "assembly-secret"
 	db := newHTTPTestStore(t)
 	client, err := service.NewIdentityClient(cfg.UniAuth)
 	if err != nil {
@@ -45,7 +55,7 @@ func TestGitHubWebhookProductionRouteAssembly(t *testing.T) {
 	witness := &rootIdentityWitness{IdentityOperations: app.Identity}
 	app.Identity = witness
 	signals := &githubAssemblySignals{}
-	app.GitHubWebhook, err = githubservice.NewWebhookReceiver(signals, 42, testLogger())
+	app.GitHubWebhook, err = githubservice.NewAppWebhookReceiver(signals, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,15 +75,24 @@ func TestGitHubWebhookProductionRouteAssembly(t *testing.T) {
 		}
 	})
 	body := `{"installation":{"id":2},"repository":{"id":3},"number":4}`
-	mac := hmac.New(sha256.New, []byte(cfg.GitHub.WebhookSecret))
+	mac := hmac.New(sha256.New, []byte("assembly-secret"))
 	_, _ = mac.Write([]byte(body))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/github/webhook", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/github/apps/58484824-12a6-42f3-914a-052a6673403b/webhook", strings.NewReader(body))
 	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	req.Header.Set("X-GitHub-Event", "pull_request")
 	req.Header.Set("X-GitHub-Delivery", "assembly")
 	res := httptest.NewRecorder()
 	root.ServeHTTP(res, req)
-	if res.Code != http.StatusAccepted || witness.calls != 0 || signals.received == nil || signals.received.AppID != 42 || signals.received.Number != 4 {
+	if res.Code != http.StatusAccepted || witness.calls != 0 || signals.received == nil || signals.appID != "58484824-12a6-42f3-914a-052a6673403b" || signals.received.Number != 4 {
 		t.Fatalf("status=%d identity calls=%d signal=%+v", res.Code, witness.calls, signals.received)
+	}
+	for _, path := range []string{
+		"/api/v1/github/webhook",
+	} {
+		res = httptest.NewRecorder()
+		root.ServeHTTP(res, httptest.NewRequest(http.MethodPost, path, nil))
+		if res.Code != http.StatusNotFound {
+			t.Fatalf("retired route %s returned %d", path, res.Code)
+		}
 	}
 }

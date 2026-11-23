@@ -23,6 +23,8 @@ func TestTypedQueriesFilterBeforePaginationAndHideDeletedParents(t *testing.T) {
 		($5,$7,'task',$1,'needle second',now()-interval '2 seconds',NULL),
 		($6,$7,'task',NULL,'needle independent',now()-interval '1 second',NULL)`, goal, deletedGoal, hidden, first, second, independent, f.project)
 	mustOK(t, err)
+	_, err = f.tx.Exec(ctx, `UPDATE tasks SET ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$1) WHERE id=$2`, deletedGoal, hidden)
+	mustOK(t, err)
 	_, err = f.tx.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,false)`, f.project, first, hidden)
 	mustOK(t, err)
 	reader := task.NewReader(f.tx)
@@ -82,7 +84,7 @@ func TestTypedQueriesFilterBeforePaginationAndHideDeletedParents(t *testing.T) {
 	}
 	titles, err := search.Titles(ctx, f.project, []string{goal, deletedGoal, first})
 	mustOK(t, err)
-	if len(titles) != 1 || titles[goal] != "needle goal" {
+	if len(titles) != 2 || titles[goal] != "needle goal" || titles[first] != "needle first" {
 		t.Fatalf("parent titles: %+v", titles)
 	}
 	graph, err := reader.TaskGraphTasks(ctx, f.project, first, store.TaskGraphSelection{OrdinaryPrerequisites: true, LiveOnly: true}, 160)

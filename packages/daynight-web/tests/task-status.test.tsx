@@ -5,7 +5,7 @@ import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, directAccessFix
 import { act, cleanup, fireEvent, screen, waitFor as waitForWithRealTimers, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
-import { ApiError, setTaskStatus, checkAttachmentPreview, getTask, getTaskSync, listAttachments, putAttachment, readAttachmentText } from '../src/api/client';
+import { ApiError, setTaskStatus, getTask, getTaskSync, listAttachments, putAttachment, readAttachmentText } from '../src/api/client';
 import * as projectAuth from '../src/api/auth';
 import { getProject } from '../src/api/project-settings';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
@@ -18,7 +18,7 @@ import { installGraphMeasurements } from './graph-measurements';
 vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
   getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(), putAttachment: vi.fn(),
-  readAttachmentText: vi.fn(), checkAttachmentPreview: vi.fn(), }; });
+  readAttachmentText: vi.fn(), }; });
 // Durable cache checks finish on event-loop tasks while polling time stays under test control.
 const waitFor: typeof waitForWithRealTimers = async (assertion, options) => {
   if (!vi.isFakeTimers()) return waitForWithRealTimers(assertion, options);
@@ -88,7 +88,6 @@ beforeEach(() => {
   vi.mocked(listAttachments).mockReset().mockResolvedValue({ items: [], nextCursor: null });
   vi.mocked(putAttachment).mockReset();
   vi.mocked(readAttachmentText).mockReset().mockResolvedValue('Selected attachment content');
-  vi.mocked(checkAttachmentPreview).mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => { cleanup(); root.remove(); });
 const mount = async () => {
@@ -322,7 +321,7 @@ describe('status in shared production task details', () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     await mount();
     await openGraph();
-    const inspected = await screen.findByRole('button', { name: 'Task 2, To do, No Goal' });
+    const inspected = await screen.findByRole('button', { name: 'Task 2, To do' });
     fireEvent.click(inspected);
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
     const inspection = () => [...document.querySelectorAll<HTMLElement>('.task-node,.task-dependency-edge')].map((node) => [node.closest<HTMLElement>('.react-flow__node')?.dataset.id ?? node.dataset.id, node.dataset.inspection]);
@@ -346,10 +345,10 @@ describe('status in shared production task details', () => {
     expect(getTask).toHaveBeenCalledTimes(1);
     await act(async () => { mutation.resolve(commit()); });
     await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
-    expect(stat('To do')).toHaveTextContent('1'); expect(stat('Blocked')).toHaveTextContent('0'); expect(stat('Ready')).toHaveTextContent('1');
+    expect(stat('To do')).toHaveTextContent('1'); expect(stat('Not ready')).toHaveTextContent('0'); expect(stat('Ready')).toHaveTextContent('1');
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
     expect(within(dialog).getByText('Task status confirmed.')).toBeVisible();
-    expect(within(dialog).queryByText('Blocked', { selector: '.task-detail-blocked' })).toBeNull();
+    expect(within(dialog).queryByText('Not ready', { selector: '.task-detail-blocked' })).toBeNull();
     expect(document.querySelector('.root-status')).toHaveTextContent('In progress');
     expect(document.querySelector('.task-graph-canvas')).toBe(canvas); expect(viewport()).toBe(transform);
     expect(document.querySelector('.task-chain-dialog')).toHaveClass('task-chain-dialog-fullscreen');

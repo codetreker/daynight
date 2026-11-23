@@ -41,6 +41,9 @@ export type WorkspaceMessages = {
     readonly allLoaded: string;
   };
   readonly project: {
+    readonly copyRepositoryUrl: string;
+    readonly repositoryUrlCopied: string;
+    readonly copyRepositoryUrlFailed: string;
     readonly back: string;
     readonly lastRefreshed: (args: { readonly time: string }) => string;
     readonly refreshing: string;
@@ -60,19 +63,15 @@ export type WorkspaceMessages = {
     readonly dismissNotice: string;
     readonly statistics: string;
     readonly totalTasks: string;
-    readonly uniqueTasks: string;
-    readonly completion: (args: { readonly percent: number }) => string;
-    readonly endedBreakdown: (args: { readonly done: number; readonly cancelled: number; readonly percent: number }) => string;
-      readonly waiting: string;
-    readonly advancing: string;
     readonly ready: string;
     readonly blocked: string;
-    readonly todoSubset: string;
     readonly empty: string;
     readonly emptyDetail: string;
     readonly chains: string;
     readonly statusFilter: string;
     readonly allStatuses: string;
+    readonly noStatuses: string;
+    readonly selectedStatuses: (args: { readonly count: number }) => string;
     readonly statusOptions: Readonly<Record<"proposed" | "todo" | "in_progress" | "done" | "cancelled", string>>;
   };
   readonly search: {
@@ -110,6 +109,7 @@ export type WorkspaceMessages = {
   readonly sections: {
     readonly label: string;
     readonly overview: string;
+    readonly statistics: string;
     readonly tasks: string;
     readonly prs: string;
     readonly tags: string;
@@ -140,6 +140,7 @@ export type WorkspaceMessages = {
     readonly section: PreferenceNotices;
     readonly tab: PreferenceNotices;
     readonly assignee: PreferenceNotices;
+    readonly status: PreferenceNotices;
     readonly scroll: PreferenceNotices;
   };
 };

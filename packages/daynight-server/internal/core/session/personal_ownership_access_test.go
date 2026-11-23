@@ -6,7 +6,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 func permissionCurrent(f fixture, ctx context.Context, principal model.Principal, work map[string]int) (map[string]any, error) {
@@ -37,35 +36,6 @@ func permissionOperation(f fixture, ctx context.Context, principal model.Princip
 	phase := f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1})
 	defer f.dao.FinishContext(phase)
 	return f.s.Operation(phase, principal, f.project, f.task, snapshot.SessionID, id)
-}
-
-func permissionTerminalRead(f fixture, ctx context.Context, principal model.Principal, id string, current, lease bool) (map[string]any, error) {
-	work := map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1}
-	if lease {
-		work["LockCredential"], work["ProjectAccess"] = 2, 2
-	}
-	var phase context.Context
-	if current {
-		work["CurrentTerminalSession"], work["LockTerminal"] = 1, 1
-		phase = f.TaskPhase(ctx, work)
-	} else {
-		phase = f.TerminalPhase(ctx, false, work)
-	}
-	defer f.dao.FinishContext(phase)
-	if current {
-		return f.s.CurrentTerminal(phase, principal, f.project, f.task)
-	}
-	return f.s.TerminalState(phase, principal, f.project, f.task, id)
-}
-
-func permissionTerminalSubmit(f fixture, ctx context.Context, principal model.Principal, id, browser string, message v2.Message, retained bool) (v2.Message, error) {
-	work := map[string]int{}
-	if retained {
-		work["TerminalOperation"] = 1
-	}
-	phase := f.TerminalPhase(ctx, false, work)
-	defer f.dao.FinishContext(phase)
-	return f.s.SubmitTerminal(phase, principal, f.project, f.task, id, browser, message)
 }
 
 func makeRelayOwnerInheritedOnly(t *testing.T, f fixture) {
@@ -118,29 +88,5 @@ func TestInheritedOnlySessionOwnerRetainsReadControlAndDispatchAdmission(t *test
 	assertAdmissionDenied(t, err)
 	if len(offers) != 0 {
 		t.Fatalf("dispatch offered work after its inherited requester lost access: %#v", offers)
-	}
-}
-
-func TestInheritedOnlyTerminalOwnerRetainsCurrentStateAndWorkerBinding(t *testing.T) {
-	f, message := terminalFixture(t)
-	makeRelayOwnerInheritedOnly(t, f)
-	ctx := context.Background()
-	registration := f.TerminalRegistrationPhase(ctx, map[string]int{"InsertTerminal": 1})
-	if _, err := terminalRegistrationStep(t, f, message.SessionID, func() (v2.Message, error) { return f.s.RegisterTerminal(registration, f.p, f.project, f.task, message) }); err != nil {
-		t.Fatal("inherited-only terminal registration", err)
-	}
-	f.dao.FinishContext(registration)
-	binding := f.TerminalPhase(ctx, false, map[string]int{"SaveTerminal": 1})
-	if err := terminalErrorStep(t, f, func() error {
-		return f.s.BindTerminalConnection(binding, f.p, f.project, f.task, message.SessionID, message.Envelope, "1")
-	}); err != nil {
-		t.Fatal("inherited-only terminal Worker connection", err)
-	}
-	f.dao.FinishContext(binding)
-	if _, err := permissionTerminalRead(f, ctx, f.p, message.SessionID, true, false); err != nil {
-		t.Fatal("inherited-only terminal current state", err)
-	}
-	if _, err := permissionTerminalRead(f, ctx, f.p, message.SessionID, false, false); err != nil {
-		t.Fatal("inherited-only terminal state", err)
 	}
 }

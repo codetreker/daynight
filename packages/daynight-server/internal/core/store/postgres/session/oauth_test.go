@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Store, profile string) {
@@ -58,15 +59,17 @@ func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Sto
 }
 
 func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t, profile) })
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t, suite, profile) }) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T, profile string) {
+func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, queuedRevoker := range []bool{false, true} {
-		t.Run(map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -85,53 +88,50 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer submit.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, submit)
 			dispatch, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer dispatch.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, dispatch)
 			revoker, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer revoker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, revoker)
 			if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := pgsession.New(dispatch).LockSession(ctx, id); err != nil {
 				t.Fatal(err)
 			}
+			submitPID := submit.Conn().PgConn().PID()
 			waiting, finished := make(chan error, 1), make(chan struct{})
-			go func() { defer close(finished); _, err := pgsession.New(submit).LockSession(ctx, id); waiting <- err }()
+			var revocationFinished chan struct{}
+			go func() {
+				defer close(finished)
+				_, err := pgsession.New(submit).LockSession(ctx, id)
+				waiting <- err
+			}()
 			defer func() {
 				cancel()
-				_ = dispatch.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("submit waiter did not drain")
+				rollbackSessionTestTransaction(t, dispatch)
+				<-finished
+				rollbackSessionTestTransaction(t, submit)
+				if revocationFinished != nil {
+					<-revocationFinished
 				}
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT bot_id::text,server_instance", dispatch.Conn().PgConn().PID())
-			revoked, revocationFinished := make(chan error, 1), make(chan struct{})
+			revoked := make(chan error, 1)
 			if queuedRevoker {
+				revocationFinished = make(chan struct{})
 				go func() {
 					defer close(revocationFinished)
 					_, err := pgoauth.NewDAO(revoker).RevokeFamily(ctx, grant.ID, time.Now())
 					revoked <- err
 				}()
-				defer func() {
-					cancel()
-					_ = submit.Rollback(context.Background())
-					_ = dispatch.Rollback(context.Background())
-					select {
-					case <-revocationFinished:
-					case <-time.After(time.Second):
-						t.Error("revoker did not drain")
-					}
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
+				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submitPID)
 			}
 			readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 			defer readCancel()
@@ -141,14 +141,14 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 			if err := dispatch.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if err := <-waiting; err != nil {
+			if err := testutil.ReceiveQueryResult(t, ctx, waiting); err != nil {
 				t.Fatal(err)
 			}
 			if err := submit.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if queuedRevoker {
-				if err := <-revoked; err != nil {
+				if err := testutil.ReceiveQueryResult(t, ctx, revoked); err != nil {
 					t.Fatal(err)
 				}
 				if err := revoker.Commit(ctx); err != nil {
@@ -160,15 +160,19 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 }
 
 func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t, profile) })
+		if !t.Run(profile, func(t *testing.T) {
+			testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t, suite, profile)
+		}) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T, profile string) {
+func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, mode := range []string{"revocation", "expiry"} {
-		t.Run(mode, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, mode, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -181,32 +185,47 @@ func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
-			done := make(chan error, 1)
+			defer rollbackSessionTestTransaction(t, waiter)
+			var wait func() error
+			var query string
 			if mode == "revocation" {
 				if err := pgsession.New(blocker).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 					t.Fatal(err)
 				}
-				go func() { _, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now()); done <- err }()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					_, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now())
+					return err
+				}
+				query = "SELECT id::text,user_id::text,client_id"
 			} else {
 				if _, err := blocker.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID); err != nil {
 					t.Fatal(err)
 				}
-				go func() {
-					done <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text FROM oauth_access_tokens", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					return pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
+				}
+				query = "SELECT id::text FROM oauth_access_tokens"
 			}
+			done, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				done <- wait()
+			}()
+			defer func() {
+				cancel()
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
+			}()
+			testutil.WaitTransferTeamLock(t, ctx, db.Pool, query, blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			result := <-done
+			result := testutil.ReceiveQueryResult(t, ctx, done)
 			if mode == "revocation" {
 				if result != nil {
 					t.Fatal(result)
@@ -282,15 +301,17 @@ func testTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T, 
 }
 
 func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialRechecksGrantAfterWait(t, profile) })
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialRechecksGrantAfterWait(t, suite, profile) }) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string) {
+func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, change := range []string{"scope", "expiry", "revocation"} {
-		t.Run(change, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, change, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -303,12 +324,12 @@ func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, waiter)
 			switch change {
 			case "scope":
 				_, err = blocker.Exec(ctx, `UPDATE oauth_grants SET scope='changed' WHERE id=$1`, grant.ID)
@@ -327,12 +348,8 @@ func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string)
 			}()
 			defer func() {
 				cancel()
-				_ = blocker.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("credential waiter did not drain")
-				}
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT g.id::text FROM oauth_grants", blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
@@ -682,6 +699,14 @@ func TestSessionOAuthReadonlyPreflightDoesNotAcquireFamilyLocks(t *testing.T) {
 }
 
 func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original credential", true: "bound OAuth credential"}[bound], func(t *testing.T) {
+			testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t, bound)
+		})
+	}
+}
+
+func testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T, bound bool) {
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -692,54 +717,182 @@ func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
-	var deadline time.Time
-	if err := db.Pool.QueryRow(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1 RETURNING expires_at`, actor.CredentialID).Scan(&deadline); err != nil {
-		t.Fatal(err)
-	}
 	blocker, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rollbackSessionTestTransaction(t, blocker)
-	if _, err := blocker.Exec(ctx, `SELECT id FROM oauth_access_tokens WHERE id=$1 FOR UPDATE`, actor.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	waiter, err := db.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rollbackSessionTestTransaction(t, waiter)
+	holderPID := blocker.Conn().PgConn().PID()
+	ready := make(chan uint32, 1)
+	start := make(chan struct{})
 	result, finished := make(chan error, 1), make(chan struct{})
-	go func() {
-		defer close(finished)
-		result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
-	}()
+	commitAttempted := false
 	defer func() {
 		cancel()
-		_ = blocker.Rollback(context.Background())
+		if !commitAttempted {
+			rollbackSessionTestTransaction(t, blocker)
+		}
+		<-finished
+	}()
+	go func() {
+		defer close(finished)
+		waiter, err := db.Pool.Begin(ctx)
+		if err != nil {
+			result <- err
+			return
+		}
+		defer rollbackOAuthExpiryWaiter(t, ctx, waiter)
+		ready <- waiter.Conn().PgConn().PID()
 		select {
-		case <-finished:
-		case <-time.After(time.Second):
-			t.Error("expiry waiter did not drain")
+		case <-start:
+			if bound {
+				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
+			} else {
+				result <- pgsession.New(waiter).LockCredential(ctx, actor, now)
+			}
+		case <-ctx.Done():
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text FROM oauth_access_tokens", blocker.Conn().PgConn().PID())
-	for {
-		var expired bool
-		if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1`, deadline).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		if err := testutil.WaitThreadClock(ctx); err != nil {
-			t.Fatal(err)
-		}
+
+	var waiterPID uint32
+	select {
+	case waiterPID = <-ready:
+	case err := <-result:
+		t.Fatalf("OAuth expiry waiter failed to start: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
+
+	// Commit expiry before taking the token lock. The holder leaves the row unchanged.
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 1)
+	if !now.Before(expires) {
+		t.Fatalf("caller time %v must precede token expiry %v", now, expires)
+	}
+	var lockedExpiry time.Time
+	if err := blocker.QueryRow(ctx, `SELECT expires_at FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, actor.CredentialID, actor.UserID).Scan(&lockedExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if !lockedExpiry.Equal(expires) {
+		t.Fatalf("locked token expires at %v, want %v", lockedExpiry, expires)
+	}
+	close(start)
+
+	waitForOAuthExpiryTokenLock(t, ctx, db, waiterPID, holderPID, result)
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+	commitAttempted = true
 	if err := blocker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) {
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || (bound && errors.Is(err, pgx.ErrNoRows)) {
 		t.Fatalf("naturally expired access admitted using pre-wait time: %v", err)
+	}
+}
+
+func waitForOAuthExpiryTokenLock(t *testing.T, ctx context.Context, db *postgres.Store, waiterPID, holderPID uint32, result <-chan error) {
+	t.Helper()
+	const tokenLookup = "SELECT id::text FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR SHARE"
+	for {
+		select {
+		case err := <-result:
+			t.Fatalf("OAuth expiry waiter finished without observing the token lock: %v", err)
+		default:
+		}
+		var waiting bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query=$2
+				AND $3=ANY(pg_blocking_pids(pid))
+		)`, waiterPID, tokenLookup, holderPID).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		if err := testutil.WaitThreadClock(ctx); err != nil {
+			t.Fatalf("OAuth expiry waiter %d did not wait for holder %d: %v", waiterPID, holderPID, err)
+		}
+	}
+}
+
+func rollbackOAuthExpiryWaiter(t *testing.T, operationCtx context.Context, tx pgx.Tx) {
+	t.Helper()
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(operationCtx), 5*time.Second)
+	defer cancel()
+
+	// Rollback returns the connection to the pool. Retain the cleanup signal while we own it.
+	conn := tx.Conn().PgConn()
+	closedBefore, cleanupDone := conn.IsClosed(), conn.CleanupDone()
+	err := tx.Rollback(cleanup)
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) {
+		return
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) && (closedBefore || operationCtx.Err() != nil) {
+		select {
+		case <-cleanupDone:
+			return
+		case <-cleanup.Done():
+			err = errors.Join(err, cleanup.Err())
+		}
+	}
+	t.Errorf("rollback OAuth expiry waiter: %v", err)
+}
+
+// expiryClockBarrier holds the final clock check after the real credential read.
+type expiryClockBarrier struct {
+	pgx.Tx
+	calls  int
+	ready  chan struct{}
+	resume chan struct{}
+}
+
+func (tx *expiryClockBarrier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.calls++
+	if tx.calls == 4 {
+		close(tx.ready)
+		select {
+		case <-tx.resume:
+		case <-ctx.Done():
+		}
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+func TestSessionOAuthExpiryBetweenCredentialReadAndClockCheck(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, owner, _ := testAuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", now.Add(-time.Minute))
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 1)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &expiryClockBarrier{Tx: tx, ready: make(chan struct{}), resume: make(chan struct{})}
+	result := make(chan error, 1)
+	finished := make(chan struct{})
+	defer func() {
+		cancel()
+		<-finished
+		rollbackSessionTestTransaction(t, tx)
+	}()
+	go func() {
+		defer close(finished)
+		result <- pgsession.New(wrapped).LockCredential(ctx, actor, now)
+	}()
+	select {
+	case <-wrapped.ready:
+	case err := <-result:
+		t.Fatalf("credential read did not reach clock check: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+	close(wrapped.resume)
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expiry after credential read was not rejected by clock check: %v", err)
 	}
 }

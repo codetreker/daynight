@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createWorkerRepositoryAdmission } from "../../../src/commands/worker/repository-admission.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerProject } from "../../../src/commands/worker/types.js";
 
@@ -21,7 +22,7 @@ const fixture = async () => {
   await mkdir(paths.workerDirectory, { recursive: true });
   const store = openWorkerStore(createMemoryDatabase(), { onMigration: () => {} });
   stores.push(store);
-  const admission = createWorkerRepositoryAdmission({ paths, store: () => store });
+  const admission = createWorkerRepositoryAdmission({ paths, store: () => store, workerId: uuid(4), serverOrigin: "https://daynight.example" });
   const project = async (number: number, relative: string): Promise<WorkerProject> => {
     const localPath = path.join(directory, relative);
     await mkdir(localPath, { recursive: true });
@@ -138,4 +139,40 @@ describe("Worker repository admission", () => {
     await expect(f.admission.admit(first, new AbortController().signal)).rejects.toThrow("overlaps another worker repository");
     expect(f.store.listProjects()).toEqual([first, second]);
   });
+});
+
+
+it("retains a repository binding for its journal-backed Web cleanup even when the task index is absent", async () => {
+  const f = await fixture();
+  const project = await f.project(1, "original"), replacement = { ...await f.project(1, "replacement"), repoUrl: project.repoUrl };
+  f.store.registerProject(project);
+  const owner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
+  const journal = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
+  try {
+    const task = journal.register({ ...owner, project, serverOrigin: "https://daynight.example", workerId: uuid(4), userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+    expect(f.store.getTask(owner)).toBeNull();
+    await expect(f.admission.admit(replacement, new AbortController().signal)).rejects.toThrow("unfinished Web execution");
+    const cleanup = journal.beginCleanup(owner, { kind: "terminal", deadline: 100 }, 2);
+    const done = journal.completeTask(owner, 3);
+    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 1, nextAttemptAt: 200, stage: "observation", lastError: "retained" }, task);
+    await expect(f.admission.admit(replacement, new AbortController().signal)).rejects.toThrow("Outstanding cleanup");
+    expect(f.store.getProject(owner)).toEqual(project);
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+    expect(f.store.getCleanupSchedule(owner, done)).toMatchObject({ worktreeId: owner.worktreeId, deadline: cleanup.cleanup!.deadline });
+    f.store.deleteCleanupSchedule(owner, done);
+    expect(await f.admission.admit(replacement, new AbortController().signal)).toEqual(replacement);
+  } finally { journal.close(); }
+});
+
+it("does not adopt a Web journal belonging to another Worker when changing a binding", async () => {
+  const f = await fixture();
+  const project = await f.project(1, "original"), replacement = { ...await f.project(1, "replacement"), repoUrl: project.repoUrl };
+  f.store.registerProject(project);
+  const owner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
+  const journal = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
+  try {
+    const original = journal.register({ ...owner, project, serverOrigin: "https://daynight.example", workerId: uuid(99), userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+    expect(await f.admission.admit(replacement, new AbortController().signal)).toEqual(replacement);
+    expect(journal.getTask(owner)).toEqual(original);
+  } finally { journal.close(); }
 });

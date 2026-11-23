@@ -51,7 +51,7 @@ const loadKernel = async (): Promise<JobKernel> => {
       throw new WindowsControllerJobError("open", code);
     },
     openProcess: pid => {
-      const handle: unknown = openProcess(0x101, 0, pid);
+      const handle: unknown = openProcess(0x1101, 0, pid);
       if (handle === null) throw failure("open-process");
       return handle;
     },
@@ -149,6 +149,46 @@ declare const leaseBrand: unique symbol;
 export type ControllerJobLease = { readonly [leaseBrand]: true };
 type LeaseState = { api: JobKernel; handle: unknown; name: string; proof: ProcessProof; busy: boolean; closed: boolean };
 const leases = new WeakMap<ControllerJobLease, LeaseState>();
+
+/** Assign a still-suspended child and retain its original Job before any child code runs. */
+export const createControllerJobLease = async (launchId: string, proof: ProcessProof, deadline: number): Promise<ControllerJobLease> => {
+  const name = `Local\\Daynight-${launchId}`; validate(name);
+  if (proof.jobObjectName !== name) throw new Error("Suspended child proof lacks its assigned Job identity.");
+  const checkDeadline = operationDeadline(deadline), api = await (kernel ??= loadKernel());
+  checkDeadline();
+  const job = api.create(name);
+  try {
+    if (job.alreadyExists) throw new WindowsControllerJobError("identity-already-exists", 183);
+    const processHandle = api.openProcess(proof.pid);
+    withHandle(api, processHandle, "close-process-handle", () => {
+      checkDeadline(); api.assign(job.handle, processHandle);
+      if (!api.contains(job.handle, processHandle)) throw new Error("Suspended child Job assignment was not confirmed.");
+    });
+    const lease = {} as ControllerJobLease;
+    leases.set(lease, { api, handle: job.handle, name, proof: { ...proof }, busy: false, closed: false });
+    return lease;
+  } catch (error) {
+    try { api.close(job.handle, "close-job-handle"); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "Suspended child Job setup and handle release failed."); }
+    throw error;
+  }
+};
+
+/** A resumed Controller adopts only the Job already containing its own original process. */
+export const adoptOwnedControllerJob = async (launchId: string): Promise<string> => {
+  const name = `Local\\Daynight-${launchId}`; validate(name);
+  if (ownedJobs.has(name)) throw new Error("The Controller Job Object is already retained.");
+  const api = await (kernel ??= loadKernel()), handle = api.open(name, true);
+  if (handle === null) throw new WindowsControllerJobError("open", 2);
+  try {
+    const processHandle = api.openProcess(process.pid);
+    withHandle(api, processHandle, "close-process-handle", () => {
+      if (!api.contains(handle, processHandle)) throw new Error("Controller is not in the assigned launch Job.");
+    });
+    ownedJobs.set(name, { api, handle });
+    return name;
+  } catch (error) { api.close(handle, "close-job-handle"); throw error; }
+};
 
 /** Open and authenticate the original Controller while both handles are held. */
 export const acquireControllerJobLease = async (launchId: string, spawnProof: ProcessProof, deadline: number): Promise<ControllerJobLease> => {

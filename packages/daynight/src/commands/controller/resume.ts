@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
-import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
+import { assertCurrentSqlite, inspectSqlite, type SqliteSource } from "../../platform/sqlite-format.js";
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import { assertResumeLeaseMigrationAllowed, nativeResumeLeaseFormat } from "./resume-lease-format.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
@@ -13,7 +14,8 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import type { SessionProvider } from "../../session/protocol.js";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { readControllerSnapshot, readCurrentControllerInventorySnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { controllerJournalFormat } from "./journal-format.js";
 import { captureProcessProof, confirmControllerProcessesStopped } from "./process-proof.js";
 
 export type ResumeLease = { ticket: ControllerLaunchTicket; nativeSessionId: string; release(): Promise<void> };
@@ -23,6 +25,20 @@ const missing = (error: unknown): boolean => error instanceof Error && "code" in
 const privateFile = async (file: string): Promise<void> => {
   const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.isSymbolicLink() || process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw new Error("Controller recovery evidence must be a private regular file.");
+};
+const inventorySnapshot = (file: string, ticket: ControllerLaunchTicket): ControllerSnapshot | null => {
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true });
+  let source: SqliteSource | undefined, failure: unknown, failed = false;
+  try { source = db.transaction(() => inspectSqlite(db, controllerJournalFormat)).deferred(); }
+  catch (cause) { failed = true; failure = cause; }
+  try { closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "not-started"); }
+  catch (cause) { throw failed ? new AggregateError([failure, cause], "Controller resume inventory inspection and close failed.", { cause: failure }) : cause; }
+  if (failed) throw failure;
+  // Inventory must not migrate unrelated live writers. Earlier formats retain
+  // the existing permit-owned migration path for their stopped journals.
+  if (source!.kind === "current" || source!.kind === "outdated" && (source!.version === 16 || source!.version === 17))
+    return readCurrentControllerInventorySnapshot(file, [ticket], Date.now() + 5000)?.snapshot ?? null;
+  return readControllerSnapshot(file);
 };
 const inventory = async (home: string): Promise<LocalExecution[]> => {
   let files: string[];
@@ -41,7 +57,7 @@ const inventory = async (home: string): Promise<LocalExecution[]> => {
   for (const ticket of tickets.values()) {
     const file = path.join(controllerExecutionDirectory(home, ticket.executionId), "journal.sqlite");
     let snapshot: ControllerSnapshot | null = null;
-    try { await privateFile(file); snapshot = readControllerSnapshot(file); }
+    try { await privateFile(file); snapshot = inventorySnapshot(file, ticket); }
     catch (error) { if (!missing(error)) throw error; }
     if (snapshot && (snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.testExecutionId !== ticket.testExecutionId || snapshot.claimId !== ticket.claimId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId || snapshot.nativeSessionId !== null && !uuid(snapshot.nativeSessionId))) throw new Error("Controller journal does not match its latest launch ticket.");
     result.push({ ticket, snapshot, file });
@@ -65,23 +81,25 @@ const get = async (config: { serverUrl: string; serverToken: string }, resource:
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 };
 
-const discardUnreturnedLease = (file: string, key: string, nonce: string): void => {
-  const db = new Database(file, { fileMustExist: true });
-  let failed = false, failure: unknown;
+const leaseTransaction = (db: Database.Database, file: string, phase: string, action: () => void): void => {
+  let actionFailed = false, actionFailure: unknown;
   try {
     runSqliteImmediate(db, () => {
-      assertCurrentSqlite(db, nativeResumeLeaseFormat);
-      const existing = db.prepare("SELECT nonce FROM leases WHERE native_key=?").get(key) as { nonce: string } | undefined;
-      if (existing === undefined) return;
-      if (existing.nonce !== nonce) throw new Error("Native resume lease ownership changed; reconciliation is required.");
-      const changed = db.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
-      if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
+      try { assertCurrentSqlite(db, nativeResumeLeaseFormat); action(); }
+      catch (cause) { actionFailed = true; actionFailure = cause; throw cause; }
     });
-  } catch (cause) { failed = true; failure = cause; }
-  try { closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, failed ? sqliteTransactionOutcome(failure) : "committed"); }
-  catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease reconciliation and shutdown failed."); throw cleanup; }
-  if (failed) throw failure;
+  } catch (cause) {
+    const outcome = sqliteTransactionOutcome(cause);
+    const sqliteError = cause instanceof Error && "code" in cause && typeof cause.code === "string" && cause.code.startsWith("SQLITE_");
+    if (cause instanceof SqliteAccessError) throw new SqliteAccessError(cause.kind, cause.context, { cause, outcome, connectionClosed: false });
+    if (!actionFailed || cause !== actionFailure || sqliteError) throw new SqliteAccessError("operation-failed", { database: nativeResumeLeaseFormat.name, file, phase }, { cause, outcome });
+    throw cause;
+  }
 };
+
+const closedLeaseFailure = (failure: unknown, closed: boolean): unknown => failure instanceof SqliteAccessError
+  ? new SqliteAccessError(failure.kind, failure.context, { cause: failure.cause, outcome: failure.outcome, connectionClosed: closed })
+  : failure;
 
 /** Acquire one stopped local Test Session's native writer. The caller releases
  * the lease only after proving its new controller and descendants stopped; an
@@ -120,32 +138,34 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   try { const created = await open(file, "wx", 0o600); await created.close(); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   await privateFile(file);
   const key = createHash("sha256").update(JSON.stringify([input.provider, nativeHome, nativeSessionId])).digest("hex"), nonce = randomUUID(), processProof = await captureProcessProof(process.pid);
-  let db: Database.Database | undefined, acquired = false, inserted = false;
+  let db: Database.Database | undefined, acquired = false, outcome: SqliteOutcome = "not-started";
   const close = (outcome: SqliteOutcome = "unknown"): void => { if (db !== undefined && db.open) closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, outcome); };
   const release = async (): Promise<void> => {
     if (!acquired) { close("committed"); return; }
     let failed = false, failure: unknown;
     try {
-      runSqliteImmediate(db!, () => {
-        assertCurrentSqlite(db!, nativeResumeLeaseFormat);
+      leaseTransaction(db!, file, "lease-release", () => {
         const changed = db!.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
         if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
       });
       acquired = false;
     } catch (cause) { failed = true; failure = cause; }
-    try { close(failed ? sqliteTransactionOutcome(failure) : "committed"); }
-    catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease release and shutdown failed."); throw cleanup; }
-    if (failed) throw failure;
+    const releaseOutcome = failed ? failure instanceof SqliteAccessError ? failure.outcome : sqliteTransactionOutcome(failure) : "committed";
+    try { close(releaseOutcome); }
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: nativeResumeLeaseFormat.name, file, phase: "lease-release-close" }, { cause: failed ? new AggregateError([failure, cleanup], "Native resume lease release and shutdown failed.") : cleanup, outcome: releaseOutcome, connectionClosed: db === undefined || !db.open }); }
+    if (failed) throw closedLeaseFailure(failure, db === undefined || !db.open);
   };
   try {
     db = openSqliteDatabase({ file, format: nativeResumeLeaseFormat, allowCreate: true,
       assertMigrationAllowed: assertResumeLeaseMigrationAllowed,
-      onReady: (db) => {
-        if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
-        db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
-        inserted = true;
-      },
     });
+    try {
+      leaseTransaction(db, file, "lease-acquire", () => {
+        if (db!.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
+        db!.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
+      });
+      outcome = "committed";
+    } catch (cause) { outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); throw cause; }
     acquired = true;
     // Another continuation may have been launched since selection. Reinspect
     // every execution for this native identity while the shared lease is held.
@@ -158,14 +178,9 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   } catch (error) {
     try {
       if (acquired) await release();
-      else {
-        close();
-        // Completion reporting can fail after INSERT commits but before the
-        // connection is returned. Only our known committed nonce is releasable.
-        if (db === undefined && inserted && error instanceof SqliteAccessError && error.outcome === "committed" && error.connectionClosed) discardUnreturnedLease(file, key, nonce);
-      }
+      else close(outcome);
     }
-    catch (cleanup) { throw new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."); }
-    throw error;
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: nativeResumeLeaseFormat.name, file, phase: "lease-acquire-close" }, { cause: new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."), outcome: cleanup instanceof SqliteAccessError ? cleanup.outcome : acquired ? sqliteTransactionOutcome(cleanup) : outcome, connectionClosed: db === undefined ? error instanceof SqliteAccessError && error.connectionClosed : !db.open }); }
+    throw db === undefined ? error : closedLeaseFailure(error, !db.open);
   }
 };

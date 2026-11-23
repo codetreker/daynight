@@ -14,15 +14,20 @@ make the existing Worker reporting and readiness depend on another service.
 
 The server accepts a closed, bounded current observation and stores one expiring
 Redis String per account and Worker. A header supports bounded summary reads;
-a single `SET EX` replaces the complete frame and its TTL after ordered CAS
-checks. Redis time supplies receipts and observation anchors. A separate
-monitoring connection has a fixed operation deadline and does not participate
+a single `SET EX` replaces the complete frame and its TTL. Legacy PUT uses
+ordered CAS checks; the [direct reporting decision](../simplification/2026-11-17-worker-monitoring-direct-reporting.md)
+adds unconditional saves for compatible producers. Redis time supplies receipts
+and observation anchors. A separate monitoring connection has a fixed operation deadline and does not participate
 in PostgreSQL transactions or readiness.
 
 Current PostgreSQL access determines association visibility on every detail
-read. Total capacity is independent of visible details, and old cleanup
-associations do not prove an active claim. Diagnostic text uses fixed classified
-summaries so remote status does not carry arbitrary local errors. The
+read. Total capacity and its optional active/retained partition are independent
+of visible details; both counts use the complete occupied execution identities
+and sum to total occupancy. Older observations retain an absent partition.
+Old cleanup associations do not prove an active claim. Diagnostic text uses fixed classified
+summaries so remote status does not carry arbitrary local errors. Unconfirmed
+retained ownership has its own fixed diagnostic and keeps the original claim
+association; a completed task does not establish safe resource cleanup. The
 [contract](../../../../docs/spec/daynight-worker-monitoring.md) owns the exact
 fields, bounds and errors; the [design](../../../../docs/design/daynight-worker-monitoring.md)
 owns the server mechanisms. The existing [Worker boundary decision](2026-11-05-server-worker-boundaries.md)

@@ -1,3 +1,4 @@
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import { ArchiveRepairRequiredError, archiveRepairCode } from "./archive-error.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -5,12 +6,10 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-tic
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { controllerJournalFormat } from "./journal-format.js";
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
-import path from "node:path";
 import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { parseSourceEvent, RELAY_LIMITS, type SourceEvent } from "../../session/controller-protocol.js";
 import { sessionBinding } from "../../session/protocol.js";
-import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 
 export type StoppedSourceTail = { sourceEpoch: string; batchId: string; events: readonly SourceEvent[] };
@@ -18,12 +17,12 @@ export type StoppedSourceTailReceipt = { sourceEpoch: string; batchId: string; l
 
 /** Deliver only the original stopped writer's durable tail; no native writer is opened. */
 export const replayStoppedControllerHistory = async (options: {
-  journalPath: string; ticket: ControllerLaunchTicket; stateDirectory?: string; signal?: AbortSignal;
+  journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal;
   send(batch: StoppedSourceTail, signal: AbortSignal): Promise<StoppedSourceTailReceipt>;
 }): Promise<void> => {
   const { ticket, journalPath } = options;
   const identity = { fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration }, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
-  const initial = new Database(journalPath, { readonly: true, fileMustExist: true });
+  const initial = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true });
   let original!: string;
   const assertStopped = (db: Database.Database): void => {
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
@@ -36,7 +35,7 @@ export const replayStoppedControllerHistory = async (options: {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
   const stateKey = "stopped_source_tail";
   let originalThrough: string | undefined;
-  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, stateDirectory: options.stateDirectory ?? path.dirname(journalPath), assertOriginal: assertStopped }, action);
+  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, assertOriginal: assertStopped }, action);
   const settle = <T>(db: Database.Database, action: () => T): T => {
     try { return runSqliteImmediate(db, action); }
     catch (error) { throw withOutboxTransactionOutcome(error, sqliteTransactionOutcome(error)); }
@@ -79,9 +78,6 @@ export const replayStoppedControllerHistory = async (options: {
       if (!events.length) throw new Error("Stopped history has no complete unacknowledged event tail.");
       const batch = { sourceEpoch: ticket.executionId, batchId, events };
       const encoded = JSON.stringify(batch);
-      // The stopped tail is a settlement copy; keep room for SQLite pages
-      // and their durability journal without discarding the original outbox.
-      controllerMetadataBudget(journalPath, db).assert(Buffer.byteLength(encoded) * 2 + 65536, true);
       db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(stateKey, encoded);
       return batch;
     }));

@@ -13,6 +13,7 @@ import (
 )
 
 func TestBotDefinitionCredentialRechecksAfterLockedRead(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	bot, principal := storedBotCandidate(t, db)
 	sessionDAOTransaction(t, db, func(s store.SessionScope) error { return s.BotDAO().InsertBot(t.Context(), bot) })
@@ -35,6 +36,7 @@ func TestBotDefinitionCredentialRechecksAfterLockedRead(t *testing.T) {
 }
 
 func TestBotDeletionKeepsIndependentTaskAndPreciseVersion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx := t.Context()
 	candidate, _ := storedBotCandidate(t, db)
@@ -46,7 +48,6 @@ func TestBotDeletionKeepsIndependentTaskAndPreciseVersion(t *testing.T) {
 		var result string
 		if err := db.Pool.QueryRow(ctx, `SELECT jsonb_build_object(
  'task',(SELECT to_jsonb(t) FROM tasks t WHERE id=$1),
- 'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY position) FROM task_steps s WHERE task_id=$1),
  'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY name) FROM task_properties p WHERE task_id=$1),
  'dependencies',(SELECT jsonb_agg(to_jsonb(d) ORDER BY depends_on_task_id) FROM task_dependencies d WHERE task_id=$1),
  'sessions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM task_sessions s WHERE task_id=$1))::text`, task).Scan(&result); err != nil {

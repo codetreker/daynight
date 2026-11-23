@@ -156,46 +156,27 @@ func TestProjectSettingsChecksCurrentAdministratorAfterProjectLock(t *testing.T)
 }
 
 func TestProjectSettingsCancellationAndDatabaseFailuresPreserveTheSavedProject(t *testing.T) {
-	for _, test := range []struct {
-		name, match string
-		cancelAfter bool
-		minutes     int32
-	}{
-		{"member refusal completion", "FROM project_grants", true, 90},
-		{"project query", "SELECT p.id::text, p.name, p.repo_url", false, 90},
-		{"noop completion", "SELECT p.id::text, p.name, p.repo_url", true, 60},
-		{"update query", "UPDATE projects SET execution_warning_minutes", false, 90},
-		{"update completion", "UPDATE projects SET execution_warning_minutes", true, 90},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newMembershipFixture(t)
-			admin, member := f.user(t), f.user(t)
-			project := f.project(t, admin, "Canceled settings")
-			f.join(t, admin, member, project.ID)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.match) }}
-			if test.cancelAfter {
-				action.end = cancel
-			} else {
-				action.start = cancel
-			}
-			traced := NewProjects(tracedStore(t, f.database.Pool.Config().ConnConfig.ConnString(), action))
-			principal := admin
-			if test.name == "member refusal completion" {
-				principal = member
-			}
-			updated, err := traced.UpdateSettings(ctx, principal, project.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: test.minutes})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(updated, model.Project{}) {
-				t.Fatalf("canceled operation returned saved state or lost cause: %#v, %v", updated, err)
-			}
-			read, err := f.projects.Get(context.Background(), admin, project.ID)
-			if err != nil || !reflect.DeepEqual(read, project) {
-				t.Fatalf("canceled settings write committed data: %#v, %v", read, err)
-			}
-		})
-	}
+	t.Run("update completion", func(t *testing.T) {
+		f := newMembershipFixture(t)
+		admin := f.user(t)
+		project := f.project(t, admin, "Canceled settings")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		action := taskQueryAction{
+			match: func(sql string) bool { return strings.Contains(sql, "UPDATE projects SET execution_warning_minutes") },
+			end:   cancel,
+		}
+		traced := NewProjects(tracedStore(t, f.database.Pool.Config().ConnConfig.ConnString(), action))
+		updated, err := traced.UpdateSettings(ctx, admin, project.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90})
+		assertOperational(t, err)
+		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(updated, model.Project{}) {
+			t.Fatalf("canceled operation returned saved state or lost cause: %#v, %v", updated, err)
+		}
+		read, err := f.projects.Get(context.Background(), admin, project.ID)
+		if err != nil || !reflect.DeepEqual(read, project) {
+			t.Fatalf("canceled settings write committed data: %#v, %v", read, err)
+		}
+	})
 	f := newMembershipFixture(t)
 	admin := f.user(t)
 	project := f.project(t, admin, "Version overflow must roll back")

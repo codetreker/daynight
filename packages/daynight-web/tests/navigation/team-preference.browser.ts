@@ -66,7 +66,10 @@ const install = async (page: Page): Promise<Fixture> => {
 };
 const selected = (page: Page, id: string) => page.evaluate((k) => localStorage.getItem(k), key(id));
 const put = (page: Page, id: string, value: string) => page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [key(id), value]);
-const openPicker = (page: Page) => page.locator('.team-selector .team-switch').click();
+const openPicker = async (page: Page) => {
+  if (await page.evaluate(() => matchMedia('(max-width: 740px)').matches) && !(await page.locator('.sidebar').isVisible())) await page.getByRole('button', { name: /^(Open navigation|打开导航)$/, exact: true }).click();
+  await page.locator('.team-selector .team-switch').click();
+};
 const heading = (page: Page, name: string) => name === 'Team settings' || name === 'Projects shared with me'
   ? page.getByRole('main').getByRole('heading', { name, exact: true })
   : page.locator('.project-list-information').filter({ has: page.getByText(name, { exact: true }) }).getByRole('heading', { name: /^(Projects|项目)$/, exact: true });
@@ -80,7 +83,7 @@ for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 
       await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
       const narrow = viewport.width < 600, chinese = locale === 'zh-CN';
       const sidebar = page.locator('.sidebar nav');
-      const open = async () => { if (narrow) await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar', exact: true }).click(); };
+      const open = async () => { if (narrow) await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation', exact: true }).click(); };
       await open();
       await expect(sidebar.getByRole('link', { name: longProjectName })).toBeVisible();
       await sidebar.getByRole('button', { name: chinese ? '加载更多' : 'Load more', exact: true }).click();
@@ -153,6 +156,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 500 
       const api = await install(page); api.extraTeams = 24;
       await page.goto('/projects');
       await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale === 'zh-CN' ? 'zh-CN' : 'en');
+      if (viewport.width <= 740) await page.getByRole('button', { name: locale === 'zh-CN' ? '打开导航' : 'Open navigation' }).click();
       const trigger = page.locator('.team-switch');
       const menu = page.locator('.team-options');
       const nav = page.locator('.sidebar nav');
@@ -189,7 +193,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 500 
   }
 }
 
-test('opens directly in collapsed desktop and phone rail, and closes the drawer in layers', async ({ page }) => {
+test('opens the Team picker in collapsed desktop and the phone drawer, and closes in layers', async ({ page }) => {
   await install(page); await page.goto('/projects');
   const trigger = page.locator('.team-switch');
   const menu = page.locator('.team-options');
@@ -200,16 +204,15 @@ test('opens directly in collapsed desktop and phone rail, and closes the drawer 
   await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
   await page.setViewportSize({ width: 390, height: 700 });
-  await trigger.click(); await expect(menu).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toHaveCount(0);
-  await trigger.click(); await expect(menu).toBeHidden();
-  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  await expect(page.locator('.sidebar')).toBeHidden();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
   const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
   await expect(drawer).toBeVisible();
   await trigger.click(); await expect(menu).toBeVisible();
   await page.keyboard.press('Escape'); await expect(menu).toBeHidden();
   await expect(drawer).toBeVisible(); await expect(trigger).toBeFocused();
   await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeFocused();
 });
 
 test('supports keyboard navigation, dismissal, native links and route changes', async ({ page }) => {
@@ -407,7 +410,7 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, t
       const settings = chinese ? '团队设置' : 'Team settings';
       const shared = chinese ? '与我共享' : 'Shared with me';
       const personalLabel = chinese ? '个人' : 'Personal';
-      const expand = chinese ? '展开侧栏' : 'Expand sidebar';
+      const expand = narrow ? (chinese ? '打开导航' : 'Open navigation') : (chinese ? '展开侧栏' : 'Expand sidebar');
       const collapse = chinese ? '折叠侧栏' : 'Collapse sidebar';
       const nav = page.locator('.sidebar nav');
       const assertPersonal = async () => {
@@ -448,6 +451,41 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, t
   });
 }
 
+for (const locale of ['en', 'zh-CN'] as const) for (const narrow of [false, true]) {
+  test(`opens account GitHub Apps from ${narrow ? 'mobile' : 'desktop'} navigation in ${locale}`, async ({ page }) => {
+    await page.setViewportSize(narrow ? { width: 320, height: 800 } : { width: 1280, height: 900 });
+    await install(page);
+    await page.goto('/projects');
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const chinese = locale === 'zh-CN';
+    const name = chinese ? 'GitHub Apps' : 'My GitHub Apps';
+    const sidebar = page.locator('.sidebar');
+    const open = async () => { if (narrow) await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation', exact: true }).click(); };
+    await open();
+    const group = sidebar.locator('.sidebar-group').nth(1);
+    const account = group.locator('a[href="/github-apps"]');
+    const team = sidebar.locator(`a[href="/teams/${personalA}/github-apps"]`);
+    await expect(group.locator('.nav-label')).toHaveText(chinese ? '我的' : 'My');
+    await expect(account).toHaveText(name);
+    await expect(account).toHaveAttribute('aria-label', name);
+    await expect(account).toHaveAttribute('title', name);
+    await expect(team).toHaveAttribute('aria-label', 'GitHub Apps');
+    if (!narrow) {
+      await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar', exact: true }).click();
+      await expect(account).toHaveAttribute('title', name);
+      await expect(account).toHaveAttribute('aria-label', name);
+    }
+    await account.click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/github-apps');
+    if (narrow) {
+      await expect(page.getByRole('dialog', { name: chinese ? '工作空间导航' : 'Workspace navigation' })).toHaveCount(0);
+      await open();
+    }
+    await expect(account).toHaveAttribute('aria-current', 'page');
+    await expect(team).not.toHaveAttribute('aria-current');
+  });
+}
+
 for (const path of [`/projects/${project}`, '/shared-projects', '/workers', '/account']) {
   test(`hides Personal management links on ${path}`, async ({ page }) => {
     await install(page);
@@ -469,8 +507,9 @@ test('keeps Personal management links absent throughout project loading, failure
     await expect(sidebar.locator('.sidebar-group').nth(0).locator('.sidebar-projects')).toHaveCount(1);
     const myGroup = sidebar.locator('.sidebar-group').nth(1);
     await expect(myGroup.locator('.nav-label')).toHaveText('My');
-    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'In-progress tasks');
+    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'My GitHub Apps');
     await expect(myGroup.locator('a').nth(1)).toHaveAttribute('aria-label', 'Shared with me');
+    await expect(sidebar.getByRole('link', { name: 'In-progress tasks' })).toHaveAttribute('href', '/my-tasks');
   };
   try {
     await page.goto('/projects');
@@ -608,11 +647,11 @@ test.describe('Chinese narrow sidebar', () => {
     await page.goto('/projects'); await expect(heading(page, '个人')).toBeVisible();
     await put(page, alice, alpha);
     await page.goto(`/projects/${project}`); await page.reload();
+    await page.getByRole('button', { name: '打开导航' }).click();
     const control = page.getByRole('button', { name: '切换 Team: 团队, Alpha', exact: true });
     await expect(control).toBeVisible(); await control.click();
     await expect(page.locator('.team-options')).toBeVisible();
     await control.click();
-    await page.getByRole('button', { name: '展开侧栏' }).click();
     await expect(page.locator('.team-selector .team-switch')).toContainText('Alpha');
     await expect(page.locator(`.sidebar a[href="/teams/${alpha}/members"]`)).toHaveCount(0);
     await expect(page.locator(`.sidebar a[href="/teams/${alpha}/settings"]`)).toBeVisible();

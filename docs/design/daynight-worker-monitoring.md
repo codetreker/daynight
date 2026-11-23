@@ -15,15 +15,25 @@ flowchart LR
   S --> H
 ```
 
-`internal/server/worker` 负责方法、路径、查询拒绝、请求解析和响应编码；`internal/protocol/monitoring` 持有共享闭合结构、规范化与编码边界。`service/worker` 以认证 principal、当前账号和 Worker 可见窗口组织 PostgreSQL 读取、监控存储和投影；`core/worker` 校验执行关联并处理当前权限及响应预算。`core/store` 提供不暴露 Redis 驱动的 `MonitoringStore`；`core/store/redis` 拥有连接、帧和 Redis 命令。组件装配只为监控创建并关闭 Redis 客户端，正常业务和 readiness 不依赖它。
+`internal/server/worker` 负责方法、路径、查询拒绝、请求解析和响应编码；`internal/protocol/monitoring` 持有共享闭合结构、规范化与编码边界。`service/worker` 以认证 principal、当前账号和 Worker 可见窗口组织 PostgreSQL 读取、监控存储和投影；`core/worker` 校验执行关联并处理当前权限及响应预算。`core/store` 提供不暴露 Redis 驱动的 `MonitoringStore`；`core/store/redis` 拥有连接、帧和 Redis 命令。组件装配为监控与[存储 gate](daynight-task-attachments.md#storage-接口与本地实现)创建和关闭独立的 Redis 客户端。readiness 继续检查数据库。
 
-执行观测中的 claim 关联需要与当前账号、Worker 和活跃 claim 匹配。清理和资源责任是经过 Worker 准入的自报事实：已完成、撤回或重领的旧 claim 不再能证明当前执行所有权。读取依据当前项目访问及任务存在、未删除状态投影名称和 ID；被隐藏的明细及其关联错误、工作区路径、原因和数量分解一并过滤。总体容量和单独上报的无身份清理阻塞事实保留。项目级失败使用项目 scope，可表达没有 Task 的失败。监控关联不授予任何业务权限。
+执行观测中的 claim 关联需要与当前账号、Worker 和活跃 claim 匹配。清理和资源责任是经过 Worker 准入的自报事实：已完成、撤回或重领的旧 claim 不再能证明当前执行所有权。读取依据当前项目访问及任务存在、未删除状态投影名称和 ID；被隐藏的明细及其关联错误、工作区路径和原因一并过滤。总体容量及其可选 active/retained 互斥分解和单独上报的无身份清理阻塞事实保留。项目级失败使用项目 scope，可表达没有 Task 的失败。监控关联不授予任何业务权限。
 
-## Redis 帧与比较写入
+## 遗留资源与容量分解
 
-每个账号和 Worker 使用一个 `dn:worker-monitoring:{userId:workerId}` String。首行是含版本、revision、runId、sequence、正文摘要、Redis 接收时间、到期时间和私有 StoredSummary 的 JSON，含换行最多 2 KiB；正文为最多 256 KiB 的规范化 Observation，整值最多 258 KiB。SHA-256 只覆盖正文。读取详情校验帧和正文摘要；摘要读取仅对已准入的 ID 获取 `GETRANGE 0 2047`，不扫描键或读取正文。空字符串与缺席由同一 Redis 脚本区分，避免并发创建导致错误判断。Redis `TIME` 提供观察时钟，不依赖浏览器时间。
+生产者使用准入同一份完整身份集合计算 `occupied` 和可选 `breakdown`，先按 project/task/claim 去重，再将占用身份划分为活动任务与其他保留资源。共享 capacity codec 同时解析详情、存储摘要和公共摘要；拒绝负数、非安全整数、缺失分项或与 occupied 不一致的和。旧帧没有分解时保持缺席。权限投影只删除 scoped 明细，不从剩余列表重算容量；被截断的异常和资源责任仍以 partial/restricted 呈现，不能显示为完整无异常。
 
-服务端在比较前验证首行及闭合摘要，Lua 再比较所验证的首行；若并发修改使其变化，在同一 200 ms 总预算内重新读取和验证。Lua 只解析首行，按长度和字典序比较规范十进制 sequence，避免浮点精度损失。确认旧帧、类型、版本和比较条件后，唯一写命令 `SET ... EX 3600` 同时替换正文、元数据与 TTL；没有单独的索引或续期命令。重复与拒绝保持原数据和剩余 TTL；读取也不续期。CAS 顺序和错误码由[合同](../spec/daynight-worker-monitoring.md#错误cas-与存储)定义。
+`ownership-unconfirmed` 是受控归属判断的固定分类，不上传原始 Git 或执行日志。Failure 保留原 claim scope，复用当前权限投影与 project-relative worktree 表达；任务后继 claim 不改写旧异常身份。Web 容量卡展示活动任务占用和保留资源占用，详情展示原 claim、工作区位置及在原机器停止 Worker 后核验原证据的命令。命令仅使用可见 claim 身份，不从路径推断 worktree ID，不因任务已完成而提供盲目删除操作。后台轮询保留展开状态；权限撤销同时撤掉关联、路径和恢复命令。
+
+## Redis 帧与写入
+
+每个账号和 Worker 使用一个 `dn:worker-monitoring:{userId:workerId}` String。首行是含版本、revision、runId、sequence、正文摘要、Redis 接收时间、到期时间和私有 StoredSummary 的 JSON，含换行最多 2 KiB；正文为规范化 Observation，直接来源的兼容字段使正文最多 256 KiB + 62 bytes，整值最多 258 KiB + 62 bytes。SHA-256 只覆盖正文。读取详情校验帧和正文摘要；摘要读取仅对已准入的 ID 获取 `GETRANGE 0 2047`，不扫描键或读取正文。空字符串与缺席由同一 Redis 脚本区分，避免并发创建导致错误判断。Redis `TIME` 提供观察时钟，不依赖浏览器时间。
+
+旧 PUT 在比较前验证首行及闭合摘要，Lua 再比较所验证的首行；若并发修改使其变化，在同一 200 ms 总预算内重新读取和验证。Lua 只解析首行，按长度和字典序比较规范十进制 sequence，避免浮点精度损失。确认旧帧、类型、版本和比较条件后，唯一写命令 `SET ... EX 3600` 同时替换正文、元数据与 TTL；没有单独的索引或续期命令。重复与拒绝保持原数据和剩余 TTL；读取也不续期。CAS 顺序和错误码由[合同](../spec/daynight-worker-monitoring.md#错误cas-与存储)定义。
+
+直接 POST 由协议层解析 DirectObservation，并以本次生成的 canonical UUID 样本 ID 转换为旧读者兼容的 Observation：runId 为样本 ID、sequence 为 `"1"`，业务内容不变。Server 还为保存生成 revision。两种写入共用同一键、同一私有摘要和读取投影；这些兼容字段不代表真实进程身份，也不参与直接写入协调。
+
+直接保存使用独立 Save：在 200 ms 总预算内执行一次 Redis TIME、生成带接收与到期时间的帧，再以唯一修改命令 SET EX3600 整体替换，不读取或解析旧值、不比较、不循环。相同、迟到的观测和损坏或不同类型的旧值均按无条件整体保存处理，每次成功刷新 TTL。旧 PUT 继续执行 CAS；旧重复和拒绝不续期。两种入口交叠时，旧请求按 CAS 决定结果，直接保存无条件覆盖，不提供跨入口顺序保证。
 
 StoredSummary 额外保存最多 16 个固定原因索引及紧凑 project/task 权限引用；这些引用仅供 Server 核对，不输出到 HTTP 或日志。summary 查询先整批准入并读取首行，再在一个当前权限快照中重验 Worker 和批量读取引用所需的项目、任务来源。详情和摘要共享相同 scope 可见性；摘要先过滤再去重，生成独立的公共 admission，不返回引用或隐藏数量。格式与具体字段由[合同](../spec/daynight-worker-monitoring.md#错误cas-与存储)定义。
 
@@ -31,14 +41,18 @@ Redis 和 PostgreSQL 不共享事务。服务先进行资源准入，再读取�
 
 ## 投影与编码预算
 
-详情先过滤不可访问的关联，再补充当前项目名和任务标题。权限过滤后保留的无名称故障（包括 worktree 与 labels-omitted 占位）、真实总容量和其他基础事实占据预算，标签和普通活动按合同受限。预算按 Go 实际 JSON HTML escaping、响应外壳及换行计算，最大 512 KiB；无法容纳的标签使用 `labels-omitted`，必要时省略低优先级活动并标记 `detailCoverage=partial`。批量响应最多 100 项、256 KiB，保持请求顺序；公共原因只暴露当前可见的固定代码和覆盖质量，不返回关联身份或隐藏数量。PUT 原始请求和规范正文各最多 256 KiB。
+详情先过滤不可访问的关联，再补充当前项目名和任务标题。权限过滤后保留的无名称故障（包括 worktree 与 labels-omitted 占位）、真实总容量和其他基础事实占据预算，标签和普通活动按合同受限。预算按 Go 实际 JSON HTML escaping、响应外壳及换行计算，最大 512 KiB；无法容纳的标签使用 `labels-omitted`，必要时省略低优先级活动并标记 `detailCoverage=partial`。批量响应最多 100 项、256 KiB，保持请求顺序；公共原因只暴露当前可见的固定代码和覆盖质量，不返回关联身份或隐藏数量。PUT 和直接 POST 的原始请求与各自规范正文均最多 256 KiB。直接来源转为旧读取 envelope 后固定增加 62 bytes，存储解析器单独承接此私有余量，并继续验证闭合业务字段和 digest；外部请求解析器不放宽。
 
-## 格式切换
+## 独立升级与格式切换
 
-首行 codec 和 CAS 仅接受 v2。确认没有旧数据且旧写入已排空时可直接切换；存量存在或未知时，先关闭并排空所有旧 monitoring 写入，以 Redis TIME 记录 T0 并等待至少 3600 秒，使合法旧帧依原 TTL 自然过期，再完整部署 v2 Server 并验证后恢复 monitoring，最后部署 Web。期间监控端点明确返回 503，既有心跳、Task、claim 和清理保持独立。回滚采用相同排空和自然到期屏障；不迁移、删键、续期或混用版本。实际部署和回滚步骤由 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition) 持有。
+兼容 Server 先部署，旧 Worker 与 Web 保持既有 GET/PUT/query；所有接流量的 Server 均支持直接 POST 和私有正文余量后，生产者才可采用直接上报。现有合法 v2 记录继续可读，不扫描、迁移或等待过期。Server 同时保留 CAS 和直接写入及旧读 envelope，旧协议退役需要单独确定支持范围与迁移条件。
+
+回滚优先选择直接上报生产者。若须回滚到不能支持直接入口或私有余量的 Server，先停止直接写入，保留旧协议和业务通道；最后一次直接写入后等待 3600 秒，或证明所有不兼容记录已被合规旧报告替换后再回滚。不删除键、不重写未知写入。实际步骤由 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition) 持有。
+
+对于不兼容帧版本之间的切换，首行 codec 和 CAS 仅接受 v2。确认没有旧数据且旧写入已排空时可直接切换；存量存在或未知时，先关闭并排空所有旧 monitoring 写入，以 Redis TIME 记录 T0 并等待至少 3600 秒，使合法旧帧依原 TTL 自然过期，再完整部署 v2 Server 并验证后恢复 monitoring，最后部署 Web。期间监控端点明确返回 503，既有心跳、Task、claim 和清理保持独立。回滚采用相同排空和自然到期屏障；不迁移、删键、续期或混用版本。实际部署和回滚步骤由 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition) 持有。
 
 ## 配置与验证
 
-`DAYNIGHT_REDIS_URL` 为空时监控端点返回 `503 monitoring_unavailable`；非空值须为合法 `redis` 或 `rediss` URL；查询参数只接受 `db`，连接预算和重试策略固定。监控独享连接及其关闭生命周期，故障不会使已有 PostgreSQL API 或 readiness 不可用。日志保留错误链与组件、阶段、request ID 等安全诊断，不记录 Redis URL 或完整状态。连接及验证命令见 [Server README](../../packages/daynight-server/README.md#validate)。
+`DAYNIGHT_REDIS_URL` 为空时监控端点返回 `503 monitoring_unavailable`；非空值须为合法 `redis` 或 `rediss` URL；查询参数只接受 `db`，连接预算和重试策略固定。监控独享连接及其关闭生命周期。Redis 故障影响监控和需要存储 gate 的业务操作，PostgreSQL readiness 继续独立反映数据库状态。日志保留错误链与组件、阶段、request ID 等安全诊断，以 `protocol=direct` 和 `sample_id` 标识直接来源，以 `protocol=legacy-cas`、run ID 和 sequence 标识旧写入；样本 ID 不声明真实运行身份。日志不记录 Redis URL 或完整状态。连接及验证命令见 [Server README](../../packages/daynight-server/README.md#validate)。
 
-HTTP、service 和 core 测试隔离直接下层，验证解析、准入、当前权限、取消、错误与真实编码预算。Redis DAO 使用独立的真实 Redis 验证 CAS 顺序、重复和拒绝不续期、缺席与损坏、并发、OOM、结果未知及 deadline；PostgreSQL DAO 使用独立实例验证当前权限来源。服务端验证不能代替生产者采集或完整产品链路的验收。
+HTTP、service 和 core 测试隔离直接下层，验证解析、准入、当前权限、取消、错误与真实编码预算。Redis DAO 使用独立的真实 Redis 验证 CAS 顺序、重复和拒绝不续期、直接保存与续期、缺席与损坏、并发、OOM、结果未知及 deadline；PostgreSQL DAO 使用独立实例验证当前权限来源。服务端验证不能代替生产者采集或完整产品链路的验收。

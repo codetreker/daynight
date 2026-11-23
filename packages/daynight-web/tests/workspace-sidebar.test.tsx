@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectsProvider } from "../src/features/projects/ProjectsProvider";
+import { useWorkspaceDrawer } from "../src/app/sidebar/useWorkspaceDrawer";
 import { WorkspaceSidebar } from "../src/app/sidebar/WorkspaceSidebar";
 import { parseAuthRoute, type AuthRoute } from "../src/app/router";
 import { useBodyScrollLock } from "../src/app/useBodyScrollLock";
@@ -26,15 +27,16 @@ type HarnessProps = {
 };
 const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", visibilityTeamId = selectedTeamId, route, webhooksAvailable = true, blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
+  const drawer = useWorkspaceDrawer(routeKey, blocked);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} route={route ?? (routeKey === "/" ? { kind: "projects" } : routeKey === "/members" || routeKey === "/settings" ? { kind: routeKey === "/members" ? "teamMembers" : "teamSettings", teamId: selectedTeamId ?? "" } : parseAuthRoute(routeKey))} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: selectedTeamId, visibilityTeamId }} webhooksAvailable={webhooksAvailable} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
-    <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
+    <WorkspaceSidebar drawer={drawer} collapsed={collapsed} onToggle={onToggle} route={route ?? (routeKey === "/" ? { kind: "projects" } : routeKey === "/members" || routeKey === "/settings" ? { kind: routeKey === "/members" ? "teamMembers" : "teamSettings", teamId: selectedTeamId ?? "" } : parseAuthRoute(routeKey))} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: selectedTeamId, visibilityTeamId }} webhooksAvailable={webhooksAvailable} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
+    <div ref={workspace} data-testid="workspace" inert={initiallyInert}><button ref={drawer.openerRef} aria-controls="workspace-sidebar" aria-expanded={drawer.active} onClick={drawer.open} hidden={!drawer.narrow}>Open navigation</button><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
 
 const openDrawer = () => {
-  const toggle = screen.getByRole("button", { name: "Expand sidebar" });
+  const toggle = screen.getByRole("button", { name: "Open navigation" });
   toggle.focus();
   fireEvent.click(toggle);
   return { toggle, drawer: screen.getByRole("dialog") };
@@ -47,12 +49,58 @@ describe("workspace sidebar", () => {
     const nav = screen.getByRole("navigation", { name: "Main navigation" });
     const groups = nav.querySelectorAll(".sidebar-group");
     expect(groups).toHaveLength(3);
-    expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Projects", "Team settings"]);
-    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["In-progress tasks", "Shared with me", "My Workers", "Assistants"]);
+    expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["In-progress tasks", "Projects", "Team settings"]);
+    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["My GitHub Apps", "Shared with me", "My Workers", "Assistants"]);
     expect(within(groups[2] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Webhooks", "Test Sessions"]);
     expect(screen.getByRole("link", { name: "Webhooks" })).toHaveAttribute("href", "/webhooks?owner=personal");
     view.rerender(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" webhooksAvailable={false} />);
     expect(screen.queryByRole("link", { name: "Webhooks" })).toBeNull();
+  });
+
+  it("keeps each main navigation icon decorative and each link named", () => {
+    render(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" />);
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    const links = Array.from(nav.querySelectorAll(".nav-button"));
+    expect(links).toHaveLength(9);
+    for (const link of links) {
+      expect(link.getAttribute("title")).toBe(link.getAttribute("aria-label"));
+      const slot = link.querySelector(".nav-icon");
+      expect(slot).toHaveAttribute("aria-hidden", "true");
+      expect(slot?.querySelector("svg")).toHaveAttribute("focusable", "false");
+      expect(slot?.querySelectorAll("svg")).toHaveLength(1);
+    }
+  });
+
+  it("offers Personal Team access to authorized GitHub Apps", () => {
+    const personalId = "00000000-0000-4000-8000-000000000701";
+    render(<Harness selectedTeamId={personalId} visibilityTeamId={personalId} route={{ kind: "teamGitHubApps", teamId: personalId }} />);
+    expect(screen.getByRole("link", { name: "GitHub Apps" })).toHaveAttribute("href", `/teams/${personalId}/github-apps`);
+    expect(screen.getByRole("link", { name: "GitHub Apps" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+  });
+
+  it.each(["/github-apps", "/github-apps/00000000-0000-4000-8000-000000000001/admins", "/github-apps/00000000-0000-4000-8000-000000000001/teams"])("keeps account GitHub Apps named and selected for %s", (routeKey) => {
+    const personalId = "00000000-0000-4000-8000-000000000701";
+    const view = render(<Harness routeKey={routeKey} />);
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    const groups = nav.querySelectorAll(".sidebar-group");
+    const account = within(groups[1] as HTMLElement).getByRole("link", { name: "My GitHub Apps" });
+    const team = within(groups[0] as HTMLElement).getByRole("link", { name: "GitHub Apps" });
+    expect(within(groups[1] as HTMLElement).getByText("My")).toBeInTheDocument();
+    expect(account).toHaveTextContent("My GitHub Apps");
+    expect(account).toHaveAttribute("title", "My GitHub Apps");
+    expect(account).toHaveAttribute("href", "/github-apps");
+    expect(account).toHaveAttribute("aria-current", "page");
+    expect(team).toHaveAttribute("href", `/teams/${personalId}/github-apps`);
+    expect(team).not.toHaveAttribute("aria-current");
+    view.setLocale("zh-CN");
+    expect(within(groups[1] as HTMLElement).getByText("我的")).toBeInTheDocument();
+    expect(within(groups[1] as HTMLElement).getByRole("link", { name: "GitHub Apps" })).toBe(account);
+    expect(account).toHaveTextContent("GitHub Apps");
+    expect(account).toHaveAttribute("title", "GitHub Apps");
+    expect(account).toHaveAttribute("aria-current", "page");
+    expect(within(groups[0] as HTMLElement).getByRole("link", { name: "GitHub Apps" })).toBe(team);
+    expect(within(groups[1] as HTMLElement).getByRole("link", { name: "我的 Worker" })).toHaveAttribute("href", "/workers");
   });
 
   it("keeps the account task overview available independently of Team selection", () => {
@@ -70,6 +118,8 @@ describe("workspace sidebar", () => {
       expect(link).not.toHaveAttribute("aria-current");
     }
     expect(screen.getByRole("link", { name: "My Workers" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("href", "/my-tasks");
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).not.toHaveAttribute("aria-current");
   });
 
   it("keeps icon navigation named and invokes only the desktop preference action", () => {
@@ -108,17 +158,17 @@ describe("workspace sidebar", () => {
     expect(screen.getByRole("link", { name: /^助手$/ })).toBe(assistants);
   });
 
-  it("opens assistants from the narrow drawer and preserves native modified navigation", () => {
+  it.each([["Assistants", "/bots"], ["In-progress tasks", "/my-tasks"]])("opens %s from the narrow drawer and preserves native modified navigation", (name, path) => {
     mockSidebarMediaQuery(true);
     const onNavigate = vi.fn();
     render(<Harness onNavigate={onNavigate} />);
     const { drawer } = openDrawer();
-    const assistants = within(drawer).getByRole("link", { name: "Assistants" });
-    fireEvent.click(assistants, { ctrlKey: true });
+    const link = within(drawer).getByRole("link", { name });
+    fireEvent.click(link, { ctrlKey: true });
     expect(screen.getByRole("dialog")).toBe(drawer);
     expect(onNavigate).not.toHaveBeenCalled();
-    fireEvent.click(assistants);
-    expect(window.location.pathname).toBe("/bots");
+    fireEvent.click(link);
+    expect(window.location.pathname).toBe(path);
     expect(onNavigate).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -165,9 +215,9 @@ describe("workspace sidebar", () => {
     expect(drawer).toHaveAttribute("aria-modal", "true");
     expect(background).toHaveAttribute("inert");
     expect(document.body.style.overflow).toBe("hidden");
-    const first = within(drawer).getByRole("link", { name: "Daynight project home" });
+    const first = within(drawer).getByRole("button", { name: "Close navigation" });
     expect(document.activeElement).toBe(first);
-    const last = within(drawer).getByRole("button", { name: "Collapse sidebar" });
+    const last = within(drawer).getByRole("link", { name: "Test Sessions" });
     first.focus();
     fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(last);
@@ -189,11 +239,11 @@ describe("workspace sidebar", () => {
     const onToggle = vi.fn();
     render(<Harness collapsed onToggle={onToggle} />);
     const { toggle } = openDrawer();
-    fireEvent.click(screen.getByRole("button", { name: "Close navigation" }));
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".sidebar-backdrop")!);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(toggle);
     openDrawer();
-    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close navigation" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(toggle);
     expect(onToggle).not.toHaveBeenCalled();
@@ -205,7 +255,12 @@ describe("workspace sidebar", () => {
     render(<Harness onNavigate={onNavigate} />);
     const { drawer } = openDrawer();
     const projects = within(drawer).getByRole("link", { name: "Projects" });
-    fireEvent.click(projects, { ctrlKey: true });
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      expect(fireEvent.click(projects, modifier)).toBe(true);
+    }
+    projects.setAttribute("target", "_blank");
+    expect(fireEvent.click(projects)).toBe(true);
+    projects.removeAttribute("target");
     expect(screen.getByRole("dialog")).toBe(drawer);
     expect(onNavigate).not.toHaveBeenCalled();
     fireEvent.click(projects);
@@ -226,7 +281,7 @@ describe("workspace sidebar", () => {
     expect(document.body.style.overflow).not.toBe("hidden");
     expect(screen.getByRole("textbox")).toBe(draft);
     if (change === "blocked") {
-      fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
       expect(screen.queryByRole("dialog")).toBeNull();
     }
     view.rerender(<Harness />);

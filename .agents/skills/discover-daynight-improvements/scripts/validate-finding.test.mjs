@@ -18,9 +18,10 @@ async function fixture(t) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), typeof content === "string" || Buffer.isBuffer(content) ? content : JSON.stringify(content));
   };
-  const manifest = { format: "daynight-finding-v1", title: "窄屏标题被操作区挤压", description: "task.md", prototype: "prototype.html", evidence: ["evidence/before/evidence.json"], supportingFiles: [] };
+  const manifest = { format: "daynight-finding-v1", title: "窄屏标题被操作区挤压", description: "summary.md", prototype: "prototype.html", evidence: ["evidence/before/evidence.json"], supportingFiles: ["task.md"] };
   const capture = { format: "daynight-ui-evidence-v1", status: "consistent", mode: "screenshot", artifact: { kind: "screenshot", path: "screen.png", compositorScreenshot: true } };
   const bytes = Buffer.from([0, 255, 129, 10, 42]);
+  await put("summary.md", "修复窄屏标题布局。见[任务定义](task.md)。\n");
   await put("task.md", "# 一个独立问题\n\n[原型](prototype.html)\n![证据](evidence/before/screen.png)\n[规范](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html)\n");
   await put("prototype.html", "<!doctype html><button type=button>展开</button>");
   await put("evidence/before/evidence.json", capture);
@@ -36,7 +37,7 @@ test("builds an exact byte inventory, including capture artifacts, without writi
   const result = await validateFinding(f.file);
   assert.equal(result.valid, true);
   assert.equal(result.title, f.manifest.title);
-  assert.deepEqual(result.files.map((file) => file.path), ["evidence/before/evidence.json", "evidence/before/screen.png", "finding.json", "prototype.html", "task.md"]);
+  assert.deepEqual(result.files.map((file) => file.path), ["evidence/before/evidence.json", "evidence/before/screen.png", "finding.json", "prototype.html", "summary.md", "task.md"]);
   const image = result.files.find((file) => file.path.endsWith("screen.png"));
   assert.equal(image.bytes, f.bytes.length);
   assert.equal(image.sha256, createHash("sha256").update(f.bytes).digest("hex"));
@@ -84,7 +85,7 @@ test("rejects missing, non-file, empty and duplicate role files", async (t) => {
     f.manifest.description = name; await f.save();
     await assert.rejects(validateFinding(f.file));
   }
-  f.manifest.description = "task.md"; f.manifest.supportingFiles = ["task.md"]; await f.save();
+  f.manifest.description = "summary.md"; f.manifest.supportingFiles = ["summary.md"]; await f.save();
   await assert.rejects(validateFinding(f.file), /duplicate/i);
 });
 
@@ -119,7 +120,7 @@ test("checks declared attachment links including escaped names and refuses unlis
   f.manifest.supportingFiles.push("evidence/测量 (loaded).md"); await f.save();
   await f.put("task.md", "[measurement](<evidence/%E6%B5%8B%E9%87%8F%20(loaded).md#state>)\n[section](#local)\n");
   assert.equal((await validateFinding(f.file)).valid, true);
-  for (const href of ["unlisted.md", "../outside.md", "file:///tmp/private", "/tmp/private"]) {
+  for (const href of ["unlisted.md", "summary.md", "finding.json", "../outside.md", "file:///tmp/private", "/tmp/private"]) {
     await f.put("task.md", `[attachment](${href})\n`);
     await assert.rejects(validateFinding(f.file), /link|relative|path|component/i);
   }
@@ -141,7 +142,7 @@ test("checks nested labels and quoted titles while ignoring example links in inl
   const f = await fixture(t);
   for (const link of ["[Missing](missing.png 'caption')", "[Before [390px]](missing.png)", '[Missing](missing.png "caption")', '[Before](missing.png (caption))']) {
     await f.put("task.md", `${link}\n`);
-    await assert.rejects(validateFinding(f.file), /not in the file inventory/);
+    await assert.rejects(validateFinding(f.file), /not in the attachment inventory/);
   }
   await f.put("task.md", "`[literal syntax](missing.png)`\n``[literal `syntax`](missing.png)``\n\n```markdown\n[example](missing.png)\n```\n[Real](prototype.html 'caption')\n");
   assert.equal((await validateFinding(f.file)).valid, true);
@@ -161,14 +162,43 @@ test("rejects linked images outside the package Markdown subset and treats title
 
 test("resolves inline description links from the attachment root even when its source file is nested", async (t) => {
   const f = await fixture(t);
-  f.manifest.description = "docs/task.md";
+  f.manifest.description = "docs/summary.md";
   f.manifest.prototype = "docs/prototype.html";
   await f.put(f.manifest.prototype, "<!doctype html><button>Preview</button>");
+  await f.put("task.md", "# 一个独立问题\n");
   await f.save();
   await f.put(f.manifest.description, "[Prototype](prototype.html)\n");
-  await assert.rejects(validateFinding(f.file), /not in the file inventory: prototype.html/);
+  await assert.rejects(validateFinding(f.file), /not in the attachment inventory: prototype.html/);
   await f.put(f.manifest.description, "[Prototype](docs/prototype.html)\n[Evidence](evidence/before/evidence.json)\n");
   assert.equal((await validateFinding(f.file)).valid, true);
+});
+
+test("checks attached Markdown links relative to each document while keeping the summary root-relative", async (t) => {
+  const f = await fixture(t);
+  f.manifest.description = "docs/summary.md";
+  f.manifest.supportingFiles = ["docs/task.md", "docs/notes.MARKDOWN"];
+  await f.put("docs/summary.md", "修复标题布局。见[任务定义](docs/task.md)。\n");
+  await f.put("docs/task.md", "[Prototype](../prototype.html)\n[Notes](./notes.MARKDOWN)\n[Evidence](../evidence/before/evidence.json)\n");
+  await f.put("docs/notes.MARKDOWN", "[Prototype](../prototype.html#state)\n");
+  await f.save();
+  assert.equal((await validateFinding(f.file)).valid, true);
+
+  await f.put("docs/task.md", "[Prototype](prototype.html)\n");
+  await assert.rejects(validateFinding(f.file), /from docs\/task\.md.*docs\/prototype\.html/);
+  await f.put("docs/task.md", "[Notes](notes.MARKDOWN)\n");
+  await f.put("docs/notes.MARKDOWN", "[Missing](missing.md)\n");
+  await assert.rejects(validateFinding(f.file), /from docs\/notes\.MARKDOWN.*docs\/missing\.md/);
+});
+
+test("rejects root escapes and unsafe encoded paths inside attached Markdown", async (t) => {
+  const f = await fixture(t);
+  f.manifest.supportingFiles = ["docs/task.md"];
+  await f.put("summary.md", "修复标题布局。见[任务定义](docs/task.md)。\n");
+  await f.save();
+  for (const href of ["../../prototype.html", "../%2e%2e/prototype.html", "..%2Fprototype.html", "..%5Cprototype.html", "%GG.md", "%01.md", "%7F.md", "/prototype.html", "file:///private"]) {
+    await f.put("docs/task.md", `[Invalid](${href})\n`);
+    await assert.rejects(validateFinding(f.file), /Invalid attachment link/);
+  }
 });
 
 test("decodes link segments separately and rejects encoded separators and invalid path characters", async (t) => {
@@ -177,12 +207,13 @@ test("decodes link segments separately and rejects encoded separators and invali
   await f.put(f.manifest.prototype, "<!doctype html><button>Preview</button>");
   await f.save();
   for (const href of ["docs%2Fprototype.html", "docs%2fprototype.html", "docs%5Cprototype.html", "docs/%GGprototype.html", "docs/%01prototype.html", "docs/%7Fprototype.html", "docs/%2e%2e/prototype.html"]) {
-    await f.put("task.md", `[Prototype](${href})\n`);
+    await f.put("summary.md", `[Prototype](${href})\n`);
     await assert.rejects(validateFinding(f.file), /Invalid attachment link/);
   }
   await f.put("docs/测量 100%.md", "measurement\n");
   f.manifest.supportingFiles.push("docs/测量 100%.md"); await f.save();
-  await f.put("task.md", "[Prototype](docs/prototype.html)\n[Measurement](docs/%E6%B5%8B%E9%87%8F%20100%25.md#state)\n");
+  await f.put("summary.md", "[Prototype](docs/prototype.html)\n[Measurement](docs/%E6%B5%8B%E9%87%8F%20100%25.md#state)\n");
+  await f.put("task.md", "# 一个独立问题\n");
   assert.equal((await validateFinding(f.file)).valid, true);
   for (const name of ["docs/control\u0001.md", "docs/control\u007f.md", "docs/\ud800.md"]) {
     f.manifest.supportingFiles = [name]; await f.save();

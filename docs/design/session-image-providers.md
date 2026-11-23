@@ -6,11 +6,11 @@
 
 ## 原生事实与版本资格
 
-以下固定资料解释设计选择，不是运行中的版本声明或最低支持版本。发布 profile 必须绑定实际 executable、SDK、backend、精确模型、平台、send/steer、原始输入限制和适用条件，并关联原生 payload/receipt/history 与视觉证据，不能仅按版本字符串或一次识图成功开放支持。资格是对明确组合的发布判断，不宣称证明全部不可观测内部算法；当前生产资格目录为空，未匹配组合继续关闭。[资格边界决策](../../.agents/notes/implemented/architecture/2026-11-16-image-qualification-boundaries.md)解释原件责任和局部发布的取舍。
+以下固定资料解释设计选择，不是运行中的版本声明或最低支持版本。发布 profile 必须绑定实际 executable、SDK、backend、精确模型、平台、send/steer、原始输入限制和适用条件，并关联原生 payload/receipt/history 与视觉证据，不能仅按版本字符串或一次识图成功开放支持。资格是对明确组合的发布判断，不宣称证明全部不可观测内部算法；当前生产资格目录只有[Codex 已发布资格](#已发布资格)中的两个精确组合，其他组合继续关闭。[资格边界决策](../../.agents/notes/implemented/architecture/2026-11-16-image-qualification-boundaries.md)解释原件责任和局部发布的取舍。
 
 [资格目录与选择器](../../packages/daynight/src/commands/controller/providers/image-qualification.ts)以 `ImageRuntimeIdentity` 记录 provider、nativeVersion、nativeExecutableSha256、sdkVersion、platform、arch、backendIdentity 和 modelId。nativeExecutableSha256 绑定实际可执行文件字节摘要，版本字符串不能代替。backendIdentity 按对应 Provider 机制编码可观测身份并取 SHA256，公共值不保存地址或凭据，也不把 Provider 别名本身当作充分身份；其证据范围受下文观察机制限制；Codex app-server 的 sdkVersion=null 表示不使用 SDK，Copilot 的缺失 SDK 版本则是未知。`ImageQualification` 在同一精确身份上保存 evidenceId、evidenceSha256、独立 send/steer 开关、MIME、单图/整条字节、图数及原始输入 geometry。证据文档拥有适用条件及原生处理观察，不增加未经验证的默认支持。
 
-只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 和 Copilot 可使用下文各自限定的程序与原生声明配置观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，当前空目录使协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
+只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 和 Copilot 可使用下文各自限定的程序与原生声明配置观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，目录中没有对应行时，协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
 
 | 来源 | 影响设计的原生事实 |
 | --- | --- |
@@ -25,13 +25,15 @@
 | 所有者 | 职责 |
 | --- | --- |
 | [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 和实际完整历史确认后封存并 submit，未知时 query 原身份。 |
-| [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB，消费普通元数据预算。 |
-| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存字节计公共磁盘账本，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
+| [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB。 |
+| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按原身份与文件租约管理暂存，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
 | [Codex RPC](../../packages/daynight/src/commands/controller/providers/codex-rpc.ts) | 有界解析原生流，将明确媒体字段交独立 token 暂存，保持 RPC 回执与原连接。 |
 | [Claude live helper](../../packages/daynight/src/commands/controller/providers/claude-live.ts) 与 [transcript helper](../../packages/daynight/src/commands/controller/providers/claude-transcript.ts) | 隔离 SDK 全量解析和受权历史索引，使用有界 IPC 与媒体 ACK；Controller 保存实际 native 子进程证明。 |
 | [Copilot bridge](../../packages/daynight/src/commands/controller/providers/copilot-bridge.ts) | 同一 runtime 的唯一 SDK 连接承载输入、控制、交互、订阅和分页；帧代理限制输入，私有媒体 lease 把字节逐块交给 Controller。 |
 
-索引 writer 的预算 reservation 与实际进程证明持久保存。恢复只有在原 writer 已停止或已被其他进程替代时才释放 reservation；存活、无法确认或缺少证明时拒绝新 writer。实际索引、sidecar 和 reservation 按占用上界计量，避免重复计费；原生状态不能借用结算专用额度。
+索引 writer 的独占 lease 与实际进程证明持久保存。恢复只有在原 writer 已停止或已被其他进程替代时才释放 lease；存活、无法确认或缺少证明时拒绝新 writer。释放时核对原 lease 身份，不按索引占用预留字节。
+
+Codex 分页历史在响应帧仍持有媒体时同步投影并取得所需 lease，再释放帧；异步权限包装不能延长帧所有权。投影失败拒绝原读取，不终止无关 RPC，也不重新读取变化的媒体。
 
 Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL。公共 `resolveImageCaptureSource` 在原出现已 ACK、本地原 request 已持久且实际完整历史已确认后，沿原来源权限读取；组件缺失时保留同位置的 `component_unsupported`。读取不等待服务 register 或 reserved。已保存的图片直接复用服务 resource，重开不重新访问原来源。待到达来源保留 pending，最终 payload 到达后更新同一位置；完成布局由 normalizer 完整提供，不能用纯文字 delta 覆盖图片槽。
 
@@ -59,11 +61,19 @@ Daynight 将公共存储中的完整原件按原顺序交给原生图片接口�
 
 观察器核对实际发送的thread/start参数，明确model覆盖由原生response确认，未指定模型时使用首次配置默认值；不增加provider开关。未知thread配置覆盖拒绝建立观察，已知权限、effort及Agent CLI alias配置保留。新thread的modelProvider必须匹配选中配置，启动前后路由摘要一致才能建立基线；物理cwd仍由adapter验证。前后相同表示有界一致性，不是原子快照或thread专属endpoint证明。
 
-程序摘要来自verifyToolLaunch已验证、与实际child直接启动路径相符的唯一Windows原生artifact；JS、interpreter和未验证fallback保持未知。Windows0.169.0与既有macOS0.167.0是分别识别的协议兼容入口，不是通用版本许可或receipt/history资格。sdkVersion=null表示无SDK。当前生产目录为空，所以观察成功仍不能开放图片。
+程序摘要来自verifyToolLaunch已验证、与实际child直接启动路径相符的唯一原生entry或runtime artifact：Windows要求该路径为.exe，macOS接受直接启动的原生Mach-O entry；符号链接启动器（例如~/.local/bin/codex）已解析为真实程序路径，摘要因此标识真实程序文件。Linux、JS、interpreter、prefixArgs、runtimeProfile和未验证fallback保持未知。Windows0.169.0与macOS0.167.0、0.170.0是分别识别的协议兼容入口，不是通用版本许可或receipt/history资格。sdkVersion=null表示无SDK。观察成功本身不能开放图片，还须匹配下述已发布资格行。
 
 设置、模型、cwd、进程与连接变化撤销generation和旧观察。公开controls刷新与确认设置事件可重新读取；同一thread只能回到原路由基线，不能因全局配置变化而套用新backend身份。不同模型必须匹配其自己的资格，活动turn继续受已确认turnModel限制。resume不建立新观察，图片保持unknown；已接受输入、历史、归档及原操作查询仍保留。观察5秒到期后撤销，最多保留一个未完成原生读取，迟到不能恢复观察；后台观察不占用普通文字发送门禁。
 
 图片在读取、编码后核对原 grant 和观察，实际 transport 写入前再次验证同 child 生命周期、thread、generation、controls revision、资格 fingerprint 及待处理的原生交互。该检查位于 Read authority 可能等待 drain 之后；提交前失败零次输入，提交后的失败保留接受或 unknown，不重发。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-codex-image-config-observation.md)解释新 thread 范围和恢复成本。
+
+### 已发布资格
+
+生产资格目录当前只有两行，均为 Codex 0.170.0、`darwin`/`arm64`、`sdkVersion=null`、同一原生程序摘要 `9248cfee…abd6` 与同一声明路由摘要 `63f0adb3…b8bc14`（`copilot_gateway`、`wire_api=responses`），模型分别为 `gpt-6-astra` 与 `gpt-6.2-astra`。每行只是对证据中观察到的完整身份的发布判断，不覆盖其他版本、程序构建、平台、路由或模型。两行开放 send，steer 保持关闭，因为没有同回合 steer 接收证据。
+
+限额只取原生证据实际交付且模型正确回答的值，不是原生或目录上限：输入 MIME 为 PNG、JPEG、WebP；每条消息最多 8 张；宽、高各不超过 16384，像素不超过 33554432，帧数为 1；单图字节上限 `gpt-6-astra` 为 10461350、`gpt-6.2-astra` 为 10442582，整条消息图片字节上限分别为 20904114 与 20883253。JPEG 与 WebP 只在小尺寸样本上验证，限额仍按整行统一表达。公共能力再与 `IMAGE_LIMITS` 及服务端组件取交集。
+
+Codex 自更新、重装或其他改变程序字节的升级会使摘要失配，Session 回到 `capability_unknown` 或 `profile_disabled`，图片关闭而文字不受影响。resume 线程不建立声明配置观察，因而保持 unknown。`evidenceId` 与 `evidenceSha256` 只绑定原生证据包，该包确定身份、限额与 steer 判断，本身不是产品链路验收。[验收规格](../spec/session-image-acceptance.md)要求的同一组合产品链路证据（上传、原生交付、模型回答、历史、预览、下载、归档及 Controller 停止后读取原件）由该组合的验收报告保存，不写入资格行；两行只在这些证据通过后随代码发布。[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-codex-macos-image-runtime.md)保留取舍与后果。
 
 ### 能力、编码与接受
 
@@ -111,7 +121,7 @@ sourceKey 来自版本化的原生位置 tuple，包含 canonical item/operation
 
 Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reject/dispose 和现有错误分类；不修改另两个 Provider 的通用 NativeRpc 行为。不能仅增大原 16 MiB 整行阈值，因为 readline 在检查前已经聚合完整行。
 
-解析器跨 chunk 校验 UTF-8、JSON token/escape，仅对明确 schema 的媒体字符串建立候选暂存槽。字段顺序任意，type/id 晚于 bytes 时先暂存不可执行 wire bytes，完整帧、来源和身份通过后才能使用；不能正则替换 JSON。该暂存仅消费已连接原生进程主动发来的 bytes，不抓 URL 或读 path，仍计入公共 2200 MiB/execution、8 GiB 和空闲水位。
+解析器跨 chunk 校验 UTF-8、JSON token/escape，仅对明确 schema 的媒体字符串建立候选暂存槽。字段顺序任意，type/id 晚于 bytes 时先暂存不可执行 wire bytes，完整帧、来源和身份通过后才能使用；不能正则替换 JSON。该暂存仅消费已连接原生进程主动发来的 bytes，不抓 URL 或读 path，仍执行公共空闲水位检查，不计媒体累计额度。
 
 | 对象 | 上限与处理 |
 | --- | --- |
@@ -192,7 +202,7 @@ native/resume pin 默认保留到原生 Session 删除。仅 profile 已证明 S
 
 `CopilotRouteObservation` 的 sessionId、generation 和模型读回限制异步观察及最终图片派发；原生没有提供原子快照，因此前后模型相同也不能被描述成原子证明。设置、模型或模式变化、恢复及断连使旧观察失效，稳定读回后可重新观察。发送前在现有派发互斥范围内刷新，bridge 在异步图片编码和最终授权回调之后再次核对 generation。generation 不参与稳定资格摘要，无变化读回不制造新的资格身份。观察必须有界，晚到结果不得恢复已失效观察；图片观察失败不得永久占有普通文字发送门禁。
 
-这里的 backendIdentity 仅标识原生声明的可见路由配置，不证明最终 HTTP 目标、隐藏部署或模型权重，也不是实际出站请求观察。生产不为此安装 requestHandler：SDK 在回调前全量缓冲请求，默认转发的重定向行为也需要独立验证。当前资格目录仍为空；真实输入、精确回执、历史及产品证据由资格验收负责，不能由配置读回替代。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-copilot-image-runtime-observation.md)保留替代方案和成本。
+这里的 backendIdentity 仅标识原生声明的可见路由配置，不证明最终 HTTP 目标、隐藏部署或模型权重，也不是实际出站请求观察。生产不为此安装 requestHandler：SDK 在回调前全量缓冲请求，默认转发的重定向行为也需要独立验证。当前资格目录没有 Copilot 行；真实输入、精确回执、历史及产品证据由资格验收负责，不能由配置读回替代。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-copilot-image-runtime-observation.md)保留替代方案和成本。
 
 ### 图片输入与目录限制
 

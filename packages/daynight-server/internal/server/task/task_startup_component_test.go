@@ -107,7 +107,11 @@ func startupReportValue(t *testing.T, body map[string]any) sp.StartupReport {
 func startupReportedTask(t *testing.T, current model.Task, report sp.StartupReport) model.Task {
 	t.Helper()
 	result := current
-	result.Properties = taskproperty.Clone(current.Properties)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(current.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result.Properties["sessionStartup"] = rawProperty(t, report)
 	result.Version, result.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	return result
@@ -143,6 +147,14 @@ func startupExpectWrite(t *testing.T, f *startupTaskFixture, current model.Task,
 			panic("invalid startup DAO call")
 		}
 	}
+	if observed != nil {
+		scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+			return taskHTTPClaimAdmission{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+				check(ctx, "admission", user == principal.UserID && worker != "" && counts["task"] == 1)
+				return nil, nil
+			}}
+		}
+	}
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
@@ -169,6 +181,11 @@ func startupExpectWrite(t *testing.T, f *startupTaskFixture, current model.Task,
 	}
 	if returned != nil {
 		wanted := taskcore.CurrentWrite(*returned)
+		var err error
+		wanted.Properties, err = taskproperty.NormalizeStored(wanted.Properties)
+		if err != nil {
+			t.Fatal(err)
+		}
 		tasks.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 			check(ctx, "update", id == current.ID && reflect.DeepEqual(values, wanted) && counts["task"] == 1)
 			return *returned, nil

@@ -56,6 +56,7 @@ type fixtureDAO struct {
 	DeleteBotSessionFn                  func(context.Context, string, string) error
 	RedactDeletedBotFn                  func(context.Context, string) error
 	SessionOperationFn                  func(context.Context, string, string) (store.SessionOperation, error)
+	SessionOperationExistsFn            func(context.Context, string, string) (bool, error)
 	InsertSessionOperationFn            func(context.Context, store.SessionOperation) error
 	SetSessionOperationReceiptFn        func(context.Context, sp.Operation) error
 	SetSessionOperationEpochFn          func(context.Context, string, string, int64) error
@@ -72,25 +73,14 @@ type fixtureDAO struct {
 	SetSessionArchiveReadyFn            func(context.Context, string, string, int, string) error
 	ListTestSessionsFn                  func(context.Context, string, time.Time, int, bool, time.Time, *time.Time, string) ([]store.TestSessionListItem, error)
 	LockTerminalFn                      func(context.Context, string) ([]byte, error)
-	SaveTerminalFn                      func(context.Context, string, []byte, *time.Time, string) error
-	FindTerminalRegistrationFn          func(context.Context, string, string, string, string, string) (string, error)
-	InsertTerminalFn                    func(context.Context, store.TerminalRegistration) error
-	InsertRecordingEvidenceFn           func(context.Context, string, int64, string, int64, string) error
-	TerminalOperationFn                 func(context.Context, string, string) (store.TerminalOperation, error)
-	InsertTerminalOperationFn           func(context.Context, store.TerminalOperation) error
-	SetTerminalOperationResultFn        func(context.Context, string, v2.OperationResult) error
-	InvalidateTerminalOperationsFn      func(context.Context, string) error
-	ExpireTerminalOperationsFn          func(context.Context, string, time.Time) error
-	QueuedTerminalOperationFn           func(context.Context, string) ([]string, error)
-	TerminalViewerOperationPendingFn    func(context.Context, string, string, string) (bool, error)
 	TerminalArchiveFn                   func(context.Context, string) (v2.ArchiveStatus, *v2.Receipt, string, error)
-	SaveTerminalReceiptFn               func(context.Context, string, v2.Receipt, *string) error
-	SaveTerminalArchiveStatusFn         func(context.Context, string, v2.ArchiveStatus) error
 	CurrentTerminalSessionFn            func(context.Context, string, string, string) (string, error)
 	TerminalHistoryFn                   func(context.Context, string, string, *time.Time, *string, int) ([]store.TerminalHistoryRow, error)
-	TerminalRecordingEvidenceFn         func(context.Context, string, int64, string) (string, string, error)
-	TerminalAutomationAllowedFn         func(context.Context, string) (bool, error)
-	TerminalInputPendingFn              func(context.Context, string) (bool, error)
+}
+
+func (d *fixtureDAO) SessionOperationExists(ctx context.Context, session, operation string) (bool, error) {
+	d.invoke(ctx, "SessionOperationExists", d.SessionOperationExistsFn != nil)
+	return d.SessionOperationExistsFn(ctx, session, operation)
 }
 
 func newFixtureDAO(t *testing.T) *fixtureDAO {
@@ -451,74 +441,9 @@ func (d *fixtureDAO) LockTerminal(a0 context.Context, a1 string) ([]byte, error)
 	return d.LockTerminalFn(a0, a1)
 }
 
-func (d *fixtureDAO) SaveTerminal(a0 context.Context, a1 string, a2 []byte, a3 *time.Time, a4 string) error {
-	d.invoke(a0, "SaveTerminal", d.SaveTerminalFn != nil)
-	return d.SaveTerminalFn(a0, a1, a2, a3, a4)
-}
-
-func (d *fixtureDAO) FindTerminalRegistration(a0 context.Context, a1 string, a2 string, a3 string, a4 string, a5 string) (string, error) {
-	d.invoke(a0, "FindTerminalRegistration", d.FindTerminalRegistrationFn != nil)
-	return d.FindTerminalRegistrationFn(a0, a1, a2, a3, a4, a5)
-}
-
-func (d *fixtureDAO) InsertTerminal(a0 context.Context, a1 store.TerminalRegistration) error {
-	d.invoke(a0, "InsertTerminal", d.InsertTerminalFn != nil)
-	return d.InsertTerminalFn(a0, a1)
-}
-
-func (d *fixtureDAO) InsertRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string, a4 int64, a5 string) error {
-	d.invoke(a0, "InsertRecordingEvidence", d.InsertRecordingEvidenceFn != nil)
-	return d.InsertRecordingEvidenceFn(a0, a1, a2, a3, a4, a5)
-}
-
-func (d *fixtureDAO) TerminalOperation(a0 context.Context, a1 string, a2 string) (store.TerminalOperation, error) {
-	d.invoke(a0, "TerminalOperation", d.TerminalOperationFn != nil)
-	return d.TerminalOperationFn(a0, a1, a2)
-}
-
-func (d *fixtureDAO) InsertTerminalOperation(a0 context.Context, a1 store.TerminalOperation) error {
-	d.invoke(a0, "InsertTerminalOperation", d.InsertTerminalOperationFn != nil)
-	return d.InsertTerminalOperationFn(a0, a1)
-}
-
-func (d *fixtureDAO) SetTerminalOperationResult(a0 context.Context, a1 string, a2 v2.OperationResult) error {
-	d.invoke(a0, "SetTerminalOperationResult", d.SetTerminalOperationResultFn != nil)
-	return d.SetTerminalOperationResultFn(a0, a1, a2)
-}
-
-func (d *fixtureDAO) InvalidateTerminalOperations(a0 context.Context, a1 string) error {
-	d.invoke(a0, "InvalidateTerminalOperations", d.InvalidateTerminalOperationsFn != nil)
-	return d.InvalidateTerminalOperationsFn(a0, a1)
-}
-
-func (d *fixtureDAO) ExpireTerminalOperations(a0 context.Context, a1 string, a2 time.Time) error {
-	d.invoke(a0, "ExpireTerminalOperations", d.ExpireTerminalOperationsFn != nil)
-	return d.ExpireTerminalOperationsFn(a0, a1, a2)
-}
-
-func (d *fixtureDAO) QueuedTerminalOperation(a0 context.Context, a1 string) ([]string, error) {
-	d.invoke(a0, "QueuedTerminalOperation", d.QueuedTerminalOperationFn != nil)
-	return d.QueuedTerminalOperationFn(a0, a1)
-}
-
-func (d *fixtureDAO) TerminalViewerOperationPending(a0 context.Context, a1 string, a2 string, a3 string) (bool, error) {
-	d.invoke(a0, "TerminalViewerOperationPending", d.TerminalViewerOperationPendingFn != nil)
-	return d.TerminalViewerOperationPendingFn(a0, a1, a2, a3)
-}
-
 func (d *fixtureDAO) TerminalArchive(a0 context.Context, a1 string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
 	d.invoke(a0, "TerminalArchive", d.TerminalArchiveFn != nil)
 	return d.TerminalArchiveFn(a0, a1)
-}
-
-func (d *fixtureDAO) SaveTerminalReceipt(a0 context.Context, a1 string, a2 v2.Receipt, a3 *string) error {
-	d.invoke(a0, "SaveTerminalReceipt", d.SaveTerminalReceiptFn != nil)
-	return d.SaveTerminalReceiptFn(a0, a1, a2, a3)
-}
-
-func (d *fixtureDAO) SaveTerminalArchiveStatus(a0 context.Context, a1 string, a2 v2.ArchiveStatus) error {
-	d.invoke(a0, "SaveTerminalArchiveStatus", d.SaveTerminalArchiveStatusFn != nil)
-	return d.SaveTerminalArchiveStatusFn(a0, a1, a2)
 }
 
 func (d *fixtureDAO) CurrentTerminalSession(a0 context.Context, a1 string, a2 string, a3 string) (string, error) {
@@ -531,25 +456,12 @@ func (d *fixtureDAO) TerminalHistory(a0 context.Context, a1 string, a2 string, a
 	return d.TerminalHistoryFn(a0, a1, a2, a3, a4, a5)
 }
 
-func (d *fixtureDAO) TerminalRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string) (string, string, error) {
-	d.invoke(a0, "TerminalRecordingEvidence", d.TerminalRecordingEvidenceFn != nil)
-	return d.TerminalRecordingEvidenceFn(a0, a1, a2, a3)
-}
-
-func (d *fixtureDAO) TerminalAutomationAllowed(a0 context.Context, a1 string) (bool, error) {
-	d.invoke(a0, "TerminalAutomationAllowed", d.TerminalAutomationAllowedFn != nil)
-	return d.TerminalAutomationAllowedFn(a0, a1)
-}
-
-func (d *fixtureDAO) TerminalInputPending(a0 context.Context, a1 string) (bool, error) {
-	d.invoke(a0, "TerminalInputPending", d.TerminalInputPendingFn != nil)
-	return d.TerminalInputPendingFn(a0, a1)
-}
-
 type fixtureWriter struct {
-	dao     *fixtureDAO
-	bot     store.BotWriteDAO
-	WriteFn func(context.Context, func(store.SessionScope) error) (store.Completion, error)
+	WorkerVersion *int64
+	WorkerCheck   func(context.Context, string, string) error
+	dao           *fixtureDAO
+	bot           store.BotWriteDAO
+	WriteFn       func(context.Context, func(store.SessionScope) error) (store.Completion, error)
 }
 
 func (w *fixtureWriter) SessionDAO() store.SessionDAO { return w.dao }
@@ -599,4 +511,16 @@ type fixtureData struct {
 	UnreconciledCount   int
 	OtherFirstInput     bool
 	InteractionResponse bool
+}
+
+func (w *fixtureWriter) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return w }
+func (w *fixtureWriter) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	return w.WorkerCheck(ctx, user, worker)
+}
+
+func (w *fixtureWriter) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	if err := w.WorkerCheck(ctx, user, worker); err != nil {
+		return nil, err
+	}
+	return w.WorkerVersion, nil
 }

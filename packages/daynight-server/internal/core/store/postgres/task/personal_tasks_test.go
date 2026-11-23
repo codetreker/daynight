@@ -40,13 +40,14 @@ func TestPersonalTaskInventory(t *testing.T) {
 	readerExec(t, db, `UPDATE tasks SET type='goal' WHERE id=ANY($1::uuid[])`, []string{goal.ID, deletedGoal.ID})
 	readerExec(t, db, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, goal.ID, child.ID)
 	readerExec(t, db, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, deletedGoal.ID, hiddenChild.ID)
-	readerExec(t, db, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, deletedGoal.ID)
+	readerExec(t, db, `WITH deleted AS (UPDATE tasks SET deleted_at=now() WHERE id=$1 RETURNING deleted_at)
+		UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE id=$2`, deletedGoal.ID, hiddenChild.ID)
 	ids := []string{first.ID, second.ID, nullTime.ID, other.ID, teamOnly.ID, invisible.ID, notStarted.ID, child.ID, hiddenChild.ID}
 	readerExec(t, db, `UPDATE tasks SET assigned_to=$1 WHERE id=ANY($2::uuid[])`, actor, ids)
 	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	readerExec(t, db, `UPDATE tasks SET started_at=$1,version=9223372036854775807 WHERE id=ANY($2::uuid[])`, when, []string{first.ID, second.ID})
 	readerExec(t, db, `UPDATE tasks SET started_at=NULL WHERE id=ANY($1::uuid[])`, []string{nullTime.ID, child.ID})
-	readerPutProperty(t, db, first.ID, "paused", []byte(`true`))
+	readerPutProperty(t, db, first.ID, "blocked", []byte(`true`))
 	if err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
 		dao := scope.TaskDAO().(store.PersonalTaskReader)
 		facts, err := dao.PersonalTaskFacts(t.Context(), actor)

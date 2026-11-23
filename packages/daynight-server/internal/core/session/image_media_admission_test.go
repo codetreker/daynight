@@ -10,6 +10,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -303,59 +304,61 @@ func TestMediaOfferDeferralPreservesIndependentFailures(t *testing.T) {
 func TestRemoteCompletionReacquiresOnlyUnchangedOriginal(t *testing.T) {
 	for _, kind := range []string{"actor", "blob", "spec", "receipt", "expiry", "storage released", "fence", "delete epoch", "deleting", "frozen", "admission failure"} {
 		t.Run(kind, func(t *testing.T) {
-			raw := []byte("original before remote validation")
-			f := newImageRuleFixture(t, raw)
-			f.prepare(t)
-			if _, err := f.write(t, raw, 0); err != nil {
-				t.Fatal(err)
-			}
-			_, d, mu := boundedMediaRelay(t, f)
-			changed := false
-			d.respond = func(row store.SessionMediaRequest) store.SessionMediaRequest {
-				row.Complete = true
-				response := sp.LocalImagePreparation{UploadID: f.spec.UploadID, ImageID: f.spec.ImageID, Target: f.spec.Target, State: "receiving", AcceptedOffset: "0"}
-				if row.Action == "complete" {
-					response.State, response.AcceptedOffset = "validated", f.spec.ByteLength
-					response.Validated = &sp.ValidatedImage{MediaType: "image/png", ByteLength: f.spec.ByteLength, SHA256: f.spec.SHA256, Width: 2, Height: 3, FrameCount: 1}
-					current := d.uploads[f.spec.UploadID]
-					switch kind {
-					case "actor":
-						current.ActorID = uuid.NewString()
-					case "blob":
-						current.BlobID = uuid.NewString()
-					case "spec":
-						current.Spec.Name = "changed original.png"
-					case "receipt":
-						current.Receipt.State = "released"
-					case "expiry":
-						current.ExpiresAt = current.ExpiresAt.Add(time.Minute)
-					case "storage released":
-						current.StorageReleased = true
-					case "fence":
-						f.r.Snapshot.ExecutionGeneration = "2"
-					case "delete epoch":
-						d.usage.DeleteEpoch++
-					case "deleting":
-						d.usage.Deleting = true
-					case "frozen":
-						d.usage.Frozen = true
-					case "admission failure":
-						d.acquireError = errors.New("lease commit outcome unknown")
-					}
-					d.uploads[f.spec.UploadID] = current
-					changed = true
+			synctest.Test(t, func(t *testing.T) {
+				raw := []byte("original before remote validation")
+				f := newImageRuleFixture(t, raw)
+				f.prepare(t)
+				if _, err := f.write(t, raw, 0); err != nil {
+					t.Fatal(err)
 				}
-				row.Result = encode(response)
-				return row
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-			defer cancel()
-			_, err := f.s.CompleteUpload(ctx, f.p, "", "", f.r.Snapshot.SessionID, f.spec.UploadID, sp.ImageUploadComplete{SHA256: f.spec.SHA256, ByteLength: f.spec.ByteLength})
-			mu.Lock()
-			defer mu.Unlock()
-			if !changed || err == nil || len(d.resources) != 0 || len(d.leases) != 0 {
-				t.Fatal("changed or unconfirmed original reached local publication", changed, err, len(d.resources), len(d.leases))
-			}
+				_, d, mu := boundedMediaRelay(t, f)
+				changed := false
+				d.respond = func(row store.SessionMediaRequest) store.SessionMediaRequest {
+					row.Complete = true
+					response := sp.LocalImagePreparation{UploadID: f.spec.UploadID, ImageID: f.spec.ImageID, Target: f.spec.Target, State: "receiving", AcceptedOffset: "0"}
+					if row.Action == "complete" {
+						response.State, response.AcceptedOffset = "validated", f.spec.ByteLength
+						response.Validated = &sp.ValidatedImage{MediaType: "image/png", ByteLength: f.spec.ByteLength, SHA256: f.spec.SHA256, Width: 2, Height: 3, FrameCount: 1}
+						current := d.uploads[f.spec.UploadID]
+						switch kind {
+						case "actor":
+							current.ActorID = uuid.NewString()
+						case "blob":
+							current.BlobID = uuid.NewString()
+						case "spec":
+							current.Spec.Name = "changed original.png"
+						case "receipt":
+							current.Receipt.State = "released"
+						case "expiry":
+							current.ExpiresAt = current.ExpiresAt.Add(time.Minute)
+						case "storage released":
+							current.StorageReleased = true
+						case "fence":
+							f.r.Snapshot.ExecutionGeneration = "2"
+						case "delete epoch":
+							d.usage.DeleteEpoch++
+						case "deleting":
+							d.usage.Deleting = true
+						case "frozen":
+							d.usage.Frozen = true
+						case "admission failure":
+							d.acquireError = errors.New("lease commit outcome unknown")
+						}
+						d.uploads[f.spec.UploadID] = current
+						changed = true
+					}
+					row.Result = encode(response)
+					return row
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				_, err := f.s.CompleteUpload(ctx, f.p, "", "", f.r.Snapshot.SessionID, f.spec.UploadID, sp.ImageUploadComplete{SHA256: f.spec.SHA256, ByteLength: f.spec.ByteLength})
+				mu.Lock()
+				defer mu.Unlock()
+				if !changed || err == nil || len(d.resources) != 0 || len(d.leases) != 0 {
+					t.Fatal("changed or unconfirmed original reached local publication", changed, err, len(d.resources), len(d.leases))
+				}
+			})
 		})
 	}
 }

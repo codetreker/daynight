@@ -30,15 +30,32 @@ HTTP 使用 `include=session` 显式选择新表示，show 在原 Task 顶层增
 
 Graph 每节点附加 `session/relation`，顶层附加 `sessionSummary/partial`。relation 从请求 Task 沿普通依赖的无向连通分量计算；直接外部前置保留为 `external`，不参与进行中汇总。内部 GraphTask 读取版本用于绑定检查，不改变旧 Graph API 字段。`--depends-only` 使用原查询，不触发 Session 观察。
 
+## 凭据限定投影
+
+显式 scoped 服务和 REST/MCP 注册路径遵循[凭据准入合同](credential-scope-internal.md#任务读取准入与投影)。
+Task 读取先检查 task:read；缺少 session:read 时，在读取 TaskSessionSources、
+重验来源及采样 live 状态之前直接生成占位投影，既不探测 Session 是否存在，也不
+使用实际 Session 字段补齐。Task 属性中的 worker 与 sessionStartup 执行记录同时
+排除；原任务查询、普通字段、依赖与分页继续适用。
+
+占位观察使用 unavailable、unknown 和 insufficient_scope，全部会话身份、状态、
+时间及 send.allowed/mode 为空，error 只描述缺少 Session 读取权限。Graph 聚合
+只计 member 范围内进行中的普通 Task；工作分组扫描完整可见进行中成员后，保留
+原目标分页。聚合的 observedAt 来自 Task 查询，三个活动计数为零、unknownCount
+等于上述任务数、complete=false，结果 partial=true。即使任务没有执行记录，也
+不能通过无投影响应区分其 Session 存在性。生产装配使用 scoped 观察流程。包含完整 Project 的 Graph 使用请求独立的权限集合，在初始快照与每批 live 采样后的新快照中复核当前凭证的 task:read、project:read 和本次采样使用的 session:read。任一权限被移除均中止整次响应，不发布此前读取的 Project 或 Session。task-only Graph 只返回 project.id，不读取项目内容，也不附加 project:read；同一服务实例的其他请求保持各自的权限要求。
+
 ## 工作分组与稳定遍历
 
-PostgreSQL 从匹配负责人的 `in_progress` Task 出发，通过普通依赖的两个方向计算连通成员，并以最小 Task UUID 合并重复种子。查询一次选择所需组数及一个 lookahead；根和标题在 DAO 以预览字段返回，不为分组加载完整描述和属性。外部依赖始终不参与递归。
+PostgreSQL 从匹配负责人的可见普通 `in_progress` Task 出发，用单列 `reachable(id)` 和 `UNION` 对所有种子共享去重，通过普通内部依赖的两个方向只展开一次可达顶点。指定组从组 ID 单独起步，随后验证它是分量最小 UUID 且组内存在匹配负责人的进行中 Task。外部依赖、Goal 和有效删除的任务始终不扩展图；零种子直接返回空页。
 
-组选择记录 `TaskSearchFence{Epoch,Count,VersionSum}`。随后的每批目标读取在独立授权快照内验证同一 fence、查询最多 200 个进行中目标并加载对应 Session 来源；释放快照后才采样、重验并累计摘要。只保留最多 20 个目标预览，整组统计则扫描所有进行中成员。最后再验证 graph fence，防止发布变化前后的混合遍历。
+DAO 在同一快照内将可达 ID 集合用于边查询，流式合并每条普通内部边。并查集由不依赖业务模块的 `utils/graph` 提供，成员映射只保留顶点和分量最小 UUID，内存随可达顶点数增长。SQL 通过两列 UUID 数组的 `unnest` 接收成员映射，聚合组计数、匹配负责人的最大启动时间、最早根和根预览，按既有顺序选择所需组数及一个 lookahead。去掉附加组后，同一快照按 `(group_id,task_id)` 读取本页全部进行中成员的目标键，包括其他负责人。根和标题以预览字段返回，不加载完整描述和属性。
+
+首次组选择同时记录 `TaskSearchFence{Epoch,Count,VersionSum}` 和请求内目标键。service 验证键顺序严格递增、所属组及各组进行中计数完整对应。随后的每批读取在新的独立授权快照内验证同一 fence，传入最多 200 个明确目标键，按键查询轻量 Task 并验证返回身份、顺序、状态与数量，再加载对应 Session 来源。后续批次不遍历依赖图；释放快照后才采样、重验并累计摘要。只保留最多 20 个目标预览，整组统计覆盖首次选择的所有进行中成员。最后再验证 graph fence，防止发布变化前后的混合结果。
 
 游标以规范 JSON 和 URL-safe Base64 编码，严格校验字段、十进制 fence、ID、actor/project/assignee 以及组或目标位置。组位置为 `startedAt/groupId`，目标位置为 `groupId/taskId`。Task 变化要求重置；Session 活动不纳入 graph fence，因此刷新观察不改变目标遍历位置。目标续页仍扫描整组以更新统计，只跳过游标之前的展示目标。
 
-该结构限制单次来源批量和返回数据，完整聚合成本仍与所选组的进行中成员数相关。重复目标续页会重新计算整组摘要；这是保持真实聚合与稳定目标分页的成本，不是持久聚合缓存。
+该结构限制单次来源批量和返回数据，请求内目标键内存与所选组的进行中成员数成正比；可达图只在首次快照展开，完整聚合成本仍与所选组的进行中成员数相关。重复目标续页会重新计算整组摘要；这是保持真实聚合与稳定目标分页的成本，不是持久聚合缓存。
 
 ## 专用响应预算
 
@@ -54,4 +71,4 @@ HTTP inspection、CLI API 方法和公共 session 命令注册壳是后续消费
 
 ## 验证边界
 
-核心测试构造受控 Task、Session 和能力事实，验证纯投影、游标及预算；service 测试 mock 直接调用的规则和 DAO，控制授权、快照完成、live 采样期间的身份变化与批次顺序。DAO 测试使用隔离 PostgreSQL 观察真实 SQL、映射和分页，不能以 service mock 替代。协议测试通过真实 HTTP/MCP 编码和 CLI 解析验证结果约定、显式 null、控制字符、旧查询兼容及 partial；MCP 结构化结果以内部定义验证，工具发现省略 `outputSchema`。运行证据随具体源码版本保存，文档不宣称测试替代真实 Provider 或多平台接收证据。
+核心测试构造受控 Task、Session 和能力事实，验证纯投影、游标及预算；service 测试 mock 直接调用的规则和 DAO，控制授权、快照完成、live 采样期间的身份变化与批次顺序。DAO 测试使用隔离 PostgreSQL 观察真实 SQL、映射和分页，不能以 service mock 替代。协议测试通过真实 HTTP/MCP 编码和 CLI 解析验证结果约定、显式 null、控制字符、旧查询兼容及 partial；MCP 测试直接断言结构化结果，工具发现省略 `outputSchema`。运行证据随具体源码版本保存，文档不宣称测试替代真实 Provider 或多平台接收证据。

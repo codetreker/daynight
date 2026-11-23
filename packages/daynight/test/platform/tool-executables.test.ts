@@ -68,7 +68,9 @@ describe("resolved tool commands", () => {
     const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, workerNode: node, environment: { PATH: pathNode } }, operation());
     const command = toolCommand(launch, []);
     expect(JSON.parse((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout).node).toBe(await realpath(node));
-    await rm(node);
+    // Executable removal can still report EBUSY after execFile has joined close.
+    await removeFixtureRoot(node);
+    await expect(stat(node)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(verifyToolLaunch(launch, operation())).rejects.toMatchObject({ tool: "codex", context: "web", stage: "verify", code: "tool_identity_changed" });
   });
 
@@ -195,13 +197,12 @@ describe("resolved tool commands", () => {
     } finally { if (timer) clearTimeout(timer); release(); await result.catch(() => {}); }
   });
 
-  it("keeps Web Copilot bundled while Herdr uses the captured external installation", async () => {
+  it("uses bundled Copilot by default and an explicit external selection", async () => {
     const root = await fixture(), entry = await script(root, "copilot.js", "external");
-    if (process.platform !== "win32") await symlink(entry, path.join(root, "copilot"), "file");
     const web = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "auto" }, cwd: root, environment: { PATH: root } }, operation());
-    const external = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "auto" }, cwd: root, environment: { PATH: root, PATHEXT: ".JS" } }, operation());
+    const external = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "path", path: entry }, cwd: root, environment: { PATH: root, PATHEXT: ".JS" } }, operation());
     expect(web.source).toBe("bundled"); expect(web.interpreterPath).toBeNull();
-    expect(external.source).toBe("path");
+    expect(external.source).toBe("explicit");
     expect(web.artifacts.some(item => item.role === "runtime" && item.realPath === web.executablePath)).toBe(true);
     expect(web.executablePath).not.toBe(external.executablePath);
     const command = toolCommand(external, []);

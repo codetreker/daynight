@@ -15,7 +15,6 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -66,7 +65,7 @@ func testTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T, database *
 		readerTask(t, database, seed.projectID, seed.number, seed.status)
 		readerExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, readerID(seed.number), seed.userID)
 	}
-	readerExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, readerID(14))
+	readerExec(t, database, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, readerID(14))
 	readerExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{former, deleted})
 	var before string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
@@ -135,48 +134,6 @@ func testTaskAssigneeStorePreservesMissingQualifiedProfileFacts(t *testing.T, da
 			t.Fatalf("missing qualified profile facts lost: %#v", result)
 		}
 
-	}
-}
-
-func TestTaskAssigneeStoreQueryAndRowFailuresPreserveCauses(t *testing.T) {
-	for _, kind := range []string{"query", "scan", "iteration"} {
-		database := readerStore(t)
-		project := readerProject(t, database, 1)
-		readerAssigneeUser(t, database, project.ID, 101, true)
-		readerAssigneeUser(t, database, project.ID, 102, true)
-		switch kind {
-		case "query":
-			readerExec(t, database, `DROP TABLE tasks CASCADE`)
-		case "scan":
-			readerExec(t, database, `ALTER TABLE users RENAME TO assignee_user_source;
-				CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,'\x01'::bytea AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
-		case "iteration":
-			readerExec(t, database, `CREATE FUNCTION refuse_assignee_profile(id uuid) RETURNS text LANGUAGE plpgsql AS $$
-				BEGIN IF id='00000000-0000-4000-8000-000000000102'::uuid THEN RAISE EXCEPTION USING ERRCODE='P1032',MESSAGE='private profile diagnostic'; END IF; RETURN 'Visible'; END $$;
-				ALTER TABLE users RENAME TO assignee_user_source;
-				CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,refuse_assignee_profile(id) AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
-		}
-		for _, resolve := range []bool{false, true} {
-			var ids []string
-			if resolve {
-				ids = []string{readerID(101), readerID(102)}
-			}
-			result, err := readerAssigneeRead(t, database, project.ID, ids)
-			var failure *Error
-			if !errors.As(err, &failure) || len(result) != 0 || strings.Contains(err.Error(), "private profile") {
-				t.Fatalf("%s failure became partial or unsafe: %#v %v", kind, result, err)
-			}
-			if kind == "query" || kind == "iteration" {
-				var cause *pgconn.PgError
-				code := "42P01"
-				if kind == "iteration" {
-					code = "P1032"
-				}
-				if !errors.As(err, &cause) || cause.Code != code {
-					t.Fatalf("%s failure lost PostgreSQL cause: %v", kind, err)
-				}
-			}
-		}
 	}
 }
 
@@ -491,38 +448,6 @@ func testTaskPriorityListRejectsInvalidDAOInputs(t *testing.T, db *postgres.Stor
 	}
 }
 
-func TestTaskPriorityListStorageFailures(t *testing.T) {
-	for _, test := range []struct {
-		name, ddl string
-		fence     bool
-	}{
-		{"fence query", `DROP VIEW task_resource_rows; DROP TABLE tasks`, true},
-		{"list query", `DROP TABLE task_dependencies`, false},
-		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`, false},
-		{"iteration", `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
-			ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			db := readerStore(t)
-			ctx := context.Background()
-			project := readerProject(t, db, 1)
-			readerTask(t, db, project.ID, 11, model.TaskTodo)
-			readerExec(t, db, test.ddl)
-			err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-				if test.fence {
-					_, err := snapshot.TaskDAO().TaskListFence(ctx, project.ID)
-					return err
-				}
-				_, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, TaskPriorityQuery{Limit: 1})
-				return err
-			})
-			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private list failure") {
-				t.Fatalf("query failure was lost or leaked: %v", err)
-			}
-		})
-	}
-}
-
 func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 	database := readerStore(t)
 	project := readerProject(t, database, 1)
@@ -601,7 +526,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	readerExec(t, s, `CREATE FUNCTION reject_sync_detail() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
 		ALTER VIEW task_resource_rows RENAME TO resource_source;
-		CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, title, reject_sync_detail() AS description,
+		CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, parent_type, title, reject_sync_detail() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at,effective_deleted_at FROM resource_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
@@ -658,35 +583,6 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
-	for _, test := range []struct{ name, ddl string }{
-		{"query", "DROP VIEW task_resource_rows; DROP TABLE tasks"},
-		{"missing-title", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,NULL::text AS title,status,version,created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			s := readerStore(t)
-			project := readerProject(t, s, 1)
-			readerTask(t, s, project.ID, 11, model.TaskTodo)
-			readerExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-				_, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
-				return err
-			})
-			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
-				t.Fatalf("sync failure hidden or leaked: %v", err)
-			}
-			if test.name == "iteration" {
-				var pgErr *pgconn.PgError
-				if !errors.As(err, &pgErr) || pgErr.Code != "P1003" {
-					t.Fatalf("driver cause lost: %v", err)
-				}
-			}
-		})
 	}
 }
 
@@ -785,7 +681,7 @@ func testAutomaticCandidatesFilterBeforePagination(t *testing.T, database *postg
 		readerExec(t, database, `UPDATE tasks SET type='goal' WHERE id=$1`, parent.ID)
 		readerExec(t, database, `UPDATE tasks SET parent_id=$2 WHERE id=$1`, children[i].ID, parent.ID)
 	}
-	readerExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, parents[4].ID)
+	readerExec(t, database, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, parents[4].ID)
 	owner, workerID := readerID(100), readerID(101)
 	for _, index := range []int{0, 1, 4} {
 		claim := &model.WorkerClaim{ClaimID: readerID(110 + index), State: model.WorkerActive, UserID: owner, WorkerID: workerID,

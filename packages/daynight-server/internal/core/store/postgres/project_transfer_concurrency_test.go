@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,16 +17,22 @@ import (
 )
 
 func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, transferFirst := range []bool{false, true} {
 		for _, firstCommits := range []bool{false, true} {
-			t.Run(fmt.Sprintf("transferFirst=%t/commit=%t", transferFirst, firstCommits), func(t *testing.T) {
-				s, actor, _, project := membershipFixture(t)
+			if !t.Run(fmt.Sprintf("transferFirst=%t/commit=%t", transferFirst, firstCommits), func(t *testing.T) {
+				actor, _, project := testutil.ProjectMembershipFixture(t, s)
 				target, err := testCreateTeam(s, context.Background(), actor.UserID, uuid.NewString(), "Destination")
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				var workers sync.WaitGroup
+				defer func() {
+					cancel()
+					workers.Wait()
+				}()
 				rollback := errors.New("test rollback")
 				occupied := errors.New("destination contains projects")
 				missing := errors.New("destination is missing")
@@ -88,9 +95,9 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 					})
 				}
 				if transferFirst {
-					go func() { first <- transfer(true) }()
+					workers.Go(func() { first <- transfer(true) })
 				} else {
-					go func() { first <- deleteTeam(true) }()
+					workers.Go(func() { first <- deleteTeam(true) })
 				}
 				var blockerPID uint32
 				select {
@@ -101,10 +108,10 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 					t.Fatal(ctx.Err())
 				}
 				if transferFirst {
-					go func() { second <- deleteTeam(false) }()
+					workers.Go(func() { second <- deleteTeam(false) })
 					waitTransferTeamLock(t, ctx, s, "SELECT id::text FROM teams WHERE", blockerPID)
 				} else {
-					go func() { second <- transfer(false) }()
+					workers.Go(func() { second <- transfer(false) })
 					waitTransferTeamLock(t, ctx, s, "SELECT id::text,name,personal_user_id::text,version FROM teams WHERE", blockerPID)
 				}
 				close(release)
@@ -134,7 +141,10 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 				if wantTransfer && (owner != target.ID || !teamExists) || !wantTransfer && (owner != project.Ownership.TeamID || teamExists) {
 					t.Fatalf("inconsistent owner or destination: %s exists=%t", owner, teamExists)
 				}
-			})
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, s.Pool)
 		}
 	}
 }

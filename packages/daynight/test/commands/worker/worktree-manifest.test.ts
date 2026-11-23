@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { bindingForManifest, managedNamespace, manifestPath } from "../../../src/commands/worker/worktrees/paths.js";
 
-const fault = vi.hoisted(() => ({ syncPath: "", syncRegular: false, whenPresent: "", readPath: "", writeDirectory: "", listPath: "" }));
+const fault = vi.hoisted(() => ({ syncPath: "", syncRegular: false, whenPresent: "", readPath: "", writeDirectory: "", listPath: "", countListPath: "", enumerations: 0 }));
 vi.mock("node:fs", async importOriginal => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return {
@@ -31,6 +31,7 @@ vi.mock("node:fs", async importOriginal => {
     },
     readdirSync: (...args: Parameters<typeof fs.readdirSync>) => {
       if (String(args[0]) === fault.listPath) throw Object.assign(new Error("controlled list failure"), { code: "EACCES" });
+      if (String(args[0]) === fault.countListPath) fault.enumerations++;
       return fs.readdirSync(...args);
     },
   };
@@ -39,6 +40,7 @@ vi.mock("node:fs", async importOriginal => {
 const roots: string[] = [];
 afterEach(() => {
   fault.syncPath = ""; fault.syncRegular = false; fault.whenPresent = ""; fault.readPath = ""; fault.writeDirectory = ""; fault.listPath = "";
+  fault.countListPath = ""; fault.enumerations = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const fixture = () => {
@@ -55,18 +57,35 @@ const claim = (value: ReturnType<typeof manifest>) => ({ projectId: value.projec
 test("publishes and reads the current manifest without activating or changing the old runtime format", () => {
   const f = fixture(), value = manifest();
   expect(f.store.read(value.worktreeId)).toBeNull();
-  expect(f.store.findClaim(claim(value))).toBeNull();
+  expect(f.store.lookupOwner(value)).toEqual({ byWorktreeId: null, byClaim: null });
   expect(f.store.list()).toEqual([]);
   expect(f.store.publish(value)).toEqual(value);
   expect(JSON.parse(readFileSync(path.join(f.directory, `${value.worktreeId}.json`), "utf8"))).toEqual(value);
   expect(f.store.read(value.worktreeId)).toEqual(value);
-  expect(f.store.findClaim(claim(value))).toEqual(value);
+  expect(f.store.lookupOwner(value)).toEqual({ byWorktreeId: value, byClaim: value });
   expect(f.store.list()).toEqual([value]);
   expect(f.store.publish(value)).toEqual(value);
   expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   expect(managedNamespace(f.repository)).toBe(path.join(f.repository, ".worktrees", "daynight"));
   expect(manifestPath(f.common, value.worktreeId)).toBe(path.join(f.directory, `${value.worktreeId}.json`));
   expect(bindingForManifest(f.repository, f.common, value)).toEqual({ repositoryPath: f.repository, commonDirectory: f.common, worktreePath: path.join(f.repository, ".worktrees", "daynight", value.directoryName), branch: `daynight/${value.taskId}` });
+});
+
+test("looks up both ownership keys in one fresh complete enumeration", () => {
+  const f = fixture();
+  const first = { ...manifest(), worktreeId: "11111111-1111-4111-8111-111111111111" };
+  const second = { ...manifest(), worktreeId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" };
+  f.store.publish(first); f.store.publish(second);
+  fault.countListPath = f.directory;
+  expect(f.store.lookupOwner({ ...first, worktreeId: second.worktreeId })).toEqual({ byWorktreeId: second, byClaim: first });
+  expect(fault.enumerations).toBe(1);
+  expect(f.store.lookupOwner({ ...first, worktreeId: randomUUID() })).toEqual({ byWorktreeId: null, byClaim: first });
+  expect(f.store.lookupOwner({ ...first, claimId: randomUUID() })).toEqual({ byWorktreeId: first, byClaim: null });
+  expect(fault.enumerations).toBe(3);
+
+  writeFileSync(manifestPath(f.common, second.worktreeId), "{");
+  expect(() => f.store.lookupOwner(first)).toThrow();
+  expect(fault.enumerations).toBe(4);
 });
 
 test("enforces all three uniqueness rules without overwriting existing ownership", () => {
@@ -106,7 +125,7 @@ test.each(["claim", "directory"] as const)("detects duplicate %s in existing on-
   const second = { ...manifest(), ...(duplicate === "claim" ? claim(first) : { directoryName: first.directoryName }) };
   writeFileSync(path.join(f.directory, `${second.worktreeId}.json`), JSON.stringify(second));
   expect(() => f.store.list()).toThrow();
-  expect(() => f.store.findClaim(claim(first))).toThrow();
+  expect(() => f.store.lookupOwner(first)).toThrow();
   expect(() => f.store.publish(manifest())).toThrow();
 });
 
@@ -131,7 +150,7 @@ test.each([
   writeFileSync(path.join(f.directory, `${value.worktreeId}.json`), JSON.stringify(corrupt(value)));
   expect(() => f.store.read(value.worktreeId)).toThrow();
   expect(() => f.store.list()).toThrow();
-  expect(() => f.store.findClaim(claim(value))).toThrow();
+  expect(() => f.store.lookupOwner(value)).toThrow();
   expect(() => f.store.publish(value)).toThrow();
 });
 
@@ -160,7 +179,7 @@ test("propagates read and enumeration failures rather than treating them as abse
   expect(() => f.store.read(value.worktreeId)).toThrow("controlled read failure");
   fault.readPath = ""; fault.listPath = f.directory;
   expect(() => f.store.list()).toThrow("controlled list failure");
-  expect(() => f.store.findClaim(claim(value))).toThrow("controlled list failure");
+  expect(() => f.store.lookupOwner(value)).toThrow("controlled list failure");
   expect(() => f.store.publish(manifest())).toThrow("controlled list failure");
 });
 

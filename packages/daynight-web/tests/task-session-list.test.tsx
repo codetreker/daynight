@@ -13,6 +13,11 @@ import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 
+// Session indicators consume retained observations without invoking usage requests.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+// Worker display metadata is independent of Session observation traffic.
+vi.mock('../src/api/worker-alias', async original => ({ ...await original<typeof import('../src/api/worker-alias')>(), getWorkerAlias: async () => ({ value: null, version: '1' }) }));
+
 const id = (n: number) => `10000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const projectId = id(100);
 const rootId = id(1);
@@ -104,7 +109,7 @@ it('keeps chain expansion, Task details and pending Session shortcuts as separat
   const main = document.getElementById(`chain-task-${rootId}-${childId}`)!;
   fireEvent.click(main); expect(value.onOpenTask).toHaveBeenCalledWith(childId, main);
   const row = main.closest('.task-row')!;
-  const shortcut = within(row as HTMLElement).getByRole('button', { name: /Session 待同步.*打开 Session/ });
+  const shortcut = within(row as HTMLElement).getByRole('button', { name: /待同步.*打开 Session/ });
   expect(shortcut.querySelector('.session-status-annotation')).toBeNull();
   fireEvent.pointerDown(shortcut, { pointerType: 'touch' }); fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut); expect(value.onOpenTask).toHaveBeenCalledTimes(1);
@@ -120,10 +125,10 @@ it('keeps focused shortcut nodes and expanded state through Session updates', as
   const shortcut = row.querySelector<HTMLButtonElement>('.session-status-action')!;
   const user = userEvent.setup();
   act(() => shortcut.focus());
-  expect(shortcut).toHaveAccessibleName(/Session 需要响应/);
+  expect(shortcut).toHaveAccessibleName(/需要响应/);
   value.replace({ [childId]: 'working' });
   expect(row.querySelector('.session-status-action')).toBe(shortcut); expect(shortcut).toHaveFocus();
-  expect(shortcut).toHaveAccessibleName(/Session 工作中/);
+  expect(shortcut).toHaveAccessibleName(/工作中/);
   expect(document.getElementById(`task-root-${rootId}`)).toHaveAttribute('aria-expanded', 'true');
   await user.keyboard('{Enter}'); expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   value.replace({}); expect(row.querySelector('.session-status-action')).toBeNull();
@@ -147,7 +152,7 @@ it('projects Session observations into independent Goal members and hides them w
   expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'warning');
   value.replace({ [childId]: 'pending', [otherId]: 'working' });
   const row = firstGoal.querySelector<HTMLElement>(`.task-row-title[id$="-${childId}"]`)!.closest<HTMLElement>('.task-row')!;
-  const shortcut = within(row).getByRole('button', { name: /Session 待同步.*打开 Session/ });
+  const shortcut = within(row).getByRole('button', { name: /待同步.*打开 Session/ });
   fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   expect(value.onOpenTask).not.toHaveBeenCalled();

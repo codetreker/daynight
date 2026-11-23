@@ -17,7 +17,7 @@ type LateObserver = (response: CodexLateResponse) => void;
 export class CodexRpc {
   readonly stopped: Promise<void>;
   private readonly decoder: CodexJsonDecoder;
-  private readonly pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout; observer?: LateObserver }>();
+  private readonly pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout; observer?: LateObserver; consume?: (value: unknown) => unknown }>();
   private readonly late = new Map<number, LateObserver>();
   private observerCount = 0;
   private sequence = 0;
@@ -49,8 +49,9 @@ export class CodexRpc {
       for (const frame of this.decoder.write(bytes.subarray(offset, offset + this.decoder.limits.bufferBytes))) {
         try {
           this.deliver(frame.value);
-          // Promise consumers can retain a private image lease before the
-          // frame releases its own reference. No service capture is awaited.
+          // Direct continuations may retain a private image lease before the
+          // frame releases its reference. Wrapped history uses a synchronous
+          // consumer; no service capture is awaited here.
           await Promise.resolve();
         } finally { frame.release(); }
         if (!await this.yieldToIo()) return;
@@ -84,17 +85,21 @@ export class CodexRpc {
     }
     clearTimeout(waiter.timer); this.pending.delete(message.id);
     if (waiter.observer) this.observerCount -= 1;
-    if ("error" in response) waiter.reject(response.error); else waiter.resolve(response.result);
+    if ("error" in response) waiter.reject(response.error);
+    else {
+      try { waiter.resolve(waiter.consume ? waiter.consume(response.result) : response.result); }
+      catch (error) { waiter.reject(error instanceof Error ? error : new Error("Native response consumption failed.")); }
+    }
   }
   /** Unobserved timeout evidence is never evicted while this connection lives. */
-  request(method: string, params: unknown, onLateResponse?: LateObserver): Promise<unknown> {
+  request(method: string, params: unknown, onLateResponse?: LateObserver, consume?: (value: unknown) => unknown): Promise<unknown> {
     if (this.closed || this.nativeClosed) return Promise.reject(new Error("Native process is closed."));
     if (onLateResponse && this.observerCount >= 1000) return Promise.reject(new NativeRpcError(-32602, "Native response observer capacity exceeded before dispatch."));
     if (onLateResponse) this.observerCount += 1;
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); if (onLateResponse) this.late.set(id, onLateResponse); reject(new NativeRpcTimeoutError(method)); }, this.options.timeoutMs ?? 30_000);
-      this.pending.set(id, { resolve, reject, timer, ...(onLateResponse ? { observer: onLateResponse } : {}) });
+      this.pending.set(id, { resolve, reject, timer, ...(onLateResponse ? { observer: onLateResponse } : {}), ...(consume ? { consume } : {}) });
       try { this.write({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); if (onLateResponse) this.observerCount -= 1; reject(error); }
     });
   }

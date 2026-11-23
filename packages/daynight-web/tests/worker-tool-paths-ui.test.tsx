@@ -1,11 +1,11 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
+import type { WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerEditingPanels } from '../src/features/workers/configuration/WorkerEditingPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationResponse } from './helpers/worker-configuration';
 import { toolPathConfiguration, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
-import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
+import { WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
 const flush = () => act(async () => { for (let n = 0; n < 60; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
 const setup = (initial = toolPathConfiguration()) => {
@@ -22,7 +22,7 @@ const setup = (initial = toolPathConfiguration()) => {
     const { controlModeSupported: _mode, toolPathsSupported: _tools, ...wire } = resource;
     const response = configurationResponse(wire);
     response.headers.set('Daynight-Worker-Control-Mode', '1');
-    response.headers.set('Daynight-Worker-Tool-Paths', '1');
+    response.headers.set('Daynight-Worker-Tool-Paths', '2');
     return response;
   }));
   return writes;
@@ -38,23 +38,20 @@ const expand = () => {
 
 describe('Worker tool path configuration fields', () => {
   it.each([
-    ['applied', 'Applied'], ['checking', 'Checking'], ['not_checked', 'Not checked'], ['pending', 'Awaiting application'], ['error', 'Application failed'],
-  ] as const)('summarizes required tool %s independently from unused failures', async (state, label) => {
-    const resource = toolPathConfiguration();
-    const items = (['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode'] as const).map(kind => ({ key: { kind }, targetRevision: '1', appliedValue: resource.desired!.value[kind], state: 'applied', error: null, lastFailure: null, nextAttemptAt: null }) as WorkerConfigurationOutcome);
-    setup({ ...resource, observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '1', reportedAt: WORKER_TIME, items } });
+    ['checking', 'Checking'], ['not_checked', 'Not checked'], ['pending', 'Awaiting application'], ['error', 'Application failed'],
+  ] as const)('shows an unused editable tool as %s rather than hiding its check result', async (state, label) => {
+    setup();
     mount(true, toolPathTelemetry([
-      toolPathObservation('codex', 'web', { state, error: state === 'error' ? { code: 'not_found', occurredAt: WORKER_TIME } : null }),
-      toolPathObservation('herdr', 'herdr', { state: 'error', error: { code: 'not_found', occurredAt: WORKER_TIME } }),
+      toolPathObservation(),
+      toolPathObservation('copilot', 'web', { state, error: state === 'error' ? { code: 'not_found', occurredAt: '2026-10-25T10:00:00Z' } : null }),
     ]));
     await flush();
     const summary = within(document.querySelector<HTMLElement>('.configuration-summary')!);
-    expect(summary.getByText('Tool launch paths', { selector: 'dt' }).parentElement).toHaveTextContent(label);
-    if (state === 'applied') expect(summary.getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
-    else expect(summary.queryByText('Applied', { selector: '.status-chip' })).not.toBeInTheDocument();
+    expect(summary.getByText('Tool launch paths · Codex / Copilot', { selector: 'dt' }).parentElement).toHaveTextContent(label);
+    expect(summary.queryByText('Applied', { selector: '.status-chip' })).not.toBeInTheDocument();
   });
   it('starts collapsed, preserves unadopted tools and saves an explicit path through the existing form', async () => {
-    const writes = setup(toolPathConfiguration('1', { codex: null, copilot: null, herdr: null }));
+    const writes = setup(toolPathConfiguration('1', { codex: null, copilot: null }));
     mount(); await flush();
     expect(screen.getByText('Tool launch paths', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
     const fields = expand();
@@ -62,7 +59,7 @@ describe('Worker tool path configuration fields', () => {
     fireEvent.change(fields.getByRole('textbox', { name: 'Codex' }), { target: { value: '/opt/My Tools/工具/codex' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.toolPaths).toEqual({ codex: { kind: 'path', path: '/opt/My Tools/工具/codex' }, copilot: null, herdr: null });
+    expect(writes[0]!.toolPaths).toEqual({ codex: { kind: 'path', path: '/opt/My Tools/工具/codex' }, copilot: null });
     expect(fields.queryByText('Applied', { selector: '.status-chip' })).not.toBeInTheDocument();
   });
   it('requires an explicit reset for auto and keeps an emptied path invalid until cancelled', async () => {
@@ -82,7 +79,7 @@ describe('Worker tool path configuration fields', () => {
   });
   it('disables path editing when the Worker has not reported the capability', async () => {
     setup(); mount(false); await flush(); const fields = expand();
-    for (const name of ['Codex', 'Copilot', 'Herdr']) expect(fields.getByRole('textbox', { name })).toBeDisabled();
+    for (const name of ['Codex', 'Copilot']) expect(fields.getByRole('textbox', { name })).toBeDisabled();
     expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBeEnabled();
   });
 });

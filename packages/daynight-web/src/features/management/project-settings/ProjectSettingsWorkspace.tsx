@@ -1,3 +1,4 @@
+import { ProjectRepository } from "../project-repository/ProjectRepository";
 import type { BrowserLocation } from "../../../app/navigation";
 import type { TransferNavigationContext } from "../transfer-navigation";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
@@ -19,11 +20,11 @@ import { ProjectOwnership } from "../ProjectOwnership";
 import type { ProjectTransferReceipt } from "../../../api/project-transfer";
 import { usePromptNavigation } from "../AccountPage";
 import { useWorkerPrompt } from "../../worker-prompts/useWorkerPrompt";
-import { WorkerPromptEditor } from "../../worker-prompts/WorkerPromptEditor";
+import { WorkerPromptEditor, type PromptPurpose } from "../../worker-prompts/WorkerPromptEditor";
 import type { ProjectDeletionReceipt } from "../../../api/project-deletion";
 import { ProjectDeletion } from "../ProjectDeletion";
 import { useProjectManagementGuard } from "../ProjectManagementGuard";
-import { GitHubSettings } from "../../github-integration/GitHubSettings";
+import { ProjectGitHubConsumption } from "../../github-integration/ProjectGitHubConsumption";
 import { MembersPanel } from "../MembersPanel";
 import type { ReactNode } from "react";
 
@@ -50,34 +51,40 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
   }, [capture, selected, projectId]);
   const survives = useCallback((url: URL) => { const route = parseAuthRoute(url.pathname, url.search); return route.kind === 'settings' && route.projectId === projectId; }, [projectId]);
   const guard = useProjectManagementGuard();
-  const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange, guard);
-  const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: sectionActive('prompts') });
-  const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, prompt, { survives, visible: sectionActive('prompts'), onContinueEditing: () => select('prompts') });
-  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain]);
+  const retainedSettings = useRef({ settings: false, repository: false });
+  const settingsRetention = useCallback((retain: boolean) => { retainedSettings.current.settings = retain; onSettingsRetentionChange?.(retain || retainedSettings.current.repository); }, [onSettingsRetentionChange]);
+  const repositoryRetention = useCallback((retain: boolean) => { retainedSettings.current.repository = retain; onSettingsRetentionChange?.(retain || retainedSettings.current.settings); }, [onSettingsRetentionChange]);
+  const state = useProjectSettings(projectId, user.id, onRoute, active, settingsRetention, guard);
+  const [purpose, setPurpose] = useState<PromptPurpose>('worker');
+  const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: sectionActive('prompts') && purpose === 'worker' });
+  const reviewer = useWorkerPrompt({ scope: 'project', projectId, purpose: 'reviewer' }, { readEnabled: sectionActive('prompts') && purpose === 'reviewer' });
+  const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, { dirty: (!prompt.unavailable && prompt.dirty) || (!reviewer.unavailable && reviewer.dirty), unavailable: prompt.unavailable && reviewer.unavailable, abandon: () => { prompt.abandon(); reviewer.abandon(); } }, { survives, visible: sectionActive('prompts'), onContinueEditing: () => { if (purpose === 'worker' && !prompt.dirty && reviewer.dirty) setPurpose('reviewer'); if (purpose === 'reviewer' && !reviewer.dirty && prompt.dirty) setPurpose('worker'); select('prompts'); } });
+  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain || reviewer.pending || reviewer.confirmed || reviewer.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain, reviewer.pending, reviewer.confirmed, reviewer.uncertain]);
   const empty = { dirty: false, pending: false, needsAttention: false };
-  const [observed, setObserved] = useState<{ github: ProjectSettingsSectionState; members: ProjectSettingsSectionState; transfer: ProjectSettingsSectionState; delete: ProjectSettingsSectionState }>({ github: empty, members: empty, transfer: empty, delete: empty });
-  const update = useCallback((owner: 'github' | 'members' | 'transfer' | 'delete', value: ProjectSettingsSectionState) => setObserved(previous => {
+  const [observed, setObserved] = useState<{ github: ProjectSettingsSectionState; members: ProjectSettingsSectionState; repository: ProjectSettingsSectionState; transfer: ProjectSettingsSectionState; delete: ProjectSettingsSectionState }>({ github: empty, members: empty, repository: empty, transfer: empty, delete: empty });
+  const update = useCallback((owner: 'github' | 'members' | 'repository' | 'transfer' | 'delete', value: ProjectSettingsSectionState) => setObserved(previous => {
     const old = previous[owner];
     return old.dirty === value.dirty && old.pending === value.pending && old.needsAttention === value.needsAttention ? previous : { ...previous, [owner]: value };
   }), []);
   const githubState = useCallback((value: ProjectSettingsSectionState) => update('github', value), [update]);
   const membersState = useCallback((value: ProjectSettingsSectionState) => update('members', value), [update]);
   const [memberResultHost, setMemberResultHost] = useState<HTMLDivElement | null>(null);
+  const repositoryState = useCallback((value: ProjectSettingsSectionState) => update('repository', value), [update]);
   const transferState = useCallback((value: ProjectSettingsSectionState) => update('transfer', value), [update]);
   const deletionState = useCallback((value: ProjectSettingsSectionState) => update('delete', value), [update]);
   const states: Record<ProjectSettingsTab, ProjectSettingsSectionState> = {
     execution: { dirty: state.dirty, pending: state.summaryPending, needsAttention: state.invalid || state.draftConflict || state.uncertain || state.reconciliation !== null || state.error !== null || state.writeError !== null },
-    prompts: { dirty: prompt.dirty, pending: prompt.pending || prompt.confirmed, needsAttention: prompt.readError !== null || prompt.writeError !== null || prompt.conflict || prompt.uncertain || prompt.invalid || prompt.tooLarge },
+    prompts: { dirty: prompt.dirty || reviewer.dirty, pending: prompt.pending || prompt.confirmed || reviewer.pending || reviewer.confirmed, needsAttention: [prompt, reviewer].some(item => item.readError !== null || item.writeError !== null || item.conflict || item.uncertain || item.invalid || item.tooLarge) },
     github: observed.github,
     members: observed.members,
-    management: { dirty: observed.transfer.dirty || observed.delete.dirty, pending: observed.transfer.pending || observed.delete.pending, needsAttention: observed.transfer.needsAttention || observed.delete.needsAttention },
+    management: { dirty: observed.repository.dirty || observed.transfer.dirty || observed.delete.dirty, pending: observed.repository.pending || observed.transfer.pending || observed.delete.pending, needsAttention: observed.repository.needsAttention || observed.transfer.needsAttention || observed.delete.needsAttention },
   };
   const showUnavailable = state.unavailable && unavailableView !== undefined && !guard.isBlocked("delete");
   return <div ref={promptNavigation.owner} onFocusCapture={promptNavigation.rememberFocus}>
     {showUnavailable ? unavailableView : navigation}
     <div ref={setMemberResultHost} />
     <div hidden={showUnavailable} inert={showUnavailable}>
-    <div className="page-heading project-settings-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? projectId}</h1><p className="subtitle">{m.scopeHint}</p></div></div>
+    <div className="page-heading project-settings-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? projectId}</h1></div></div>
     {state.error !== null && <ManagementError error={state.error} retry={state.retry} />}
     <div className="project-settings-layout"><ProjectSettingsTabs projectId={projectId} selected={selected} states={states} onSelect={select} />
     <div className="project-settings-content">
@@ -85,10 +92,10 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
     <section id={`project-settings-${projectId}-section-execution`} role="region" aria-labelledby={`project-settings-${projectId}-tab-execution`} hidden={selected !== 'execution'} inert={selected !== 'execution'}>
     <ExecutionSettingsSection state={state} guard={guard} />
     </section>
-    <section id={`project-settings-${projectId}-section-prompts`} role="region" aria-labelledby={`project-settings-${projectId}-tab-prompts`} hidden={selected !== 'prompts'} inert={selected !== 'prompts'}><WorkerPromptEditor state={prompt} scope="project" /></section>
-    <section id={`project-settings-${projectId}-section-github`} role="region" aria-labelledby={`project-settings-${projectId}-tab-github`} hidden={selected !== 'github'} inert={selected !== 'github'}><GitHubSettings projectId={projectId} userId={user.id} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('github')} onRoute={onRoute} guard={guard} onRetentionChange={onGitHubRetentionChange} onStateChange={githubState} presentationGeneration={generations.current.github} /></section>
-    <section id={`project-settings-${projectId}-section-members`} role="region" aria-labelledby={`project-settings-${projectId}-tab-members`} hidden={selected !== 'members'} inert={selected !== 'members'}><MembersPanel projectId={projectId} user={user} projectName={state.project?.name ?? null} active={sectionActive('members')} onRoute={onRoute} onGuardChange={onMemberRetentionChange} onStateChange={membersState} resultHost={memberResultHost} presentationGeneration={generations.current.members} onRemoved={onMemberRemoved ?? (() => {})} onUnavailable={onMemberUnavailable} onMembershipChange={onMembershipChange} /></section>
-    <section id={`project-settings-${projectId}-section-management`} role="region" aria-labelledby={`project-settings-${projectId}-tab-management`} hidden={selected !== 'management'} inert={selected !== 'management'}><ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} onStateChange={transferState} presentationGeneration={generations.current.management} />
+    <section id={`project-settings-${projectId}-section-prompts`} role="region" aria-labelledby={`project-settings-${projectId}-tab-prompts`} hidden={selected !== 'prompts'} inert={selected !== 'prompts'}><WorkerPromptEditor state={purpose === 'worker' ? prompt : reviewer} scope="project" purpose={purpose} onPurposeChange={setPurpose} /></section>
+    <section id={`project-settings-${projectId}-section-github`} role="region" aria-labelledby={`project-settings-${projectId}-tab-github`} hidden={selected !== 'github'} inert={selected !== 'github'}><ProjectGitHubConsumption projectId={projectId} userId={user.id} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('github')} onRoute={onRoute} guard={guard} onRetentionChange={onGitHubRetentionChange} onStateChange={githubState} presentationGeneration={generations.current.github} /></section>
+    <section id={`project-settings-${projectId}-section-members`} role="region" aria-labelledby={`project-settings-${projectId}-tab-members`} hidden={selected !== 'members'} inert={selected !== 'members'}><MembersPanel projectId={projectId} user={user} active={sectionActive('members') && !showUnavailable} onRoute={onRoute} onGuardChange={onMemberRetentionChange} onStateChange={membersState} resultHost={memberResultHost} presentationGeneration={generations.current.members} onRemoved={onMemberRemoved ?? (() => {})} onUnavailable={onMemberUnavailable} onMembershipChange={onMembershipChange} /></section>
+    <section id={`project-settings-${projectId}-section-management`} role="region" aria-labelledby={`project-settings-${projectId}-tab-management`} hidden={selected !== 'management'} inert={selected !== 'management'}><ProjectRepository projectId={projectId} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} guard={guard} onRetentionChange={repositoryRetention} onStateChange={repositoryState} /><ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} onStateChange={transferState} presentationGeneration={generations.current.management} />
     <ProjectDeletion projectId={projectId} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onDeletionRetentionChange} guard={guard} onDeleted={onDeleted} onOutcome={onDeletionOutcome} onStateChange={deletionState} presentationGeneration={generations.current.management} /></section>
     </div></div>
     </div>

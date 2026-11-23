@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -294,6 +295,9 @@ func (s *Service) deliveryViewInSnapshot(ctx context.Context, sc store.WebhookRe
 	if err != nil {
 		return nil, notFound(err)
 	}
+	if err = requireScope(ctx, sc, p, scopepolicy.WebhookRead); err != nil {
+		return nil, err
+	}
 	v, _, err := s.makeDeliveryView(ctx, sc, h, p, d, manage)
 	return v, err
 }
@@ -327,6 +331,9 @@ func (s *Service) Payload(ctx context.Context, p model.Principal, o Owner, endpo
 		if !full {
 			return fault("forbidden", "Access to this payload is denied.")
 		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookRead); e != nil {
+			return e
+		}
 		now, e := sc.ObservedAt(ctx)
 		if e != nil {
 			return e
@@ -348,6 +355,9 @@ func (s *Service) ListDeliveries(ctx context.Context, p model.Principal, o Owner
 	err := s.DB.ReadWebhookSnapshot(ctx, func(sc store.WebhookReadScope) error {
 		manage, e := historyEndpoint(ctx, sc, p, o, endpoint)
 		if e != nil {
+			return e
+		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookRead); e != nil {
 			return e
 		}
 		h, e := historyReader(sc)
@@ -493,6 +503,9 @@ func (s *Service) ListAttempts(ctx context.Context, p model.Principal, o Owner, 
 		}
 		_, full, _, e := historySources(ctx, sc, h, p, d)
 		if e != nil {
+			return e
+		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookRead); e != nil {
 			return e
 		}
 		filter := ""

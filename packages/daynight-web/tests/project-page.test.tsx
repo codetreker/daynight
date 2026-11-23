@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { browserNavigation } from "../src/app/navigation";
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
@@ -30,16 +31,27 @@ vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof 
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
 vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
-vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: {
-  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void; pagination?: PaginationState;
+vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onOpenChainUsage, onCloseChain, onOpenTask, onOpenSession, pagination }: {
+  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onOpenChainUsage: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void; pagination?: PaginationState;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
   <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
+  <button onClick={event => onOpenChainUsage(root, event.currentTarget)}>用量 {root}</button>
   {openGraphTarget?.kind === 'chain' && openGraphTarget.rootId === root && <div role="dialog" className="task-chain-dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}{pagination !== undefined && <ListPagination label="任务链列表" {...pagination} />}</div> }));
+const usagePanelLifecycle = vi.hoisted(() => ({ mounted: vi.fn(), cancelled: vi.fn() }));
+vi.mock("../src/features/usage-aggregate/UsageAggregatePanel", () => ({
+  UsageAggregatePanel: ({ scopeId, onOpenTask }: { scopeId: string; onOpenTask: (id: string, trigger: HTMLElement) => void }) => {
+    useEffect(() => { usagePanelLifecycle.mounted(scopeId); return () => { usagePanelLifecycle.cancelled(scopeId); }; }, [scopeId]);
+    return <div data-testid="usage-panel">{scopeId}<button onClick={event => onOpenTask(B, event.currentTarget)}>打开未完整成员</button></div>;
+  },
+  UsageAggregateDisclosure: () => null,
+}));
+vi.mock("../src/features/task-graph/GoalGraphDialog", () => ({ GoalGraphDialog: ({ goalId, onClose, onOpenTask, onRootChange }: { goalId: string; onClose: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onRootChange?: (element: HTMLElement | null) => void }) =>
+  <div ref={onRootChange} className="task-chain-dialog" role="dialog" data-testid={`goal-graph-${goalId}`}><button onClick={onClose}>关闭整体图</button><button onClick={event => onOpenTask(goalId, event.currentTarget)}>打开整体图详情</button></div> }));
 vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, navigation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
   projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; navigation: { tab: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
@@ -78,6 +90,10 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
       done: tasks.filter((task) => task.status === "done").length, cancelled: 0, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
   };
+};
+const goalGraph = (id = A): TaskGraph => {
+  const value = graph([{ id, title: '链接 Goal', status: 'todo', dependsOn: [] }]);
+  return { ...value, tasks: value.tasks.map(task => ({ ...task, type: 'goal' as const })) };
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -139,6 +155,406 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it('restarts chain usage only after the new history snapshot and keeps the selected member when the anchor disappears', async () => {
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    usagePanelLifecycle.mounted.mockClear(); usagePanelLifecycle.cancelled.mockClear();
+    const initial = graph(); graphRequest.mockResolvedValue(initial);
+    const root = document.createElement('div'); root.id = 'root'; document.body.appendChild(root);
+    try {
+      const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope }, container: root, baseElement: document.body });
+      await waitForGraph(); selectTasks();
+      fireEvent.click(await screen.findByRole('button', { name: `用量 ${A}` }));
+      expect(await screen.findByTestId('usage-panel')).toHaveTextContent(A);
+      fireEvent.click(screen.getByRole('button', { name: '打开未完整成员' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(B);
+      const next = deferred<TaskGraph>(); graphRequest.mockReturnValue(next.promise);
+      const requestCount = graphRequest.mock.calls.length;
+      act(() => { for (const listener of listeners) listener({ projectId, historyChanged: true }); });
+      expect(screen.queryByTestId('usage-panel')).toBeNull();
+      expect(screen.getByText('正在确认任务链…')).toBeVisible();
+      expect(usagePanelLifecycle.cancelled).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(graphRequest.mock.calls.length).toBeGreaterThan(requestCount));
+      await act(async () => next.reject(new ApiError('network')));
+      expect(await screen.findByText('无法确认任务链，请重试。')).toBeVisible();
+      expect(screen.queryByTestId('usage-panel')).toBeNull();
+      const retried = deferred<TaskGraph>(); graphRequest.mockReturnValue(retried.promise);
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '重试' }));
+      await act(async () => retried.resolve(graph()));
+      await waitFor(() => expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId('usage-panel')).toHaveTextContent(A);
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      const withoutAnchor = graph([{ id: B, title: '后续任务', status: 'todo', dependsOn: [] }, ...seeds.slice(2)]);
+      graphRequest.mockResolvedValue(resetSnapshot(withoutAnchor));
+      fireEvent.click(detail().getByRole('button', { name: '刷新全图' }));
+      expect(await screen.findByText('此用量范围已不可用。')).toBeVisible();
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(2);
+      view.unmount();
+    } finally { scope.dispose(); root.remove(); }
+  });
+
+  it('opens a linked empty Goal only after the authoritative snapshot, keeps its URL, and removes it on close', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}#chain=${B}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+    await act(async () => pending.resolve(goalGraph()));
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(location.hash).toBe(''); expect(history.length).toBe(length);
+    expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭整体图' }));
+    expect(location.search).toBe('?tab=tasks');
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+  });
+
+  it.each([`goalGraph=${A}`, `tab=tasks&goalGraph=bad`, `tab=tasks&goalGraph=${A}&chain=${B}`])('rejects the original malformed Goal address %s without waiting for data', async query => {
+    history.replaceState(null, '', `/projects/${projectId}?${query}#chain=${B}`);
+    graphRequest.mockReturnValue(deferred<TaskGraph>().promise);
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(new URLSearchParams(location.search).has('goalGraph')).toBe(false);
+    expect(new URLSearchParams(location.search).has('chain')).toBe(false);
+    expect(location.hash).toBe('');
+  });
+
+  it.each([A, X])('rejects a Task or absent Goal ID %s only after the complete snapshot', async id => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${id}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    expect(location.search).toContain(`goalGraph=${id}`);
+    await act(async () => pending.resolve(graph()));
+    expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(location.search).toBe('?tab=tasks');
+    expect(screen.queryByTestId(`goal-graph-${id}`)).toBeNull();
+  });
+
+  it('keeps a valid Goal address on an initial failure and opens it after retry', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(goalGraph());
+    render(<ProjectPage projectId={projectId} />);
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+  });
+
+  it('opens a Goal hidden by pagination without moving the list page', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    const items = [A, ...Array.from({ length: 22 }, (_, i) => `30000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`)];
+    const value = graph(items.map(id => ({ id, title: `Goal ${id}`, status: 'todo' as const, dependsOn: [] })));
+    graphRequest.mockResolvedValue({ ...value, tasks: value.tasks.map(task => ({ ...task, type: 'goal' as const, createdAt: task.id === A ? '2026-10-19T12:00:00Z' : time })) });
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(document.getElementById(`project-goal-graph-${A}`)).toBeNull();
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+  });
+
+  it('does not admit a cached Goal until the new authoritative project snapshot confirms it', async () => {
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(goalGraph()).mockReturnValueOnce(pending.promise);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText('链接 Goal')).toBeVisible();
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        await act(async () => pending.resolve(resetSnapshot(graph([]))));
+        expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+        expect(location.search).toBe('?tab=tasks');
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('admits only the latest Goal URL when a cached background precedes a delayed snapshot', async () => {
+    const items = [A, B].map(id => ({ id, title: `Cached Goal ${id}`, status: 'todo' as const, dependsOn: [] }));
+    const original = graph(items);
+    const goals = { ...original, tasks: original.tasks.map(task => ({ ...task, type: 'goal' as const })) };
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(goals).mockReturnValueOnce(pending.promise);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText(`Cached Goal ${A}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        act(() => browserNavigation().navigate(`/projects/${projectId}?tab=tasks&goalGraph=${B}`));
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+        await act(async () => pending.resolve(goals));
+        expect(await screen.findByTestId(`goal-graph-${B}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('does not use a Goal cached in another project to admit the current project URL', async () => {
+    history.replaceState(null, '', `/projects/${otherProject}`);
+    const foreign = goalGraph();
+    graphRequest.mockResolvedValueOnce({ ...foreign, project: graph([], otherProject).project }).mockResolvedValueOnce(graph([]));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={otherProject} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+        expect(location.search).toBe('?tab=tasks');
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('does not open a pending linked Goal after leaving the project task section', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole('tab', { name: '标签' }));
+    expect(location.search).toBe('?tab=tags');
+    await act(async () => pending.resolve(goalGraph()));
+    await waitForGraph();
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+  });
+
+  it('retires a nested draft and removes the link when a confirmed refresh deletes its Goal', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      graphRequest.mockResolvedValue(resetSnapshot(graph([])));
+      fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+      await waitFor(() => expect(location.search).toBe('?tab=tasks'));
+      expect(discard).toHaveBeenCalledOnce();
+      expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      expect(screen.queryByTestId('selected-task')).toBeNull();
+      expect(browserNavigation().decision()).toBeNull();
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('keeps linked Goal details and drafts on a normal refresh in the same history', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
+      expect(discard).not.toHaveBeenCalled();
+      expect(screen.getByTestId(`goal-graph-${A}`)).toBeVisible();
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(A);
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it.each(['indexed', 'native'] as const)('does not rewrite a different %s entry with the same Goal URL during revocation', async kind => {
+    const url = `/projects/${projectId}?tab=tasks&goalGraph=${A}`;
+    history.replaceState(null, '', url);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      const target = kind === 'indexed' ? history.state : { nativeMarker: 'target' };
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      act(() => {
+        history.replaceState(target, '', url);
+        dispatchEvent(new PopStateEvent('popstate', { state: target }));
+        if (kind === 'indexed') expect(browserNavigation().decision()).not.toBeNull();
+        scope.suspendProject(projectId);
+      });
+      expect(discard).toHaveBeenCalledOnce();
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+      if (kind === 'indexed') expect(history.state.__daynightNavigation.entryId).toBe(target.__daynightNavigation.entryId);
+      else expect(history.state).toEqual({ nativeMarker: 'target' });
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+  it.each([["overview", "概览"], ["tasks", "任务列表"], ["prs", "PR 列表"], ["tags", "标签"]] as const)(
+    "opens %s directly despite a conflicting preference and does not save it", async (tab, label) => {
+      history.replaceState(null, "", `/projects/${projectId}?tab=${tab}`);
+      localStorage.setItem(`daynight:project-section:${projectId}`, JSON.stringify(tab === "tags" ? "overview" : "tags"));
+      graphRequest.mockResolvedValue(graph());
+      render(<ProjectPage projectId={projectId} />);
+      expect(sectionTabs().getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true");
+      expect(sectionTabs().getByRole("tab", { name: label })).toHaveAttribute("href", `/projects/${projectId}?tab=${tab}`);
+      expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBe(JSON.stringify(tab === "tags" ? "overview" : "tags"));
+      expect(location.search).toBe(`?tab=${tab}`);
+      await waitForGraph();
+    },
+  );
+
+  it("normalizes a bare entry from preference without adding an entry or replacing the project panels", async () => {
+    localStorage.setItem(`daynight:project-section:${projectId}`, JSON.stringify("tasks"));
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(sectionTabs().getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(location.search).toBe("?tab=tasks"); expect(history.length).toBe(length);
+    await findListButton("已完成根");
+    const panel = document.getElementById("project-section-panel-tasks");
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
+    expect(location.search).toBe("?tab=overview");
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "任务列表" }));
+    expect(location.search).toBe("?tab=tasks");
+    expect(document.getElementById("project-section-panel-tasks")).toBe(panel);
+  });
+
+  it("consumes a pending multi-member chain fragment by replacing the URL and selecting tasks", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?other=retained&tab=prs#chain=${A}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
+    expect(location.search).toBe("?other=retained&tab=tasks");
+    expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    expect(sectionTabs().getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBeNull();
+  });
+
+  it("consumes a chain query through the current component and does not replay a competing fragment", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?other=retained&tab=tasks&chain=${B}#chain=${C}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    const view = render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
+    expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
+    expect(location.search).toBe("?other=retained&tab=tasks");
+    expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    fireEvent.click(chainDialog().getByRole('button', { name: '关闭依赖图' }));
+    view.rerender(<ProjectPage projectId={projectId} />);
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it.each([`chain=${X}`, 'chain=bad', `chain=${A}&chain=${B}`])("consumes an unavailable or invalid chain query %s", async query => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&other=retained&${query}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText("对应的任务分组已不可见，请从任务列表选择任务。")).toBeVisible();
+    expect(location.search).toBe('?tab=tasks&other=retained'); expect(history.length).toBe(length);
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("discards a chain query when the user changes section while the index is pending", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&chain=${A}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "标签" }));
+    expect(location.search).toBe('?tab=tags');
+    await act(async () => { pending.resolve(graph()); });
+    await waitForGraph();
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("opens the task when the query witness has become a singleton", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&chain=${A}`);
+    graphRequest.mockResolvedValue(graph([seeds[0]!]));
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+    expect(location.search).toBe('?tab=tasks');
+  });
+
+  it("consumes an invalid fragment without changing the selected section", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#task=${X}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText("对应的任务分组已不可见，请从任务列表选择任务。")).toBeVisible();
+    expect(location.search).toBe("?tab=prs"); expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    expect(sectionTabs().getByRole("tab", { name: "PR 列表" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("discards a pending fragment when the user changes section before the index is ready", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#chain=${A}`);
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "标签" }));
+    expect(location.search).toBe("?tab=tags"); expect(location.hash).toBe("");
+    await act(async () => { pending.resolve(graph()); });
+    await waitFor(() => expect(sectionTabs().getByRole("tab", { name: "标签" })).toHaveAttribute("aria-selected", "true"));
+    expect(location.search).toBe("?tab=tags"); expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("does not repeat a cancelled fragment decision on the same location after rerender", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs`);
+    graphRequest.mockResolvedValue(graph());
+    const view = render(<ProjectPage projectId={projectId} />);
+    await waitForGraph();
+    const navigation = browserNavigation(), discard = vi.fn();
+    const release = navigation.register({ scope: { identity: {}, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+    act(() => { history.pushState({ foreign: true }, '', `/projects/${projectId}?tab=prs#chain=${A}`); dispatchEvent(new PopStateEvent('popstate')); });
+    await waitFor(() => expect(navigation.decision()).not.toBeNull());
+    act(() => navigation.cancel());
+    view.rerender(<ProjectPage projectId={projectId} />);
+    expect(navigation.decision()).toBeNull();
+    expect(location.search).toBe('?tab=prs'); expect(location.hash).toBe(`#chain=${A}`);
+    expect(discard).not.toHaveBeenCalled();
+    release();
+  });
+
+  it("waits for another pending navigation decision before consuming the fragment", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#chain=${A}`);
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    const navigation = browserNavigation(), discard = vi.fn(), unrelated = vi.fn();
+    const release = navigation.register({ scope: { identity: {}, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+    act(() => navigation.requestAction(unrelated));
+    const decision = navigation.decision();
+    await act(async () => { pending.resolve(graph()); });
+    expect(navigation.decision()).toBe(decision); expect(location.hash).toBe(`#chain=${A}`);
+    act(() => navigation.cancel());
+    await waitFor(() => expect(navigation.decision()).not.toBeNull());
+    expect(navigation.decision()).not.toBe(decision);
+    expect(unrelated).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled();
+    act(() => navigation.cancel()); release();
+  });
+
   it("keeps the current page when a background snapshot changes the page count", async () => {
     const makeSeeds = (count: number): Seed[] => Array.from({ length: count }, (_, i) => ({ id: `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`, title: `Task ${i + 1}`, status: "todo", dependsOn: [] }));
     graphRequest.mockResolvedValueOnce(graph(makeSeeds(21))).mockResolvedValue(graph(makeSeeds(41)));
@@ -169,7 +585,7 @@ describe("project dashboard", () => {
     await findListButton("另一任务链");
     const chainCount = () => document.querySelector("#project-task-tab-chains .graph-count-pill");
     expect(chainCount()).toHaveTextContent(/^2$/);
-    const filter = screen.getByText("标签筛选", { selector: "summary" });
+    const filter = screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!;
     expect(filter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     fireEvent.click(filter);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
@@ -181,7 +597,9 @@ describe("project dashboard", () => {
     fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => expect(searchTasks).toHaveBeenCalledWith(projectId, "query", expect.objectContaining({ type: "task", tagIds: [E], tagMatch: "all" }), null, expect.anything(), expect.anything(), expect.anything()));
     expect(chainCount()).toHaveTextContent(/^2$/);
-    const searchFilter = screen.getByText("标签筛选 (1)", { selector: "summary" });
+    const searchFilter = document.querySelector(".task-search-filters .tag-filter > summary")!;
+    expect(searchFilter).toHaveTextContent("标签筛选");
+    expect(searchFilter.querySelector(".select-trigger__count")).toHaveTextContent("1");
     expect(searchFilter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     expect(document.querySelectorAll(".tag-filter")).toHaveLength(1);
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
@@ -209,15 +627,15 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
-      fireEvent.change(screen.getByRole("combobox", { name: "状态" }), { target: { value: "todo" } });
+      selectStatus('todo');
       expect(chainList().queryByRole("button", { name: "已完成根" })).toBeNull();
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
       fireEvent.click(within(document.getElementById("project-overview-progress")!).getByRole("button", { name: /已完成根.*前往任务列表/ }));
       await waitFor(() => expect(listButton("已完成根")).toHaveFocus());
       expect(screen.queryByRole("button", { name: "移除 后端" })).toBeNull();
-      expect(screen.getByRole("combobox", { name: "状态" })).toHaveValue("todo");
+      expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
       expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", expect.stringContaining(C));
     } finally { HTMLElement.prototype.scrollIntoView = scroll; }
   });
@@ -241,14 +659,14 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
-      fireEvent.change(screen.getByRole("combobox", { name: "状态" }), { target: { value: "todo" } });
+      selectStatus('todo');
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
       fireEvent.click(within(document.getElementById("project-overview-progress")!).getByRole("button", { name: /已完成根.*前往任务列表/ }));
       await waitFor(() => expect(listButton("已完成根")).toHaveFocus());
       expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
-      expect(screen.getByRole("combobox", { name: "状态" })).toHaveValue("todo");
+      expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
 
       missing = true;
       vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: F, nextCursor: null });
@@ -278,7 +696,7 @@ describe("project dashboard", () => {
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
     await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
     fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -307,7 +725,7 @@ describe("project dashboard", () => {
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
     await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
     fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -344,7 +762,7 @@ describe("project dashboard", () => {
     const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
     try {
       selectTasks(); await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -395,7 +813,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("Chain 1");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -430,7 +848,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("Chain 21");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       const chainPagination = () => within(screen.getByRole("navigation", { name: "任务链列表分页" }));
       fireEvent.click(chainPagination().getByRole("button", { name: "下一页" }));
@@ -457,7 +875,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockImplementationOnce(async () => { missing = true; throw new ApiError("server", 400, "invalid_tag_filter"); })
       .mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
     render(<ProjectPage projectId={projectId} />); selectTasks(); await findListButton("另一任务链");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "已删除" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "保留" }));
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
@@ -530,8 +948,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("另一任务链");
-    const ordinaryStatus = screen.getByLabelText("状态");
-    fireEvent.change(ordinaryStatus, { target: { value: "todo" } });
+    selectStatus('todo');
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     await user.type(input, "缓存{Enter}");
     await screen.findByRole("button", { name: "打开任务：搜索命中" });
@@ -548,7 +965,7 @@ describe("project dashboard", () => {
     expect(document.querySelector(".task-search-results")).toBeNull();
     expect(document.querySelector(".task-search-filters")).toBeNull();
     expect(taskTabs().getByRole("tab", { name: "任务链" })).toBeVisible();
-    expect(screen.getByLabelText("状态")).toHaveValue("todo");
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     expect(listButton("另一任务链")).toBeTruthy();
     await act(async () => { pending.resolve({ projectId, total: 1, items: [{ ...hit, title: "迟到结果" }], nextCursor: null }); });
     expect(screen.queryByRole("button", { name: "打开任务：迟到结果" })).toBeNull();
@@ -637,7 +1054,7 @@ describe("project dashboard", () => {
     expect(detail().getByTestId('selected-task')).toHaveTextContent(A);
     expect(detail().getByTestId('detail-tab')).toHaveTextContent('session');
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
-    expect(window.location.search).toBe('');
+    expect(window.location.search).toBe('?tab=tasks');
     fireEvent.click(detail().getByRole('button', { name: '关闭详情' }));
     await waitFor(() => expect(screen.queryByLabelText('详情测试外壳')).toBeNull());
     expect(shortcut).toHaveFocus();
@@ -646,7 +1063,7 @@ describe("project dashboard", () => {
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   beforeEach(() => { rememberRoot(A); });
 
-  it("loads a complete graph into six accurate unique-task statistics and opens a chain only on request", async () => {
+  it("loads a complete graph into seven accurate task statistics and opens a chain only on request", async () => {
     window.localStorage.clear();
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(pending.promise);
@@ -655,9 +1072,10 @@ describe("project dashboard", () => {
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy(); await waitForGraph();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
-    expect(screen.getByText("完成比例 25%")).toBeTruthy();
-    expect(screen.getAllByText("待处理的子集")).toHaveLength(2);
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "0", "3", "0", "2", "1"]);
+    const cards = document.querySelectorAll(".stats .stat");
+    expect(cards).toHaveLength(7);
+    for (const card of cards) expect([...card.children].map(child => child.className)).toEqual(["stat-label", "stat-number"]);
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(screen.getByText("git@github.com:example/project.git")).toBeTruthy();
     expect(screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime")).not.toBe(time);
@@ -826,8 +1244,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await waitFor(() => expect(number("任务总数")).toBe("0"));
     expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
-    expect(screen.getByText("完成比例 0%")).toBeTruthy();
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0", "0"]);
   });
 
   it.each([

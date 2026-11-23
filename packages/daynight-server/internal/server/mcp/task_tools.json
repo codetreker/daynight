@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies. Supply tagIds as the complete Project tag UUID set.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or ordinary Task dependencies; it starts without acceptance relationships, which can be edited separately. Supply tagIds as the complete Project tag UUID set. Ordinary parentTaskId creates a child of an existing visible unfinished Task; ordinary parent links are immutable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -13,7 +13,8 @@
           "type": "string"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Brief Task or Goal overview of the work, expected outcome and necessary scope, with material references. Put detailed material in attachments. A simple task fully explained in a few sentences needs no attachment."
         },
         "assignedTo": {
           "type": [
@@ -55,9 +56,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         },
         "status": {
           "type": "string",
@@ -91,6 +93,18 @@
             "format": "uuid"
           },
           "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "parentTaskId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Existing visible unfinished ordinary Parent Task in this Project; mutually exclusive with a non-null Goal parentId."
         }
       },
       "required": [
@@ -131,8 +145,17 @@
               }
             },
             "not": {
-              "required": [
-                "requiredPlatform"
+              "anyOf": [
+                {
+                  "required": [
+                    "requiredPlatform"
+                  ]
+                },
+                {
+                  "required": [
+                    "parentTaskId"
+                  ]
+                }
               ]
             }
           },
@@ -158,6 +181,20 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "parentTaskId"
+            ]
+          },
+          "then": {
+            "properties": {
+              "parentId": {
+                "type": "null"
+              }
+            }
+          }
         }
       ]
     },
@@ -165,116 +202,6 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "version": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,18}$"
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": [
-            "tags"
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
@@ -297,6 +224,13 @@
             "full"
           ],
           "default": "summary"
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -309,1070 +243,11 @@
       "readOnlyHint": true,
       "destructiveHint": false,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "projectId": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "status": {
-                  "enum": [
-                    "proposed",
-                    "todo",
-                    "in_progress",
-                    "done",
-                    "cancelled"
-                  ]
-                },
-                "version": {
-                  "type": "string",
-                  "pattern": "^[1-9][0-9]{0,18}$"
-                },
-                "ready": {
-                  "type": "boolean"
-                },
-                "requiredPlatform": {
-                  "enum": [
-                    "macos",
-                    "linux",
-                    "windows",
-                    null
-                  ]
-                },
-                "assignedTo": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "uuid"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "allowAgents": {
-                  "type": "boolean"
-                },
-                "session": {
-                  "type": "object",
-                  "properties": {
-                    "schemaVersion": {
-                      "const": 1
-                    },
-                    "observation": {
-                      "enum": [
-                        "observed",
-                        "unavailable",
-                        "unsupported"
-                      ]
-                    },
-                    "registration": {
-                      "enum": [
-                        "registered",
-                        "not_registered",
-                        "not_applicable",
-                        "unknown"
-                      ]
-                    },
-                    "sessionId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "uuid"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "nativeSessionId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "claimId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "uuid"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "executionGeneration": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "connectionEpoch": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agentControlMode": {
-                      "enum": [
-                        "web",
-                        "herdr",
-                        null
-                      ]
-                    },
-                    "contentKind": {
-                      "enum": [
-                        "native_timeline",
-                        "terminal_recording",
-                        null
-                      ]
-                    },
-                    "provider": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "indicator": {
-                      "enum": [
-                        "working",
-                        "notice",
-                        "warning",
-                        null
-                      ]
-                    },
-                    "reason": {
-                      "type": "string"
-                    },
-                    "activity": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "connectionState": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lifecycle": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "currentTurnId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "needsAttention": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "send": {
-                      "type": "object",
-                      "properties": {
-                        "allowed": {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "mode": {
-                          "enum": [
-                            "start",
-                            "steer",
-                            null
-                          ]
-                        },
-                        "reason": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "allowed",
-                        "mode",
-                        "reason"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "observedAt": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lastSeenAt": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "freshUntil": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "error": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string"
-                            },
-                            "message": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "schemaVersion",
-                    "observation",
-                    "registration",
-                    "sessionId",
-                    "nativeSessionId",
-                    "claimId",
-                    "executionGeneration",
-                    "connectionEpoch",
-                    "agentControlMode",
-                    "contentKind",
-                    "provider",
-                    "indicator",
-                    "reason",
-                    "activity",
-                    "connectionState",
-                    "lifecycle",
-                    "currentTurnId",
-                    "needsAttention",
-                    "send",
-                    "observedAt",
-                    "lastSeenAt",
-                    "freshUntil",
-                    "error"
-                  ],
-                  "additionalProperties": false
-                },
-                "projection": {
-                  "const": "summary"
-                },
-                "titlePreview": {
-                  "type": "string"
-                },
-                "titleTruncated": {
-                  "type": "boolean"
-                },
-                "blockedByCount": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "task",
-                    "goal"
-                  ]
-                },
-                "parentId": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "uuid"
-                },
-                "tags": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "format": "uuid"
-                      },
-                      "name": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "name"
-                    ],
-                    "additionalProperties": false
-                  }
-                }
-              },
-              "required": [
-                "id",
-                "projectId",
-                "status",
-                "version",
-                "ready",
-                "requiredPlatform",
-                "assignedTo",
-                "allowAgents",
-                "session",
-                "projection",
-                "titlePreview",
-                "titleTruncated",
-                "blockedByCount",
-                "type",
-                "parentId",
-                "tags"
-              ],
-              "additionalProperties": false,
-              "allOf": [
-                {
-                  "if": {
-                    "properties": {
-                      "type": {
-                        "const": "goal"
-                      }
-                    }
-                  },
-                  "then": {
-                    "properties": {
-                      "status": {
-                        "enum": [
-                          "todo",
-                          "in_progress",
-                          "done",
-                          "cancelled"
-                        ]
-                      },
-                      "parentId": {
-                        "type": "null"
-                      },
-                      "ready": {
-                        "const": false
-                      },
-                      "allowAgents": {
-                        "const": false
-                      },
-                      "requiredPlatform": {
-                        "type": "null"
-                      },
-                      "blockedByCount": {
-                        "const": 0
-                      }
-                    }
-                  }
-                }
-              ]
-            },
-            {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "projectId": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "status": {
-                  "enum": [
-                    "proposed",
-                    "todo",
-                    "in_progress",
-                    "done",
-                    "cancelled"
-                  ]
-                },
-                "version": {
-                  "type": "string",
-                  "pattern": "^[1-9][0-9]{0,18}$"
-                },
-                "ready": {
-                  "type": "boolean"
-                },
-                "requiredPlatform": {
-                  "enum": [
-                    "macos",
-                    "linux",
-                    "windows",
-                    null
-                  ]
-                },
-                "assignedTo": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "uuid"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "allowAgents": {
-                  "type": "boolean"
-                },
-                "session": {
-                  "type": "object",
-                  "properties": {
-                    "schemaVersion": {
-                      "const": 1
-                    },
-                    "observation": {
-                      "enum": [
-                        "observed",
-                        "unavailable",
-                        "unsupported"
-                      ]
-                    },
-                    "registration": {
-                      "enum": [
-                        "registered",
-                        "not_registered",
-                        "not_applicable",
-                        "unknown"
-                      ]
-                    },
-                    "sessionId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "uuid"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "nativeSessionId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "claimId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "uuid"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "executionGeneration": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "connectionEpoch": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agentControlMode": {
-                      "enum": [
-                        "web",
-                        "herdr",
-                        null
-                      ]
-                    },
-                    "contentKind": {
-                      "enum": [
-                        "native_timeline",
-                        "terminal_recording",
-                        null
-                      ]
-                    },
-                    "provider": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "indicator": {
-                      "enum": [
-                        "working",
-                        "notice",
-                        "warning",
-                        null
-                      ]
-                    },
-                    "reason": {
-                      "type": "string"
-                    },
-                    "activity": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "connectionState": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lifecycle": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "currentTurnId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "needsAttention": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "send": {
-                      "type": "object",
-                      "properties": {
-                        "allowed": {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "mode": {
-                          "enum": [
-                            "start",
-                            "steer",
-                            null
-                          ]
-                        },
-                        "reason": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "allowed",
-                        "mode",
-                        "reason"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "observedAt": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lastSeenAt": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "freshUntil": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "format": "date-time"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "error": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string"
-                            },
-                            "message": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "schemaVersion",
-                    "observation",
-                    "registration",
-                    "sessionId",
-                    "nativeSessionId",
-                    "claimId",
-                    "executionGeneration",
-                    "connectionEpoch",
-                    "agentControlMode",
-                    "contentKind",
-                    "provider",
-                    "indicator",
-                    "reason",
-                    "activity",
-                    "connectionState",
-                    "lifecycle",
-                    "currentTurnId",
-                    "needsAttention",
-                    "send",
-                    "observedAt",
-                    "lastSeenAt",
-                    "freshUntil",
-                    "error"
-                  ],
-                  "additionalProperties": false
-                },
-                "projection": {
-                  "const": "full"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "description": {
-                  "type": "string"
-                },
-                "properties": {
-                  "type": "object"
-                },
-                "createdAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "startedAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "completedAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "cancelledAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "dependsOn": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "format": "uuid"
-                  }
-                },
-                "externalDependsOn": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "format": "uuid"
-                  }
-                },
-                "blockedBy": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "format": "uuid"
-                  }
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "task",
-                    "goal"
-                  ]
-                },
-                "parentId": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "uuid"
-                },
-                "progress": {
-                  "type": "object",
-                  "properties": {
-                    "total": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "done": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "cancelled": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "unfinished": {
-                      "type": "integer",
-                      "minimum": 0
-                    }
-                  },
-                  "required": [
-                    "total",
-                    "done",
-                    "cancelled",
-                    "unfinished"
-                  ],
-                  "additionalProperties": false
-                },
-                "tags": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "format": "uuid"
-                      },
-                      "name": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "name"
-                    ],
-                    "additionalProperties": false
-                  }
-                }
-              },
-              "required": [
-                "id",
-                "projectId",
-                "status",
-                "version",
-                "ready",
-                "requiredPlatform",
-                "assignedTo",
-                "allowAgents",
-                "session",
-                "projection",
-                "title",
-                "description",
-                "properties",
-                "createdAt",
-                "updatedAt",
-                "startedAt",
-                "completedAt",
-                "cancelledAt",
-                "dependsOn",
-                "externalDependsOn",
-                "blockedBy",
-                "type",
-                "parentId",
-                "tags"
-              ],
-              "additionalProperties": false,
-              "allOf": [
-                {
-                  "if": {
-                    "properties": {
-                      "type": {
-                        "const": "goal"
-                      }
-                    }
-                  },
-                  "then": {
-                    "properties": {
-                      "status": {
-                        "enum": [
-                          "todo",
-                          "in_progress",
-                          "done",
-                          "cancelled"
-                        ]
-                      },
-                      "parentId": {
-                        "type": "null"
-                      },
-                      "ready": {
-                        "const": false
-                      },
-                      "allowAgents": {
-                        "const": false
-                      },
-                      "requiredPlatform": {
-                        "type": "null"
-                      },
-                      "dependsOn": {
-                        "maxItems": 0
-                      },
-                      "externalDependsOn": {
-                        "maxItems": 0
-                      },
-                      "blockedBy": {
-                        "maxItems": 0
-                      }
-                    },
-                    "required": [
-                      "progress"
-                    ]
-                  },
-                  "else": {
-                    "not": {
-                      "required": [
-                        "progress"
-                      ]
-                    }
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "observedAt": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "partial": {
-              "type": "boolean"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "requestId",
-            "observedAt",
-            "partial",
-            "refs"
-          ],
-          "additionalProperties": false
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ],
-      "additionalProperties": false
     }
   },
   {
     "name": "task_update",
-    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields. Supply tagIds as the complete Project tag UUID set.",
+    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields. Supply tagIds as the complete Project tag UUID set. Ordinary parent links cannot be added, cleared or moved by an update.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1393,7 +268,8 @@
           "type": "string"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Brief Task or Goal overview of the work, expected outcome and necessary scope, with material references. Put detailed material in attachments. A simple task fully explained in a few sentences needs no attachment."
         },
         "assignedTo": {
           "anyOf": [
@@ -1445,9 +321,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         },
         "parentId": {
           "type": [
@@ -1455,7 +332,7 @@
             "null"
           ],
           "format": "uuid",
-          "description": "Omit to retain, null to clear, or a Goal UUID to assign."
+          "description": "Omit to retain, null to clear, or a Goal UUID to assign to an ordinary root. Existing ordinary child links are immutable."
         },
         "tagIds": {
           "type": "array",
@@ -1464,6 +341,13 @@
             "format": "uuid"
           },
           "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -1523,121 +407,11 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "version": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,18}$"
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": [
-            "tags"
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
     "name": "task_set_status",
-    "description": "Set Task status. For ordinary Tasks, cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim.",
+    "description": "Set Task status. For ordinary Tasks, cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim. cancelDescendants is valid only for ordinary cancelled operations; true confirms atomic cancellation of every visible unfinished descendant.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1671,9 +445,21 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "cancelDescendants": {
+          "type": "boolean",
+          "description": "Explicitly confirm cancellation of visible unfinished descendants. Omission or false cancels only the target. Valid only for an ordinary cancelled operation."
         }
       },
       "required": [
@@ -1696,6 +482,20 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "cancelDescendants"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "cancelled"
+              }
+            }
+          }
         }
       ]
     },
@@ -1703,116 +503,6 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "version": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,18}$"
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": [
-            "tags"
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
@@ -1848,83 +538,6 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object"
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
@@ -1991,83 +604,6 @@
       "readOnlyHint": true,
       "destructiveHint": false,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object"
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
@@ -2098,9 +634,17 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -2115,116 +659,6 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "version": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,18}$"
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": [
-            "tags"
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   },
   {
@@ -2252,9 +686,17 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -2268,116 +710,6 @@
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
-    },
-    "outputSchema": {
-      "type": "object",
-      "properties": {
-        "data": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "version": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,18}$"
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": [
-            "tags"
-          ]
-        },
-        "meta": {
-          "type": "object",
-          "properties": {
-            "requestId": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "requestId"
-          ]
-        },
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            },
-            "writeOutcome": {
-              "enum": [
-                "confirmed",
-                "not_committed",
-                "unknown"
-              ]
-            },
-            "phase": {
-              "type": "string"
-            },
-            "refs": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ]
-        }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "data",
-            "meta"
-          ],
-          "not": {
-            "required": [
-              "error"
-            ]
-          }
-        },
-        {
-          "required": [
-            "error"
-          ],
-          "not": {
-            "required": [
-              "data"
-            ]
-          }
-        }
-      ]
     }
   }
 ]

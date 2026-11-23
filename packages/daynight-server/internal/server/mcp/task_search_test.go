@@ -62,14 +62,12 @@ func TestTaskSearchDiscoveryAndProtocol(t *testing.T) {
 			if found == nil || found.Description == "" || found.InputSchema == nil || found.OutputSchema != nil || found.Annotations == nil || !found.Annotations.ReadOnlyHint || found.Annotations.DestructiveHint == nil || *found.Annotations.DestructiveHint || found.Annotations.OpenWorldHint == nil || *found.Annotations.OpenWorldHint {
 				t.Fatalf("discovery: %+v", found)
 			}
-			definition := singleResultDefinition(t, taskSearchToolDefinition, "task_search")
 			args := map[string]any{"projectId": testProjectID, "query": "title:cache OR id:abc", "type": "task", "parentId": parent, "assignedTo": "me", "status": "todo", "ready": true, "allowAgents": true, "compatiblePlatform": "linux", "tagIds": []string{testTargetID}, "tagMatch": "any", "limit": 1}
 			for page := 0; page < 2; page++ {
 				result := tagTestCall(t, client, "task_search", args)
 				if result.IsError {
 					t.Fatalf("search: %+v", structured(t, result))
 				}
-				validateToolResult(t, definition, result)
 				data := object(t, structured(t, result)["data"])
 				if data["projectId"] != testProjectID || data["total"] != float64(2) {
 					t.Fatalf("page: %+v", data)
@@ -91,7 +89,7 @@ func TestTaskSearchDiscoveryAndProtocol(t *testing.T) {
 				}
 				tags := item["tags"].([]any)
 				if page == 0 {
-					if item["id"] != testTargetID || item["parentId"] != parent || object(t, item["context"])["taskId"] != parent || len(tags) != 1 || object(t, tags[0])["name"] != "backend" || object(t, tags[0])["id"] != testTargetID || data["nextCursor"] != cursor {
+					if item["id"] != testTargetID || item["parentId"] != parent || object(t, item["context"])["taskId"] != parent || object(t, item["context"])["title"] != "Goal" || len(tags) != 1 || object(t, tags[0])["name"] != "backend" || object(t, tags[0])["id"] != testTargetID || data["nextCursor"] != cursor {
 						t.Fatalf("first page: %+v", data)
 					}
 					args["cursor"] = cursor

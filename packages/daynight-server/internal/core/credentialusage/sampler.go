@@ -229,8 +229,9 @@ func (s *Sampler) TakeDue() Batch {
 }
 
 // Complete confirms a batch once. Failures are retained as bounded diagnostics;
-// each candidate has at most three attempts and retries wait at least one second.
-// A newer event received during a failed attempt gets its own attempt budget.
+// known uncommitted candidates have at most three attempts, spaced one second
+// apart. Unknown outcomes are abandoned without replay. A newer event received
+// during a failed attempt gets its own attempt budget.
 func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,6 +279,16 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 		}
 		s.addFault(e, cloneFault(f))
 		e.failNotBefore = now.Add(RetryInterval)
+		if outcome == Unknown {
+			// The old snapshot may already have committed; never schedule it again.
+			e.exhausted = true
+			s.abandoned++
+			if e.pending != nil {
+				e.pending.retryNotBefore = e.failNotBefore
+				e.pending.due = e.failNotBefore
+			}
+			continue
+		}
 		if e.pending == nil {
 			if old.attempts >= MaxAttempts {
 				e.exhausted = true

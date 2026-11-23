@@ -1,18 +1,18 @@
-import { useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react";
+import { BrandMark } from "../../ui/BrandMark";
+import { useLayoutEffect, useRef, type MouseEvent, type RefObject } from "react";
 import { tabbable } from "tabbable";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { navigate, type AuthRoute } from "../router";
 import { useBodyScrollLock } from "../useBodyScrollLock";
 import "../../styles/sidebar.css";
 import { WorkspaceNavigation, type SidebarTeamContext } from "./WorkspaceNavigation";
-
-// Keep the media query identical to sidebar.css so layout and modal ownership change together.
-export const SIDEBAR_NARROW_QUERY = "(max-width: 740px)";
+import type { WorkspaceDrawer } from "./useWorkspaceDrawer";
+export { SIDEBAR_NARROW_QUERY } from "./useWorkspaceDrawer";
 
 type WorkspaceSidebarProps = {
+  readonly drawer: WorkspaceDrawer;
   readonly collapsed: boolean;
   readonly onToggle: () => void;
-  readonly routeKey: string;
   readonly route: AuthRoute;
   readonly team: SidebarTeamContext;
   readonly webhooksAvailable: boolean;
@@ -22,42 +22,35 @@ type WorkspaceSidebarProps = {
   readonly onCreateTeam?: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, route, team, webhooksAvailable, blocked, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ drawer, collapsed, onToggle, route, team, webhooksAvailable, blocked, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
-  const [media] = useState(() => window.matchMedia(SIDEBAR_NARROW_QUERY));
-  const [narrow, setNarrow] = useState(media.matches);
-  const [drawer, setDrawer] = useState<{ readonly route: string } | null>(null);
+  const { narrow, active, openerRef, closeReason, routeChanged } = drawer;
   const sidebar = useRef<HTMLElement>(null);
-  const toggle = useRef<HTMLButtonElement>(null);
-  const restoreFocus = useRef(false);
-  const active = narrow && drawer !== null && drawer.route === routeKey && !blocked;
   const activeRef = useRef(active);
   activeRef.current = active;
+  const callbacks = useRef({ onNavigate, onCreateTeam });
+  callbacks.current = { onNavigate, onCreateTeam };
   const expanded = narrow ? active : !collapsed;
   const toggleLabel = expanded ? m.sidebar.collapse : m.sidebar.expand;
   useBodyScrollLock(active);
 
   useLayoutEffect(() => {
-    const changed = () => {
-      setNarrow(media.matches);
-      setDrawer(null);
-    };
-    media.addEventListener("change", changed);
-    return () => media.removeEventListener("change", changed);
-  }, [media]);
-
-  useLayoutEffect(() => {
-    if (drawer !== null && (!narrow || blocked || drawer.route !== routeKey)) setDrawer(null);
-  }, [drawer, narrow, blocked, routeKey]);
-
-  useLayoutEffect(() => {
     if (!active) {
-      // Restore after DOM mutations so React focus preservation cannot overwrite the destination.
-      if (restoreFocus.current) {
-        restoreFocus.current = false;
-        const opener = toggle.current;
-        if (opener?.isConnected && opener.closest("[inert]") === null) opener.focus({ preventScroll: true });
+      const reason = closeReason.current;
+      closeReason.current = null;
+      if (blocked) return;
+      if (reason === "breakpoint" && sidebar.current?.contains(document.activeElement)) {
+        const target = narrow ? openerRef.current : sidebar.current.querySelector<HTMLButtonElement>(".sidebar-toggle");
+        if (target?.isConnected && target.closest("[inert], [hidden]") === null) target.focus({ preventScroll: true });
       }
+      if (!narrow) return;
+      // The active effect's cleanup has released background inert before focus returns.
+      if (reason === "dismiss" || reason === "create-team") {
+        const opener = openerRef.current;
+        if (opener?.isConnected && opener.closest("[inert], [hidden]") === null) opener.focus({ preventScroll: true });
+      }
+      if (reason === "navigate" || routeChanged) callbacks.current.onNavigate();
+      if (reason === "create-team") callbacks.current.onCreateTeam?.();
       return;
     }
     const background = workspaceRef.current!;
@@ -65,8 +58,8 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, route, team, w
     if (!wasInert) background.setAttribute("inert", "");
     const element = sidebar.current!;
     const focusFirst = () => (tabbable(element)[0] ?? element).focus({ preventScroll: true });
-    focusFirst();
-    const close = () => { restoreFocus.current = true; setDrawer(null); };
+    element.querySelector<HTMLButtonElement>(".sidebar-close")!.focus({ preventScroll: true });
+    const close = () => drawer.close("dismiss");
     const keydown = (event: KeyboardEvent) => {
       if (!activeRef.current || event.defaultPrevented) return;
       if (event.key === "Escape") {
@@ -91,32 +84,31 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, route, team, w
       document.removeEventListener("keydown", keydown);
       document.removeEventListener("focusin", focusin);
       if (!wasInert) background.removeAttribute("inert");
-
     };
-  }, [active, workspaceRef]);
+  }, [active, blocked, narrow, routeChanged, workspaceRef, closeReason, openerRef]);
 
-  const closeDrawer = () => { restoreFocus.current = true; setDrawer(null); };
+  const closeDrawer = () => drawer.close("dismiss");
+  const completeNavigation = () => { if (active) drawer.close("navigate"); else onNavigate(); };
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.currentTarget.target !== "" && event.currentTarget.target !== "_self") return;
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    setDrawer(null);
-    navigate(event.currentTarget.pathname + event.currentTarget.search);
-    onNavigate();
+    completeNavigation();
+    navigate(event.currentTarget.pathname + event.currentTarget.search + event.currentTarget.hash);
   };
   return <>
     {active && <button className="sidebar-backdrop" type="button" tabIndex={-1} aria-label={m.sidebar.close} onClick={closeDrawer} />}
-    <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
+    <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} hidden={narrow && !active} inert={narrow && !active} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
       <div className="sidebar-main">
-        <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
-        <WorkspaceNavigation route={route} team={team} expanded={expanded} webhooksAvailable={webhooksAvailable} follow={follow} onNavigate={onNavigate} {...(onCreateTeam ? { onCreateTeam: () => { if (narrow) toggle.current?.focus(); setDrawer(null); onCreateTeam(); } } : {})} />
+        <div className="sidebar-header">
+        <button className="sidebar-close" hidden={!narrow} type="button" aria-label={m.sidebar.close} title={m.sidebar.close} onClick={closeDrawer}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+        <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><BrandMark className="brand-mark" surface="dark" /><span className="brand-name">daynight</span></a>
+        </div>
+        <WorkspaceNavigation route={route} team={team} expanded={expanded} webhooksAvailable={webhooksAvailable} follow={follow} onNavigate={completeNavigation} {...(onCreateTeam ? { onCreateTeam: () => { if (active) drawer.close("create-team"); else onCreateTeam(); } } : {})} />
       </div>
-      <div className="sidebar-bottom">
-        <button ref={toggle} className="sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-expanded={expanded} aria-label={toggleLabel} title={toggleLabel} onClick={() => {
-          if (!narrow) onToggle();
-          else if (active) closeDrawer();
-          else if (!blocked) setDrawer({ route: routeKey });
-        }}><span aria-hidden="true">{expanded ? "‹" : "›"}</span><span className="collapse-label">{toggleLabel}</span></button>
-      </div>
+      {!narrow && <div className="sidebar-bottom">
+        <button className="sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-expanded={expanded} aria-label={toggleLabel} title={toggleLabel} onClick={onToggle}><span aria-hidden="true">{expanded ? "‹" : "›"}</span><span className="collapse-label">{toggleLabel}</span></button>
+      </div>}
     </aside>
   </>;
 };

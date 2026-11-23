@@ -50,6 +50,9 @@ func (s *Execution) prepareUploadIdentityWithFirst(ctx context.Context, p model.
 		if !write {
 			return denied()
 		}
+		if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
+		}
 		if remote {
 			if e := s.admitImageRate(ctx, tx, p.UserID, "prepare"); e != nil {
 				return e
@@ -208,7 +211,9 @@ func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, t
 		if e != nil {
 			return out, e
 		}
-		err = s.cleanupUploadStorage(ctx, project, id, uploadID, access, func(ctx context.Context) error {
+		gateCtx, cancelGate := filestorage.GateContext(ctx, gate)
+		defer cancelGate()
+		err = s.cleanupUploadStorage(gateCtx, project, id, uploadID, access, func(ctx context.Context) error {
 			return s.releaseControllerPreparationWithAccess(ctx, id, uploadID, access)
 		})
 		err = errors.Join(err, gate.Close())
@@ -245,6 +250,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 			return out, err
 		}
 		defer func() { result = errors.Join(result, gate.Close()) }()
+		var cancelGate context.CancelFunc
+		ctx, cancelGate = filestorage.GateContext(ctx, gate)
+		defer cancelGate()
 	}
 	lease := uuid.NewString()
 	ioContext, finishIO, ioErr := s.beginImageIO(ctx, id, lease)
@@ -263,6 +271,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
+		}
+		if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
 		}
 		if remote {
 			if e := s.admitImageRate(ctx, tx, p.UserID, "control"); e != nil {
@@ -378,6 +389,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 			if !write {
 				return denied()
 			}
+			if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+				return err
+			}
 			d, current, e := s.upload(ctx, tx, r, p, uploadID)
 			if e != nil {
 				return e
@@ -420,6 +434,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
+		}
+		if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
 		}
 		d, u, e := s.upload(ctx, tx, r, p, uploadID)
 		if e != nil {
@@ -470,7 +487,7 @@ func (s *Execution) publishImageBytes(ctx context.Context, path string, input io
 	reader := &imageSourceReader{reader: input}
 	info, err := s.files.Put(ctx, sessionresource.Bucket, path, io.TeeReader(io.LimitReader(reader, size+1), h))
 	if err != nil {
-		if reader.err == nil && filestorage.PublicationOutcome(err) == filestorage.NotPublished && singleImageCause(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if reader.err == nil && filestorage.PublicationOutcome(err) == filestorage.NotPublished && singleImageCause(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, filestorage.ErrGateLost) {
 			return &definiteImageError{image: sp.ImageError{Code: "storage_unavailable", Message: "Image storage could not publish the original."}, cause: err}
 		}
 		return err
@@ -506,6 +523,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		return out, e
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
+	settlementCtx := ctx
 	settlementReady := false
 	// Settle only after transfer cleanup while the original upload gate still
 	// excludes a concurrent writer. A later gate-close failure is reconciled
@@ -518,7 +538,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if imageError == nil {
 			return
 		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupParent, cancelCleanupGate := filestorage.GateCleanupContext(settlementCtx)
+		defer cancelCleanupGate()
+		cleanup, cancel := context.WithTimeout(cleanupParent, 5*time.Second)
 		defer cancel()
 		var settled *store.SessionUploadRecord
 		e := s.browser(cleanup, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
@@ -558,6 +580,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
+		}
+		if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
 		}
 		if remote {
 			if e := s.admitImageRate(ctx, tx, p.UserID, "control"); e != nil {
@@ -673,17 +698,17 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if e = s.releaseImageLease(ctx, p, project, taskID, id, lease); e != nil {
 			return out, e
 		}
-		if _, e = s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "prepare"), "prepare", upload.Spec); e != nil {
+		if _, e = s.controllerUploadMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "prepare"), "prepare", upload.Spec); e != nil {
 			return out, e
 		}
 		for _, chunk := range chunks {
 			offset := decimal(chunk.Offset)
 			body := map[string]any{"uploadId": uploadID, "offset": offset, "sha256": chunk.SHA256, "$data": mediaDataIdentity{SHA256: chunk.SHA256, ByteLength: int(chunk.ByteLength)}}
-			if _, e = s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "write/"+offset), "write", body); e != nil {
+			if _, e = s.controllerUploadMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "write/"+offset), "write", body); e != nil {
 				return out, e
 			}
 		}
-		reply, err := s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "complete"), "complete", map[string]any{"uploadId": uploadID, "sha256": input.SHA256, "byteLength": input.ByteLength})
+		reply, err := s.controllerUploadMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "complete"), "complete", map[string]any{"uploadId": uploadID, "sha256": input.SHA256, "byteLength": input.ByteLength})
 		if err != nil {
 			return out, err
 		}
@@ -700,6 +725,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 			if !write {
 				return denied()
+			}
+			if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+				return err
 			}
 			d, current, err := s.upload(ctx, tx, r, p, uploadID)
 			if err != nil {
@@ -743,9 +771,12 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		return out, fault("resource_conflict", "Decoder returned invalid image metadata.")
 	}
 	if remote {
-		e = s.browser(ctx, p, project, taskID, id, func(_ *operationTx, r *record, _ task, write bool) error {
+		e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 			if !write {
 				return denied()
+			}
+			if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+				return err
 			}
 			return validateInputImage(r.Snapshot.Capabilities.Images, validated)
 		})
@@ -765,6 +796,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
+		}
+		if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
 		}
 		d, u, e := s.upload(ctx, tx, r, p, uploadID)
 		if e != nil {
@@ -792,7 +826,12 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 				return conflict()
 			}
 		} else if errors.Is(e, model.ErrNotFound) {
-			if e = checkContentPublication(ctx, tx, id, resourceContentChange{descriptor}); e != nil {
+			if r.OnlineMode == "relay" {
+				if usage.Resources >= sp.MaxSessionResources || usage.Bytes < 0 || number(validated.ByteLength) > sp.MaxSessionResourceBytes-usage.Bytes {
+					f := &model.Fault{Code: "quota_exceeded", Message: "Session image resource capacity is exhausted."}
+					return &definiteImageError{image: sp.ImageError{Code: f.Code, Message: f.Message}, cause: f}
+				}
+			} else if e = checkContentPublication(ctx, tx, id, resourceContentChange{descriptor}); e != nil {
 				var capacity *contentCapacityError
 				var f *model.Fault
 				if errors.As(e, &capacity) && errors.As(e, &f) && f.Code == "quota_exceeded" {
@@ -837,6 +876,8 @@ func (s *Execution) ReleaseUpload(ctx context.Context, p model.Principal, projec
 		return out, e
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
@@ -899,6 +940,8 @@ func (s *Execution) DirectUpload(ctx context.Context, p model.Principal, project
 	if err != nil {
 		return sp.ImageUploadReceipt{}, false, err
 	}
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	_, created, err := s.prepareUploadIdentityWithFirst(ctx, p, project, task, id, input.Spec, true, &input)
 	var out sp.ImageUploadReceipt
 	if err == nil {

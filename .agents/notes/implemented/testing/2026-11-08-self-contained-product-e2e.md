@@ -27,8 +27,15 @@ after reload. It also checks the default gray, edits and filters associations,
 and checks renamed and deleted catalog entries across clients. Module and store
 tests retain the error, concurrency and capacity matrices.
 
+The credential-scope journey uses the same isolated runtime to obtain device
+PATs and OAuth grants through their public flows. It exercises independent
+credential edits and the resulting REST and MCP operations, including refresh,
+against the same persisted tasks. The targeted refusal demonstrates that an
+edited credential is effective across assembled entry points; detailed refusal
+and concurrency matrices remain with their owning layers.
+
 Every run owns an internal database network, a private ingress bridge, a
-PostgreSQL instance and data volume, an application container, private
+PostgreSQL instance and data volume, an ephemeral Redis monitoring store, an application container, private
 credentials and storage. Public addresses are
 loopback-only ports. Inside the application container, local forwarders preserve
 those same public origin identities while production services retain their
@@ -47,6 +54,13 @@ connected ingress and database routes remain available, while external runtime
 connections cannot be routed. App registration goes through
 the real Console after normal authentication, rather than writing auth data.
 
+Bootstrap navigation records bounded, sanitized main-frame and action events;
+the provider records CONNECT, TLS and HTTP stages with connection-local IDs.
+Live provider snapshots remain available when shutdown is unconfirmed, and the
+browser snapshot freezes before close can generate aborts. These streams do not
+claim cross-layer request identity. Separate controlled stalls verify the TLS
+and HTTP boundaries without inserting fault cases into the product journey.
+
 An independent Linux CI job selects the framework and actual production build
 inputs and runs the same explicit command. Selected E2E must succeed at the
 final gate. CI reserves a separate always-run recovery step: resource ownership
@@ -55,6 +69,46 @@ Preparation and execution steps are individually bounded; their declared
 maxima include cleanup and upload and remain below the job limit. Recovery
 preserves the original scenario and cleanup receipt instead of turning an
 interrupted run green. Artifact uploads include only results and logs.
+The Playwright process has a ten-minute bound within the existing journey
+step. The original five-minute process limit expired on CI during the expanded
+sequential authentication journey, before the per-test deadline, and was raised
+to seven minutes. The assistant inbox journey then added up to two Worker
+assistant-task minute-loop waits (takeover and delivery), raising it to ten
+minutes. The Worker fixture's per-run process limit rose from three to seven
+minutes for the same reason: the restarted run hosts the inbox Bot after the
+patrol, and delivery can land on the minute-loop tick where a three-minute limit
+would stop the Worker. Each larger bound preserves the complete assertions and independent recovery deadline while
+leaving less normal cleanup time within the journey step at the process limit.
+The Redis container has no published port or persistent volume and is included
+in the exact owner-checked cleanup and absence proof. Existing receipts without
+its identity must be cleaned by their original runner rather than inferred.
+
+Worker product journeys also register their original runner and gated process
+identities before the test can launch a detached Controller. Parent cleanup and
+independent recovery verify and stop the original processes before removing the
+fixture or its private execution evidence. Chromium launch intent and the
+original process-group identity are persisted separately, so a failed Playwright
+run can verify that the recorded browser group stopped without relying on
+`browser.close()` alone. A missing or conflicting proof keeps the responsibility
+visible instead of turning process absence into a guessed successful cleanup.
+The product E2E guide owns the recovery procedure.
+
+The auxiliary recovery harness waits for the payload to publish its PID and
+parent PID before killing the runner. The parent must match the persisted gate
+child proof: the proved `gated-target` process launches the payload, so their
+PIDs differ. Recovery must stop both while retaining unconfirmed browser state.
+
+A failed build may release its lock only after its commands have all joined and
+the runner has persisted that stop boundary. Cancellation and unknown command
+outcomes retain the lock and evidence; a normal build error still fails the run.
+Recovery serializes removal of that lock with other recovery for the same run
+and refuses a lock owned by a different run.
+
+Worker completion is versioned. An explicit conflict rejects the attempted
+write, so the fixture can read the Task again, verify the original active
+assignment and authorization, and make a bounded new decision. An unknown
+outcome cannot justify a replay. This keeps concurrent Task updates from making
+the normal journey fail while preserving the original claim.
 
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
@@ -75,6 +129,24 @@ self-contained repeatable run and couples failures to another environment.
 focused module contract but omits complete startup, routing, authentication and
 production resource assembly. It does not establish the cross-client journey.
 
+**Use a shared or simulated monitoring store.** A shared Redis would couple runs
+and weaken resource ownership; a simulated API would not establish that the real
+Server can read monitoring through its configured store.
+
+**Use a bootstrap trace or HAR for diagnosis.** These can retain URLs,
+headers, bodies or other credentials and still require a provider-side boundary
+to distinguish TLS from a stalled HTTP response. Bounded allowlisted events keep
+the required evidence without retaining those materials.
+
+**Infer browser shutdown from Playwright exit or close.** Chromium is detached,
+and a close result alone does not establish that its original process group has
+stopped. Recovery needs the persisted identity and a confirmed stop.
+
+**Treat auxiliary launch return as payload readiness.** The gate has only sent
+authorization at that point; its child proof and the payload may not yet exist.
+Interrupting the runner then can exercise the missing-proof refusal instead of
+the intended recovery path.
+
 ## Consequences
 
 The framework adds an independent build and runtime owner while reusing normal
@@ -84,9 +156,12 @@ platform or fault matrices.
 
 Go, source and container caches make repeated preparation cheaper. Preparation
 still requires tools and potentially dependency access; runtime isolation does
-not claim an offline build. The upstream source pin and local provider must be
-reviewed when UniAuth's protocol changes.
+not claim an offline build. The upstream source pin, diagnostic endpoint allowlist and local provider must be
+reviewed when UniAuth's protocol changes. A truncated stream cannot establish
+that an unrecorded stage did not occur; provider and browser IDs are independent.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
-the retained result. The independent hosted job does not replace module, installed CLI or deployment
+the retained result. A failed process observation can retain private fixture
+state until its original ownership can be established; it is excluded from CI
+artifact uploads. The independent hosted job does not replace module, installed CLI or deployment
 checks; module-only fixture changes do not schedule a complete product journey.

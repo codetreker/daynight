@@ -31,13 +31,17 @@ const server = createServer(socket => {
       else if (method === "session.create") {
         if (process.env.DAYNIGHT_TEST_BRIDGE_MODE === "open-race") setTimeout(() => respond(id, { sessionId: params.sessionId }), 50);
         else respond(id, { sessionId: params.sessionId });
-      } else if (method === "runtime.shutdown" && process.env.DAYNIGHT_TEST_BRIDGE_MODE === "graceful-shutdown") { respond(id, {}); socket.end(); server.close(); }
+      } else if (method === "runtime.shutdown") {
+        respond(id, {});
+        if (process.env.DAYNIGHT_TEST_BRIDGE_SHUTDOWN === "exit") { socket.end(); server.close(); }
+      }
       else if (method === "session.permissions.handlePendingPermissionRequest" && params.requestId === "source-request") {
         assert.equal(params.result.kind, "reject");
         write({ method: "session.event", params: { sessionId: params.sessionId, event: { type: "permission.completed", id: "source-complete", data: { requestId: "source-request", result: { kind: "denied-interactively-by-user", feedback: params.result.feedback } } } } });
         respond(id, {});
       }
-      else if (method === "session.options.update" || method === "session.destroy" || method === "runtime.shutdown" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
+      else if (method === "session.options.update" || method === "session.destroy" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
+      else if (method === "session.interruptMainTurn") respond(id, { interrupted: true });
       else if (method === "session.model.getCurrent") respond(id, { modelId: "fixture-model" });
       else if (method === "session.provider.getEndpoint") {
         assert.equal(params.modelId, undefined);

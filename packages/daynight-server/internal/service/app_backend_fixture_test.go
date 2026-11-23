@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,10 +22,12 @@ import (
 // not change later reads; only resource opening and closure retain local state.
 type appBackend struct {
 	store.Transactions
+	unusedGitHubCapabilities
 	store.WebhookDeliveryTransactions
 	store.WebhookRetentionTransactions
 	store.WebhookReceiptGC
 	store.WebhookConfigGC
+	store.ReviewAssignmentStore
 	t                                                                                 *testing.T
 	mu                                                                                sync.Mutex
 	calls                                                                             map[string]int
@@ -41,6 +44,27 @@ type appBackend struct {
 	privateActor                                                                      *model.Principal
 	privateGets, privatePuts                                                          int
 	collector                                                                         *appTestCollector
+}
+
+func (b *appBackend) ReviewScanStart(ctx context.Context) (time.Time, *store.ReviewWorkerKey, error) {
+	if err := b.check(ctx); err != nil {
+		return time.Time{}, nil, err
+	}
+	return time.Now(), nil, nil
+}
+
+func (b *appBackend) ListArchiveCleanup(ctx context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
+	if err := b.check(ctx); err != nil {
+		return nil, err
+	}
+	if cursor != "" || limit != 32 {
+		return nil, b.unexpected("ListArchiveCleanup arguments")
+	}
+	return nil, b.record("ListArchiveCleanup", 1)
+}
+
+func (b *appBackend) WriteArchiveCleanup(context.Context, store.ArchiveCleanupTarget, func(store.ArchiveCleanupScope) error) (store.Completion, error) {
+	return store.Completion{Outcome: store.TransactionNotCommitted}, b.unexpected("WriteArchiveCleanup")
 }
 
 func newAppBackend(t *testing.T) *appBackend {
@@ -557,6 +581,17 @@ type unexpectedAppTransactions struct{ backend *appBackend }
 
 var _ store.Transactions = unexpectedAppTransactions{}
 
+func (s unexpectedAppTransactions) ReadHistoryDirectory(context.Context, func(store.HistoryDirectoryScope) error) error {
+	return s.backend.unexpected("ReadHistoryDirectory")
+}
+
+func (s unexpectedAppTransactions) ReadUsage(context.Context, func(store.UsageScope) error) error {
+	return s.backend.unexpected("ReadUsage")
+}
+func (s unexpectedAppTransactions) WriteUsage(context.Context, func(store.UsageScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteUsage")
+}
+
 func (s unexpectedAppTransactions) CreateTeam(context.Context, string, func(store.TeamCreationDAO) error) (store.Completion, error) {
 	failure := s.backend.unexpected("CreateTeam")
 	var value0 store.Completion
@@ -628,6 +663,10 @@ func (s unexpectedAppTransactions) WriteIdentity(context.Context, func(store.Ide
 	var value0 store.Completion
 	return value0, failure
 }
+func (s unexpectedAppTransactions) WritePreviewSSO(context.Context, func(store.PreviewSSODAO) error) (store.Completion, error) {
+	failure := s.backend.unexpected("WritePreviewSSO")
+	return store.Completion{Outcome: store.TransactionNotCommitted}, failure
+}
 func (s unexpectedAppTransactions) WriteOAuthClients(context.Context, func(store.OAuthClientScope) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteOAuthClients")
 	var value0 store.Completion
@@ -642,6 +681,9 @@ func (s unexpectedAppTransactions) WriteProject(context.Context, string, func(st
 	failure := s.backend.unexpected("WriteProject")
 	var value0 store.Completion
 	return value0, failure
+}
+func (s unexpectedAppTransactions) WriteProjectDirectMember(context.Context, string, func(store.ProjectDirectMemberScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteProjectDirectMember")
 }
 func (s unexpectedAppTransactions) WriteProjectCreation(context.Context, string, func(store.ProjectCreationDAO) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteProjectCreation")
@@ -672,4 +714,25 @@ func (s unexpectedAppTransactions) WriteWorker(context.Context, func(store.Worke
 	failure := s.backend.unexpected("WriteWorker")
 	var value0 store.Completion
 	return value0, failure
+}
+
+func (s unexpectedAppTransactions) WriteGitHubProjectTransfer(context.Context, string, func(store.GitHubProjectTransferScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubProjectTransfer")
+}
+func (s unexpectedAppTransactions) WriteGitHubProjectDeletion(context.Context, string, func(store.GitHubProjectDeletionScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubProjectDeletion")
+}
+func (s unexpectedAppTransactions) WriteGitHubTeamDeletion(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubTeamDeletion")
+}
+
+func (d *appMaintenanceDAO) CurrentTransferAuthorization(ctx context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+	if err := d.backend.check(ctx); err != nil {
+		return model.CredentialAuthorization{}, err
+	}
+	if d.backend.privateActor == nil || p != *d.backend.privateActor {
+		return model.CredentialAuthorization{}, d.backend.unexpected("transfer policy actor")
+	}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"attachment:upload"}, 1)
+	return model.CredentialAuthorization{Principal: p, Profile: model.ScopedPATProfile, Policy: &policy}, err
 }

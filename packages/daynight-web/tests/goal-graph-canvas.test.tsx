@@ -24,8 +24,8 @@ describe('Goal graph canvas', () => {
     expect(view.container.querySelectorAll('.task-node-details')).toHaveLength(51);
     expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe('96px');
+      expect(node.style.width).toBe('240px');
+      expect(node.style.height).toBe('102px');
     }
     const card = screen.getByRole('button', { name: 'task-0, To do' });
     expect(card).not.toHaveAttribute('aria-haspopup');
@@ -39,7 +39,7 @@ describe('Goal graph canvas', () => {
     expect(open).toHaveBeenCalledWith('task-0', details);
   });
 
-  it('preserves viewport when the same topology is refreshed and handles empty Goals', async () => {
+  it('preserves the canvas and viewport through topology changes and an empty Goal', async () => {
     const first = index(2);
     const props = { projectId: 'project', goalId: 'goal', direction: 'horizontal' as const, onDirectionChange: noop, onOpenTask: noop };
     const view = render(<GoalTaskGraph {...props} index={first} />);
@@ -49,14 +49,41 @@ describe('Goal graph canvas', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
     await waitFor(() => expect(Number(/scale\(([^)]+)\)/.exec(viewport.style.transform)![1])).toBeLessThan(initialZoom));
     const before = viewport.style.transform;
+    const canvas = view.container.querySelector('.react-flow');
+    fireEvent.click(screen.getByRole('button', { name: 'task-0, To do' }));
     view.rerender(<GoalTaskGraph {...props} index={index(2)} />);
+    expect(viewport.style.transform).toBe(before);
+    view.rerender(<GoalTaskGraph {...props} index={index(1)} />);
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(1));
+    expect(screen.getByRole('button', { name: 'task-0, To do, selected' })).toHaveAttribute('aria-pressed', 'true');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    expect(view.container.querySelector('.react-flow__viewport')).toBe(viewport);
     expect(viewport.style.transform).toBe(before);
     view.rerender(<GoalTaskGraph {...props} index={index(0)} />);
     expect(screen.getByText('This Goal has no tasks.')).toBeVisible();
-    expect(view.container.querySelector('.react-flow')).toBeNull();
+    expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(0);
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    expect(view.container.querySelector('.react-flow__viewport')).toBe(viewport);
+    expect(viewport.style.transform).toBe(before);
     view.rerender(<GoalTaskGraph {...props} index={index(2)} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
-    await waitFor(() => expect(view.container.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'));
+    expect(screen.getByRole('button', { name: 'task-0, To do' })).toHaveAttribute('aria-pressed', 'false');
+    expect(view.container.querySelector('.react-flow__viewport')).toBe(viewport);
+    expect(viewport.style.transform).toBe(before);
+  });
+
+  it('mounts an empty canvas and frames its first tasks when they arrive', async () => {
+    const props = { projectId: 'project', goalId: 'goal', direction: 'horizontal' as const, onDirectionChange: noop, onOpenTask: noop };
+    const view = render(<GoalTaskGraph {...props} index={index(0)} />);
+    expect(screen.getByText('This Goal has no tasks.')).toBeVisible();
+    const canvas = view.container.querySelector('.react-flow');
+    const viewport = view.container.querySelector<HTMLElement>('.react-flow__viewport')!;
+    expect(canvas).not.toBeNull();
+    view.rerender(<GoalTaskGraph {...props} index={index(2)} />);
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
+    await waitFor(() => expect(viewport.style.transform).not.toBe('translate(0px,0px) scale(1)'));
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    expect(view.container.querySelector('.react-flow__viewport')).toBe(viewport);
   });
 
   it('presents a recoverable layout failure', async () => {
@@ -78,7 +105,7 @@ describe('Goal graph canvas', () => {
     const props = { projectId: 'project', goalId: 'goal', direction: 'horizontal' as const, onDirectionChange: noop, onOpenTask: noop };
     const view = render(<GoalTaskGraph {...props} index={index(30)} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(30));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.anything(), { width: 800, height: 445 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.anything(), { width: 800, height: 445 }, 'horizontal', expect.any(Map)));
     const viewport = view.container.querySelector<HTMLElement>('.react-flow__viewport')!;
     await waitFor(() => expect(Number(/scale\(([^)]+)\)/.exec(viewport.style.transform)![1])).toBeGreaterThanOrEqual(0.8));
     const calls = spy.mock.calls.length;
@@ -103,7 +130,7 @@ describe('Goal graph canvas', () => {
     view.rerender(<GoalTaskGraph {...props} index={index(31)} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(31));
     expect(spy.mock.calls.length).toBeGreaterThan(afterFit);
-    await waitFor(() => expect(Number(/scale\(([^)]+)\)/.exec(viewport.style.transform)![1])).toBeGreaterThanOrEqual(0.8));
+    expect(viewport.style.transform).toBe(overview);
     spy.mockRestore();
   });
 
@@ -144,7 +171,7 @@ describe('Goal graph canvas', () => {
     expect([...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => node.style.transform)).toEqual(positions);
     expect(spy.mock.calls.length).toBe(calls);
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
-    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 390, height: 600 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 390, height: 600 }, 'horizontal', expect.any(Map)));
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     spy.mockImplementationOnce(() => { throw new Error('test'); });
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
@@ -152,7 +179,7 @@ describe('Goal graph canvas', () => {
     width = 700; height = 500;
     act(() => { for (const observer of observers) observer.notify(); });
     fireEvent.click(screen.getByRole('alert').querySelector('button')!);
-    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 700, height: 500 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 700, height: 500 }, 'horizontal', expect.any(Map)));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(30));
     warning.mockRestore();
     spy.mockRestore();

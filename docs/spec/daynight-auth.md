@@ -19,9 +19,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
 创建、读取、分页、改名和删除普通 Team，并通过邀请加入普通 Team；当前 admin 可按完整外部身份直接添加成员，当前 owner Team admin 可预览和转移项目。Team 成员管理和转移客户端保持各自的功能边界。
 
-可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
-鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
-[附件架构决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)。
+主站登录建立会话后经站内 SSO 建立预览凭据，再返回原登录完成页。附件预览使用 Task 独立 origin 与关联同一会话的预览凭据；SSO 失败不撤销已建立的主站会话，用户可主动恢复；若短期记录创建失败或结果未知，失败页提供继续原主站登录目标的入口，不重放创建。服务启动要求有效的预览 origin 配置。
 
 | 编号 | 必需行为 |
 |---|---|
@@ -34,7 +32,7 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 | AU7 | 项目列表先按成员筛选再分页；详情、任务、图、属性、附件列表、下载及预览逐请求执行项目授权。 |
 | AU8 | 邀请有有效期、可撤销、单次使用；接受者先登录再明确确认，加入角色为 member。 |
 | AU9 | 移除成员后拒绝新准入请求；已获授权并开始的文件传输允许完成。角色不固化在会话或令牌中。 |
-| AU10 | 附件维持可信同源预览，以主站会话验证资源请求，保留脚本、模块、相对 CSS/图片/fetch、Esc/Tab 和焦点恢复。 |
+| AU10 | 附件在 Task 独立 origin 预览，以关联主站会话的预览凭据验证资源请求，保留脚本、模块和相对 CSS/图片/fetch；不同 Task 与主站隔离。 |
 | AU11 | 启用鉴权时，全部服务入口、客户端、部署健康检查和既有验收同次适配，不能依赖前端隐藏按钮。 |
 | AU12 | 错误、取消及不确定写入可见；秘密不进入诊断、日志、仓库绑定或持久 URL。 |
 | AU13 | 普通 Team 创建与创建者 admin 原子提交；本人列表和详情受成员资格限制，admin 按精确元数据版本改名或删除空 Team，Personal 禁止变更。 |
@@ -80,13 +78,27 @@ SameSite=Lax；显式 HTTP 主站测试配置使用不带 Secure/`__Host-` 的�
 返回位置限主站内部路径，解码后的 UTF-8 内容最多 4096 bytes。首次合法登录请求缺少有效的第一方 scope Cookie 时，服务设置该 Cookie 并以 303 返回同一登录 URL，不建立交易。支持 Cookie 的客户端返回后才创建交易；每个 scope 最多有 5 条未完成且未过期的交易，全服务最多有 10000 条，期限为 10 分钟。scope 超限返回 429 `rate_limited`，全服务满时返回 503 `capacity_exhausted` 和 `Retry-After`；拒绝不撤销已有交易。scope 表示 Cookie 标识的逻辑浏览器，清除 Cookie 或并发首次请求无法关联为同一物理浏览器。注销终止当前 Daynight 会话，上游登录状态由 UniAuth 管理。
 Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝，不回退到 Cookie。
 
-浏览器会话绝对有效期七天，与 PAT 的到期规则独立。PAT 由 Web 会话显式创建，或由该会话批准的
+浏览器会话以主库时钟计算连续 168 小时的闲置期限，主站和预览共用同一 sessions 行。只有通过认证且符合入口来源准入的请求才记录活动；后台刷新、轮询及认证后的 304 计入。主站准入要求实际 authority 等于配置的主站 authority，入口是明确注册的业务 handler，包含内部 dispatcher 实际支持的方法，并具有同源 Fetch Metadata 或精确 Origin；GET 隐含的 HEAD 和内部 dispatcher 支持的 HEAD 均可计入，明确拒绝的 HEAD 不计入；注册的纯方法拒绝 handler 即使使用方法限定模式也不计入活动，并保留原只读认证、授权及 CSRF 检查；缺失或相互矛盾的来源信息不续期。Cookie 写请求还必须具有精确主站 Origin；即使 Fetch Metadata 声明同源，缺失、重复或不匹配的 Origin 也不能触发续期或业务写入，认证拒绝仍先于 Origin 拒绝。公开入口、登录中间步骤、注销、方法拒绝、失败认证、纯服务端轮询和协议 ping/pong 不计入活动。预览仅在规范 Task Host 的受保护 GET/HEAD 读取获准后，复核原预览凭据并续期：允许同源请求、受支持的同站 iframe 文档导航和显式用户发起的顶层文档导航；跨站自动请求、其他同站子资源以及缺失或矛盾的来源信息不续期，读取权限规则保持原义。预览活动不授予主站权限。
+
+续期按实际主站或预览凭据散列锁定已有行，锁后读取主库当前时间，严格要求同一凭据仍有效且 expires_at > now，单调更新 last_used_at 和其后 168 小时的期限。缺行、到期、撤销或预览换发后的旧凭据不能插入或恢复记录；仅提交确认后承认续期。新签发、认证、预览 SSO、权限重检和会话清理统一使用主库时钟，PAT/OAuth 的独立期限不变。新增可空 last_used_at 不回填旧行；新签发记录保存实际签发时间，旧记录仅在首次合格活动后获得最近使用时间。
+
+POST /api/v1/auth/session/activity 只接受有效主站 Cookie、精确主站 Origin 和必填 expectedUserId UUID，写入前在锁内核对账号，账号不符返回 409 identity_mismatch，成功返回无正文的 204 和 no-store。它供可见且已连接的实时观察使用；前端在取消、身份变化、隐藏或断连时停止发送，前端不能由全局定时器或为此冒用 /me 启动请求制造活动。
+
+普通活动响应不重发 Cookie。仅新登录和预览 SSO 请求 Cookie 持久保存 400 天，保留 host-only/预览 Domain、Secure、HttpOnly、SameSite=Lax 与两域隔离。浏览器可提前清除 Cookie；旧 Cookie 保留原期限，不转换，丢失后按既有主站登录或预览 SSO 恢复。
+
+浏览器会话管理只接受有效主站 Cookie，写入校验精确主站 Origin，响应使用 no-store。列表仅包含本账号尚未到期的会话，当前会话单列，其余按创建时间和 ID 倒序分页；游标绑定账号和调用会话。会话投影仅包含 ID、浏览器及系统分类、创建、最近使用和到期时间；分类与最近使用时间可为空，旧记录不回填，也不保存原始 User-Agent 或 IP。单条读取用于核对目标是否仍有效。撤销请求绑定预期账号和调用会话，身份变化或目标为当前会话返回 409，其他账号或无有效目标同形返回 404，确认成功返回 204。结果未知时只读取目标核对，不自动重发；不存在只证明目标不再活跃。当前浏览器仍通过 logout 退出。撤销后目标主站、预览及后续权限核验失效，其他浏览器会话、PAT 和 OAuth 凭据不受影响。
+
+`GET /api/v1/me/browser-sessions` 接受 `limit`（1–100，默认 50）及不透明 `cursor`，返回 `{userId,current,items,nextCursor}`，无下一页时 `nextCursor` 为 null。`current` 与各 `items` 包含必有的 `id`、`browser`、`os`、`createdAt`、`lastUsedAt`、`expiresAt`；时间为 UTC 时间字符串，未知分类与最近使用为 null。`GET /api/v1/me/browser-sessions/{id}` 返回同一投影。`POST /api/v1/me/browser-sessions/{id}/revoke` 接受必填 UUID 字段 `{expectedUserId,expectedSessionId}`，成功无正文。单条读取和撤销不接受 query；这些入口拒绝 HEAD 和显式 Authorization。无效输入返回 400 `invalid_input`，无效会话返回 401，身份或当前会话冲突返回 409 `identity_mismatch`，目标不可用返回 404 `not_found`，提交结果未知返回 503 `write_outcome_unknown`；错误采用现有 `{error:{code,message,requestId}}` 格式。
+
+PAT 由 Web 会话显式创建，或由该会话批准的
 设备授权在领取时自动创建；默认永不过期，以 `expiresAt:null` 表达。手工创建请求必须显式提供
 `name` 和 `expiresAt`，到期值为 null 或以 Z 结尾的未来 UTC 时间，不接受旧 `days` 输入。
 有限时间以数据库微秒精度保存，正规化后仍须为未来。
 账户页只显示用户自己的元数据，永不过期显示为“永不过期 / Never expires”。PAT 列表、创建和期限修改
 返回的元数据必须包含 `expiresAt` 与 `lastUsedAt`，二者可为 null；设备领取保持原有
 `{access_token,token_type}` 响应，其 PAT 元数据通过账户列表读取。秘密仅在创建或领取时交付一次。
+撤销 PAT 的确认框打开时默认聚焦取消按钮；取消或 Escape 不发出撤销请求，关闭后焦点返回仍存在的撤销入口。
+用户明确确认后才撤销所选令牌。键盘焦点保持在确认框内，关闭、取消和撤销按钮均可到达。
 
 令牌管理器允许将当前有效 PAT 的到期时间改为未来 UTC 时间或 null，保持同一秘密与散列，CLI
 无需重新登录。修改必须绑定页面显示的账号和观察到的到期值：账号不匹配返回 403，观察值过期返回
@@ -99,6 +111,16 @@ Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝�
 目标账户、客户端与资源。授权没有 PAT 的期限编辑功能。读取失败可重试；撤销结果未知时不得自动重放，
 须由用户显式读取当前状态，读回结果不声称恢复了原请求的历史回执。身份准入暂停时，撤销的本地等待结束并保留已确认或未知结果；未派发的取消不视为未知提交。暂停期间保留列表，不自动读取或重放。已确认结果的后续读取仍须通过原身份准入，旧结果不能关闭较新的对话框。后台身份与数据检查保留已有界面和草稿；
 确认账户变化或会话失效时隔离旧账户数据。
+
+账户凭据管理 API 支持为每条 PAT 和 OAuth grant 保存独立的可空描述。描述是单行文本，先拒绝无效 Unicode、NUL 和行分隔符，再裁剪首尾 Unicode White_Space；空结果表示无描述，非空最多 100 个 Unicode 码点。描述修改只改变该字段，不改变秘密、期限、撤销、刷新、最近使用时间或清理行为。仍保留的过期 PAT 和过期或撤销的 OAuth grant 可以编辑；删除记录时描述随之删除。旧记录、设备签发和新 OAuth 授权的描述初始为 null。
+
+`GET /api/v2/me/tokens` 包含仍保存的过期 PAT，`POST /api/v2/me/tokens` 接受绑定当前账户的 `expectedUserId` 和可选描述，确认创建后只交付一次秘密。`GET /api/v3/oauth/grants` 保留 v2 元数据并增加必有的可空描述。两类记录分别通过 `PATCH /api/v2/me/tokens/{id}/description` 和 `PATCH /api/v3/oauth/grants/{id}/description`，以必填 `expectedUserId`、`expectedDescription` 和 `description` 保存；观察值必须是 null 或服务返回的规范值。观察值变化返回 409，不存在或不属于当前账户返回 404。新入口只接受主站浏览器会话，写入校验精确 Origin 和账户；拒绝 query、HEAD 和显式 Authorization，响应 no-store。提交未知不能当作成功或自动重放。旧 PAT v1 和 OAuth v1/v2 表示及设备、OAuth 签发协议保持兼容。
+
+账户页用名称下方的单行纯文本展示非空描述，铅笔紧邻描述；无描述时省略该行，铅笔紧邻名称。创建 PAT 可选填描述，并保留一次性明文交付。两类记录共用编辑、取消、清空和校验交互，支持中英文、键盘、触摸及窄屏；同名记录的编辑入口可区分目标，成功和取消后焦点回到原记录铅笔。多行粘贴必须在浏览器清理输入前拒绝，超长输入不截断。
+
+明确失败保留草稿及上次确认值。冲突或未知结果保留该记录的核对入口，只读回后由用户明确再次保存；读回失败只重试读取，可信目标消失结束保存资格。不同记录的未决描述独立，同一面板的列表读取与写入互斥。描述与期限回执只合并各自权威字段。期限 404 用新列表核对仍保留的过期 PAT。确认创建的秘密独立于后续列表读取；后续读取失败不能隐藏秘密、把创建标为失败或重发创建。创建结果未知时提示可能已签发，列表不重建秘密。同账户 SPA 导航保留草稿、在途及待核对状态和待展示秘密，账户变化隔离旧状态，晚到结果不能修改新页面。整页重载结束内存状态。
+
+新凭据路由返回 401 时先以独立 `/api/v1/me` 复核身份：仅真实失效触发全局过期；原账号有效提示接口暂不可用，另一账号进入身份暂停，复核失败保留输入和读取错误。不得放宽响应解析、自动降级或重发写入。
 
 PAT 和 OAuth grant 的内部元数据可保存最后一次已记录的真实合格使用事件时间。新建和升级后的
 既有记录初始均为 null，不从历史数据推断或回填；null 只表示没有已记录值。对同一对象，较旧、
@@ -115,8 +137,9 @@ OAuth grant 的 v1 列表保持精确原表示；v2 列表在相同字段上增�
 在采用新字段的 Web 投入流量前，backend 必须先具备 PAT 字段及 OAuth v2 读取能力；新客户端上线后，
 恢复 artifact 必须保留这些协议能力，除非已真实退役这些客户端。数据库保留新增列不能替代协议兼容。
 
-撤销或已设置的到期时间到达后，新请求返回未认证，不影响其他会话或令牌。凭据代表用户当前全部
-项目权限，不另设令牌角色。CLI 凭据绑定有效服务 origin，不进入仓库绑定、明文命令参数或日志，
+撤销或已设置的到期时间到达后，新请求返回未认证，不影响其他会话或令牌。凭据权限为其明确业务 scope 与用户当前资源权限的交集，不另设令牌角色。
+新设备批准、手动 PAT 创建与权限编辑必须选择非空的明确 scope；存量凭据通过冻结全集迁移保留既有能力。
+目录、逐凭据编辑及启用恢复合同由[凭据 Scope 设计](../design/credential-scope-internal.md)维护。CLI 凭据绑定有效服务 origin，不进入仓库绑定、明文命令参数或日志，
 重定向不得转发凭据。
 
 CLI 在缺少配置文件或 `serverUrl` 时使用 `https://daynight.cc`，保留显式地址配置供测试服务使用。
@@ -128,6 +151,20 @@ HTTPS 或字面量 localhost/numeric loopback HTTP 才能使用令牌。外部�
 含凭据文件在 POSIX 上使用 `0600`，其他能力写入同样遵守。YAML 错误不泄露标量或
 原始 parser cause。配置并发和持久化要求由[客户端 C6](daynight.md#c6-按需配置引导)与
 [客户端配置要求](daynight-project-task.md#pt2-服务配置)拥有。
+
+## 显式浏览器预览 SSO
+
+已登录主站的浏览器可以显式打开配置预览 origin 的 `/auth/sso/start`，经主站 session 授权、预览 callback 和 complete 完成一次标准导航 SSO，返回已校验原目标。无 login 参数时返回主站项目页。主站登录 callback 设置会话 Cookie 后保存原 `/auth/complete` 目标并启动该 SSO，成功后返回该目标。
+
+两个不同随机凭据关联同一既有 session，预览凭据继承其用户、实际到期和注销。生产预览 Cookie 是 HttpOnly、Secure、SameSite=Lax、Path=/，Domain 仅覆盖配置的 preview hostname 与其子域。随机 state 的 host-only 绑定 Cookie 必须由回调浏览器带回，code/state 单次消费。complete 必须验证浏览器实际持有预览 Cookie；缺失、失效、重用、到期和错误绑定明确失败。
+
+失败后用户可主动重试可验证的短期记录；服务校验当前主站 session 和记录绑定，原子替换旧记录并保留目标。无法验证来源或已过期时不泄露目标，明确提供返回主站及重新 SSO 的入口；不自动循环或重复兑换 code。
+
+原始目标保存在服务端，跳转仅携带短登录 ID、state 或 code，不能反复嵌套放大 URL。允许既定主站页面、含恰好两个合法参数的 `/auth/complete`、合法 Task 预览附件目标；拒绝外站和认证循环，保留原始 escaped path/query 与原登录目标内的 fragment。一般 SSO 目标遵守既有 24 KiB raw query / 48 KiB request target 边界，原登录内层 returnPath 仍受原 4096-byte 限制。
+
+失败页按 Accept-Language 提供中英文、可见错误、请求 ID、手动重新 SSO 和主站入口，不自动循环，不撤销已建立的主站会话。未登录时允许在新标签页登录后返回重试。所有响应 no-store、no-referrer，服务与代理日志排除 code/state 原值、Cookie 和秘密。并发 SSO 或账号切换造成两域 Cookie 不一致是已接受风险。
+
+裸预览 Host 仅提供 SSO；单层规范 Task/Goal UUID Host 只提供对应附件预览 GET/HEAD，畸形 preview Host 必须拒绝，不落回主站 API。未认证的 document/iframe GET 保存原目标并启动 SSO，子资源和 HEAD 返回非 HTML 错误；权限、资源或存储失败不启动 SSO。其他主站路由和 loopback 健康探针继续可用。真实浏览器须证明 Cookie 作用域、原目标恢复、未带回 Cookie 的停止与重试、主站会话保留及注销失效。
 
 ## CLI 设备授权
 
@@ -221,6 +258,8 @@ Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
 | `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
+| `POST /api/v1/teams/{teamId}/member-candidates/search` | 普通 Team admin；`expectedUserId,query`，可选 `limit,cursor` | `200`，既有账号资料分页 `{items,nextCursor,actorRole}` |
+| `POST /api/v1/teams/{teamId}/members/{userId}` | 普通 Team admin；`expectedUserId` | `200`，真实成员与资料回执 `{membership,added,actorRole:"admin"}` |
 | `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
 | `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
@@ -278,6 +317,8 @@ Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，
 修改角色。成功 membership 包含实际目标 UUID、Team UUID、角色、无损正 int64 版本和 UTC 时间。
 直接添加不推进 Team 元数据版本，不改变最后 admin 规则或独立 Project grant，不创建或消费邀请。
 
+普通 Team 的当前 admin 可按本地 UUID 直接添加既有账号：`POST /api/v1/teams/{teamId}/members/{userId}` 仅接受 `{expectedUserId}`，不接受 query、角色或资料。两个路径 ID 和主体必须为非零规范 UUID，主体必须匹配当前凭据；未知、重复、缺失、null、错误类型字段与非法 Unicode 明确拒绝。新关系固定为 member 并返回 added=true；已有 member 或 admin 返回 added=false 及原角色、版本和时间。回执的 membership 包含事务内保存的真实可空 profile，actorRole 为 admin。目标不存在返回 `404 user_not_found`，Team 缺失返回 `404 not_found`。该操作不初始化账号或 Personal Team、不创建或消费邀请、不推进 Team 元数据版本，也不改写 Project 独立授权。成员关系与 webhook eligibility 在同一事务提交，等待后重验当前凭据；仅确认提交后返回成功，未知结果不得自动重放。
+
 普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/members/resolve` 只读解析既有外部身份。
 请求仅接受 `{expectedUserId,user:{externalUserId}}`，拒绝 query、未知或重复字段以及 profile；
 Team 和 expectedUserId 必须是非零规范 UUID，expectedUserId 必须等于真实用户凭据的主体。
@@ -286,6 +327,10 @@ externalUserId 使用直接添加的身份校验和规范化规则。成功返�
 凭据失效、非 admin、Team 不存在、主体不匹配和 Personal Team 沿现有 401/403/404/409 拒绝，
 内部或事务完成失败不能返回成功。响应保留 `Daynight-User-ID` 和 `no-store`，不回显外部身份。
 此读取不创建用户、凭据或成员，不改变资料或角色；它不授权后续写入，角色变更仍须使用当前版本和权限检查。
+
+普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/member-candidates/search` 搜索全服务既有账号的姓名或邮箱字面片段。请求仅接受必需的 `expectedUserId`、`query` 和可选的 `limit`、`cursor`，不接受 query string；主体和 Team ID 为非零规范 UUID，主体必须匹配当前凭据。查询须为合法 UTF-8 且不含 NUL，裁切 Unicode 空白后最多 1024 bytes，ASCII 字母忽略大小写；空查询仍校验权限并返回空页，不能携带 cursor。limit 默认 20，范围 1–50；cursor 非空且最多 2048 bytes，并绑定主体、凭据、Team、规范化查询和 limit。未知、重复、缺失必需字段、null 或错误类型以及非法 Unicode 均拒绝。
+
+成功返回 `{items,nextCursor,actorRole}`，actorRole 为 `admin`；每项仅包含真实本地 `userId` 和必需的 `profile:{name,email,avatarUrl}`，资料字段可为 null。按 UUID 排序并按条分页，同名同邮箱的账号仍各自返回；静态数据可完整遍历，每页重新校验当前凭据与权限。分页间资料或账号变化不保证跨页快照一致。响应保留主体头与 `no-store`，查询、cursor 和资料不写入诊断日志。凭据失效、无权限、Team 缺失、主体不匹配或 Personal Team 分别沿用现有拒绝；无效输入或 cursor 返回 `400 invalid_input`，读取或清理失败不返回成功。
 
 角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
 过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的
@@ -307,11 +352,16 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 
 `POST /api/v1/projects/{projectId}/transfer` 接收必填
 `{ownership:{teamId,version},targetTeam:{id,version},expectedUserId}`。主体核对先于领域 SQL；
-提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
+REST 以唯一 header 值 `Daynight-Confirm-Goal-Dependency-Removal: true` 表达永久清理确认；省略代表未确认，其他字面值、空值、重复值或逗号列表均返回 `400 invalid_input`。请求体、预览与成功回执保持原结构，header 由 CORS allow-list 允许浏览器跨源提交。提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
 `409 version_conflict`，不可见项目或不存在目标返回 `404 not_found`，仅有 Project admin
 而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
 `changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
-身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+身份及所有 grant 和邀请。实际转移须明确确认永久清除项目内及跨项目两方向的全部 Goal 验收依赖；缺少确认且有边时返回 `400 invalid_input`，项目及关系保持原值，并提示更新客户端或更换入口。清理与转移原子提交，各受影响下游的关系修订推进一次，无关 Goal 边和普通 Task 历史边保留。同归属空操作保留所有边，无边请求沿用既有准入。转移预算十五秒；已确认未提交的拒绝和失败保留项目及关系，取消与提交故障沿用下述未知结果规则。版本耗尽时真实转移返回 `409 version_exhausted`。
+实际转移还检查目标普通或 Personal Team 的活跃仓库占用；同仓库已存在时返回
+`409 project_repository_conflict`，历史地址无可用仓库身份时返回
+`409 project_repository_identity_unavailable`。拒绝不改变 ownership、Project 版本与时间、
+grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的详情。成功转出释放来源 Team
+的占用；已在当前 Team 的无变化请求仍按上述权限及版本检查返回，不受历史 NULL 身份影响。
 
 成功回执 `{projectId,changed,sourceTeam,ownerTeam,ownership,actorAccess}` 只在确认提交后
 返回；`actorAccess:null` 表示操作者成功转移后失权。无法确认提交返回
@@ -325,6 +375,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 | 项目、任务、图、属性和成员名单读取 | 允许 | 允许 |
 | 任务元数据、依赖、属性、set-status 和附件管理 | 允许 | 允许 |
 | 邀请、移除成员、调整角色和撤销邀请 | 拒绝 | 允许 |
+| 按姓名或邮箱搜索既有账号候选 | 拒绝 | 允许 |
 | 项目提醒阈值修改 | 拒绝 | 允许 |
 
 新任务默认 proposed，创建可显式选择 proposed/todo；元数据 PATCH 不接受 status；set-status 使用
@@ -340,8 +391,44 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 `none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
 
 独立授权的新增、修改和移除由有效 Project admin 执行，可针对本人或其他 admin；不改变 Team 角色，
-也不要求保留 direct admin。新增目标必须已经是有效 ProjectParticipant，外部用户仍须本人接受邀请，
-不能通过任意用户 ID 加入项目。Team admin 即使有 direct member grant，有效角色仍为 admin。
+也不要求保留 direct admin。grants 路径的新增目标必须已经是有效 ProjectParticipant；项目外的既有账号
+可通过下述直接添加路径加入，其他人仍可本人接受邀请。Team admin 即使有 direct member grant，有效角色仍为 admin。
+
+有效 Project admin 可使用 `POST /api/v1/projects/{projectId}/members/{userId}` 直接添加既有账号。
+请求仅接受 `{expectedUserId}`，不接受 query、角色、资料、游标或版本；路径和主体必须是非零规范 UUID，
+主体必须匹配当前凭据。未知、重复、缺失、null、错误类型字段与非法 Unicode 均被拒绝。成功返回
+`200 {added,participant,actorAccess}`，participant 与成员名册单项一致，actorAccess 是事务中的当前主体访问。
+请求沿用用户凭据、Cookie 来源和 OAuth API audience、scope 与绑定校验；响应为 `no-store`，
+仅已建立真实主体的响应设置 `Daynight-User-ID`。无项目访问返回 `404 not_found`，普通成员返回 `403 forbidden`。
+无访问的目标获得独立 member grant；已有继承、独立或两种访问时返回 `added:false` 和实际来源、角色、版本及时间，
+不改写授权。目标不存在返回 `404 user_not_found`。此操作不创建账号、Team 成员或邀请；新增授权与 webhook
+eligibility 同事务提交，等待后重验权限及凭据，仅确认提交后返回成功。未知提交为 `503 write_outcome_unknown`，
+不得自动重放；后续读取只证明当前事实。该路径支持 POST、PATCH 和 DELETE，原有 PATCH、DELETE 合同保持不变。
+
+### 项目管理员候选搜索
+
+`POST /api/v1/projects/{projectId}/member-candidates/search` 允许有效 Project admin
+搜索全服务既有账号，包括从普通 Team 继承、仅有 Project 独立授权及 Personal Team
+所属项目的 admin。普通成员返回 `403 forbidden`，无项目访问或项目不存在返回
+`404 not_found`，两者均不能读取账号目录。搜索不创建账号、成员、授权或邀请，也不授予后续写入权限。
+
+请求仅接受必需的 `{expectedUserId,query}` 和可选的 `limit,cursor`，拒绝 query string、
+未知、重复、缺失必需字段、null、错误类型及非法 Unicode。项目和主体 ID 必须为规范非零 UUID；
+主体与真实凭据不匹配在领域查询前返回 `409 identity_mismatch`。查询为无 NUL 的合法 UTF-8，
+裁切 Unicode 空白后最多 1024 bytes，按姓名或邮箱字面子串匹配，仅 ASCII 字母忽略大小写。
+limit 默认 20，范围 1–50；cursor 非空且最多 2048 bytes。空查询仍校验凭据和有效 admin，
+返回空数组及 null 游标，不能携带 cursor。无效输入或游标返回 `400 invalid_input`。
+
+成功 200 返回 `{items,nextCursor,actorRole:"admin"}`。每项仅含 `userId` 和必需的
+`profile:{name,email,avatarUrl}`，三个资料字段均必填且可为 null；`nextCursor` 为字符串或 null。
+按 UUID 升序分页，同名账号分别返回。项目专用游标绑定项目、真实用户、凭据类别和 ID、
+规范化查询及页大小，与 Team 搜索游标不互通；游标只表示位置。每页在同一只读快照内重验
+当前凭据和有效 admin 后读取目录，跨页变化不保证全局快照。凭据失效返回 401，读取或快照清理
+失败不得交付部分目录或成功响应，也不产生未知写入状态。响应设置 `Cache-Control: no-store`，
+只有已建立真实主体的响应设置 `Daynight-User-ID`。查询、游标、姓名、邮箱、头像和凭据秘密
+不得进入诊断日志。Cookie 来源、API OAuth scope 和其他认证拒绝沿现有规则。
+
+### 独立授权与邀请
 
 `PUT /api/v1/projects/{projectId}/grants/{userId}` 接受
 `{version:null|正 int64,role:"member"|"admin",expectedUserId}`：null 要求 grant 不存在，
@@ -364,8 +451,10 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 原操作的成功回执。Team 关系与 Project grant 独立，撤销一种来源不能撤销另一种来源。
 
 创建 Project 接受原文 `name`、`repoUrl`、可选 `teamId` 和必填 `expectedUserId`。目标 Team 的
-当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。Project、真实 ownership 与
-creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
+当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。服务在目标 Team 范围内
+强制活跃仓库身份唯一，规则由[Project 需求](daynight-server.md#project)拥有。占用冲突返回
+`409 project_repository_conflict`，不创建 Project、ownership 或 grant；不同 Team 可分别创建。
+Project、内部仓库身份、真实 ownership 与 creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
 不可创建。客户端核对响应主体，不自动重放未知写入。成功返回 Project、ownership 和同一事务中
 新鲜的 access。CLI 未指定目标时使用当前身份的 Personal Team；Web 创建入口提交打开对话框时捕获的 Team。两者使用当前真实身份并保留有效名称与仓库地址原文。
 
@@ -451,7 +540,7 @@ access 成功而消失；普通权限刷新保持设置草稿和未知写入的�
 
 ## Web 交互与状态
 
-项目设置展示真实 owner Team，只有当前 owner Team admin 可以预览和确认转移；仅有 Project admin 不足以转出。目标可从已加入 Team 选择，或输入 UUID、同服务 Team 页面链接，无需目标成员资格。确认展示目标和转移后权限，独立授权与邀请保持。归属或目标版本冲突必须重新预览并确认；已派发操作的未知结果不能自动重发，后续 404 也不能证明成功。成功回执决定结果；仍有 access 时留在项目，失权时清除所属项目私有缓存，并按精确 source Team 访问结果选择原 Team 或 Personal。只有提交时的编辑器、草稿和导航上下文仍未改变，才关闭原对话框或自动导航；用户在请求期间返回、切换位置或开始新的编辑后，旧结果不得关闭新编辑器、清除新草稿或抢占导航。网络失败保留成功结果和可重试导航。已确认转移的缓存清理失败在对话框关闭或项目失权后仍可见并可重试；重复点击不得并发清理或重发转移。
+项目设置展示真实 owner Team，只有当前 owner Team admin 可以预览和确认转移；仅有 Project admin 不足以转出。目标可从已加入 Team 选择，或输入 UUID、同服务 Team 页面链接，无需目标成员资格。确认展示目标和转移后权限，独立授权与邀请保持。归属或目标版本冲突必须重新预览并确认。可信 HTTP 409 `project_repository_conflict` 在既有错误区域用中英文说明目标 Team 已有同一仓库的项目，`project_repository_identity_unavailable` 说明当前仓库地址无法识别，无法转移。两类拒绝保留输入、目标预览、打开的对话框和导航上下文，继续显示安全的 request ID；不显示成功或泄露冲突 Project 详情。其他错误沿用原分类与提示。已派发操作的未知结果不能自动重发，后续 404 也不能证明成功。成功回执决定结果；仍有 access 时留在项目，失权时清除所属项目私有缓存，并按精确 source Team 访问结果选择原 Team 或 Personal。只有提交时的编辑器、草稿和导航上下文仍未改变，才关闭原对话框或自动导航；用户在请求期间返回、切换位置或开始新的编辑后，旧结果不得关闭新编辑器、清除新草稿或抢占导航。网络失败保留成功结果和可重试导航。已确认转移的缓存清理失败在对话框关闭或项目失权后仍可见并可重试；重复点击不得并发清理或重发转移。
 
 项目设置的“成员与邀请”分组区分有效角色、Team 继承和单独授权。有效 Project admin 可为仅继承的现有
 participant 新增单独授权，或修改、移除真实 grant；操作前确认对象及权限变化。成功按
@@ -524,18 +613,14 @@ Project 删除保留原用户、项目与操作的派发事实和可信回执：
 语言只改变展示；输入、一次性秘密、成员观察版本、当前身份及进行中的请求保持，
 切换不触发请求重试或重复提交。
 
-## 同源附件
+## 附件预览隔离
 
-HTML 附件继续作为可信项目代码，拥有浏览者当前的主站权限。这沿用既有附件决策；
-项目授权验证每个服务端资源请求，不提供上传代码的执行沙箱。
-
-普通 iframe、图片、PDF、相对 CSS/JS/模块和 fetch 复用主站 Cookie。HEAD 和后续
-GET 都执行鉴权。会话失效返回明确的 401，不将登录 HTML 当成文件；Web 使用已有
-错误反馈引导重新登录。下载继续使用 attachment 语义，文件目录和内容不改写。
-详情对话框通过现有同源文档桥处理 Esc、Tab 和焦点，不增加预览会话或消息协议。
-
-继续一次一个文件、bucket/path 和原预算。文件系统与 PG 非原子性保留 K1，普通
-IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的文件操作。
+HTML 在 Task 或 Goal 专属预览 origin 执行，同一资源的附件同源，不与主站或其他
+Task 共享 origin。预览凭据关联既有主站会话，每个资源请求仍执行项目授权。
+普通 iframe 和相对 CSS/JS/模块、图片及 fetch 保留浏览器行为。主站 HEAD 继续
+鉴权；旧主站预览 GET 跳转到 Task origin，下载保留 attachment 与 nosniff。
+预览文档失效时可经 SSO 恢复，图片失败提供新标签 SSO 与普通重试；不建立
+跨源键盘桥。单文件操作、K1 和已准入传输的边界保持。
 
 ## 用户应用授权 API
 
@@ -606,6 +691,8 @@ HEAD 的资源仍拒绝 HEAD。请求头匹配大小写不敏感，业务 parser
 归档生产写入、上传准备和生产者上传回执读取不属于用户 CORS；它们的 OPTIONS 无凭据
 返回 403，不发送 CORS 头，不认证或预留上传。用户归档状态、content 和文件读取，以及
 用户图片上传保持用户 CORS。准备和生产者状态即使用 GET 仍需原 PAT owner upload admission。
+公开助手任务收件箱接收路由 `/api/v1/assistant-task-inbox/{inboxId}` 不属于用户 CORS，其 OPTIONS
+落入该路由的 405；接收契约见[助手任务收件箱规格](assistant-task-inbox.md)。
 CORS 不授予身份或资源权限；主站 Cookie 写 Origin、账号根及生产者凭据要求保持。
 S2S issuer 不提供浏览器 CORS，Public OAuth/MCP 保留原独立 CORS，静态资源和健康检查不受影响。
 公开签发和 API token 的 REST 准入分别由其认证入口负责。
@@ -639,13 +726,14 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 
 ## 配置与运行边界
 
-下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
+下列六项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
 对应环境变量显式设置时覆盖文件。App Secret 不下发到前端。
 数据库、存储根目录和既有生命周期配置继续遵守服务要求。
 
 | 配置 | 要求 |
 |---|---|
 | `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
+| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。除同一数字 loopback IP 不同端口的显式 HTTP 夹具外，两边 hostname 均须为小写、含点且无末尾点的 DNS 名称，并且不同；同一 DNS hostname 的不同端口不足以隔离 Cookie。显式 HTTP 测试可用同站 `.test` 或 `.localhost` 域名。hostname 非法时按主站优先归因到实际字段，保留校验阶段及 env/YAML 来源，错误不回显配置值。 |
 | `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
 | `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
 | `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
@@ -653,7 +741,7 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
-`/login`、`/auth/complete`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams` API 命名空间；
+`/login`、`/auth/complete`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams`、`/api/v1/auth/preview` 和 `/auth/sso` 命名空间；
 配置和启动验证必须先于路由注册拒绝冲突。已有 callback
 占用该命名空间时须更换路径并同步 UniAuth 登记值。不接受编码别名、
 路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口、完成页和实际 callback
@@ -680,10 +768,11 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| Team 管理、项目候选搜索、项目创建或转移、直接添加项目成员、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 直接添加的目标已是不同角色的 Team 成员 | 409 resource_conflict，成员版本与时间不变 |
 | 新增独立授权的目标不是有效 participant | 404 not_found |
+| 直接添加的目标账号不存在 | 404 user_not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有活跃 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；经核对的 no-op 仍有效 |
@@ -717,12 +806,12 @@ App Secret、一次性 code 或邀请秘密。
 | AU-V4 | member 可读写资源但不能管理授权；有效 admin 可撤销最后 direct admin，继承来源仍可管理；旧观察版本和删除重加 ABA 明确冲突，Team 关系不改写独立 grant。 |
 | AU-V5 | 邀请 GET/inspect 不消费；明确确认、过期、撤销、并发、已有成员和创建者离任符合规则。正式 Application 入口使用合成项目和 Team 邀请验证初始及后续应用/原生进入、首次请求前 fragment 清理、所有历史写入不含凭据、取消或离开后 Back 不恢复凭据；禁用 sessionStorage 时仍可检查邀请，终结后不再检查旧凭据；scope 切换、同标签重开、登录/401 续接、认证后临时副本清理与身份改变退休保持各自合同。清理不丢失有效应用历史的草稿准入，也不为复制 marker 的原生 fragment 补编号。 |
 | AU-V6 | 注销、PAT 撤销/到期、成员移除覆盖 Web、安装 CLI 和文件资源；已准入传输边界有证据。 |
-| AU-V7 | 同源可执行 HTML、脚本/模块/相对资源、直接预览、HEAD、图片/PDF、二进制下载、Esc/Tab/焦点及窄屏保持；未认证资源访问拒绝。 |
+| AU-V7 | Task origin 可执行 HTML、脚本/模块/相对资源、直接预览、主站 HEAD、图片/PDF 和二进制下载保持；验证不同 Task 与主站的隔离及未认证资源拒绝。 |
 | AU-V8 | 最终样式原型覆盖登录、设备授权、项目、成员、邀请、令牌、预览的成功/空/加载/失败/失效/禁用/长内容；英语和简体中文均遵守原型、双语 L1–L10、状态与请求保持要求。既有 project-grants 浏览器 fixture 通过正式 Application 的 Members 路径，在 700/768/800/1280px 验证表格滚动后的完整按钮、指针命中、确认删除及单次版本化请求；768/800px 保持侧栏展开，1280px 无多余表格溢出。 |
 | AU-V9 | 启用的同一版本通过原有适用 Go/CLI/Web/部署门禁、严格覆盖率、原生安装/补全、生产浏览器及资源预算。 |
 | AU-V10 | 独立登录的缺失/合法/非法目标、已有会话、历史、任务/文件/query、已知 callback 失败、邀请和设备账号切换、普通退出及失败重试保持上述连续性；公开首页不成为私有授权依据。 |
 | AU-V10 | 日志按请求/用户/项目关联登录、授权和错误；Cookie、PAT、App Secret、设备秘密、上游一次性 code 与邀请秘密不进入诊断或持久 URL；设备短码只用于核对和验证链接，不进入日志。 |
-| AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值，浏览器会话仍为七天。 |
+| AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值；浏览器会话验证主站与预览单侧后台使用跨过原期限、静默满 168 小时失效、锁等待后到期、续期与撤销/清理/预览换发并发、来源准入矩阵和新旧 Cookie 的实际保留。压力测试独立于 CI，记录并发预览与轮询的锁等待和 WAL。 |
 | AU-V14 | 直接添加在目标初始化前拒绝无权主体；独立初始化确认后再次核验权限、凭据与状态。同角色真实 PostgreSQL 收敛保留版本和时间，异角色无写；成员等待后的到期、并发撤权和 eligibility 失败回滚保持完整目标账号与成员阶段边界。正常集成入口通过真实 PAT 请求添加外部身份，并从后续目录读回实际目标 UUID、资料与成员版本和时间。 |
 | AU-V12 | Team 创建者 admin 原子性、本人过滤和跨账号 cursor、不可见/非 admin/Personal 拒绝、合法 Unicode 与原文空白、NUL/非法转义/全空白拒绝、重名、精确版本 no-op/冲突/耗尽、空删除与非空拒绝均有验证；真实 PostgreSQL 锁等待证明删除和 ownership 写入互斥，错误身份零领域 SQL，取消、回滚失败和未知 COMMIT 保持结果分类。 |
 

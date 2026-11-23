@@ -36,7 +36,6 @@ type WorkerDisk struct {
 
 type WorkerVersions struct {
 	Daynight string              `json:"daynight"`
-	Herdr    WorkerProbe[string] `json:"herdr"`
 	Codex    WorkerProbe[string] `json:"codex"`
 	Copilot  WorkerProbe[string] `json:"copilot"`
 }
@@ -106,6 +105,7 @@ type WorkerTaskSnapshot struct {
 }
 
 type WorkerSummary struct {
+	Alias                *Alias        `json:"alias,omitempty"`
 	WorkerID             string        `json:"workerId"`
 	Machine              WorkerMachine `json:"machine"`
 	Platform             string        `json:"platform"`

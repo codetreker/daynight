@@ -2,6 +2,8 @@ import { isConfigurationText, parseWorkerConfigurationValue, type WorkerConfigur
 import { canonicalId } from '../../../api/parse';
 import type { ExecutionPlatform, WorkerAgent } from '../../../api/types';
 import { parseToolPathChoice, type Tool, type WorkerCloudToolPaths } from '../../../api/worker-tool-paths';
+import { parseWorkerTaskTagFilter, taskTagFilterSemantics, type WorkerTaskTagFilter } from '../../../api/worker-task-tag-filter';
+import { normalizeTagName } from '../../../api/task-tags';
 
 export type NativeDraft = { readonly agent: WorkerAgent; readonly model: string; readonly args: string };
 export type ProjectNativeDraft = {
@@ -9,21 +11,35 @@ export type ProjectNativeDraft = {
   readonly argsMode: 'inherit' | 'clear' | 'custom'; readonly args: string;
 };
 export type ConfigurationDraft = {
-  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
+  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly platformTaskMode?: WorkerConfigurationValue['platformTaskMode']; readonly native: NativeDraft;
   readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
+  readonly archiveSessions?: boolean;
+  readonly enableSudoCleanup?: boolean | undefined;
+  readonly enableWindowsProcessCleanup?: boolean | undefined;
   readonly toolPaths?: WorkerCloudToolPaths;
+  readonly taskTagFilter?: WorkerTaskTagFilter & { readonly input: string };
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
 };
-export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode' | 'toolPath';
+export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode' | 'toolPath' | 'tagName';
 export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValue | null; readonly errors: Readonly<Record<string, DraftIssue>> };
-export type ConfigurationDraftOptions = { readonly toolPathsSupported?: boolean; readonly platform?: ExecutionPlatform };
+export type ConfigurationDraftOptions = { readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean; readonly platform?: ExecutionPlatform };
+export const configurationNumberRanges = {
+  maxConcurrent: { minimum: 1, maximum: 64 },
+  pollIntervalMs: { minimum: 1_000, maximum: 60_000 },
+  recoveryLimit: { minimum: 0, maximum: 10 },
+} as const;
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
-const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
+const tools: readonly Tool[] = ['codex', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
-  ...(value.agentControlMode === undefined ? {} : { agentControlMode: value.agentControlMode }),
+  ...(value.platformTaskMode === undefined ? {} : { platformTaskMode: value.platformTaskMode }),
+
+  ...(value.archiveSessions === undefined ? {} : { archiveSessions: value.archiveSessions }),
+  ...(value.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: value.enableSudoCleanup }),
+  ...(value.enableWindowsProcessCleanup === undefined ? {} : { enableWindowsProcessCleanup: value.enableWindowsProcessCleanup }),
   ...(value.toolPaths === undefined ? {} : { toolPaths: structuredClone(value.toolPaths) }),
+  ...(value.taskTagFilter === undefined ? {} : { taskTagFilter: { ...value.taskTagFilter, names: [...value.taskTagFilter.names], input: '' } }),
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
   projects: value.projects.map(project => ({ projectId: project.projectId, native: {
     agent: project.nativeOverrides.agent === undefined ? 'inherit' : project.nativeOverrides.agent,
@@ -35,14 +51,24 @@ export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDr
 });
 export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSupported = draft.agentControlMode !== undefined, options: ConfigurationDraftOptions = {}): ParsedConfigurationDraft => {
   const errors: Record<string, DraftIssue> = {};
+  let taskTagFilter: WorkerTaskTagFilter | undefined;
+  if (draft.taskTagFilter !== undefined) {
+    const { names, match, input } = draft.taskTagFilter;
+    const pending = input.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+    if (pending !== '' && normalizeTagName(input) === null) errors.taskTagFilter = 'tagName';
+    try { taskTagFilter = parseWorkerTaskTagFilter({ names: pending === '' ? names : [...names, input], match }); }
+    catch { errors.taskTagFilter = 'tagName'; }
+  }
   const toolPathsSupported = options.toolPathsSupported ?? draft.toolPaths !== undefined;
+  const archiveSessionsSupported = options.archiveSessionsSupported ?? draft.archiveSessions !== undefined;
   if (toolPathsSupported) for (const tool of tools) {
     const choice = draft.toolPaths?.[tool];
     if (choice === null) continue;
     try { parseToolPathChoice(choice, options.platform); }
     catch { errors[`toolPaths.${tool}`] = 'toolPath'; }
   }
-  const number = (raw: string, key: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number => {
+  const number = (key: keyof typeof configurationNumberRanges): number => {
+    const raw = draft[key], { minimum, maximum } = configurationNumberRanges[key];
     const value = Number(raw);
     if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < minimum || value > maximum) errors[key] = 'integer';
     return value;
@@ -59,7 +85,7 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     if (!Array.isArray(value) || !value.every(isConfigurationText)) { errors[key] = 'args'; return []; }
     return value as string[];
   };
-  const maxConcurrent = number(draft.maxConcurrent, 'maxConcurrent', 1), pollIntervalMs = number(draft.pollIntervalMs, 'pollIntervalMs', 1, 2_147_483_647), recoveryLimit = number(draft.recoveryLimit, 'recoveryLimit', 0);
+  const maxConcurrent = number('maxConcurrent'), pollIntervalMs = number('pollIntervalMs'), recoveryLimit = number('recoveryLimit');
   if (!agents.includes(draft.native.agent)) errors['native.agent'] = 'agent';
   if (controlModeSupported && draft.agentControlMode !== null && draft.agentControlMode !== 'herdr' && draft.agentControlMode !== 'web') errors.agentControlMode = 'controlMode';
   const native: WorkerConfigurationNative = { agent: draft.native.agent, model: model(draft.native.model, 'native.model', true), args: args(draft.native.args, 'native.args') };
@@ -77,28 +103,50 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     };
     return { projectId: project.projectId, nativeOverrides };
   });
-  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
-    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), native, projects }) : null, errors };
+  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, ...(draft.platformTaskMode === undefined ? { preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks } : { platformTaskMode: draft.platformTaskMode }),
+    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), ...(draft.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: draft.enableSudoCleanup }), ...(draft.enableWindowsProcessCleanup === undefined ? {} : { enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup }), ...(taskTagFilter === undefined ? {} : { taskTagFilter }), native, projects }) : null, errors };
 };
-const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths }>(source: T, includeControlMode: boolean, includeToolPaths: boolean) => {
-  const { agentControlMode, toolPaths, ...rest } = source;
-  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}) };
+const filterKey = (filter: ConfigurationDraft['taskTagFilter']): string | undefined => {
+  if (filter === undefined) return undefined;
+  const pending = filter.input.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+  try { return taskTagFilterSemantics({ names: pending === '' ? filter.names : [...filter.names, filter.input], match: filter.match }); }
+  catch { return JSON.stringify(filter); }
 };
-export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true): boolean =>
-  JSON.stringify(parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths))) === JSON.stringify(parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths)));
-export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true): boolean =>
-  JSON.stringify(projectedFields(left, includeControlMode, includeToolPaths)) === JSON.stringify(projectedFields(right, includeControlMode, includeToolPaths));
+const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly enableSudoCleanup?: boolean | undefined; readonly enableWindowsProcessCleanup?: boolean | undefined }>(source: T, includeControlMode: boolean, includeToolPaths: boolean, includeArchiveSessions: boolean, includeSudoCleanup: boolean, includeWindowsProcessCleanup: boolean) => {
+  const { agentControlMode, toolPaths, archiveSessions, enableSudoCleanup, enableWindowsProcessCleanup, ...rest } = source;
+  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}), ...(includeSudoCleanup && enableSudoCleanup !== undefined ? { enableSudoCleanup } : {}), ...(includeWindowsProcessCleanup && enableWindowsProcessCleanup !== undefined ? { enableWindowsProcessCleanup } : {}) };
+};
+export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true, includeWindowsProcessCleanup = true): boolean => {
+  const project = (value: WorkerConfigurationValue) => value.platformTaskMode === undefined ? value : Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'preferPlatformSpecificTasks'));
+  const a = parseWorkerConfigurationValue(project(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup)));
+  const b = parseWorkerConfigurationValue(project(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup)));
+  const { taskTagFilter: af, ...ar } = a, { taskTagFilter: bf, ...br } = b;
+  return JSON.stringify(ar) === JSON.stringify(br) && (af === undefined ? bf === undefined : bf !== undefined && taskTagFilterSemantics(af) === taskTagFilterSemantics(bf));
+};
+export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true, includeWindowsProcessCleanup = true): boolean => {
+  const { taskTagFilter: af, ...ar } = projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup);
+  const { taskTagFilter: bf, ...br } = projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup);
+  return JSON.stringify(ar) === JSON.stringify(br) && filterKey(af) === filterKey(bf);
+};
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
   // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
-  const baseline = { ...draftFromValue(desired), projects: [] };
+  const baseline = { ...draftFromValue(desired), projects: [],
+    maxConcurrent: String(configurationNumberRanges.maxConcurrent.minimum),
+    pollIntervalMs: String(configurationNumberRanges.pollIntervalMs.minimum),
+    recoveryLimit: String(configurationNumberRanges.recoveryLimit.minimum),
+  };
   const native = parseConfigurationDraft({ ...baseline, native: draft.native }, undefined, { toolPathsSupported: false }).value?.native;
   const projects = new Map(desired.projects.map(project => [project.projectId, project.nativeOverrides]));
   return {
     maxConcurrent: errors.maxConcurrent !== undefined || Number(draft.maxConcurrent) !== desired.maxConcurrent,
     pollIntervalMs: errors.pollIntervalMs !== undefined || Number(draft.pollIntervalMs) !== desired.pollIntervalMs,
     recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
-    preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
+    preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks || desired.platformTaskMode !== undefined && draft.platformTaskMode !== desired.platformTaskMode,
+    archiveSessions: draft.archiveSessions !== desired.archiveSessions,
+    enableSudoCleanup: draft.enableSudoCleanup !== desired.enableSudoCleanup,
+    enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup !== desired.enableWindowsProcessCleanup,
     agentControlMode: errors.agentControlMode !== undefined || draft.agentControlMode !== desired.agentControlMode,
+    taskTagFilter: errors.taskTagFilter !== undefined || filterKey(draft.taskTagFilter) !== filterKey(desired.taskTagFilter === undefined ? undefined : { ...desired.taskTagFilter, input: '' }),
     toolPaths: Object.fromEntries(tools.map(tool => [tool, errors[`toolPaths.${tool}`] !== undefined || JSON.stringify(draft.toolPaths?.[tool]) !== JSON.stringify(desired.toolPaths?.[tool])])) as Readonly<Record<Tool, boolean>>,
     native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),
     projects: new Map(draft.projects.map(project => {
@@ -117,7 +165,11 @@ export const resolvedProjectNative = (global: WorkerConfigurationNative, overrid
 };
 export const mergeConfigurationResources = (current: WorkerConfigurationResource | null, incoming: WorkerConfigurationResource): WorkerConfigurationResource => {
   if (current === null) return incoming;
-  const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision)) ? current.desired : incoming.desired;
+  const currentValue = current.desired?.value, incomingValue = incoming.desired?.value;
+  const currentHasMore = current.desired?.revision === incoming.desired?.revision && currentValue !== undefined && incomingValue !== undefined &&
+    (incomingValue.platformTaskMode === undefined || currentValue.platformTaskMode !== undefined) && (incomingValue.agentControlMode === undefined || currentValue.agentControlMode !== undefined) && (incomingValue.toolPaths === undefined || currentValue.toolPaths !== undefined) && (incomingValue.archiveSessions === undefined || currentValue.archiveSessions !== undefined) &&
+    (currentValue.platformTaskMode !== undefined && incomingValue.platformTaskMode === undefined || currentValue.agentControlMode !== undefined && incomingValue.agentControlMode === undefined || currentValue.toolPaths !== undefined && incomingValue.toolPaths === undefined || currentValue.archiveSessions !== undefined && incomingValue.archiveSessions === undefined);
+  const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision) || currentHasMore) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.document === undefined ? {} : { document: incoming.document }), ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(incoming.archiveSessionsSupported === true ? { archiveSessionsSupported: true } : {}), ...(incoming.platformTaskModeSupported === true ? { platformTaskModeSupported: true } : {}) };
 };

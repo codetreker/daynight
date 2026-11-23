@@ -230,6 +230,7 @@ func TestResourceListsPassExactQueryAndReturnLookaheadCursor(t *testing.T) {
 				next, err = page.NextCursor, e
 			case "events", "global-events":
 				input.TargetBotID = botID
+				d.retrospectiveTasks = noRetrospectives
 				d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
 				d.events = func(_ context.Context, q store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 					check(q)

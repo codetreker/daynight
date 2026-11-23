@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -32,42 +34,56 @@ func waitProjectDeletionWitnessBlock(t *testing.T, ctx context.Context, database
 }
 
 func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	taskNumber := 10
 	for _, operation := range []string{"claim", "thread"} {
 		for _, deletionFirst := range []bool{false, true} {
 			for _, taskDeleted := range []bool{false, true} {
 				if taskDeleted && (operation != "thread" || !deletionFirst) {
 					continue
 				}
-				t.Run(fmt.Sprintf("%s/deletion-first=%t/deleted-task=%t", operation, deletionFirst, taskDeleted), func(t *testing.T) {
-					database, principal, _, project := membershipFixture(t)
-					task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+				taskNumber++
+				if !t.Run(fmt.Sprintf("%s/deletion-first=%t/deleted-task=%t", operation, deletionFirst, taskDeleted), func(t *testing.T) {
+					principal, _, project := testutil.ProjectMembershipFixture(t, database)
+					task := queryTask(t, database, project.ID, taskNumber, model.TaskTodo)
 					if taskDeleted {
 						mustQueryExec(t, database, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, task.ID)
 					}
 					ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 					defer cancel()
-					target := `BEFORE UPDATE OF deleted_at ON projects`
+					table, event, column, id := "projects", "UPDATE OF deleted_at", "id", project.ID
 					if !deletionFirst && operation == "claim" {
-						target = `BEFORE INSERT ON task_properties`
+						table, event, column, id = "task_properties", "INSERT", "task_id", task.ID
 					} else if !deletionFirst {
-						target = `BEFORE INSERT ON task_thread_messages`
+						table, event, column, id = "task_thread_messages", "INSERT", "task_id", task.ID
 					}
+					const trigger = "block_project_deletion_witness"
+					target := fmt.Sprintf("BEFORE %s ON %s FOR EACH ROW WHEN (NEW.%s='%s'::uuid)", event, table, column, id)
 					mustQueryExec(t, database, `CREATE FUNCTION block_project_deletion_witness() RETURNS trigger LANGUAGE plpgsql AS $$
  BEGIN PERFORM pg_advisory_xact_lock(13629020); RETURN NEW; END $$;
- CREATE TRIGGER block_project_deletion_witness `+target+` FOR EACH ROW EXECUTE FUNCTION block_project_deletion_witness()`)
-					locker, err := database.Pool.Acquire(ctx)
+ CREATE TRIGGER block_project_deletion_witness `+target+` EXECUTE FUNCTION block_project_deletion_witness()`)
+					locker, err := database.Pool.Begin(ctx)
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer locker.Release()
-					if _, err := locker.Exec(ctx, `SELECT pg_advisory_lock(13629020)`); err != nil {
+					var writers sync.WaitGroup
+					defer func() {
+						cancel()
+						cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+						defer stop()
+						if err := locker.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+							t.Errorf("release deletion witness lock: %v", err)
+						}
+						writers.Wait()
+					}()
+					if _, err := locker.Exec(ctx, `SELECT pg_advisory_xact_lock(13629020)`); err != nil {
 						t.Fatal(err)
 					}
-					defer locker.Exec(context.Background(), `SELECT pg_advisory_unlock(13629020)`)
 					activeClaim := errors.New("fresh deletion scope observed active worker claim")
 					mutation, deletion := make(chan error, 1), make(chan error, 1)
 					startMutation := func() {
-						go func() {
+						writers.Go(func() {
 							if operation == "thread" {
 								_, _, err := threadWitnessAppend(ctx, database, principal, project.ID, task.ID, "retained message", nil)
 								mutation <- err
@@ -85,10 +101,10 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 								return err
 							})
 							mutation <- err
-						}()
+						})
 					}
 					startDeletion := func() {
-						go func() {
+						writers.Go(func() {
 							_, err := database.WriteProjectDeletion(ctx, project.ID, func(scope store.ProjectDeletionScope) error {
 								if _, err := scope.ProjectDAO().Authorization(ctx, principal); err != nil {
 									return err
@@ -108,7 +124,7 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 								return err
 							})
 							deletion <- err
-						}()
+						})
 					}
 					if deletionFirst {
 						startDeletion()
@@ -122,11 +138,14 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 						startDeletion()
 					}
 					waitProjectDeletionWitnessBlock(t, ctx, database, firstPID)
-					if _, err := locker.Exec(ctx, `SELECT pg_advisory_unlock(13629020)`); err != nil {
+					if err := locker.Rollback(ctx); err != nil {
 						t.Fatal(err)
 					}
 					mutationErr := receiveQueryResult(t, ctx, mutation)
 					deletionErr := receiveQueryResult(t, ctx, deletion)
+					writers.Wait()
+					mustQueryExec(t, database, "DROP TRIGGER "+trigger+" ON "+table+"; DROP FUNCTION "+trigger+"()")
+					assertFaultTriggerRemoved(t, database, trigger, table)
 					if deletionFirst {
 						if deletionErr != nil || !errors.Is(mutationErr, model.ErrNotFound) {
 							t.Fatalf("deletion did not exclude later mutation: deletion=%v mutation=%v", deletionErr, mutationErr)
@@ -158,13 +177,17 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 							t.Fatalf("claim escaped transaction order: version=%d worker=%v error=%v", version, worker, err)
 						}
 					}
-				})
+				}) {
+					return
+				}
+				testutil.AssertPoolReusable(t, database.Pool)
 			}
 		}
 	}
 }
 
 func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -207,6 +230,7 @@ func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
 }
 
 func TestProjectDeletionAuthorizationAfterTransferAndReturn(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, original, other, project := membershipFixture(t)
 	ctx := t.Context()
 	target, err := testCreateTeam(database, ctx, other.UserID, uuid.NewString(), "Destination")

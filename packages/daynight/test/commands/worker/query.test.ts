@@ -14,7 +14,7 @@ const machine = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Machine 中
 const observedAt = "2026-11-04T10:00:00Z";
 const summary = { workerId, machine, platform: "macos", lastReportedAt: "2026-11-04T09:59:30Z", taskObservationState: "unavailable", taskObservedAt: null, activeTaskCount: null };
 const probe = { state: "error", checkedAt: observedAt, code: "unavailable" };
-const telemetry = { machine, platform: "macos", workingDirectory: "/ordinary/directory", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", herdr: { state: "not_running", checkedAt: observedAt }, codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe } };
+const telemetry = { machine, platform: "macos", workingDirectory: "/ordinary/directory", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe } };
 const detail = { observedAt, worker: { ...summary, telemetry, inventoryObservedAt: null, tasks: [] } };
 const page = { observedAt, items: [summary], nextCursor: null };
 const context = () => ({ version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("Unexpected home access"); }), workingDirectory: vi.fn(() => { throw new Error("Unexpected cwd access"); }), stdout: vi.fn(), stderr: vi.fn(), stdoutBytes: vi.fn(async () => {}) });
@@ -61,7 +61,7 @@ describe("remote worker observed telemetry", () => {
     { provider: "copilot", available: false, reason: "unsupported_arguments", model: null, args: [] },
   ] };
   const complete = { observedAt, worker: { ...summary, taskObservationState: "observed", taskObservedAt: observedAt, activeTaskCount: 1, inventoryObservedAt: observedAt, tasks: [task], telemetry: {
-    ...telemetry, assistantHost: host, os: ok({ type: "Darwin", release: "25", version: "25.1", arch: "arm64" }), cpu: ok({ model: "CPU", logicalProcessors: 4, usagePercent: 12.5 }), memory: ok({ usedBytes: 40, totalBytes: 100 }), disk: ok({ availableBytes: 60, totalBytes: 100 }), versions: { daynight: "0.41.0", herdr: ok("0.10.0"), codex: ok("1.0.0"), copilot: ok("1.0.0") },
+    ...telemetry, assistantHost: host, os: ok({ type: "Darwin", release: "25", version: "25.1", arch: "arm64" }), cpu: ok({ model: "CPU", logicalProcessors: 4, usagePercent: 12.5 }), memory: ok({ usedBytes: 40, totalBytes: 100 }), disk: ok({ availableBytes: 60, totalBytes: 100 }), versions: { daynight: "0.41.0", codex: ok("1.0.0"), copilot: ok("1.0.0") },
   } } };
   it("preserves successful probes, assistant preflight and authorized task observations", () => {
     const parsed = parseWorkerDetail(complete, workerId);
@@ -114,7 +114,7 @@ describe("remote worker rendering", () => {
     expect(output).toContain("Task inventory: unavailable");
     expect(output).toContain("Active tasks: unknown");
     expect(output).toContain("Assistant hosting: unsupported (not reported)");
-    expect(output).toContain("Herdr: not_running");
+    expect(output).not.toContain("Herdr:");
     expect(output).toContain("Codex: not_installed");
     expect(output).not.toContain("idle");
     expect(output).toContain(`Observed: ${observedAt}`);

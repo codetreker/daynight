@@ -105,11 +105,12 @@ func (s *Deletions) cleanSessionResourcesUsing(ctx context.Context, p model.Prin
 			if e != nil {
 				return e
 			}
-			// The exact filesystem lock was acquired before the durable lease existed.
-			// Holding it now proves every previous owner exited, even after a crash.
-			completion, e = s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
-				return scope.SessionDAO().(store.SessionResourceDAO).ReleaseSessionResourceLease(ctx, session.ID, lease.ID)
+			// The previous owner held this exact gate before inserting its durable lease.
+			gateCtx, cancelGate := filestorage.GateContext(ctx, gate)
+			completion, e = s.writer.WriteSession(gateCtx, func(scope store.SessionScope) error {
+				return scope.SessionDAO().(store.SessionResourceDAO).ReleaseSessionResourceLease(gateCtx, session.ID, lease.ID)
 			})
+			cancelGate()
 			e = errors.Join(e, gate.Close())
 			if e != nil {
 				return e

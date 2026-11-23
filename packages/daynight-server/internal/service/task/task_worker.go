@@ -2,14 +2,22 @@ package task
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
 
 func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.ClaimWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerClaim)
+	if err := taskcore.ValidateTaskTagFilterKey(input.TaskTagFilterKey); err != nil {
+		return model.Task{}, err
+	}
 	descriptor, err := taskcore.CanonicalWorkerDescriptor(input.WorkerDescriptor)
 	if err != nil {
 		return model.Task{}, err
@@ -17,11 +25,32 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 	if err := taskcore.RequireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+	return s.versionedWriteTaggedWithLocks(ctx, principal, projectID, id, input.Version, nil, false, true, nil, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
 		if err := taskcore.ClaimAdmission(current, principal.UserID, descriptor); err != nil {
 			return taskcore.Mutation{}, err
 		}
 		if err := taskcore.ClaimParentAdmission(ctx, tx.TaskDAO(), current); err != nil {
+			return taskcore.Mutation{}, err
+		}
+		desired, err := tx.WorkerClaimAdmissionDAO().ClaimWorkerConfiguration(ctx, principal.UserID, descriptor.WorkerID)
+		if err != nil {
+			return taskcore.Mutation{}, err
+		}
+		if err := tx.WorkerClaimAdmissionDAO().CheckWorkerExecution(ctx, principal.UserID, descriptor.WorkerID); err != nil {
+			return taskcore.Mutation{}, err
+		}
+		filter := model.TagNameFilter{Names: []string{}, Match: "any"}
+		if desired != nil {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(desired.Raw, &fields); err != nil || fields == nil || len(fields["taskTagFilter"]) == 0 {
+				return taskcore.Mutation{}, fmt.Errorf("stored Worker task tag filter is missing or invalid")
+			}
+			filter, err = workercore.ParseTaskTagFilter(fields["taskTagFilter"])
+			if err != nil {
+				return taskcore.Mutation{}, fmt.Errorf("stored Worker task tag filter is invalid")
+			}
+		}
+		if err := taskcore.ClaimTagAdmission(current, filter, input.TaskTagFilterKey); err != nil {
 			return taskcore.Mutation{}, err
 		}
 		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
@@ -29,6 +58,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 }
 
 func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerReport)
 	claimID, err := taskcore.ValidateWorkerUpdate(input)
 	if err != nil {
 		return model.Task{}, err
@@ -59,6 +89,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.ReleaseWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerRelease)
 	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err
@@ -83,6 +114,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 }
 
 func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.WithdrawWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerRelease)
 	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err

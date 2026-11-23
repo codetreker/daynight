@@ -18,6 +18,7 @@ import (
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -33,6 +34,12 @@ type OAuthAuthenticator interface {
 	AuthenticateAccess(context.Context, string, string) (store.OAuthAccessIdentity, error)
 }
 
+// ScopedAuthenticator authenticates the bearer and returns the current policy
+// snapshot and its persistent authority in the same admission operation.
+type ScopedAuthenticator interface {
+	AuthenticateScoped(context.Context, model.CredentialKind, string, string) (model.CredentialAuthorization, AuthorityRef, error)
+}
+
 type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent) error
 
 type AuthorityRef struct {
@@ -41,6 +48,7 @@ type AuthorityRef struct {
 }
 type RequestActor struct {
 	Principal     model.Principal
+	Authorization *model.CredentialAuthorization
 	AuthorityRef  AuthorityRef
 	RequestID     string
 	Context       context.Context
@@ -53,13 +61,14 @@ type RequestActor struct {
 
 type scopeKey struct{}
 type requestScope struct {
-	actor    RequestActor
-	mu       sync.Mutex
-	httpDone bool
-	handlers int
-	releases []func()
-	batchKey string
-	batchIDs map[string]batchRPCID
+	actor        RequestActor
+	mu           sync.Mutex
+	httpDone     bool
+	handlers     int
+	releases     []func()
+	historyLease io.Closer
+	batchKey     string
+	batchIDs     map[string]batchRPCID
 }
 
 func (s *requestScope) begin()     { s.mu.Lock(); s.handlers++; s.mu.Unlock() }
@@ -70,12 +79,24 @@ func (s *requestScope) hold(release func()) {
 	s.releases = append(s.releases, release)
 	s.mu.Unlock()
 }
+func (s *requestScope) holdHistory(lease io.Closer, release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.historyLease = lease
+	s.releases = append(s.releases, release)
+}
+func (s *requestScope) retainedHistory() io.Closer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.historyLease
+}
 func (s *requestScope) finish() {
 	if s.httpDone && s.handlers == 0 {
 		for _, release := range s.releases {
 			release()
 		}
 		s.releases = nil
+		s.historyLease = nil
 	}
 }
 
@@ -84,6 +105,9 @@ type Entry struct {
 	http            http.Handler
 	auth            Authenticator
 	oauth           OAuthAuthenticator
+	scopedAuth      ScopedAuthenticator
+	scopedTools     map[string]bool
+	toolNames       map[string]bool
 	observeUsage    ObserveUsage
 	resource        string
 	manual          string
@@ -99,6 +123,32 @@ type Entry struct {
 	stopped         bool
 	drained         chan struct{}
 	active          sync.WaitGroup
+}
+
+// EnableScopedAuthentication must be called before tools are registered or
+// requests are served. Only tools registered with scoped adapters may execute.
+func (e *Entry) EnableScopedAuthentication(auth ScopedAuthenticator) error {
+	if e == nil || auth == nil || e.scopedAuth != nil {
+		return errors.New("scoped MCP authentication is required")
+	}
+	e.scopedAuth = auth
+	if e.scopedTools == nil {
+		e.scopedTools = make(map[string]bool)
+	}
+	return nil
+}
+
+// ValidateScopeCoverage prevents a partial public tool assembly from serving.
+func (e *Entry) ValidateScopeCoverage() error {
+	if e.scopedAuth == nil {
+		return errors.New("scoped MCP authentication is unavailable")
+	}
+	for name := range e.toolNames {
+		if !e.scopedTools[name] {
+			return errors.New("MCP tool has no credential scope admission: " + name)
+		}
+	}
+	return nil
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
@@ -248,8 +298,24 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	defer stop()
 	var p model.Principal
 	var authority AuthorityRef
+	var authorization *model.CredentialAuthorization
 	var err error
-	if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+	if e.scopedAuth != nil {
+		kind := model.PATCredential
+		if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+			kind = model.OAuthCredential
+		}
+		var current model.CredentialAuthorization
+		current, authority, err = e.scopedAuth.AuthenticateScoped(ctx, kind, parts[1], e.resource)
+		if err == nil {
+			p = current.Principal
+			if current.Validate() != nil || p.Kind != kind || (kind == model.PATCredential && (current.Profile != model.ScopedPATProfile || authority.Kind != "pat" || authority.ID != p.CredentialID)) || (kind == model.OAuthCredential && (current.Profile != model.ScopedMCPProfile || authority.Kind != "oauth" || authority.ID == "")) {
+				err = model.Unauthenticated(nil)
+			} else {
+				authorization = &current
+			}
+		}
+	} else if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
 		if e.oauth == nil {
 			err = model.Unauthenticated(nil)
 		} else {
@@ -276,7 +342,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		_ = e.observeUsage(ctx, source, event)
 		_ = httpx.PublishCredentialUsageFaults(e.logger, ctx)
 	}
-	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
+	s := &requestScope{actor: RequestActor{Principal: p, Authorization: authorization, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
 	historyRead := false
 	if r.Method == http.MethodPost {
@@ -310,8 +376,18 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	if historyRead {
 		bounded := &sessionReadResponseWriter{ResponseWriter: w}
 		e.http.ServeHTTP(&safeSDKWriter{ResponseWriter: bounded}, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
-		if err := bounded.finish(r); err != nil {
+		if err := bounded.finish(r, s.retainedHistory()); err != nil {
+			lost := errors.Is(err, filestorage.ErrGateLost)
+			if lost && !bounded.started && r.Context().Err() == nil {
+				s.delivered()
+				w.Header().Del("Content-Length")
+				httpx.WriteError(w, r, e.logger, "mcp", "session_read_delivery", &model.Fault{Code: "history_unavailable", Message: "The Session history is no longer available for this response.", Cause: err})
+				return
+			}
 			httpx.LogFailure(e.logger, r.Context(), "mcp", "session_read_delivery", err)
+			if lost && bounded.started {
+				panic(http.ErrAbortHandler)
+			}
 		}
 		return
 	}

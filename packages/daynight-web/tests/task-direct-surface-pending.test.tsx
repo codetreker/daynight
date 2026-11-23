@@ -31,7 +31,6 @@ const worker = { claimId: id, state: 'active', userId: TEST_VIEWER_ID, workerId:
 const task = detailFixture(projectId, taskId, { title: 'Parent', status: 'in_progress', startedAt: '2026-10-22T10:00:00Z', ready: false, properties: { worker } });
 const successor = detailFixture(projectId, otherId, { title: 'Successor', dependsOn: [taskId], blockedBy: [taskId], ready: false });
 const graph = graphFixture([task, successor]);
-const step = { id: '00000001', title: 'Step', description: '', status: 'todo', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T10:00:00Z' };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 let sessions: TaskDetailSessions;
 function Capture() { sessions = useTaskDetailSessions(); return null; }
@@ -43,10 +42,47 @@ function mount(fetcher: ReturnType<typeof vi.fn>) {
 }
 function resources(url: string) {
   if (url.endsWith('/access')) return resourceResponse(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'), TEST_VIEWER_ID);
-  if (url.endsWith('/steps')) return resourceResponse({ projectId, taskId, version: 1n, steps: [step] }, TEST_VIEWER_ID);
   if (url.includes('/task-graph')) return resourceResponse(graph, TEST_VIEWER_ID);
   return resourceResponse(task, TEST_VIEWER_ID);
 }
+it('removes copy admission and ignores a pending result after a forbidden detail refresh', async () => {
+  const clipboard = deferred<void>();
+  const write = vi.fn().mockReturnValue(clipboard.promise);
+  const testNavigator = Object.create(navigator) as Navigator;
+  Object.defineProperty(testNavigator, 'clipboard', { value: { writeText: write } });
+  vi.stubGlobal('navigator', testNavigator);
+  const retry = deferred<Response>();
+  let detailReads = 0;
+  const fetcher = vi.fn((url: string) => {
+    if (url.endsWith(`/tasks/${taskId}`)) {
+      detailReads++;
+      if (detailReads === 2) return Promise.resolve(denied());
+      if (detailReads === 3) return retry.promise;
+    }
+    return Promise.resolve(resources(url));
+  });
+  mount(fetcher);
+  await screen.findByRole('heading', { name: 'Parent' });
+  const trigger = screen.getByRole('button', { name: 'More task actions' });
+  fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(detailReads).toBeGreaterThan(1));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).error).not.toBeNull());
+  fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => clipboard.resolve());
+  expect(screen.queryByText('Link copied')).toBeNull();
+  fireEvent.click(trigger);
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(detailReads).toBe(3));
+  fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => retry.resolve(denied()));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).error).not.toBeNull());
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeEnabled());
+});
 it('aborts a delayed relationship read during a parent write and retries after a 403', async () => {
   const graphRead = deferred<Response>(); const write = deferred<Response>(); let graphs = 0; let writes = 0;
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
@@ -65,80 +101,32 @@ it('aborts a delayed relationship read during a parent write and retries after a
   expect(await screen.findByRole('button', { name: /Successor/ })).toBeVisible();
   expect(screen.getByTestId('session-current')).toHaveTextContent('true');
 });
-it('keeps Session qualified during an in-flight Step write while locking task writes', async () => {
-  const write = deferred<Response>(); let writes = 0;
+it('retires copy after a forbidden reconciliation until a fresh read succeeds', async () => {
+  const clipboard = deferred<void>(); const parent = deferred<Response>(); const retry = deferred<Response>(); let reads = 0;
+  const testNavigator = Object.create(navigator) as Navigator;
+  Object.defineProperty(testNavigator, 'clipboard', { value: { writeText: vi.fn().mockReturnValue(clipboard.promise) } });
+  vi.stubGlobal('navigator', testNavigator);
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') { writes++; return write.promise; }
+    if (init?.method === 'PUT') return Promise.reject(new Error('connection lost'));
+    if (url.endsWith(`/tasks/${taskId}`)) return ++reads === 1 ? Promise.resolve(resources(url)) : reads === 2 ? parent.promise : retry.promise;
     return Promise.resolve(resources(url));
   });
   mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
-  await waitFor(() => expect(writes).toBe(1));
-  expect(screen.getByTestId('session-current')).toHaveTextContent('true');
-  expect(sessions.captureDirectQualification(projectId, taskId)).not.toBeNull();
-  expect(sessions.canSetStepStatus(projectId, taskId)).toBe(false);
-  await act(async () => write.resolve(denied())); unsubscribe();
+  const trigger = screen.getByRole('button', { name: 'More task actions' });
+  fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  act(() => sessions.setStatus(projectId, taskId, 'done', 1n));
+  await waitFor(() => expect(reads).toBe(2));
+  await act(async () => parent.resolve(denied()));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.reconciliationError).not.toBeNull());
+  fireEvent.click(trigger); expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => clipboard.resolve()); expect(screen.queryByText('Link copied')).toBeNull();
+  fireEvent.click(trigger); act(() => sessions.reconcile(projectId, taskId));
+  await waitFor(() => expect(reads).toBe(3)); fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => retry.resolve(resources(`/tasks/${taskId}`)));
+  await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeEnabled());
 });
-it('keeps Session available while a confirmed Step write reconciles, but suspends it if the parent read fails', async () => {
-  const parent = deferred<Response>(); const retry = deferred<Response>(); let parentReads = 0; let writes = 0;
-  const fetcher = vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') { writes++; return Promise.resolve(resourceResponse({ projectId, taskId, version: 2n, steps: [{ ...step, status: 'done' }] }, TEST_VIEWER_ID)); }
-    if (url.endsWith(`/tasks/${taskId}`)) return ++parentReads === 1 ? Promise.resolve(resources(url)) : parentReads === 2 ? parent.promise : retry.promise;
-    return Promise.resolve(resources(url));
-  });
-  mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
-  await waitFor(() => expect(writes).toBe(1)); await waitFor(() => expect(parentReads).toBe(2));
-  await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ phase: 'confirmed', reconciling: true }));
-  expect(screen.getByTestId('session-current')).toHaveTextContent('true');
-  await act(async () => parent.resolve(wireResponse({ error: { code: 'internal_error', message: 'read failed', requestId: 'failed' } }, { status: 503, headers: viewerHeaders(TEST_VIEWER_ID) })));
-  await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('false'));
-  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
-  await waitFor(() => expect(parentReads).toBe(3));
-  expect(screen.getByTestId('session-current')).toHaveTextContent('false');
-  await act(async () => retry.resolve(resourceResponse({ ...task, version: 2n }, TEST_VIEWER_ID)));
-  await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('true'));
-  unsubscribe();
-});
-it('keeps Session available after a lost Step receipt while reconciliation is pending', async () => {
-  const parent = deferred<Response>(); let parentReads = 0; let writes = 0;
-  const fetcher = vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') { writes++; return Promise.reject(new Error('connection lost')); }
-    if (url.endsWith(`/tasks/${taskId}`)) return ++parentReads === 1 ? Promise.resolve(resources(url)) : parent.promise;
-    return Promise.resolve(resources(url));
-  });
-  mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
-  await waitFor(() => expect(writes).toBe(1)); await waitFor(() => expect(parentReads).toBe(2));
-  expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ phase: 'unknown', reconciling: true });
-  expect(screen.getByTestId('session-current')).toHaveTextContent('true');
-  expect(sessions.captureDirectSessionQualification(projectId, taskId)).not.toBeNull();
-  await act(async () => parent.resolve(resources(`/tasks/${taskId}`))); unsubscribe();
-});
-it('keeps the reopened Session usable while an earlier Step write remains in flight', async () => {
-  const write = deferred<Response>(); let writes = 0;
-  const fetcher = vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') { writes++; return write.promise; }
-    return Promise.resolve(resources(url));
-  });
-  mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n)); await waitFor(() => expect(writes).toBe(1));
-  act(() => { sessions.releaseRead(projectId, taskId); sessions.openDirect(projectId, taskId); });
-  await waitFor(() => expect(sessions.snapshot(projectId, taskId)).toMatchObject({ status: 'ready', detail: { title: 'Parent' } }));
-  await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('true'));
-  expect(sessions.captureDirectSessionQualification(projectId, taskId)).not.toBeNull();
-  expect(sessions.canSetStepStatus(projectId, taskId)).toBe(false);
-  await act(async () => write.resolve(denied())); unsubscribe();
-});
-it('suspends a reopened Session after retired Step 404 parent verification fails until a fresh parent succeeds', async () => {
+it('suspends a reopened Session after retired Task 404 parent verification fails until a fresh parent succeeds', async () => {
   const write = deferred<Response>(); const retry = deferred<Response>(); let parentReads = 0; let writes = 0; let failParent = false; let failed = false;
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
     if (init?.method === 'PUT') { writes++; return write.promise; }
@@ -150,21 +138,19 @@ it('suspends a reopened Session after retired Step 404 parent verification fails
     return Promise.resolve(resources(url));
   });
   mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n)); await waitFor(() => expect(writes).toBe(1));
+  act(() => sessions.setStatus(projectId, taskId, 'done', 1n)); await waitFor(() => expect(writes).toBe(1));
   act(() => { sessions.releaseRead(projectId, taskId); sessions.openDirect(projectId, taskId); });
   await waitFor(() => expect(parentReads).toBeGreaterThanOrEqual(2)); await waitFor(() => expect(sessions.snapshot(projectId, taskId)).toMatchObject({ status: 'ready', detail: { title: 'Parent' } }));
-  await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('true'));
+  expect(screen.getByTestId('session-current')).toHaveTextContent('false');
   failParent = true;
-  await act(async () => write.resolve(wireResponse({ error: { code: 'not_found', message: 'missing step', requestId: 'missing' } }, { status: 404, headers: viewerHeaders(TEST_VIEWER_ID) })));
-  await waitFor(() => expect(failed).toBe(true)); await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('false'));
+  await act(async () => write.resolve(wireResponse({ error: { code: 'not_found', message: 'missing task', requestId: 'missing' } }, { status: 404, headers: viewerHeaders(TEST_VIEWER_ID) })));
+  await waitFor(() => expect(failed).toBe(true));
+  expect(sessions.captureDirectSessionQualification(projectId, taskId)).toBeNull();
   const beforeRetry = parentReads;
   act(() => sessions.load(projectId, taskId, 1, 'refresh')); await waitFor(() => expect(parentReads).toBeGreaterThan(beforeRetry));
-  expect(screen.getByTestId('session-current')).toHaveTextContent('false');
+  expect(sessions.captureDirectSessionQualification(projectId, taskId)).toBeNull();
   await act(async () => retry.resolve(resources(`/tasks/${taskId}`)));
   await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('true'));
-  unsubscribe();
 });
 
 function CatalogueProbe() {
@@ -443,58 +429,6 @@ it.each(['access', 'identity'] as const)('withdraws an open task confirmation wh
   const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
   try {
     await screen.findByRole('button', { name: /Successor/ }); openTaskReview('status');
-    act(() => { resume = pauseAuthRequests(); setChecking(true); });
-    if (retirement === 'access') act(() => scope.suspendProject(projectId));
-    else await act(async () => { await scope.invalidateScope(); });
-    expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
-  } finally { resume?.(); view.unmount(); scope.dispose(); }
-});
-it('retains Step status and actions menus and deletion confirmation across identity verification without writes', async () => {
-  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
-  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
-  const pause = () => act(() => { resume = pauseAuthRequests(); setChecking(true); });
-  const unpause = () => act(() => { resume?.(); resume = undefined; setChecking(false); });
-  try {
-    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
-    const trigger = await screen.findByRole('button', { name: /Status for Step/ });
-    await waitFor(() => expect(trigger).toHaveAttribute('aria-disabled', 'false'));
-    fireEvent.click(trigger); const menu = screen.getByRole('menu', { name: 'Status for Step' });
-    const done = screen.getByRole('menuitemradio', { name: 'Done' }); act(() => done.focus()); expect(done).toHaveFocus();
-    const statusBlur = vi.fn(); done.addEventListener('focusout', statusBlur);
-    pause(); expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
-    expect(done).toHaveFocus(); expect(done).toBeEnabled(); expect(done).toHaveAttribute('aria-disabled', 'true'); expect(statusBlur).not.toHaveBeenCalled();
-    fireEvent.click(done);
-    expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
-    unpause(); expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
-    fireEvent.keyDown(menu, { key: 'Escape' });
-    fireEvent.click(screen.getByRole('button', { name: 'More actions for Step' }));
-    const more = screen.getByRole('menu', { name: 'More actions for Step' });
-    const deletion = screen.getByRole('menuitem', { name: 'Delete step' }); act(() => deletion.focus()); expect(deletion).toHaveFocus();
-    const moveBlur = vi.fn(); deletion.addEventListener('focusout', moveBlur);
-    pause(); expect(screen.getByRole('menu', { name: 'More actions for Step' })).toBe(more);
-    expect(deletion).toHaveFocus(); expect(deletion).toBeEnabled(); expect(deletion).toHaveAttribute('aria-disabled', 'true'); expect(moveBlur).not.toHaveBeenCalled();
-    expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeDisabled();
-    fireEvent.click(deletion); expect(screen.queryByRole('alertdialog')).toBeNull();
-    fireEvent.keyDown(more, { key: 'Home' }); expect(screen.getByRole('menuitem', { name: 'Add before' })).toHaveFocus();
-    unpause(); expect(screen.getByRole('menu', { name: 'More actions for Step' })).toBe(more);
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete step' }));
-    const confirmation = screen.getByRole('alertdialog'); const submit = confirmation.querySelector<HTMLButtonElement>('.dialog-footer button:last-child')!;
-    pause(); expect(screen.getByRole('alertdialog')).toBe(confirmation); expect(submit).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(submit);
-    expect(screen.getByRole('alertdialog')).toBe(confirmation);
-    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
-    unpause(); await waitFor(() => expect(submit).toHaveAttribute('aria-disabled', 'false')); expect(screen.getByRole('alertdialog')).toBe(confirmation);
-  } finally { resume?.(); view.unmount(); scope.dispose(); }
-});
-it.each(['access', 'identity'] as const)('withdraws an open Step deletion confirmation on %s retirement', async retirement => {
-  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
-  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
-  try {
-    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
-    const trigger = await screen.findByRole('button', { name: 'More actions for Step' });
-    await waitFor(() => expect(trigger).toHaveAttribute('aria-disabled', 'false'));
-    await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-    fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Delete step' }));
     act(() => { resume = pauseAuthRequests(); setChecking(true); });
     if (retirement === 'access') act(() => scope.suspendProject(projectId));
     else await act(async () => { await scope.invalidateScope(); });

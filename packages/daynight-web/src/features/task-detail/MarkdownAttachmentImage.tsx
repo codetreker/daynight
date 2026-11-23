@@ -1,4 +1,6 @@
+import './markdown-attachment-image.css';
 import { useRef, useState, type ComponentPropsWithoutRef } from 'react';
+import { previewLoginUrl } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 
 export const MarkdownAttachmentImage = ({ remotePaused, ...props }: ComponentPropsWithoutRef<'img'> & { readonly remotePaused: boolean }) => {
@@ -16,7 +18,7 @@ export const MarkdownAttachmentImage = ({ remotePaused, ...props }: ComponentPro
       if (remotePaused) return;
       setRevision((value) => value + 1);
       setStatus('loading');
-    }}>{m.retryMarkdownImage}</button></span>
+    }}>{m.retryMarkdownImage}</button><a className="button" href={previewLoginUrl()} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>{m.previewSignIn}</a></span>
   </span>;
 
   return <img {...props} key={revision} ref={image} src={remotePaused && status !== 'ready' ? undefined : props.src}

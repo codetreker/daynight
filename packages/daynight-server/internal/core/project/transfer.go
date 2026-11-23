@@ -14,9 +14,10 @@ type TeamVersion struct {
 	Version int64
 }
 type TransferInput struct {
-	Ownership      model.ProjectOwnership
-	TargetTeam     TeamVersion
-	ExpectedUserID string
+	ConfirmGoalDependencyRemoval bool
+	Ownership                    model.ProjectOwnership
+	TargetTeam                   TeamVersion
+	ExpectedUserID               string
 }
 type TransferPreview struct {
 	SourceTeam, TargetTeam model.TeamRef
@@ -117,6 +118,16 @@ func Transfer(ctx context.Context, dao store.ProjectWriteDAO, p model.Principal,
 	if changed {
 		if ownership.Version == math.MaxInt64 {
 			return TransferReceipt{}, &model.Fault{Code: "version_exhausted", Message: "Project ownership version is exhausted."}
+		}
+		identity, identityErr := dao.RepositoryIdentity(ctx)
+		if identityErr != nil {
+			return TransferReceipt{}, identityErr
+		}
+		if identity == nil {
+			return TransferReceipt{}, &model.Fault{Code: "project_repository_identity_unavailable", Message: "The Project repository address cannot be identified for transfer."}
+		}
+		if err := requireRepositoryAvailable(ctx, dao, target, *identity); err != nil {
+			return TransferReceipt{}, err
 		}
 		ownership, err = dao.MoveOwnership(ctx, target)
 		if err != nil {

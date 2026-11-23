@@ -26,7 +26,7 @@ func monitorScope(project, task, claim string) map[string]any {
 	return map[string]any{"kind": "claim", "projectId": project, "taskId": task, "claimId": claim}
 }
 func monitorObservation() monitoring.Observation {
-	return monitoring.Observation{"admission": map[string]any{"reasons": []any{}}, "activities": []any{}, "reservations": []any{}, "currentFailures": []any{}, "lastRecovery": nil, "detailCoverage": "complete", "capacity": map[string]any{"limit": int64(2), "occupied": int64(2), "available": int64(0)}}
+	return monitoring.Observation{"admission": map[string]any{"reasons": []any{}}, "activities": []any{}, "reservations": []any{}, "currentFailures": []any{}, "lastRecovery": nil, "detailCoverage": "complete", "capacity": map[string]any{"limit": int64(2), "occupied": int64(2), "available": int64(0), "breakdown": map[string]any{"active": int64(0), "retained": int64(2)}}}
 }
 func monitorTaskSource(t *testing.T, status model.TaskStatus, state model.WorkerState, workerID, claimID string) store.WorkerTaskSource {
 	t.Helper()
@@ -108,7 +108,7 @@ func TestMonitoringProjectionRevokedAndCompletedCleanup(t *testing.T) {
 			t.Fatalf("private data leaked: %s", b)
 		}
 	}
-	if result.PermissionProjection != "restricted" || o["capacity"].(map[string]any)["occupied"] != int64(2) {
+	if result.PermissionProjection != "restricted" || o["capacity"].(map[string]any)["occupied"] != int64(2) || o["capacity"].(map[string]any)["breakdown"].(map[string]any)["retained"] != int64(2) {
 		t.Fatalf("wrong projection %s", b)
 	}
 	reasons := o["admission"].(map[string]any)["reasons"].([]any)

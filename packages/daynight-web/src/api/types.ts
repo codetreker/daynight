@@ -29,6 +29,7 @@ export type GraphTask = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
   readonly status: TaskStatus;
@@ -73,6 +74,7 @@ export type WorkerState = "active" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
 export type WorkerAgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
+export type WorkerMachine = Pick<WorkerClaim, 'state' | 'machine'> & Partial<Pick<WorkerClaim, 'userId' | 'workerId'>>;
 export type WorkerClaim = {
   readonly claimId: string;
   readonly state: WorkerState;
@@ -99,6 +101,7 @@ export type TaskDetail = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;

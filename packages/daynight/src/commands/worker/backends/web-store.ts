@@ -1,15 +1,17 @@
 import { parseStartupObservation, type StartupObservation, type SessionStartupReport } from "../../../session/startup.js";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { controllerTicketPath } from "../../controller/launch-ticket.js";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
-import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import type { ControllerOperation, ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingOriginalGeneration, healthyOriginalGeneration, recoveringInitialGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -68,7 +70,8 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       db.prepare("INSERT INTO orchestration_blockers(identity,data) VALUES (?,?)").run(key(identity), JSON.stringify(blocker));
       return getOrchestrationBlocker(identity)!;
     }),
-    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport): LocalTask => atomic(() => {
+    // The caller verifies the matching journal and stopped predecessor before supplying recoveredInitial.
+    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport, initialOperation?: ControllerOperation | null, recoveredInitial?: ControllerSnapshot): LocalTask => atomic(() => {
       const task = getTask(identity);
       if (task === null || task.status !== "active") throw new Error("The original active orchestration is missing.");
       requireOrdinary(task);
@@ -77,7 +80,9 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const stoppedRecovery = observed !== null && stoppedOriginalGeneration(task, observed)
         && (task.recovery.retryAuthorized || (expected.source !== "legacy_worktree" && task.recovery.pauseReason === null));
       const correctLegacyLatch = expected.source === "legacy_worktree" && !stoppedRecovery;
-      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && (continuingOriginalGeneration(task, observed, initialOperation)
+        || recoveredInitial !== undefined && recoveringInitialGeneration(task, recoveredInitial) && recoveringInitialGeneration(task, observed)
+          && preservesControllerEvidence(recoveredInitial, observed, execution!.launchId));
       if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && !initialContinuation && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");
       if (correctLegacyLatch && (!legacyBranchLatch(task) || legacyReport === undefined || !same(legacyReport, execution?.startupReport))) throw new Error("A native recovery block cannot be cleared without the original legacy report revision.");
       const recovery = correctLegacyLatch ? { count: task.recovery.count, pauseReason: null, retryAuthorized: false } : task.recovery;
@@ -171,6 +176,12 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       if (cleanup.kind !== "terminal") throw new Error("Web completion requires terminal cleanup intent.");
       return { ...task, status: "done" };
     }),
+    discardRecording: (identity: ClaimIdentity, now: number): LocalTask => atomic(() => {
+      const task = getTask(identity);
+      if (task === null || task.cleanup?.kind !== "terminal") throw new Error("Recording discard requires the original terminal execution.");
+      if (task.cleanup.discardRecording) return task;
+      return write({ ...task, cleanup: { ...task.cleanup, discardRecording: true }, updatedAt: integer(now, "Execution time") });
+    }),
     initializeWebExecution: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       if (task.configuration?.agentControlMode !== "web" || task.status !== "active") throw new Error("Web execution requires its active frozen claim.");
       if (task.webExecution != null) return task;
@@ -206,6 +217,32 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       if (previous.sessionId !== null && patch.sessionId !== undefined && patch.sessionId !== previous.sessionId) throw new Error("The registered session cannot change.");
       return { ...task, webExecution: parseWebExecution({ ...previous, ...patch }) };
     }),
+    /** The caller holds execution ownership, proves no dispatch, and publishes the
+     * replacement ticket and tool sidecar before changing the durable pointer.
+     * Original tickets and the lifecycle resource history retain launch ownership.
+     */
+    replaceUnsubmittedWebLaunch: (original: LocalTask, launchId: string, homeDirectory: string, now: number): LocalTask => change(original, now, task => {
+      requireOrdinary(task);
+      const execution = task.webExecution;
+      if (!same(task, original)) throw new Error("The original Web execution changed during launch replacement.");
+      if (task.status !== "active" || task.configuration?.agentControlMode !== "web" || execution === null
+        || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0
+        || execution.restartAfterShutdown || execution.cleanupOperationId !== null || task.recovery.pauseReason !== null
+        || getOrchestrationBlocker(task) !== null) throw new Error("Web launch replacement requires proven never-submitted execution.");
+      const report = execution.startupReport;
+      // Missing journal evidence can be reported before configuration admission permits spawn.
+      if (report !== undefined && (report.recovery.state !== "none"
+        || report.startup.state !== "starting"
+          && !(report.startup.state === "unknown" && report.startup.reasonCode === "evidence_missing")
+          && !(report.startup.state === "failed" && report.startup.reasonCode === "controller_launch_failed"))) throw new Error("Web launch replacement cannot discard uncertain or submitted startup evidence.");
+      if (execution.executionGeneration === "1"
+        ? execution.initialInputState !== "not_submitted" || task.resources.nativeSession !== null
+        : task.resources.nativeSession === null) throw new Error("Web launch replacement requires the original initial or recovery identity.");
+      id(launchId, "Web launch ID");
+      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || launchId === execution.launchId
+        || execution.ticketPath !== null && execution.ticketPath !== controllerTicketPath(homeDirectory, execution.launchId)) throw new Error("Web launch replacement requires a new identity in its original private home.");
+      return { ...task, webExecution: { ...execution, launchId, ticketPath: controllerTicketPath(homeDirectory, launchId) } };
+    }),
     beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number, toolLaunch?: ResolvedToolLaunch): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;
       if (execution == null || task.configuration?.agentControlMode !== "web" || previous.executionGeneration !== execution.executionGeneration || previous.controllerInstanceId !== execution.controllerInstanceId || !previous.nativeStopped || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId) throw new Error("Web recovery requires the exact stopped generation and native identity.");
@@ -228,7 +265,14 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       requireOrdinary(task); const execution = task.webExecution;
       if (execution === null || task.status !== "active" || !task.recovery.retryAuthorized || task.recovery.pauseReason === null || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || previous.executionId !== execution.executionId || previous.claimId !== task.claimId || previous.sessionId !== execution.sessionId || String(BigInt(previous.executionGeneration) + 1n) !== execution.executionGeneration || previous.controllerInstanceId === execution.controllerInstanceId || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null || previous.controllerProcess === null) throw new Error("Unsubmitted recovery requires the exact preceding stopped generation and no current launch evidence.");
       // A failed preparation retains the allocated launch intent; another explicit allowance cannot allocate it again.
-      return { ...task, recovery: { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true }, webExecution: { ...execution, restartAfterShutdown: false, activity: "initializing" } };
+      const report = execution.startupReport;
+      // Publish the consumed allowance and its current recovery summary together;
+      // a restart cannot retain a blocked summary for an already authorized attempt.
+      const startupReport = report === undefined || report.recovery.state === "none" ? report : { ...report,
+        revision: String(BigInt(report.revision) + 1n), observedAt: new Date(now).toISOString(),
+        recovery: { state: "none" as const, reasonCode: null } };
+      return { ...task, recovery: { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true }, webExecution: { ...execution,
+        ...(startupReport === undefined ? {} : { startupReport }), restartAfterShutdown: false, activity: "initializing" } };
     }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {
       if (task.status !== "active") throw new Error("Resource creation requires an active execution.");
@@ -242,7 +286,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const existing = task.cleanup;
       if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind } };
       if (task.control !== null && input.kind !== "terminal") throw new Error("A source control intent requires terminal cleanup.");
-      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline }) };
+      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, discardRecording: false }) };
     }),
 
   };

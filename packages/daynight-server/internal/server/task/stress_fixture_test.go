@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/api"
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
@@ -48,7 +47,7 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 	config := configpkg.Config{
 		Database: databaseconfig.Config{URL: "postgres://database"},
 		Storage:  storageconfig.Config{Root: "storage"},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, PreviewOrigin: testauth.PreviewOrigin(origin), AllowHTTPTestOrigin: true},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}
@@ -83,13 +82,4 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 		t.Fatal(err)
 	}
 	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, principal: principal}
-}
-
-func stepsHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task) {
-	t.Helper()
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, logs)
-	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps", RepoURL: "https://example.com/steps", ExpectedUserID: handler.principal.UserID})), 201)
-	task := decodeResponse[api.Task](t, projectRequest(handler, "POST", "/api/v1/projects/"+project.ID+"/tasks", `{"title":"Parent"}`), 201)
-	return database, handler, task
 }

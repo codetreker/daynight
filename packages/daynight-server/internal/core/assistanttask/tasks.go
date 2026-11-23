@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func (m *Module) Create(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input CreateInput) (TaskResult, error) {
+	actor = actor.requiringBranches("Create", "default")
 	var result TaskResult
 	if actor.BotID != nil {
 		return result, forbidden()
@@ -86,6 +88,7 @@ func (m *Module) Create(ctx context.Context, dao store.AssistantTaskDAO, actor A
 }
 
 func (m *Module) Get(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string) (TaskResult, error) {
+	actor = actor.requiringBranches("Get", "default")
 	task, err := loadTask(ctx, dao, actor, taskID, false)
 	if err != nil {
 		return TaskResult{}, err
@@ -97,6 +100,18 @@ func (m *Module) Get(ctx context.Context, dao store.AssistantTaskDAO, actor Acto
 }
 
 func (m *Module) Update(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input UpdateInput) (TaskResult, error) {
+	branches := []string{"response"}
+	if input.Name != nil || input.Purpose != nil || input.Scope != nil || input.Takeover != nil || input.Trigger != nil {
+		branches = append(branches, "ordinary")
+	}
+	if input.State != nil {
+		if *input.State == "deleted" {
+			branches = append(branches, "delete")
+		} else {
+			branches = append(branches, "state")
+		}
+	}
+	actor = actor.requiringBranches("Update", branches...)
 	var result TaskResult
 	if actor.BotID != nil {
 		return result, forbidden()
@@ -193,6 +208,7 @@ func (m *Module) Update(ctx context.Context, dao store.AssistantTaskDAO, actor A
 }
 
 func (m *Module) GetManual(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, version int64) (model.AssistantTaskManual, error) {
+	actor = actor.requiringBranches("GetManual", "default")
 	task, err := loadTask(ctx, dao, actor, taskID, false)
 	if err != nil {
 		return model.AssistantTaskManual{}, err
@@ -212,6 +228,7 @@ func (m *Module) GetManual(ctx context.Context, dao store.AssistantTaskDAO, acto
 }
 
 func (m *Module) GetItem(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, id string) (model.AssistantTaskItem, error) {
+	actor = actor.requiringBranches("GetItem", "default")
 	if !strictID(id) {
 		return model.AssistantTaskItem{}, invalid("Item ID must be a canonical UUID.")
 	}
@@ -225,6 +242,25 @@ func (m *Module) GetItem(ctx context.Context, dao store.AssistantTaskDAO, actor 
 	}
 	_, err = finish(ctx, dao, actor, nil)
 	return item, err
+}
+
+// MetricsWindow is the trailing capability-metrics window.
+const MetricsWindow = 30 * 24 * time.Hour
+
+// Metrics reads the task's capability metrics for the trailing window. The
+// task is loaded without a lock: the aggregate is one read-only statement.
+func (m *Module) Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	actor = actor.requiringBranches("Metrics", "default")
+	task, err := loadTask(ctx, dao, actor, taskID, false)
+	if err != nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	metrics, err := dao.Metrics(ctx, task.OwnerUserID, task.ID, MetricsWindow)
+	if err != nil {
+		return metrics, err
+	}
+	_, err = finish(ctx, dao, actor, nil)
+	return metrics, err
 }
 
 func (m *Module) workingTask(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input Mutation) (model.AssistantTask, error) {

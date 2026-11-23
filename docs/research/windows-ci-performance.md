@@ -10,13 +10,13 @@ are seconds. The historical measurements below describe the Git fixture split.
 Current installed acceptance prepares one canonical default-shim installation
 per platform invocation, with private runtime state and writable package views;
 the [shared preparation decision](../../.agents/notes/archived/testing/2026-11-04-shared-installed-cli-preparation.md) records the rationale for that separate optimization. Preparation command, source and cleanup evidence
-is retained in `.tmp/installed-cli-preparation.json`. Worker worktree cases now
-reuse file-owned files/reftable starting repositories and copy independent
-subjects; the [Worker seed decision](../../.agents/notes/archived/testing/2026-11-04-worker-git-fixture-seeds.md)
-records that lifetime and its native isolation checks. The historical review
-split measurements do not measure that Worker change. Separate runs have
-different runner load, so historical variation is included rather than treating
-one measurement as a stable benchmark. Ordinary tests and installed acceptance
+is retained in `.tmp/installed-cli-preparation.json`. Worker worktree cases
+copy independent repositories from file-owned files and reftable seeds.
+The [development guide](../development.md#cli-test-fixtures) owns current fixture
+boundaries, including the direct setup for partial resource scans. The
+historical review split measurements do not measure the Worker fixtures.
+Separate runs have different runner load, so historical variation is included
+rather than treating one measurement as a stable benchmark. Ordinary tests and installed acceptance
 now run in independent native jobs; the
 [phase ownership decision](../../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
 records their dependencies, evidence and runner-cost trade-off. Historical

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"io"
+	"math"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -30,7 +31,6 @@ func Detail(worker model.WorkerSnapshot) WorkerDetail {
 			Memory: probeResponse(telemetry.Memory, func(value model.WorkerMemory) WorkerMemory { return WorkerMemory(value) }),
 			Disk:   probeResponse(telemetry.Disk, func(value model.WorkerDisk) WorkerDisk { return WorkerDisk(value) }),
 			Versions: WorkerVersions{Daynight: telemetry.Versions.Daynight,
-				Herdr:   probeResponse(telemetry.Versions.Herdr, func(value string) string { return value }),
 				Codex:   probeResponse(telemetry.Versions.Codex, func(value string) string { return value }),
 				Copilot: probeResponse(telemetry.Versions.Copilot, func(value string) string { return value })}}}
 
@@ -86,6 +86,9 @@ func runtimeNativeResponse(native *model.WorkerRuntimeNative) *WorkerRuntimeNati
 	return &WorkerRuntimeNative{Agent: string(native.Agent), Model: WorkerConfigurationValue(native.Model), ReasoningEffort: WorkerConfigurationValue(native.ReasoningEffort)}
 }
 
+// EmptyTaskTagFilterMemberBytes is the encoded fixed member plus its comma.
+const EmptyTaskTagFilterMemberBytes = int64(len(`,"taskTagFilter":{"names":[],"match":"any"}`))
+
 // EncodeItem measures the Worker item without the outer response envelope.
 func EncodeItem(w io.Writer, snapshot model.WorkerSnapshot, max int64) (int64, error) {
 	if err := preflightCollections(snapshot, max); err != nil {
@@ -94,12 +97,15 @@ func EncodeItem(w io.Writer, snapshot model.WorkerSnapshot, max int64) (int64, e
 	return measure.JSON(w, "worker", max, Detail(snapshot), false)
 }
 
-// EncodeTelemetry and the configuration encoders use the exact JSON shapes
-// stored by the Worker DAO; those values do not carry a terminal newline.
+// EncodeTelemetry uses the exact JSON shape stored by the Worker DAO.
 func EncodeTelemetry(w io.Writer, value model.WorkerTelemetry, max int64) (int64, error) {
 	return measure.JSON(w, "worker.telemetry", max, model.WorkerTelemetryWire(value), false)
 }
 func EncodeConfiguration(w io.Writer, value model.WorkerConfiguration, max int64) (int64, error) {
+	// The fixed-size archive column is separate from the historical JSON budget.
+	if value.TaskTagFilter != nil && value.TaskTagFilter.Match == "any" && value.TaskTagFilter.Names != nil && len(value.TaskTagFilter.Names) == 0 && max <= math.MaxInt64-EmptyTaskTagFilterMemberBytes {
+		max += EmptyTaskTagFilterMemberBytes
+	}
 	return measure.JSON(w, "worker.configuration", max, model.WorkerConfigurationWire(value), false)
 }
 

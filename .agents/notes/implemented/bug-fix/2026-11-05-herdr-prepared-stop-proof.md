@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The Herdr execution and recording write paths described here are superseded by [daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md) and [terminal entry removal](../simplification/2026-11-18-remove-worker-terminal-entries.md); this decision remains historical.
+
 ## Problem
 
 A macOS Herdr preparation registers a daemon, shell, generation and recording
@@ -21,8 +23,11 @@ The lifecycle journal retains a monotonic `nativeLaunch` fact separately from
 its closing phase. A new preparation records `not_submitted`; the launch intent
 changes it to `requested` before calling the native manager, and original agent
 capture changes it to `observed`. Unknown historical closing records remain
-`unknown`. Journal format migration validates original records and preserves
-pending messages, hashes and stopped native proofs.
+`unknown`. The original migration decision validated complete original records
+to protect pending messages, hashes and stopped native proofs. The later
+[local mapping decision](2026-11-16-herdr-local-native-launch-mapping.md) replaces
+that migration validation with field mapping and direct preservation of other
+values; runtime evidence and stop-proof validation remain in force.
 
 A distinct v2 preparation stop proof requires explicit `not_submitted`, the
 original daemon, exactly one original shell, and confirmed stopping of that

@@ -11,5 +11,5 @@ export default defineConfig({
     { name: 'chromium', use: { browserName: 'chromium', ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE ? { launchOptions: { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE } } : {}) } },
     ...(process.env.DAYNIGHT_WEBKIT === '1' ? [{ name: 'webkit', use: { browserName: 'webkit' as const } }] : []),
   ],
-  webServer: { command: 'pnpm exec vite build --outDir ../../.tmp/session-keyboard/app --emptyOutDir && pnpm exec vite preview --outDir ../../.tmp/session-keyboard/app --port 4307 --strictPort', cwd: root, url: 'http://127.0.0.1:4307/projects', reuseExistingServer: false, timeout: 120_000 },
+  webServer: { command: 'pnpm exec vite build --config tests/navigation/product-shell-vite.config.ts --outDir ../../.tmp/session-keyboard/app --emptyOutDir && pnpm exec vite preview --config tests/navigation/product-shell-vite.config.ts --outDir ../../.tmp/session-keyboard/app --port 4307 --strictPort', cwd: root, url: 'http://127.0.0.1:4307/projects', reuseExistingServer: false, timeout: 120_000 },
 });

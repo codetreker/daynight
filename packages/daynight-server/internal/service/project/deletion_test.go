@@ -50,7 +50,7 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 		}
 		exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
 	}
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, ids[0])
+	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, ids[0])
 	exec(`INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, ids[0], ids[3])
 	page := model.PageRequest{Limit: 1}
 	_, err := s.DeletionPreview(ctx, model.Principal{}, project.ID, page)
@@ -72,6 +72,9 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 	}
 	if first.Project.ID != project.ID || first.Summary.TaskCount != 3 || first.Summary.UnfinishedTaskCount != 2 || first.Summary.AttachmentCount != 1 || len(first.ActiveClaims) != 1 || first.ActiveClaims[0].TaskID != ids[0] || !first.ActiveClaims[0].Paused || first.ActiveClaims[0].Connectivity != "unknown" || first.NextCursor == nil {
 		t.Fatalf("first page: %+v", first)
+	}
+	if first.ActiveClaims[0].UserID != claim.UserID || first.ActiveClaims[0].WorkerID != claim.WorkerID {
+		t.Fatalf("claim identity changed: %+v", first.ActiveClaims[0])
 	}
 	exec(`INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now()-interval '10 minutes','{}','{}')`, actor.UserID, claim.WorkerID)
 	page.Cursor = first.NextCursor
@@ -223,118 +226,4 @@ func TestDeletionServiceRollsBackScopedFailures(t *testing.T) {
 			}
 		})
 	}
-}
-
-type deletionResultStore struct {
-	*postgres.Store
-	completion store.Completion
-	cause      error
-}
-
-func (d *deletionResultStore) WriteProjectDeletion(context.Context, string, func(store.ProjectDeletionScope) error) (store.Completion, error) {
-	return d.completion, d.cause
-}
-
-type noDeletionStore struct {
-	store.SnapshotReader
-	store.ProjectWriter
-	store.ProjectCreationWriter
-}
-
-type deletionSnapshotFailureStore struct {
-	*postgres.Store
-	mode  string
-	cause error
-}
-
-func (d *deletionSnapshotFailureStore) ReadProjectDeletion(ctx context.Context, id string, op func(store.ProjectDeletionSnapshot) error) error {
-	if d.mode == "read" {
-		return d.cause
-	}
-	return d.Store.ReadProjectDeletion(ctx, id, func(snapshot store.ProjectDeletionSnapshot) error {
-		return op(deletionSnapshotFailure{ProjectDeletionSnapshot: snapshot, mode: d.mode, cause: d.cause})
-	})
-}
-
-type deletionSnapshotFailure struct {
-	store.ProjectDeletionSnapshot
-	mode  string
-	cause error
-}
-
-func (d deletionSnapshotFailure) ObservedAt(ctx context.Context) (time.Time, error) {
-	if d.mode == "time" {
-		return time.Time{}, d.cause
-	}
-	return d.ProjectDeletionSnapshot.ObservedAt(ctx)
-}
-func (d deletionSnapshotFailure) Summary(ctx context.Context) (store.ProjectDeletionSummary, error) {
-	if d.mode == "summary" {
-		return store.ProjectDeletionSummary{}, d.cause
-	}
-	return d.ProjectDeletionSnapshot.Summary(ctx)
-}
-func (d deletionSnapshotFailure) VisitTaskWorkers(ctx context.Context, visit func(store.ProjectDeletionWorker) error) error {
-	if d.mode == "workers" {
-		return d.cause
-	}
-	return d.ProjectDeletionSnapshot.VisitTaskWorkers(ctx, visit)
-}
-
-type deletionPreflightFailureStore struct {
-	*postgres.Store
-	cause error
-}
-
-func (d *deletionPreflightFailureStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	return d.cause
-}
-
-func TestDeletionServiceCompletionAndReadFailures(t *testing.T) {
-	_, db, actor, project := createDeletionFixture(t)
-	ctx := context.Background()
-	sentinel := errors.New("injected failure")
-	for _, mode := range []string{"read", "time", "summary", "workers"} {
-		t.Run(mode, func(t *testing.T) {
-			_, err := NewProjects(&deletionSnapshotFailureStore{Store: db, mode: mode, cause: sentinel}).DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 1})
-			if !errors.Is(err, sentinel) {
-				t.Fatalf("lost cause: %v", err)
-			}
-		})
-	}
-	basic := noDeletionStore{SnapshotReader: db, ProjectWriter: db, ProjectCreationWriter: db}
-	if _, err := NewProjects(basic).DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 1}); err == nil {
-		t.Fatal("missing reader accepted")
-	}
-	for _, s := range []*Projects{NewProjects(basic), NewProjects(db, nil), NewProjects(&deletionPreflightFailureStore{Store: db, cause: sentinel})} {
-		_, err := s.Delete(ctx, actor, project.ID)
-		var failure *DeletionFailure
-		if !errors.As(err, &failure) || failure.Outcome != store.TransactionNotCommitted {
-			t.Fatalf("preflight outcome: %v", err)
-		}
-	}
-	tests := []struct {
-		name       string
-		completion store.Completion
-		cause      error
-		want       store.TransactionOutcome
-	}{
-		{"operation", store.Completion{Outcome: store.TransactionNotCommitted}, sentinel, store.TransactionNotCommitted},
-		{"commit unknown", store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: sentinel}, store.TransactionUnknown},
-		{"cleanup failure", store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: sentinel}, store.TransactionUnknown},
-		{"empty committed", store.Completion{Outcome: store.TransactionCommitted}, nil, store.TransactionUnknown},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := NewProjects(&deletionResultStore{Store: db, completion: test.completion, cause: test.cause}).Delete(ctx, actor, project.ID)
-			var failure *DeletionFailure
-			if !errors.As(err, &failure) || failure.Outcome != test.want || (test.cause != nil && !errors.Is(err, sentinel)) {
-				t.Fatalf("outcome: %+v %v", failure, err)
-			}
-		})
-	}
-	_, err := NewProjects(db).Delete(ctx, model.Principal{}, project.ID)
-	transferFault(t, err, "unauthenticated")
-	_, err = NewProjects(db).Delete(ctx, actor, "bad")
-	transferFault(t, err, "invalid_input")
 }

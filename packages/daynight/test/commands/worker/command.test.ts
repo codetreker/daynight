@@ -25,7 +25,6 @@ const claimId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const dependencies = () => ({
   setup: vi.fn<WorkerCommandDependencies["setup"]>(async () => {}),
-  attach: vi.fn<WorkerCommandDependencies["attach"]>(async () => {}),
   repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
   run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}),
   manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}),
@@ -33,7 +32,19 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it("previews resource recovery and requires explicit confirmation for removal", async () => {
+    const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
+    const deps = dependencies();
+    const args = ["resources", "recover", taskId, "--project", projectId, "--claim-id", claimId];
+    await runWorkerCommand(args, cli, deps);
+    expect(deps.resources).toHaveBeenLastCalledWith(expect.objectContaining({ request: { taskId, projectId, claimId, confirmed: false } }));
+    await runWorkerCommand([...args, "--confirm"], cli, deps);
+    expect(deps.resources).toHaveBeenLastCalledWith(expect.objectContaining({ request: { taskId, projectId, claimId, confirmed: true } }));
+    deps.resources.mockClear();
+    await expect(runWorkerCommand([...args, "--worktree-id", "wrong"], cli, deps)).rejects.toThrow();
+    expect(deps.resources).not.toHaveBeenCalled();
+  });
+  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "repo", "resources", "migrate-bot", "migrated-bot-history", "repair-markdown", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -61,27 +72,6 @@ describe("worker command", () => {
     expect(errors).toEqual(["worker started\n"]);
   });
 
-  it("requires explicit original identities and confirmation before resource disposal", async () => {
-    const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies(), sessionId = "dddddddd-dddd-dddd-dddd-dddddddddddd", worktreeId = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", operationId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
-    const args = ["resources", "dispose", taskId, "--project", projectId, "--claim-id", claimId, "--session-id", sessionId, "--worktree-id", worktreeId, "--operation-id", operationId, "--action", "delete"];
-    await expect(runWorkerCommand(args, cli, deps)).rejects.toThrow();
-    expect(deps.resources).not.toHaveBeenCalled();
-    await runWorkerCommand([...args, "--confirm"], cli, deps);
-    expect(deps.resources).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ request: { kind: "dispose", projectId, taskId, claimId, sessionId, worktreeId, operationId, action: "delete", confirmed: true } }));
-    deps.resources.mockClear();
-    await expect(runWorkerCommand([...args.slice(0, -1), "anything", "--confirm"], cli, deps)).rejects.toThrow();
-    expect(deps.resources).not.toHaveBeenCalled();
-  });
-
-  it("routes retained resource inspection without claiming or recovering work", async () => {
-    const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies();
-    await runWorkerCommand(["resources", "list"], cli, deps);
-    expect(deps.resources).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ request: { kind: "list" } }));
-    expect(deps.manage).not.toHaveBeenCalled(); expect(deps.run).not.toHaveBeenCalled();
-  });
-
   it("routes setup without inspecting home or loading a worker controller", async () => {
     const { cli } = context();
     const deps = dependencies();
@@ -90,26 +80,19 @@ describe("worker command", () => {
     for (const [name, action] of Object.entries(deps)) if (name !== "setup") expect(action).not.toHaveBeenCalled();
   });
 
-  it("attaches using only the current home without loading the task controller", async () => {
-    const { cli } = context();
-    cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies();
-    await runWorkerCommand(["attach"], cli, deps);
-    expect(deps.attach).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory() });
-    expect(deps.run).not.toHaveBeenCalled();
-    expect(deps.manage).not.toHaveBeenCalled();
-  });
-
   it("registers public help and both shell completions through the shared command tree", async () => {
     const { cli, output } = context();
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["disable", "resume", "lifecycle", "list", "show", "setup", "run", "repo", "resources", "migrate-bot", "migrated-bot-history", "repair-markdown", "retry", "release"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'retry' 'release')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('disable' 'resume' 'lifecycle' 'list' 'show' 'setup' 'run' 'repo' 'resources' 'migrate-bot' 'migrated-bot-history' 'repair-markdown' 'retry' 'release')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('recover')");
+    expect(renderZshCompletion(commandTree)).toContain("recover:Verify or recover a completed Web execution");
+    expect(definition.commands!.find(({ name }) => name === "resources")!.commands!.map(({ name }) => name)).toEqual(["recover"]);
     expect(renderZshCompletion(commandTree)).toContain("repo:Prepare local repository selections before cloud management");
     expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");
     expect(renderZshCompletion(commandTree)).not.toContain("--target-agent");
@@ -117,7 +100,7 @@ describe("worker command", () => {
     expect(renderZshCompletion(commandTree)).not.toContain("migrate-workspaces");
   });
 
-  it.each([["migrate-workspaces"], ["migrate-workspaces", "--rollback"]])("rejects the removed workspace command without accessing state %j", async (...args) => {
+  it.each([["attach"], ["resources", "list"], ["resources", "retry"], ["resources", "dispose"], ["migrate-workspaces"], ["migrate-workspaces", "--rollback"]])("rejects removed commands without accessing state %j", async (...args) => {
     const { cli } = context();
     const deps = dependencies();
     await expect(runWorkerCommand(args, cli, deps)).rejects.toThrow();

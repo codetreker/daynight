@@ -75,16 +75,20 @@ sequence to each task separately:
    disabled. For a confirmed finding authorized for automatic handoff, pass
    `--status todo`; registration-only requests retain the selected status,
    `proposed` by default. Preserve the returned ID immediately and read the full task back.
-   Initial inline content must identify the problem and scope without references
-   to attachments that are not yet present. The final description with local
-   images removed and local links reduced to their labels meets this requirement.
-3. Upload each attachment to its intended case-sensitive relative path. Read every
-   file back successfully and compare its bytes or SHA-256 with the local
+   Use the package's description source under the product manual's
+   [descriptions and references](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#descriptions-and-references)
+   rules. Before its attachments exist, reduce local links to their labels so
+   the initial description identifies the problem and scope without broken references.
+3. Upload the task definition and every other attachment to its intended
+   case-sensitive relative path, retaining the package's relative layout. The
+   manifest's description source remains inline; its `supportingFiles`, including
+   `task.md`, are attachments. Read every file back successfully and compare its
+   bytes or SHA-256 with the local
    inventory, including prototype resources. A listed path or a successful upload
    response alone does not establish the required content. A failed read can
    leave partial output, so require a successful exit before comparing.
-4. Read the full task, preserve its exact decimal version, then save the complete
-   description with its verified relative resource references using
+4. Read the full task, preserve its exact decimal version, then save the package's
+   description source with its verified relative resource references using
    `--if-version`. Read it back. Attachment writes do not increment the task
    version; reread mutable required sources rather than trusting unchanged
    metadata.
@@ -125,8 +129,9 @@ node .agents/skills/discover-daynight-improvements/scripts/review-finding-task.m
 The script validates the local package, then runs only `task show`,
 `task attachment list` and `task attachment read`. It reports whether the title
 and description equal the package, whether every local link in the description
-resolves to an attachment, the byte comparison for each package file, attachments
-present only remotely, and the task's version, status, permission, assignee,
+resolves to an attachment, the byte comparison for the task definition and every
+other attachment, attachments present only remotely, and the task's version,
+status, permission, assignee,
 platform and dependencies. It exits nonzero when anything differs. It does not
 judge whether the content is sufficient, whether the responsibility is correct
 or whether automatic execution may be enabled.

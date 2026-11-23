@@ -10,5 +10,5 @@ export default defineConfig({
   use: { channel: 'chromium', baseURL: 'http://127.0.0.1:4303', viewport: { width: 1360, height: 900 }, locale: 'en-US', screenshot: 'only-on-failure',
     // Headless Chromium otherwise suppresses classic scrollbar layout entirely.
     launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'], ...(executable === undefined ? {} : { executablePath: executable }) }, },
-  webServer: { command: 'pnpm exec vite build --outDir ../../.tmp/session-column/app --emptyOutDir && pnpm exec vite preview --outDir ../../.tmp/session-column/app --port 4303 --strictPort', cwd: root, url: 'http://127.0.0.1:4303/projects', reuseExistingServer: false, timeout: 120_000 },
+  webServer: { command: 'pnpm exec vite build --config tests/navigation/product-shell-vite.config.ts --outDir ../../.tmp/session-column/app --emptyOutDir && pnpm exec vite preview --config tests/navigation/product-shell-vite.config.ts --outDir ../../.tmp/session-column/app --port 4303 --strictPort', cwd: root, url: 'http://127.0.0.1:4303/projects', reuseExistingServer: false, timeout: 120_000 },
 });

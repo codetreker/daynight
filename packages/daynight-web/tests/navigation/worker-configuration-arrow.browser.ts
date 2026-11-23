@@ -15,7 +15,7 @@ const install = async (page: Page) => {
   const writes: unknown[] = [];
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Control-Mode': '1' } });
+    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2', 'Daynight-Worker-Control-Mode': '1' } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
@@ -37,7 +37,7 @@ const install = async (page: Page) => {
 // empty interval separating it from text even when the selected label is long.
 const paintedArrow = async (page: Page, select: Locator) => {
   const wrapper = select.locator('..');
-  await expect(wrapper).toHaveClass('native-select');
+  await expect(wrapper).toContainClass('native-select selection-control');
   await expect(wrapper).toHaveAttribute('data-density', 'form');
   await expect(wrapper).toHaveAttribute('data-layout', 'fill');
   const geometry = await wrapper.evaluate(element => {

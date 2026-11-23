@@ -141,8 +141,17 @@ func TestDeviceRedemptionAndLogout(t *testing.T) {
 	user := uuid.NewString()
 	d := &identityDAO{device: model.DeviceAuthorization{ID: uuid.NewString(), Status: "pending", UserID: &user, ExpiresAt: now.Add(time.Minute), NextPollAt: now.Add(time.Second)}}
 	failure := errors.New("database failure")
-	for _, in := range []struct{ client, grant, code, name, want string }{{"bad", DeviceGrantType, code, "host", "invalid_client"}, {DeviceClientID, "bad", code, "host", "unsupported_grant_type"}, {DeviceClientID, DeviceGrantType, code, "", "invalid_request"}, {DeviceClientID, DeviceGrantType, code, "bad\nname", "invalid_request"}, {DeviceClientID, DeviceGrantType, "bad", "host", "invalid_grant"}} {
-		_, err := m.RedeemDevice(ctx, d, in.client, in.grant, in.code, in.name, now)
+	for _, in := range []struct{ client, grant, code, name, want string }{
+		{"bad", DeviceGrantType, code, "host", "invalid_client"},
+		{DeviceClientID, "bad", code, "host", "unsupported_grant_type"},
+		{DeviceClientID, DeviceGrantType, code, "", "invalid_request"},
+		{DeviceClientID, DeviceGrantType, code, "bad\nname", "invalid_request"},
+		{DeviceClientID, DeviceGrantType, "bad", "host", "invalid_grant"},
+		{"other", "x", "x", "workstation", "invalid_client"},
+		{"daynight-cli", "x", "x", "workstation", "unsupported_grant_type"},
+		{"daynight-cli", "urn:ietf:params:oauth:grant-type:device_code", "x", "workstation", "invalid_grant"},
+	} {
+		_, err := m.RedeemDevice(ctx, nil, in.client, in.grant, in.code, in.name, now)
 		checkGrant(t, err, in.want)
 	}
 	d.failures = map[string]error{"device-hash": model.ErrNotFound}

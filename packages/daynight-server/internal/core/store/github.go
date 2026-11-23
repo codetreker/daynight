@@ -8,25 +8,73 @@ import (
 )
 
 // GitHubReadDAO reads resource facts in the caller's snapshot.
+// A nil repository selector reads the Project's fixed legacy source; it never
+// follows the current connection. Explicit selectors address Project-owned sources.
 type GitHubReadDAO interface {
 	Connection(context.Context, string) (githubpr.Connection, error)
-	Bindings(context.Context, GitHubBindingsQuery) ([]githubpr.Connection, error)
-	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
+	Repository(context.Context, string, int64) (githubpr.Repository, error)
+	Repositories(context.Context, GitHubRepositoriesQuery) ([]githubpr.Repository, error)
+	Authors(context.Context, GitHubAuthorQuery) (GitHubAuthorPage, error)
+	PullRequest(context.Context, string, int64, *int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
-	PullRequestCounts(context.Context, string) (GitHubPRCounts, error)
+	PullRequestCounts(context.Context, GitHubPRCountsQuery) (GitHubPRCounts, error)
+	PullRequestStatistics(context.Context, GitHubPRStatisticsQuery) (GitHubPRStatistics, error)
 }
 
-// GitHubBindingsQuery selects live Project connections by installation and,
-// when supplied, repository; AfterProjectID is an exclusive UUID cursor.
-type GitHubBindingsQuery struct {
-	AppID, InstallationID int64
-	RepositoryID          *int64
-	AfterProjectID        *string
-	Limit                 int
+// GitHubPullRequestVisibilityReader checks only existence in the caller's
+// snapshot, using the same fixed legacy or explicit source as PullRequest.
+type GitHubPullRequestVisibilityReader interface {
+	RequireRepositoryVisible(context.Context, string, int64) error
+	RequirePullRequestVisible(context.Context, string, int64, *int64) error
+}
+
+// GitHubRepositoriesQuery selects one ascending source page plus its continuation row.
+type GitHubRepositoriesQuery struct {
+	ProjectID         string
+	Limit             int
+	AfterRepositoryID *int64
+}
+
+// GitHubPRStatisticsQuery describes validated, ascending half-open time segments.
+// DateIndices parallels Boundaries; -1 denotes a gap or the final boundary.
+type GitHubPRStatisticsQuery struct {
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
+	Boundaries   []time.Time
+	DateIndices  []int32
+}
+
+// A nil DateIndex combines all records outside the named date segments.
+type GitHubPRStatisticsBucket struct {
+	DateIndex          *int32
+	Total, AuthorTotal int64
+	HasAuthors         bool
+}
+
+type GitHubPRStatistics struct {
+	Buckets []GitHubPRStatisticsBucket
+	Author  *githubpr.Author
+}
+
+// GitHubAuthorQuery selects a bounded page of canonical saved authors.
+type GitHubAuthorQuery struct {
+	RepositoryID     *int64
+	ProjectID, Query string
+	Limit            int
+	AnchorNameKey    *string
+	AnchorAuthorID   *int64
+}
+
+type GitHubAuthorPage struct {
+	Items   []githubpr.Author
+	HasMore bool
 }
 
 type GitHubPRQuery struct {
-	ProjectID string
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
 	// State is active, closed, merged or all; validation belongs to core.
 	State, Query              string
 	Limit                     int
@@ -42,7 +90,13 @@ type GitHubPRPage struct {
 	HasMore     bool
 }
 
-type GitHubPRCounts struct{ Active, Closed, Merged, All int64 }
+type GitHubPRCountsQuery struct {
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
+}
+
+type GitHubPRCounts struct{ Active, Closed, Merged, All, ProjectTotal int64 }
 
 // GitHubConfigurationWrite is a management decision, not a runtime-state or
 // observation replacement. ExpectedVersion is always the caller's original version.
@@ -58,20 +112,19 @@ type GitHubConfigurationWrite struct {
 	AccessCheckedAt, NextAccessCheckAt, NextPollAt *time.Time
 }
 
-// GitHubWriteDAO is bound to the existing live Project write transaction.
-// Connection locks an existing row until completion; management decisions must
-// read through it before SaveConfiguration so broadcast changes cannot be lost.
-// The enclosing Project lock protects first creation of a virtual resource.
-type GitHubWriteDAO interface {
+// GitHubWorkDAO supplies synchronization operations without configuration writes.
+type GitHubWorkDAO interface {
 	Connection(context.Context) (githubpr.Connection, error)
 	ObservedAt(context.Context) (time.Time, error)
-	SaveConfiguration(context.Context, GitHubConfigurationWrite) (bool, error)
 	Claim(context.Context, GitHubClaim) (bool, error)
 	// Renew requires the caller to lock Connection, read ObservedAt afterwards,
 	// and supply that database time plus five minutes. It rejects expiration
 	// and any deadline that does not extend the existing lease.
 	Renew(context.Context, GitHubLease, time.Time) (bool, error)
 	ValidLease(context.Context, GitHubLease) (bool, error)
+	// PublicationFacts reads the saved record and the latest coverage period
+	// beginning no later than terminalAt while holding the current lease lock.
+	PublicationFacts(context.Context, GitHubLease, int64, int64, *time.Time) (GitHubPublicationFacts, bool, error)
 	Publish(context.Context, GitHubLease, []githubpr.PullRequest) (bool, error)
 	PublishRepository(context.Context, GitHubLease, GitHubRepositoryObservation) (bool, error)
 	UnseenActive(context.Context, GitHubLease, string, int64, int) ([]int64, bool, error)
@@ -84,6 +137,16 @@ type GitHubWriteDAO interface {
 	ReschedulePending(context.Context, GitHubLease, int64, string, time.Time) (bool, error)
 	AckAccessHint(context.Context, GitHubLease, string) (bool, error)
 	SaveRuntime(context.Context, GitHubLease, GitHubRuntimeWrite) (bool, error)
+}
+
+type GitHubCoveragePeriod struct {
+	StartedAt time.Time
+	EndedAt   *time.Time
+}
+
+type GitHubPublicationFacts struct {
+	Current *githubpr.PullRequest
+	Period  *GitHubCoveragePeriod
 }
 
 // GitHubLease identifies the original work. Every mutation checks this identity
@@ -101,12 +164,13 @@ type GitHubClaim struct {
 	Until             time.Time
 }
 
-// GitHubRepositoryObservation updates presentation facts only when the
+// GitHubRepositoryObservation updates repository facts only when the
 // original installation and repository identities still match the binding.
 type GitHubRepositoryObservation struct {
 	InstallationID, RepositoryID                 int64
 	InstallationAccountLogin, RepositoryFullName string
 	RepositoryPrivate                            bool
+	RepositoryDefaultBranch                      *string
 }
 
 // GitHubRuntimeWrite contains only runtime facts controlled by the worker.
@@ -132,29 +196,4 @@ type GitHubPendingPR struct {
 	Number, Generation        int64
 	RequestID, DeliveryID     string
 	ReceivedAt, NextAttemptAt time.Time
-}
-
-// GitHubWorkReader finds bounded candidates; candidates must be rechecked in
-// the live Project write scope before claiming.
-type GitHubWorkReader interface {
-	DueGitHubProjects(context.Context, int64, time.Time, int) ([]string, error)
-}
-
-type GitHubPRSignal struct {
-	AppID, InstallationID, RepositoryID, Number int64
-	RequestID, DeliveryID                       string
-	ReceivedAt, NextAttemptAt                   time.Time
-}
-
-type GitHubAccessSignal struct {
-	AppID, InstallationID int64
-	HintID, DeliveryID    string
-	ReceivedAt            time.Time
-}
-
-// GitHubSignalWriter is bound to a separate transaction and never locks a
-// Project row. Matching connection rows are locked before pending rows.
-type GitHubSignalWriter interface {
-	SignalPullRequest(context.Context, GitHubPRSignal) (int64, error)
-	SignalAccess(context.Context, GitHubAccessSignal) (int64, error)
 }

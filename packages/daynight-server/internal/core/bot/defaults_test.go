@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -60,6 +61,48 @@ func TestDefaultsSelectionAndExplicitChoices(t *testing.T) {
 	result, err = ResolveBotDefaults(input, model.BotOverrides{})
 	if err != nil || *result.Reason != "no_available_worker" {
 		t.Fatalf("empty: %+v %v", result, err)
+	}
+}
+
+func TestDefaultsSkipsOnlineLegacyWorker(t *testing.T) {
+	observedAt := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	legacy := availableWorker(workerID, observedAt.Add(-time.Second))
+	legacy.Telemetry.AssistantHost = nil
+	usable := availableWorker(botID, observedAt)
+	usable.Telemetry.Machine = model.WorkerMachine{ID: "55555555-5555-4555-8555-555555555555", Name: "Assistant host"}
+	usable.Telemetry.AssistantHost.DefaultCwd = "/workspace"
+	usable.Telemetry.AssistantHost.DefaultProvider = model.AgentCopilot
+	usable.Telemetry.AssistantHost.Providers = []model.WorkerAssistantProvider{
+		{Provider: model.AgentCodex, Available: true, Args: []string{}},
+		{Provider: model.AgentClaude, Reason: ptr("not_found"), Args: []string{}},
+		{Provider: model.AgentCopilot, Available: true, Model: ptr("gpt-5"), Args: []string{"--effort", "high"}},
+	}
+
+	defaults, err := ResolveBotDefaults(model.BotDefaultsInput{
+		ObservedAt: observedAt,
+		Workers:    []model.WorkerSnapshot{legacy, usable},
+	}, model.BotOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.ObservedAt != observedAt {
+		t.Fatalf("defaults observation time changed: got %s want %s", defaults.ObservedAt, observedAt)
+	}
+	if len(defaults.Workers) != 2 || defaults.Workers[0].WorkerID != legacy.WorkerID || defaults.Workers[1].WorkerID != usable.WorkerID {
+		t.Fatalf("default candidates lost the legacy-first order: %+v", defaults.Workers)
+	}
+	first, second := defaults.Workers[0], defaults.Workers[1]
+	if first.State != "unsupported" || first.Providers == nil || len(first.Providers) != 0 || first.Configuration != nil ||
+		second.State != "available" || len(second.Providers) != 3 || second.Machine != usable.Telemetry.Machine || second.Platform != model.PlatformLinux {
+		t.Fatalf("default candidate facts changed: %+v", defaults.Workers)
+	}
+	config := defaults.Configuration
+	if defaults.WorkerID == nil || *defaults.WorkerID != usable.WorkerID || defaults.Reason != nil || config == nil || config.WorkerID != usable.WorkerID {
+		t.Fatalf("automatic defaults did not select the usable Worker: %+v", defaults)
+	}
+	if config.Cwd != "/workspace" || config.Provider != "copilot" || config.Model == nil || *config.Model != "gpt-5" ||
+		!slices.Equal(config.Args, []string{"--effort", "high"}) {
+		t.Fatalf("selected Worker provider defaults changed: %+v", config)
 	}
 }
 

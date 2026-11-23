@@ -2,13 +2,22 @@ package postgres
 
 import (
 	"errors"
-	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func releaseWorkerMigrationIndex(t *testing.T) int {
+	t.Helper()
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 65 })
+	if index < 1 {
+		t.Fatal("released worker ownership migration is missing")
+	}
+	return index
+}
 
 func releaseMigrationState(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
@@ -30,7 +39,9 @@ func releaseMigrationState(t *testing.T, pool *pgxpool.Pool) string {
 func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:64]); err != nil {
+	index := releaseWorkerMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(ctx, pool, migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -69,7 +80,7 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeTime := time.Now().UTC().Add(-time.Second)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	var afterFacts, afterOther, afterEpoch, afterOtherEpoch, afterHistory string
@@ -107,14 +118,14 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 		}
 	}
 	state := releaseMigrationState(t, pool)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	if after := releaseMigrationState(t, pool); after != state {
 		t.Fatal("repeated migration changed data or ledger")
 	}
-	changed := append([]migration(nil), schemaMigrations...)
-	changed[64].sql += "\n-- changed checksum"
+	changed := append([]migration(nil), migrations...)
+	changed[index].sql += "\n-- changed checksum"
 	if err := migrate(ctx, pool, changed); err == nil {
 		t.Fatal("changed migration checksum was accepted")
 	}
@@ -131,34 +142,62 @@ func boolCount(value bool) int {
 }
 
 func TestReleaseWorkerMigrationFailsAtomically(t *testing.T) {
-	for _, tc := range []struct{ name, setup, code string }{
-		{"invalid JSON", `UPDATE task_properties SET value='{' WHERE name='worker' AND task_id='00000000-0000-4000-8000-000000000011'`, "22P02"},
-		{"version overflow", `UPDATE tasks SET version=9223372036854775807 WHERE id='00000000-0000-4000-8000-000000000011'`, "22003"},
-		{"write failure", `CREATE FUNCTION reject_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1065', MESSAGE='reject'; END $$; CREATE TRIGGER reject_release BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION reject_release()`, "P1065"},
-		{"ledger failure", `CREATE FUNCTION reject_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.version=65 THEN RAISE EXCEPTION USING ERRCODE='P1065', MESSAGE='reject'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_release BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_release()`, "P1065"},
+	pool := emptyPool(t)
+	index := releaseWorkerMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(t.Context(), pool, migrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+	db := &Store{Pool: pool}
+	project := queryProject(t, db, 1)
+	for _, id := range []string{queryID(10), queryID(11)} {
+		mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'released')`, id, project.ID)
+		mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{"state":"released"}'),($1,'sessionStartup','{}')`, id)
+	}
+	initial := releaseMigrationState(t, pool)
+
+	for _, tc := range []struct{ name, setup, restore, table, code string }{
+		{
+			name: "invalid JSON", code: "22P02",
+			setup:   `UPDATE task_properties SET value='{' WHERE name='worker' AND task_id='00000000-0000-4000-8000-000000000011'`,
+			restore: `UPDATE task_properties SET value='{"state":"released"}' WHERE name='worker' AND task_id='00000000-0000-4000-8000-000000000011'`,
+		},
+		{
+			name: "version overflow", code: "22003",
+			setup:   `UPDATE tasks SET version=9223372036854775807 WHERE id='00000000-0000-4000-8000-000000000011'`,
+			restore: `UPDATE tasks SET version=1 WHERE id='00000000-0000-4000-8000-000000000011'`,
+		},
+		{
+			name: "write failure", table: "projects", code: "P1065",
+			setup:   `CREATE FUNCTION reject_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1065', MESSAGE='reject'; END $$; CREATE TRIGGER reject_release BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION reject_release()`,
+			restore: `DROP TRIGGER reject_release ON projects; DROP FUNCTION reject_release()`,
+		},
+		{
+			name: "ledger failure", table: "schema_migrations", code: "P1065",
+			setup:   `CREATE FUNCTION reject_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.version=65 THEN RAISE EXCEPTION USING ERRCODE='P1065', MESSAGE='reject'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_release BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_release()`,
+			restore: `DROP TRIGGER reject_release ON schema_migrations; DROP FUNCTION reject_release()`,
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := t.Context()
-			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:64]); err != nil {
-				t.Fatal(err)
-			}
-			db := &Store{Pool: pool}
-			project := queryProject(t, db, 1)
-			for _, id := range []string{queryID(10), queryID(11)} {
-				mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'released')`, id, project.ID)
-				mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{"state":"released"}'),($1,'sessionStartup','{}')`, id)
-			}
+		if !t.Run(tc.name, func(t *testing.T) {
 			mustQueryExec(t, db, tc.setup)
 			before := releaseMigrationState(t, pool)
-			err := migrate(ctx, pool, schemaMigrations)
+			err := migrate(t.Context(), pool, migrations)
 			var cause *pgconn.PgError
 			if !errors.As(err, &cause) || cause.Code != tc.code {
 				t.Fatalf("error=%v want SQLSTATE %s", err, tc.code)
 			}
-			if after := releaseMigrationState(t, pool); !reflect.DeepEqual(after, before) {
+			if after := releaseMigrationState(t, pool); after != before {
 				t.Fatal("failed migration partially changed data, epochs or ledger")
 			}
-		})
+			mustQueryExec(t, db, tc.restore)
+			if tc.table != "" {
+				assertFaultTriggerRemoved(t, db, "reject_release", tc.table)
+			}
+			if after := releaseMigrationState(t, pool); after != initial {
+				t.Fatal("release migration fixture was not restored")
+			}
+		}) {
+			return
+		}
 	}
 }

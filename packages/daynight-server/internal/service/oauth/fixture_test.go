@@ -494,6 +494,10 @@ func rejectClientOperations(f *oauthFixture) clientOperations {
 			f.unexpected("parse metadata")
 			return core.ClientMetadata{}, nil
 		},
+		parseCIMDMetadata: func([]byte, string) (core.ClientMetadata, error) {
+			f.unexpected("parse CIMD metadata")
+			return core.ClientMetadata{}, nil
+		},
 		parseStoredMetadata: func([]byte, string) (core.ClientMetadata, error) {
 			f.unexpected("parse stored metadata")
 			return core.ClientMetadata{}, nil
@@ -566,6 +570,7 @@ func fixtureChallenge() string {
 
 // Supplied results do not share mutable storage with the expected facts.
 func cloneAuthorization(record store.OAuthAuthorization) store.OAuthAuthorization {
+	record.ApprovedScopes = slices.Clone(record.ApprovedScopes)
 	record.BindingHash = bytes.Clone(record.BindingHash)
 	record.Client = bytes.Clone(record.Client)
 	record.CodeHash = bytes.Clone(record.CodeHash)

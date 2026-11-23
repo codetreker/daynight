@@ -12,8 +12,8 @@ import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-tele
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
-const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: uuid(6) };
+const worker: WorkerClaim = { ...descriptor, agentControlMode: "web", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", tags: [], status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
@@ -35,6 +35,7 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     response.setHeader("Daynight-User-ID", userId);
+    if (request.headers["daynight-worker-tool-paths"] === "2") response.setHeader("Daynight-Worker-Tool-Paths", "2");
     if (request.url === "/api/v1/me" && options.identity !== false) {
       respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       return;
@@ -81,21 +82,21 @@ describe("worker remote API", () => {
     const remote = createWorkerRemote({ serverUrl, serverToken: token });
     expect(await remote.currentUserId(signal())).toBe(worker.userId);
     const observed = await remote.readTask(projectId, taskId, signal());
-    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report }, signal())).resolves.toEqual(updated);
+    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, startupReport: report }, signal())).resolves.toEqual(updated);
     await expect(remote.readTask(projectId, taskId, signal())).resolves.toEqual(updated);
     const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     expect(requests.map(({ method, url }) => [method, url])).toEqual([["GET", "/api/v1/me"], ["GET", taskPath], ["PATCH", `${taskPath}/worker-claim`], ["GET", taskPath]]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
     expect(requests.slice(1).map(({ protocol }) => protocol)).toEqual(["2", "2", "2"]);
-    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report });
+    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, startupReport: report });
     expect(JSON.stringify(report)).not.toContain(token);
   });
 
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const value = { toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } }, maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
     const desired = { revision: "1", updatedAt: time, value };
-    const configuration = { bootstrap: value, observation: null };
+    const configuration = { bootstrap: value, observation: null, toolPathsBootstrap: null };
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
     const serverUrl = await listen((request, response, body) => {
       const capability = request.headers["daynight-worker-configuration"] as string | undefined;
@@ -106,9 +107,9 @@ describe("worker remote API", () => {
     });
     const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
     try {
-      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired: { known: desired, json: JSON.stringify(desired) } });
       const opened = vi.spyOn(operations, "createOperation");
-      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired } });
+      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired: { known: desired, json: JSON.stringify(desired) } } });
       await remote.report(workerId, { ...workerTelemetry, taskInventory: null }, operation);
       expect(opened).not.toHaveBeenCalled();
       expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);
@@ -117,40 +118,22 @@ describe("worker remote API", () => {
     } finally { operation.dispose(); }
   });
 
-  it("enables tool bootstrap only after authenticated configuration rediscovery on a mode-capable server", async () => {
-    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, agentControlMode: "web" as const, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
-    const tools = { codex: { kind: "path" as const, path: "/opt/codex" }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
-    const configuration = { bootstrap: null, observation: null, controlModeBootstrap: "web" as const, toolPathsBootstrap: tools };
-    let upgraded = false;
+  it("uses v2 without a mode header for configuration and reports", async () => {
+    const requests: { mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
+    const tools = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } };
+    const value = { toolPaths: tools, maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const desired = { revision: "1", updatedAt: time, value };
     const serverUrl = await listen((request, response, body) => {
-      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
-      const selected = upgraded && request.headers["daynight-worker-tool-paths"] === "1";
+      requests.push({ mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
       response.setHeader("Daynight-Worker-Configuration", "1");
-      response.setHeader("Daynight-Worker-Control-Mode", "1");
-      if (selected) response.setHeader("Daynight-Worker-Tool-Paths", "1");
-      const desired = { revision: "1", updatedAt: time, value: { ...value, ...(selected ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
-      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
-        : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
+      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null } : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
     });
-    const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", remote = createWorkerRemote({ serverUrl, serverToken: token });
-    await remote.currentUserId(signal());
-    const operation = operations.createOperation();
+    const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
     try {
       await remote.configuration(workerId, signal());
-      upgraded = true;
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      await remote.configuration(workerId, operation.signal, operation);
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      expect(requests.map(({ method, mode, tools }) => ({ method, mode, tools }))).toEqual([
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: undefined },
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: "1" },
-      ]);
-      expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
-      expect(requests.map(({ url }) => url)).toEqual(["configuration", "report", "configuration", "report"].map(suffix => `/api/v1/me/workers/${workerId}/${suffix}`));
-      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, controlModeBootstrap: "web" } });
-      expect(requests[1]!.body).not.toHaveProperty("configuration.toolPathsBootstrap");
-      expect(requests[3]!.body).toMatchObject({ configuration });
+      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, { bootstrap: null, observation: null, toolPathsBootstrap: tools }, operation);
+      expect(requests.map(({ mode, tools }) => ({ mode, tools }))).toEqual([{ mode: undefined, tools: "2" }, { mode: undefined, tools: "2" }]);
+      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, toolPathsBootstrap: tools } });
     } finally { operation.dispose(); }
   });
 
@@ -378,12 +361,12 @@ describe("worker remote API", () => {
       const url = new URL(request.url!, "http://localhost"); calls.push(url);
       const second = url.pathname.includes(secondProject);
       const later = url.searchParams.has("cursor");
-      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
+      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, later ? { ...worker, agentControlMode: "herdr", userId: uuid(99) } : worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
       respond(response, { items: [item], nextCursor: second || later ? null : "inventory cursor+/=" });
     });
     const remote = (await verifiedRemote(serverUrl));
     const result = await remote.ownInventory([{ projectId }, { projectId }, { projectId: secondProject }], workerId, signal());
-    expect(result.tasks.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9)]);
+    expect(result.tasks.map(({ id }) => id)).toEqual([taskId, uuid(9)]);
     expect(result.coveredProjectIds).toEqual([projectId, secondProject]);
     expect(result.unavailableProjectIds).toEqual([]);
     expect(calls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
@@ -500,6 +483,35 @@ describe("worker remote API", () => {
     expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true"]);
     expect(queries.map(query => query.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
     expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
+  });
+
+  it("keeps the candidate worker identity on each page and propagates stale cursor errors", async () => {
+    const queries: URLSearchParams[] = [];
+    const serverUrl = await listen((request, response) => {
+      const query = new URL(request.url!, "http://localhost").searchParams; queries.push(query);
+      if (query.get("cursor") === "last") respond(response, { error: { code: "invalid_input", message: "Cursor is invalid for this list.", requestId: "stale-cursor" } }, 400);
+      else respond(response, { items: [{ ...task(query.has("cursor") ? uuid(9) : taskId), assignedTo: worker.userId }], nextCursor: query.has("cursor") ? "last" : "next" });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    const candidates = remote.candidates(projectId, "linux", signal(), false, workerId);
+    await expect(candidates.next()).resolves.toMatchObject({ value: { id: taskId }, done: false });
+    await expect(candidates.next()).resolves.toMatchObject({ value: { id: uuid(9) }, done: false });
+    await expect(candidates.next()).rejects.toMatchObject({ status: 400, code: "invalid_input", serverMessage: "Cursor is invalid for this list." });
+    expect(queries.map(query => query.get("candidateWorkerId"))).toEqual([workerId, workerId, workerId]);
+    expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true", "true"]);
+    expect(queries.map(query => query.get("platformSpecific"))).toEqual(["false", "false", "false"]);
+    expect(queries.every(query => !query.has("workerId"))).toBe(true);
+  });
+
+  it("sends the captured filter digest with the version-bound claim", async () => {
+    const bodies: unknown[] = [];
+    const serverUrl = await listen((_request, response, body) => {
+      bodies.push(body);
+      respond(response, { ...task(taskId, worker), version: 2n });
+    });
+    const key = "b".repeat(64);
+    await expect((await verifiedRemote(serverUrl)).claim(task(), descriptor, signal(), key)).resolves.toHaveProperty("properties.worker.claimId", descriptor.claimId);
+    expect(bodies).toEqual([{ ...descriptor, version: 1n, taskTagFilterKey: key }]);
   });
 
   it("rejects an active candidate as a protocol error", async () => {

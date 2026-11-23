@@ -1,16 +1,82 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
-import { getGitHubStatus, getPullRequests, parseGitHubStatus, parsePullRequestPage } from '../src/features/pull-requests/api';
+import { comparePullRequestAuthors, getGitHubStatus, getPullRequestAuthors, getPullRequestRepositories, getPullRequests, parseGitHubStatus, parsePullRequestAuthorsPage, parsePullRequestPage, parsePullRequestRepositoriesPage } from '../src/features/pull-requests/api';
 import { prPage, prProjectId, prResponse, prStatus, prUserId } from './pull-requests-fixtures';
 
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 const admission = () => ({ userId: prUserId, onPrincipalMismatch: vi.fn() });
 
+it('reads ordered repository pages and binds lists and authors to the explicit source', async () => {
+  const repositoryId = '9007199254740993', repository = { repositoryId, fullName: 'owner/repo' };
+  const catalog = { currentRepositoryId: repositoryId, items: [{ repositoryId: '4', fullName: 'old/repo' }, repository], nextCursor: 'next' };
+  expect(parsePullRequestRepositoriesPage(catalog)).toEqual(catalog);
+  expect(() => parsePullRequestRepositoriesPage({ ...catalog, items: [...catalog.items].reverse() })).toThrow();
+  expect(() => parsePullRequestRepositoriesPage({ ...catalog, items: [], nextCursor: 'next' })).toThrow();
+  const page = { ...prPage([]), repository }, authors = { projectId: prProjectId, revision: '1', items: [], nextCursor: null, repository };
+  const fetch = vi.fn().mockResolvedValueOnce(prResponse(catalog)).mockResolvedValueOnce(prResponse(page)).mockResolvedValueOnce(prResponse(authors));
+  vi.stubGlobal('fetch', fetch);
+  const signal = new AbortController().signal;
+  await getPullRequestRepositories(prProjectId, 'cursor', signal, admission());
+  await getPullRequests(prProjectId, { state: 'all', q: '', cursor: null, repositoryId }, signal, admission());
+  await getPullRequestAuthors(prProjectId, { q: '', cursor: null, repositoryId }, signal, admission());
+  expect(new URL(fetch.mock.calls[0]![0] as string, 'https://daynight.test').searchParams.get('cursor')).toBe('cursor');
+  for (const call of fetch.mock.calls.slice(1)) expect(new URL(call[0] as string, 'https://daynight.test').searchParams.get('repositoryId')).toBe(repositoryId);
+  expect(() => parsePullRequestPage({ ...page, repository: { ...repository, repositoryId: '4' } }, prProjectId, null, repositoryId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...authors, repository: { ...repository, repositoryId: '4' } }, prProjectId, repositoryId)).toThrow();
+});
+
 it('retains exact counts and summaries without requesting or retaining descriptions', () => {
   const page = { ...prPage(['9007199254740993']), total: '9007199254740993', revision: '9007199254740993' };
-  expect(parsePullRequestPage(page, prProjectId)).toEqual(page);
+  const { repository: _repository, ...legacyPage } = page;
+  expect(parsePullRequestPage(page, prProjectId)).toEqual({ ...legacyPage, authorId: null, projectTotal: page.counts.all });
   const extra = { ...page, items: [{ ...page.items[0], description: 'not a summary field' }] };
   expect(parsePullRequestPage(extra, prProjectId).items[0]).not.toHaveProperty('description');
+});
+
+it('binds author pages to the exact account and requires the independent project total', () => {
+  const authorId = '9007199254740997';
+  const page = { ...prPage(), authorId, projectTotal: '9007199254740998', items: [{ ...prPage().items[0], author: { id: authorId, login: 'example' } }] };
+  const { repository: _repository, ...legacyPage } = page;
+  expect(parsePullRequestPage(page, prProjectId, authorId)).toEqual(legacyPage);
+  expect(() => parsePullRequestPage({ ...page, authorId: '4' }, prProjectId, authorId)).toThrow();
+  expect(() => parsePullRequestPage({ ...page, authorId: undefined }, prProjectId, authorId)).toThrow();
+  expect(() => parsePullRequestPage({ ...page, projectTotal: undefined }, prProjectId, authorId)).toThrow();
+  expect(() => parsePullRequestPage({ ...page, projectTotal: '01' }, prProjectId, authorId)).toThrow();
+  expect(() => parsePullRequestPage({ ...page, items: prPage().items }, prProjectId, authorId)).toThrow();
+});
+
+it('validates bounded directory pages with PostgreSQL C ordering and exact account IDs', () => {
+  const page = { projectId: prProjectId, revision: '9007199254740997', items: [
+    { id: '2', login: 'ALICE', loginAmbiguous: true },
+    { id: '9007199254740997', login: 'alice', loginAmbiguous: true },
+    { id: '3', login: 'é', loginAmbiguous: false },
+  ], nextCursor: 'next' };
+  expect(parsePullRequestAuthorsPage(page, prProjectId)).toEqual(page);
+  expect(comparePullRequestAuthors(page.items[1]!, page.items[2]!)).toBeLessThan(0);
+  expect(() => parsePullRequestAuthorsPage({ ...page, projectId: prUserId }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: [...page.items].reverse() }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: [page.items[0], { ...page.items[2], id: '2' }] }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: [{ ...page.items[0], loginAmbiguous: null }] }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: [{ ...page.items[0], id: '9223372036854775808' }] }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: [], nextCursor: 'next' }, prProjectId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...page, items: Array.from({ length: 51 }, (_, i) => ({ id: String(i + 1), login: 'a', loginAmbiguous: true })) }, prProjectId)).toThrow();
+});
+
+it('sends an author-bound list and an independently searched directory', async () => {
+  const authorId = '9007199254740997';
+  const page = { ...prPage([]), authorId, projectTotal: '9' };
+  const directory = { projectId: prProjectId, revision: '7', items: [], nextCursor: null };
+  const fetch = vi.fn().mockResolvedValueOnce(prResponse(page)).mockResolvedValueOnce(prResponse(directory)); vi.stubGlobal('fetch', fetch);
+  await getPullRequests(prProjectId, { state: 'merged', q: 'feature', cursor: 'next', authorId }, new AbortController().signal, admission());
+  await getPullRequestAuthors(prProjectId, { q: 'bot 中', cursor: 'authors-next' }, new AbortController().signal, admission());
+  const listUrl = new URL(fetch.mock.calls[0]![0] as string, 'https://daynight.test');
+  expect(Object.fromEntries(listUrl.searchParams)).toEqual({ state: 'merged', q: 'feature', limit: '6', cursor: 'next', authorId });
+  const authorsUrl = new URL(fetch.mock.calls[1]![0] as string, 'https://daynight.test');
+  expect(authorsUrl.pathname).toBe(`/api/v1/projects/${prProjectId}/pull-request-authors`);
+  expect(Object.fromEntries(authorsUrl.searchParams)).toEqual({ q: 'bot 中', limit: '50', cursor: 'authors-next' });
+  expect(() => getPullRequests(prProjectId, { state: 'all', q: '', cursor: null, authorId: '01' }, new AbortController().signal, admission())).toThrow();
+  expect(() => getPullRequestAuthors(prProjectId, { q: '中'.repeat(342), cursor: null }, new AbortController().signal, admission())).toThrow();
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 it.each([

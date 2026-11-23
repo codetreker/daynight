@@ -3,6 +3,7 @@ import { TaskCacheScope } from "./project-cache";
 export { createTaskCacheScope, TaskCacheScope } from "./project-cache";
 
 const Context = createContext<TaskCacheScope | null>(null);
+export const useOptionalTaskCacheScope = (): TaskCacheScope | null => useContext(Context);
 export const TaskCacheProvider = ({ scope, children }: { readonly scope: TaskCacheScope; readonly children: ReactNode }) =>
   <Context.Provider value={scope}>{children}</Context.Provider>;
 export const useTaskCacheScope = (): TaskCacheScope => {

@@ -1,5 +1,5 @@
 // GitHub settings has its own component and route-lifecycle coverage.
-vi.mock('../src/features/github-integration/GitHubSettings', () => ({ GitHubSettings: () => null }));
+vi.mock('../src/features/github-integration/ProjectGitHubConsumption', () => ({ ProjectGitHubConsumption: () => null }));
 
 import { directAccessFixture } from "./helpers/taskSync";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
@@ -201,7 +201,7 @@ describe("project settings form", () => {
     await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(3));
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
     await act(async () => fresh.resolve(json(members("member"))));
-    await screen.findByText(/只有项目管理员可以修改/);
+    await screen.findByText("你可以查看此设置，只有项目管理员可以修改。");
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
   });
 
@@ -213,7 +213,7 @@ describe("project settings form", () => {
     submit();
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
     await act(async () => permission.resolve(result === "member" ? json(members("member")) : fail(404, "not_found")));
-    if (result === "member") await screen.findByText(/只有项目管理员可以修改/);
+    if (result === "member") await screen.findByText("你可以查看此设置，只有项目管理员可以修改。");
     else await screen.findAllByText("项目不存在或你没有访问权限。");
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
   });
@@ -453,7 +453,7 @@ describe("project settings form", () => {
 
   it("shows members a read-only saved threshold and rejects missing self membership", async () => {
     install((url) => url.endsWith("/members") ? json(members("member")) : json(project(45))); const view = mount();
-    await screen.findByText(/只有项目管理员可以修改/); expect(screen.getByLabelText("提醒阈值")).toHaveValue(45); expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull(); view.unmount();
+    await screen.findByText("你可以查看此设置，只有项目管理员可以修改。"); expect(screen.getByLabelText("提醒阈值")).toHaveValue(45); expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull(); view.unmount();
     install((url) => url.endsWith("/members") ? json(members("admin", other)) : json(project())); mount();
     const denials = await screen.findAllByText("项目不存在或你没有访问权限。");
     expect(denials.some((message) => message.closest('[role="alert"]') !== null)).toBe(true);

@@ -13,7 +13,7 @@ const viewport = (width: number) => {
 };
 const Tabs = ({ changed }: { readonly changed: (section: ProjectSection) => void }) => {
   const [section, setSection] = useState<ProjectSection>("overview");
-  return <ProjectSectionTabs section={section} onChange={(value) => { setSection(value); changed(value); }} />;
+  return <ProjectSectionTabs projectId="11111111-1111-4111-8111-111111111111" section={section} onChange={(value, onCommit) => { setSection(value); changed(value); onCommit?.(); }} />;
 };
 
 beforeEach(() => { viewport(1024); });
@@ -25,11 +25,13 @@ describe("project section navigation", () => {
     render(<Tabs changed={changed} />);
     const tabs = screen.getByRole("tablist", { name: "项目视图" });
     const overview = screen.getByRole("tab", { name: "概览" });
+    const statistics = screen.getByRole("tab", { name: "统计" });
     const tasks = screen.getByRole("tab", { name: "任务列表" });
     const tags = screen.getByRole("tab", { name: "标签" });
     const prs = screen.getByRole("tab", { name: "PR 列表" });
     expect(tabs).toHaveAttribute("aria-orientation", "vertical");
     expect(overview).toHaveAttribute("aria-controls", "project-section-panel-overview");
+    expect(statistics).toHaveAttribute("aria-controls", "project-section-panel-statistics");
     expect(tasks).toHaveAttribute("aria-controls", "project-section-panel-tasks");
     expect(tags).toHaveAttribute("aria-controls", "project-section-panel-tags");
     expect(prs).toHaveAttribute("aria-controls", "project-section-panel-prs");
@@ -38,7 +40,9 @@ describe("project section navigation", () => {
     fireEvent.keyDown(overview, { key: "ArrowRight" });
     expect(changed).not.toHaveBeenCalled();
     fireEvent.keyDown(overview, { key: "ArrowDown" });
-    expect(tasks).toHaveAttribute("aria-selected", "true");
+    expect(statistics).toHaveAttribute("aria-selected", "true");
+    expect(statistics).toHaveFocus();
+    fireEvent.keyDown(statistics, { key: "ArrowDown" });
     expect(tasks).toHaveFocus();
     fireEvent.keyDown(tasks, { key: "ArrowDown" });
     expect(prs).toHaveFocus();
@@ -63,14 +67,15 @@ describe("project section navigation", () => {
     const changed = vi.fn();
     const view = render(<Tabs changed={changed} />);
     const overview = screen.getByRole("tab", { name: "概览" });
+    const statistics = screen.getByRole("tab", { name: "统计" });
     const tasks = screen.getByRole("tab", { name: "任务列表" });
     const tags = screen.getByRole("tab", { name: "标签" });
     expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "horizontal");
     fireEvent.keyDown(overview, { key: "ArrowDown" });
     expect(changed).not.toHaveBeenCalled();
     fireEvent.keyDown(overview, { key: "ArrowRight" });
-    expect(tasks).toHaveFocus();
-    fireEvent.keyDown(tasks, { key: "ArrowLeft" });
+    expect(statistics).toHaveFocus();
+    fireEvent.keyDown(statistics, { key: "ArrowLeft" });
     expect(overview).toHaveFocus();
     viewport(741);
     expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "vertical");
@@ -81,10 +86,28 @@ describe("project section navigation", () => {
     expect(removed).toHaveBeenCalledWith("resize", listener);
   });
 
+  it("exposes canonical links and leaves modified clicks to the browser", () => {
+    const changed = vi.fn();
+    render(<Tabs changed={changed} />);
+    const tasks = screen.getByRole("tab", { name: "任务列表" });
+    expect(tasks).toHaveAttribute("href", "/projects/11111111-1111-4111-8111-111111111111?tab=tasks");
+    const modified = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+    tasks.dispatchEvent(modified);
+    expect(modified.defaultPrevented).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+    const middle = new MouseEvent("click", { bubbles: true, cancelable: true, button: 1 });
+    tasks.dispatchEvent(middle);
+    expect(middle.defaultPrevented).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+    fireEvent.keyDown(tasks, { key: " " });
+    expect(changed).toHaveBeenCalledWith("tasks");
+  });
+
   it("uses the confirmed English names", () => {
     createLocaleRender("en")(<Tabs changed={vi.fn()} />);
     expect(screen.getByRole("tablist", { name: "Project views" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Statistics" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("tab", { name: "Task list" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("tab", { name: "PR list" })).toHaveAttribute("aria-selected", "false");

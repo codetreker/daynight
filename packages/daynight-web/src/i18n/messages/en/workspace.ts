@@ -17,13 +17,14 @@ export const workspace: WorkspaceMessages = {
     moreFailed: "More projects could not be loaded. Previously loaded projects remain available.", loadingMore: "Loading more…", retryMore: "Retry loading more", loadMore: "Load more", allLoaded: "All projects loaded",
   },
   project: {
-    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { proposed: "Proposed", todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled" },
+    copyRepositoryUrl: "Copy repository URL", repositoryUrlCopied: "Copied", copyRepositoryUrlFailed: "Could not copy repository URL. Try again.",
+    statusFilter: "Status", allStatuses: "All statuses", noStatuses: "No statuses selected", selectedStatuses: ({ count }) => `${number(count)} selected`, statusOptions: { proposed: "Proposed", todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled" },
     back: "← Projects", lastRefreshed: ({ time }) => `Last successful refresh ${time}`, refreshing: "Refreshing…", loading: "Loading task graph", loadingDetail: "Reading project tasks and dependencies.",
     notFound: "Project not found", incomplete: "Task graph data is incomplete", loadingFailed: "Project could not be loaded",
     networkError: "Cannot connect to the service. Check the local service and try again.", protocolError: "Task graph data is incomplete or inconsistent. Try again.",
     notFoundDetail: "This project does not exist. Return to the project list.", readError: "The task graph cannot be read right now. Try again.",
     refreshFailed: "Refresh failed", showingSnapshot: "Showing the last successfully loaded data.", retryRefresh: "Retry refresh", selectedTaskRemoved: "The selected task is no longer in the updated task graph. Its details have been closed.", dismissNotice: "Dismiss notification",
-    statistics: "Project task statistics", totalTasks: "Total tasks", uniqueTasks: "Unique task IDs", completion: ({ percent }) => `${number(percent)}% complete`, endedBreakdown: ({ done, cancelled, percent }) => `${number(done)} completed · ${number(cancelled)} cancelled · ${number(percent)}% ended`, waiting: "Waiting to start", advancing: "Work in progress", ready: "Ready", blocked: "Blocked", todoSubset: "A subset of to-do tasks", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
+    statistics: "Project task statistics", totalTasks: "Total tasks", ready: "Ready", blocked: "Not ready", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
   },
   search: {
     form: "Search project tasks", input: "Search task IDs, titles and descriptions", placeholder: "Search IDs, titles and descriptions with AND, OR, NOT…", submit: "Search", clear: "Clear search",
@@ -49,13 +50,14 @@ export const workspace: WorkspaceMessages = {
     label: ({ list }) => `${list} pagination`, range: ({ start, end, total }) => `${number(start)}–${number(end)} of ${number(total)}`,
     page: ({ page, pages }) => `Page ${number(page)} of ${number(pages)}`, previous: "Previous", next: "Next",
   },
-  sections: { tags: "Tags", label: "Project views", overview: "Overview", tasks: "Task list", prs: "PR list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
+  sections: { statistics: "Statistics", tags: "Tags", label: "Project views", overview: "Overview", tasks: "Task list", prs: "PR list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
   tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", goals: "Goals", unfinishedCount: "Unfinished task count", unfinishedChainCount: "Unfinished task chain count", unfinishedGoalCount: "Unfinished Goal count" },
   goals: { details: "Goal details", detailsLabel: ({ title }) => `${title}, Goal details`, toggle: ({ title, expanded }) => `${expanded ? "Collapse" : "Expand"} Goal: ${title}`, emptyTasks: "No tasks in this Goal.", list: "Goals", empty: "No goals yet", emptyDetail: "Goals will appear here.", summary: ({ shown, total }) => `${number(shown)} of ${number(total)} goals`, composition: ({ count }) => `${number(count)} tasks` },
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },
     assignee: { read: "The saved assignee filter could not be read. You can continue browsing.", invalid: "The saved assignee filter is invalid. All assignees are shown by default. You can continue browsing.", write: "The assignee filter could not be saved. It may not return after a reload. You can continue browsing." },
-    scroll: { read: "The saved task browsing position could not be read. You can continue browsing.", invalid: "The saved task browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The task browsing position could not be saved. It may not return after a reload. You can continue browsing." },
+    status: { read: "The saved status filter could not be read. You can continue browsing.", invalid: "The saved status filter is invalid. All statuses are shown by default. You can continue browsing.", write: "The status filter could not be saved. It may not return after a reload. You can continue browsing." },
+    scroll: { read: "The saved project browsing position could not be read. You can continue browsing.", invalid: "The saved project browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The project browsing position could not be saved. It may not return after a reload. You can continue browsing." },
   },
 };

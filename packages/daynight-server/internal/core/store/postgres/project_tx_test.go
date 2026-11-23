@@ -27,6 +27,7 @@ func receiveQueryResult(t *testing.T, ctx context.Context, result <-chan error) 
 }
 
 func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	first, second := queryProject(t, s, 1), queryProject(t, s, 2)
 	task := queryTask(t, s, first.ID, 11, model.TaskTodo)
@@ -76,6 +77,7 @@ func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
 }
 
 func TestProjectTransactionsCancelActualRowLockWithoutLateWrite(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	before := queryTask(t, s, project.ID, 11, model.TaskTodo)
@@ -118,6 +120,7 @@ func TestProjectTransactionsCancelActualRowLockWithoutLateWrite(t *testing.T) {
 }
 
 func TestProjectTransactionsCancelActualQueryWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	task := queryTask(t, s, project.ID, 11, model.TaskTodo)
@@ -155,6 +158,7 @@ func TestProjectTransactionsCancelActualQueryWait(t *testing.T) {
 }
 
 func TestQueriesFailuresPreserveCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)
@@ -250,6 +254,7 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 }
 
 func TestProjectWriteScopeCompletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 91)

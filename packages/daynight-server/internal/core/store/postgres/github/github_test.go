@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,16 +47,18 @@ func mustExec(t *testing.T, tx pgx.Tx, sql string, args ...any) {
 func ptr[T any](v T) *T { return &v }
 
 func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
-	db, id := dbFixture(t)
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	tx := begin(t, db, pgx.TxOptions{})
 	ctx := t.Context()
-	reader, writer := github.NewReader(tx), github.NewWriter(tx, id)
+	mustExec(t, tx, `UPDATE github_apps SET github_app_id=123 WHERE id=$1`, f.app)
+	reader, writer := github.NewReader(tx), github.NewProjectAppWriter(tx, id)
 	virtual, err := reader.Connection(ctx, id)
 	if err != nil || !reflect.DeepEqual(virtual, githubpr.DefaultConnection(id)) {
 		t.Fatalf("virtual: %+v, %v", virtual, err)
 	}
-	if got, err := writer.Connection(ctx); err != nil || !reflect.DeepEqual(got, virtual) {
-		t.Fatalf("write-scope virtual resource: %+v, %v", got, err)
+	if facts, err := writer.Facts(ctx, f.p); err != nil || !reflect.DeepEqual(facts.Connection, virtual) {
+		t.Fatalf("write-scope virtual resource: %+v, %v", facts.Connection, err)
 	}
 	clock, err := writer.ObservedAt(ctx)
 	if err != nil || clock.Before(time.Now().Add(-time.Minute)) || clock.After(time.Now().Add(time.Minute)) {
@@ -68,13 +71,14 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, SyncEnabled: true,
 		AppID: ptr(int64(123)), InstallationID: ptr(int64(456)), RepositoryID: ptr(int64(789)), InstallationAccountLogin: ptr("owner"), RepositoryFullName: ptr("owner/repo"), RepositoryPrivate: ptr(true), PollIntervalMinutes: 17, AccessState: "available", AccessCheckedAt: &now, NextPollAt: &now}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("create: %v %v", ok, err)
 	}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || ok {
 		t.Fatalf("stale create: %v %v", ok, err)
 	}
-	got, err := writer.Connection(ctx)
+	facts, err := writer.Facts(ctx, f.p)
+	got := facts.Connection
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +87,10 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	}
 	mustExec(t, tx, `UPDATE project_github SET poll_error_code='retained', last_webhook_success_at=$2, not_before=$2 WHERE project_id=$1`, id, now)
 	write.ExpectedVersion, write.Version, write.PollIntervalMinutes = 2, 3, 20
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("update: %v %v", ok, err)
 	}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || ok {
 		t.Fatalf("stale update: %v %v", ok, err)
 	}
 	got, err = reader.Connection(ctx, id)
@@ -94,7 +98,7 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 		t.Fatalf("updated configuration: %+v, %v", got, err)
 	}
 	write.ExpectedVersion, write.Version, write.Generation = 3, 4, 2
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("new generation: %v %v", ok, err)
 	}
 	got, err = reader.Connection(ctx, id)
@@ -111,9 +115,17 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	}
 }
 
+func ensureLegacySource(t *testing.T, tx pgx.Tx, id string) {
+	t.Helper()
+	mustExec(t, tx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,30,'owner/repo') ON CONFLICT DO NOTHING`, id)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,legacy_repository_id) VALUES($1,30) ON CONFLICT(project_id) DO NOTHING`, id)
+	mustExec(t, tx, `UPDATE project_github SET legacy_repository_id=30 WHERE project_id=$1 AND legacy_repository_id IS NULL`, id)
+}
+
 func insertPR(t *testing.T, tx pgx.Tx, id string, n int, state, title string, body *string) {
 	t.Helper()
-	mustExec(t, tx, `INSERT INTO project_pull_requests (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision) VALUES ($1,$2,$2,$3,$4,$5,false,'main','abcdef',now(),now(),$6,now(),1)`, id, n, fmt.Sprintf("https://example.test/%d", n), title, state, body)
+	ensureLegacySource(t, tx, id)
+	mustExec(t, tx, `INSERT INTO project_pull_requests (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision) VALUES ($1,30,$2,$2,$3,$4,$5,false,'main','abcdef',now(),now(),$6,now(),1)`, id, n, fmt.Sprintf("https://example.test/%d", n), title, state, body)
 }
 func numbers(items []githubpr.PullRequestSummary) []int64 {
 	out := make([]int64, 0, len(items))
@@ -154,7 +166,7 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	other := uuid.NewString()
 	insertPR(t, setup, other, 50, "open", "other", nil)
 	mustExec(t, setup, `SAVEPOINT unique_pr`)
-	_, duplicateErr := setup.Exec(ctx, `INSERT INTO project_pull_requests (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES ($1,9,99,'url','duplicate','open',false,'main','sha',now(),now(),now(),1)`, id)
+	_, duplicateErr := setup.Exec(ctx, `INSERT INTO project_pull_requests (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES ($1,30,9,99,'url','duplicate','open',false,'main','sha',now(),now(),now(),1)`, id)
 	var pgErr *pgconn.PgError
 	if !errors.As(duplicateErr, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("same Project and PR number: %v", duplicateErr)
@@ -166,23 +178,23 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	}
 	tx := begin(t, db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	r := github.NewReader(tx)
-	detail, err := r.PullRequest(ctx, id, 9)
+	detail, err := r.PullRequest(ctx, id, 9, nil)
 	if err != nil || detail.Description == nil || *detail.Description != body || detail.AuthorID != nil || detail.AuthorLogin != nil || detail.HeadRepositoryID != nil || detail.HeadRepositoryFullName != nil || detail.HeadRef != nil {
 		t.Fatalf("detail: %+v %v", detail, err)
 	}
-	emptyDetail, err := r.PullRequest(ctx, id, 8)
+	emptyDetail, err := r.PullRequest(ctx, id, 8, nil)
 	if err != nil || emptyDetail.Description == nil || *emptyDetail.Description != "" {
 		t.Fatalf("empty: %+v %v", emptyDetail, err)
 	}
-	nullDetail, err := r.PullRequest(ctx, id, 7)
+	nullDetail, err := r.PullRequest(ctx, id, 7, nil)
 	if err != nil || nullDetail.Description != nil {
 		t.Fatalf("null: %+v %v", nullDetail, err)
 	}
-	if _, err = r.PullRequest(ctx, other, 8); !errors.Is(err, model.ErrNotFound) {
+	if _, err = r.PullRequest(ctx, other, 8, nil); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
-	counts, err := r.PullRequestCounts(ctx, id)
-	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5}) {
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5, ProjectTotal: 5}) {
 		t.Fatalf("counts: %+v %v", counts, err)
 	}
 	q := store.GitHubPRQuery{ProjectID: id, State: "active", Limit: 2}
@@ -214,7 +226,7 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	if err = newtx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	counts, err = r.PullRequestCounts(ctx, id)
+	counts, err = r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
 	if err != nil || counts.Active != 3 {
 		t.Fatalf("snapshot count changed: %+v %v", counts, err)
 	}
@@ -232,13 +244,134 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	}
 	cancel, cancelFn := context.WithCancel(ctx)
 	cancelFn()
-	if _, err = github.NewReader(fresh).PullRequestCounts(cancel, id); !errors.Is(err, context.Canceled) {
+	if _, err = github.NewReader(fresh).PullRequestCounts(cancel, store.GitHubPRCountsQuery{ProjectID: id}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
 	}
 }
 
-func TestConfigurationCancellationDuringLockWait(t *testing.T) {
+func TestPullRequestReadsByAuthor(t *testing.T) {
 	db, id := dbFixture(t)
+	ctx := t.Context()
+	setup := begin(t, db, pgx.TxOptions{})
+	for _, pr := range []struct {
+		n            int
+		state, title string
+		author       *int64
+	}{
+		{9, "open", "match nine", ptr(int64(9007199254740997))},
+		{8, "open", "match eight", ptr(int64(42))},
+		{7, "open", "match seven", ptr(int64(9007199254740997))},
+		{6, "closed", "match six", ptr(int64(9007199254740997))},
+		{5, "merged", "other", ptr(int64(9007199254740997))},
+		{4, "open", "match null author", nil},
+		{3, "open", "match three", ptr(int64(9007199254740997))},
+	} {
+		insertPR(t, setup, id, pr.n, pr.state, pr.title, nil)
+		mustExec(t, setup, `UPDATE project_pull_requests SET author_id=$3 WHERE project_id=$1 AND number=$2`, id, pr.n, pr.author)
+	}
+	if err := setup.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	r := github.NewReader(tx)
+	author := int64(9007199254740997)
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &author})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5, ProjectTotal: 7}) {
+		t.Fatalf("author counts: %+v %v", counts, err)
+	}
+	q := store.GitHubPRQuery{ProjectID: id, AuthorID: &author, State: "active", Query: "match", Limit: 2}
+	first, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(first.Items), []int64{9, 7}) || first.Total != 3 || !first.HasMore || first.UpperNumber == nil || *first.UpperNumber != 9 {
+		t.Fatalf("author first page: %+v %v", first, err)
+	}
+	q.UpperNumber, q.AnchorNumber = first.UpperNumber, ptr(int64(7))
+	second, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(second.Items), []int64{3}) || second.Total != 3 || second.HasMore {
+		t.Fatalf("author next page: %+v %v", second, err)
+	}
+	q.Previous, q.AnchorNumber = true, ptr(int64(3))
+	previous, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(previous.Items), []int64{9, 7}) || previous.Total != 3 {
+		t.Fatalf("author previous page: %+v %v", previous, err)
+	}
+	q.Previous, q.AnchorNumber = false, ptr(int64(1))
+	empty, err := r.PullRequests(ctx, q)
+	if err != nil || len(empty.Items) != 0 || empty.Total != 3 || empty.UpperNumber == nil || *empty.UpperNumber != 9 {
+		t.Fatalf("empty anchored page: %+v %v", empty, err)
+	}
+	missing := int64(43)
+	missingCounts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &missing})
+	if err != nil || missingCounts != (store.GitHubPRCounts{ProjectTotal: 7}) {
+		t.Fatalf("missing author counts: %+v %v", missingCounts, err)
+	}
+	q.AuthorID, q.AnchorNumber, q.UpperNumber = &missing, nil, nil
+	missingPage, err := r.PullRequests(ctx, q)
+	if err != nil || len(missingPage.Items) != 0 || missingPage.Total != 0 {
+		t.Fatalf("missing author page: %+v %v", missingPage, err)
+	}
+	newtx := begin(t, db, pgx.TxOptions{})
+	insertPR(t, newtx, id, 10, "open", "match ten", nil)
+	mustExec(t, newtx, `UPDATE project_pull_requests SET author_id=$3 WHERE project_id=$1 AND number=$2`, id, 10, author)
+	if err := newtx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	counts, err = r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &author})
+	if err != nil || counts.All != 5 || counts.ProjectTotal != 7 {
+		t.Fatalf("author snapshot changed: %+v %v", counts, err)
+	}
+	q.AuthorID = &author
+	page, err := r.PullRequests(ctx, q)
+	if err != nil || page.Total != 3 || !reflect.DeepEqual(numbers(page.Items), []int64{9, 7}) {
+		t.Fatalf("author page snapshot changed: %+v %v", page, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := r.PullRequests(cancelled, q); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled author page: %v", err)
+	}
+}
+
+func TestPullRequestAuthorQueryCancellationDuringLockWait(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	blocker := begin(t, db, pgx.TxOptions{})
+	mustExec(t, blocker, `LOCK TABLE project_pull_requests IN ACCESS EXCLUSIVE MODE`)
+	waiter := begin(t, db, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	var pid int
+	if err := waiter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := github.NewReader(waiter).PullRequests(operationCtx, store.GitHubPRQuery{ProjectID: id, AuthorID: ptr(int64(42)), State: "all", Limit: 10})
+		result <- err
+	}()
+	waitForLock(t, db, pid)
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("author query cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled author query did not exit")
+	}
+	_ = waiter.Rollback(context.Background())
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fresh := begin(t, db, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	page, err := github.NewReader(fresh).PullRequests(ctx, store.GitHubPRQuery{ProjectID: id, AuthorID: ptr(int64(42)), State: "all", Limit: 10})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("pool recovery: %+v %v", page, err)
+	}
+}
+
+func TestConfigurationCancellationDuringLockWait(t *testing.T) {
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	ctx := t.Context()
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO project_github(project_id,version) VALUES ($1,2)`, id)
@@ -256,7 +389,7 @@ func TestConfigurationCancellationDuringLockWait(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := github.NewWriter(waiter, id).Connection(operationCtx)
+		_, err := github.NewProjectAppWriter(waiter, id).Facts(operationCtx, f.p)
 		result <- err
 	}()
 	waitForLock(t, db, pid)
@@ -280,13 +413,14 @@ func TestConfigurationCancellationDuringLockWait(t *testing.T) {
 	clockTx := begin(t, db, pgx.TxOptions{})
 	cancelled, cancelClock := context.WithCancel(ctx)
 	cancelClock()
-	if _, err := github.NewWriter(clockTx, id).ObservedAt(cancelled); !errors.Is(err, context.Canceled) {
+	if _, err := github.NewProjectAppWriter(clockTx, id).ObservedAt(cancelled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled database clock: %v", err)
 	}
 }
 
 func TestManagementReadSerializesBroadcast(t *testing.T) {
-	db, id := dbFixture(t)
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	ctx := t.Context()
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO project_github(project_id,version,revision,enabled) VALUES ($1,2,4,true)`, id)
@@ -294,8 +428,9 @@ func TestManagementReadSerializesBroadcast(t *testing.T) {
 		t.Fatal(err)
 	}
 	management := begin(t, db, pgx.TxOptions{})
-	writer := github.NewWriter(management, id)
-	before, err := writer.Connection(ctx)
+	writer := github.NewProjectAppWriter(management, id)
+	facts, err := writer.Facts(ctx, f.p)
+	before := facts.Connection
 	if err != nil || before.Revision != 4 {
 		t.Fatalf("management read: %+v %v", before, err)
 	}
@@ -310,7 +445,7 @@ func TestManagementReadSerializesBroadcast(t *testing.T) {
 		result <- err
 	}()
 	waitForLock(t, db, pid)
-	ok, err := writer.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: before.Version, Version: 3, Revision: before.Revision + 1, Enabled: true, PollIntervalMinutes: 5, AccessState: "unknown"})
+	ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: store.GitHubConfigurationWrite{ExpectedVersion: before.Version, Version: 3, Revision: before.Revision + 1, Enabled: true, PollIntervalMinutes: 5, AccessState: "unknown"}})
 	if err != nil || !ok {
 		t.Fatalf("management write: %v %v", ok, err)
 	}
@@ -396,5 +531,53 @@ func TestPullRequestKeysetTraversalAcrossSnapshots(t *testing.T) {
 	closed := read(store.GitHubPRQuery{ProjectID: id, State: "closed", Limit: 100})
 	if !reflect.DeepEqual(numbers(closed.Items), []int64{11, 9, 7, 5, 3, 1}) || closed.Total != 6 || closed.HasMore {
 		t.Fatalf("closed page: %+v", closed)
+	}
+}
+
+func TestPullRequestRequiresFixedLegacySource(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	tx := begin(t, db, pgx.TxOptions{})
+	r := github.NewReader(tx)
+	if _, err := r.PullRequest(ctx, id, 42, nil); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing connection: %v", err)
+	}
+	mustExec(t, tx, `INSERT INTO project_github(project_id) VALUES($1)`, id)
+	mustExec(t, tx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,42,42,'url','current','open',false,'main','sha',now(),now(),now(),1)`, id)
+	if _, err := r.PullRequest(ctx, id, 42, nil); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("unfixed legacy source returned a current PR: %v", err)
+	}
+	mustExec(t, tx, `ALTER TABLE project_github RENAME TO inaccessible_project_github`)
+	if _, err := r.PullRequest(ctx, id, 42, nil); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("connection read failure was hidden as not found: %v", err)
+	}
+}
+
+func TestSourceWriteFailureRollsBackConnection(t *testing.T) {
+	for _, fault := range []struct {
+		name, sql, want string
+	}{
+		{"directory unavailable", `ALTER TABLE project_github_repositories RENAME TO inaccessible_repositories`, "save github repository source"},
+		{"legacy update rejected", `ALTER TABLE project_github ADD CONSTRAINT reject_legacy_source CHECK (legacy_repository_id IS NULL)`, "save legacy github repository"},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			f := newProjectAppFixture(t)
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			mustExec(t, tx, fault.sql)
+			write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true,
+				AppID: ptr(int64(9)), InstallationID: ptr(int64(7)), RepositoryID: ptr(int64(8)), InstallationAccountLogin: ptr("o"), RepositoryFullName: ptr("o/r"), RepositoryPrivate: ptr(false), PollIntervalMinutes: 5, AccessState: "available"}
+			ok, err := github.NewProjectAppWriter(tx, f.project).Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))})
+			if err == nil || ok || !strings.Contains(err.Error(), fault.want) {
+				t.Fatalf("source write: ok=%v err=%v", ok, err)
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var connections, sources int
+			if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_github WHERE project_id=$1), (SELECT count(*) FROM project_github_repositories WHERE project_id=$1)`, f.project).Scan(&connections, &sources); err != nil || connections != 0 || sources != 0 {
+				t.Fatalf("failed source write persisted state: connections=%d sources=%d err=%v", connections, sources, err)
+			}
+		})
 	}
 }

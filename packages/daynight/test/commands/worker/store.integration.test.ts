@@ -26,7 +26,7 @@ const fixture = () => {
   const file = path.join(directory, "state.sqlite");
   const store = open(file);
   const project: WorkerProject = { projectId: claim.projectId, repoUrl: "https://github.com/owner/repo.git", localPath: path.join(directory, "repo") };
-  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex" }); };
+  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }); };
   return { directory, file, store, project, register };
 };
 
@@ -40,26 +40,81 @@ afterEach(() => {
 });
 
 describe("minimal worker SQLite schema", () => {
-  it("retains archive repair scheduling across reopen without changing the owner or deadline", () => {
+  it.each(["archive_incomplete", "markdown_projection_failed"] as const)("retains archive repair %s across reopen without changing the owner or deadline", code => {
     const f = fixture(); f.register();
     const owner = { ...claim, worktreeId: uuid(4) };
-    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: "archive_incomplete" });
+    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: code });
     close(f.store);
     const reopened = open(f.file);
-    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: "archive_incomplete" });
+    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: code });
     expect(() => reopened.saveCleanupSchedule({ ...owner, worktreeId: uuid(5) }, reopened.getCleanupSchedule(owner)!)).toThrow("different worktree");
     expect(() => reopened.saveCleanupSchedule(owner, { ...reopened.getCleanupSchedule(owner)!, deadline: 101 })).toThrow("deadline");
   });
 
   it("upgrades a version 12 cleanup schedule without inventing an archive blocker", () => {
-    const f = fixture(); f.register();
-    f.store.saveCleanupSchedule({ ...claim, worktreeId: uuid(4) }, { deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
-    close(f.store);
-    const db = connect(f.file);
-    if ((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).some(row => row.name === "archive_repair_code")) db.exec("ALTER TABLE cleanup_schedules DROP COLUMN archive_repair_code");
-    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules; DROP TABLE claim_tool_reservations");
+    const f = fixture(); close(f.store);
+    const db = connect(path.join(f.directory, "version12.sqlite"));
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 12) db.exec(step.sql);
+    db.prepare("INSERT INTO projects VALUES(?,?,?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES(?,?,?,'active','codex',NULL,'web')").run(claim.projectId, claim.taskId, claim.claimId);
+    db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained");
     db.pragma("user_version=12"); db.close();
-    expect(open(f.file).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+    expect(open(db.name).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+  });
+
+  it("preserves both version 16 repair schedules while admitting the Markdown blocker", () => {
+    const f = fixture(); close(f.store);
+    const file = path.join(f.directory, "version16.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 16) db.exec(step.sql);
+    db.prepare("INSERT INTO projects VALUES(?,?,?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES(?,?,?,'active','codex',NULL,'web')").run(claim.projectId, claim.taskId, claim.claimId);
+    db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained", "projection_gap");
+    const history = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(5), executionGeneration: "1", launchId: uuid(6) };
+    db.prepare("INSERT INTO archive_backfill_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(history.serverOrigin, history.executionId, history.executionGeneration, history.launchId, claim.projectId, claim.taskId, claim.claimId, "archive_incomplete", 300);
+    db.pragma("user_version=16"); db.close();
+    const migrated = open(file), owner = { ...claim, worktreeId: uuid(4) };
+    migrated.registerProject(f.project);
+    expect(migrated.getCleanupSchedule(claim)).toEqual({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained", archiveRepairCode: "projection_gap" });
+    expect(migrated.getArchiveBackfillSchedule(history)).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: 300 });
+    migrated.saveCleanupSchedule(owner, { ...migrated.getCleanupSchedule(owner)!, archiveRepairCode: "markdown_projection_failed" });
+    migrated.saveArchiveBackfillSchedule(history, { archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 300 });
+    close(migrated);
+    const reopened = open(file);
+    expect(reopened.getCleanupSchedule(owner)?.archiveRepairCode).toBe("markdown_projection_failed");
+    expect(reopened.getArchiveBackfillSchedule(history)?.archiveRepairCode).toBe("markdown_projection_failed");
+  });
+
+  it("upgrades version 16 archive schedules without changing their identities or deadlines", () => {
+    const f = fixture();
+    close(f.store);
+    const file = path.join(f.directory, "version16.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 16) db.exec(step.sql);
+    const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
+    db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
+      VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, 'projection_gap', 900000)`).run(identity);
+    db.pragma("user_version=16"); db.close();
+    const upgraded = open(file);
+    expect(upgraded.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: "projection_gap", nextAttemptAt: 900000 });
+    upgraded.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: 901000, legacyError: "original failure" });
+    close(upgraded);
+    const reopened = open(file);
+    expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: null, nextAttemptAt: 901000, legacyError: "original failure" });
+    reopened.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: 902000 });
+    expect(reopened.getArchiveBackfillSchedule(identity)?.legacyError).toBe("original failure");
+  });
+
+  it("preserves version 17 Markdown repair schedules when upgrading to version 18", () => {
+    const f = fixture(); close(f.store);
+    const file = path.join(f.directory, "version17.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 17) db.exec(step.sql);
+    const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
+    db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
+      VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, 'markdown_projection_failed', 900000)`).run(identity);
+    db.pragma("user_version=17"); db.close();
+    const upgraded = open(file);
+    expect(upgraded.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 900000 });
+    upgraded.saveArchiveBackfillSchedule(identity, { archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 901000, legacyError: "original failure" });
+    expect(upgraded.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: "markdown_projection_failed", legacyError: "original failure" });
   });
 
   it("creates the project mapping, task index and cleanup schedule with WAL/FULL", () => {
@@ -122,7 +177,7 @@ describe("worker claim and native session index", () => {
   it("retains a known native identity and rejects a different observed session", () => {
     const { file, store, project } = fixture();
     store.registerProject(project);
-    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "herdr" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
+    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "web" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
     const concurrent = open(file);
     expect(store.setSessionId(claim, uuid(8)).sessionId).toBe(uuid(8));
     expect(() => concurrent.setSessionId(claim, uuid(9))).toThrow("different native session");
@@ -134,7 +189,7 @@ describe("worker claim and native session index", () => {
   it("permits only one active claim for the same project and task across connections", () => {
     const { file, store, register } = fixture();
     register();
-    const newer = { ...claim, claimId: uuid(4), agent: "codex" as const };
+    const newer = { ...claim, claimId: uuid(4), agent: "codex" as const, agentControlMode: "web" as const };
     store.registerPending(newer);
     const concurrent = open(file);
     store.activateTask(claim);
@@ -143,8 +198,8 @@ describe("worker claim and native session index", () => {
     store.completeTask(claim);
     expect(concurrent.activateTask(newer).status).toBe("active");
     expect(store.listTasks()).toEqual([
-      { ...claim, status: "done", agent: "codex", agentControlMode: "herdr" as const, sessionId: null },
-      { ...newer, status: "active", agentControlMode: "herdr", sessionId: null },
+      { ...claim, status: "done", agent: "codex", agentControlMode: "web" as const, sessionId: null },
+      { ...newer, status: "active", agentControlMode: "web", sessionId: null },
     ]);
   });
 
@@ -156,7 +211,7 @@ describe("worker claim and native session index", () => {
     close(store);
     const recovered = open(file);
     expect(recovered.getProject(project)).toEqual(project);
-    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
+    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "web" as const, sessionId: uuid(8) });
     expect(Object.keys(recovered.getTask(claim)!)).toEqual(["projectId", "taskId", "claimId", "status", "agent", "agentControlMode", "sessionId"]);
   });
 });
@@ -243,6 +298,7 @@ describe("worker cleanup schedules", () => {
     const original = f.store.getTask(claim);
     expect(f.store.saveCleanupSchedule(owner, schedule)).toEqual({ ...owner, ...schedule });
     const second = { ...owner, claimId: uuid(71), worktreeId: uuid(72) };
+    f.store.registerPending({ ...second, agent: "codex", agentControlMode: "web" });
     f.store.saveCleanupSchedule(second, { ...schedule, failures: 0, nextAttemptAt: 0 });
     close(f.store);
     const recovered = open(f.file);

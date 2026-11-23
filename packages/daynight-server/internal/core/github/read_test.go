@@ -22,10 +22,15 @@ type fixture struct {
 	store.GitHubReadDAO
 	trace                                                                  []string
 	accessErr, connectionErr, countsErr, listErr, detailErr, completionErr error
+	visibilityErr, repositoryVisibilityErr                                 error
 	page                                                                   store.GitHubPRPage
 	counts                                                                 store.GitHubPRCounts
 	query                                                                  store.GitHubPRQuery
+	countsQuery                                                            store.GitHubPRCountsQuery
 	wantCtx                                                                context.Context
+	repository                                                             func(context.Context, string, int64) (githubpr.Repository, error)
+	repositories                                                           func(context.Context, store.GitHubRepositoriesQuery) ([]githubpr.Repository, error)
+	detailRepositoryID                                                     *int64
 }
 
 func (f *fixture) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
@@ -54,12 +59,35 @@ func (f *fixture) Connection(ctx context.Context, id string) (githubpr.Connectio
 	}
 	return githubpr.Connection{ProjectID: id, Revision: 7}, f.connectionErr
 }
-func (f *fixture) PullRequest(ctx context.Context, id string, n int64) (githubpr.PullRequest, error) {
+func (f *fixture) RequireRepositoryVisible(ctx context.Context, id string, repositoryID int64) error {
+	f.trace = append(f.trace, "repository-visibility")
+	if ctx != f.wantCtx || id != projectID || repositoryID != 123 {
+		panic("incorrect repository visibility arguments")
+	}
+	return f.repositoryVisibilityErr
+}
+func (f *fixture) RequirePullRequestVisible(ctx context.Context, id string, n int64, repositoryID *int64) error {
+	f.trace = append(f.trace, "pr-visibility")
+	if ctx != f.wantCtx || id != projectID || n != 42 {
+		panic("incorrect visibility arguments")
+	}
+	return f.visibilityErr
+}
+func (f *fixture) PullRequest(ctx context.Context, id string, n int64, repositoryID *int64) (githubpr.PullRequest, error) {
+	f.detailRepositoryID = repositoryID
 	f.trace = append(f.trace, "detail")
 	if ctx != f.wantCtx || id != projectID || n != 42 {
 		panic("incorrect detail arguments")
 	}
 	return githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: n}}, f.detailErr
+}
+func (f *fixture) Repository(ctx context.Context, id string, repositoryID int64) (githubpr.Repository, error) {
+	f.trace = append(f.trace, "repository")
+	return f.repository(ctx, id, repositoryID)
+}
+func (f *fixture) Repositories(ctx context.Context, q store.GitHubRepositoriesQuery) ([]githubpr.Repository, error) {
+	f.trace = append(f.trace, "repositories")
+	return f.repositories(ctx, q)
 }
 func (f *fixture) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store.GitHubPRPage, error) {
 	f.trace = append(f.trace, "list")
@@ -69,11 +97,12 @@ func (f *fixture) PullRequests(ctx context.Context, q store.GitHubPRQuery) (stor
 	f.query = q
 	return f.page, f.listErr
 }
-func (f *fixture) PullRequestCounts(ctx context.Context, id string) (store.GitHubPRCounts, error) {
+func (f *fixture) PullRequestCounts(ctx context.Context, q store.GitHubPRCountsQuery) (store.GitHubPRCounts, error) {
 	f.trace = append(f.trace, "counts")
-	if ctx != f.wantCtx || id != projectID {
+	if ctx != f.wantCtx || q.ProjectID != projectID {
 		panic("incorrect count arguments")
 	}
+	f.countsQuery = q
 	return f.counts, f.countsErr
 }
 func fixtureFor(ctx context.Context) *fixture { return &fixture{wantCtx: ctx} }
@@ -139,19 +168,19 @@ func TestReadStatusAndDetail(t *testing.T) {
 		t.Fatalf("status=%+v trace=%v error=%v", status, f.trace, err)
 	}
 	f = fixtureFor(ctx)
-	detail, err := NewReader(f, false).Detail(ctx, principal, projectID, 42)
+	detail, err := NewReader(f, false).Detail(ctx, principal, projectID, 42, nil)
 	if err != nil || detail.PullRequest.Number != 42 || detail.Connection.Revision != 7 || !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "detail"}) {
 		t.Fatalf("detail=%+v trace=%v error=%v", detail, f.trace, err)
 	}
 	f = fixtureFor(ctx)
 	f.detailErr = model.ErrNotFound
-	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 42)
+	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 42, nil)
 	faultCode(t, err, "not_found")
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing cause: %v", err)
 	}
 	f = fixtureFor(ctx)
-	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 0)
+	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 0, nil)
 	faultCode(t, err, "invalid_input")
 	if len(f.trace) != 0 {
 		t.Fatalf("invalid number read database: %v", f.trace)
@@ -160,8 +189,10 @@ func TestReadStatusAndDetail(t *testing.T) {
 
 func TestListValidationAndEmptyPage(t *testing.T) {
 	ctx := context.Background()
+	zero, negative := int64(0), int64(-1)
 	for _, req := range []ListRequest{
 		{State: "open", Limit: 1}, {State: "active", Limit: 0}, {State: "active", Limit: 101},
+		{State: "all", Limit: 1, AuthorID: &zero}, {State: "all", Limit: 1, AuthorID: &negative},
 		{State: "all", Limit: 1, Query: strings.Repeat("a", 1025)}, {State: "all", Limit: 1, Query: "\x00"}, {State: "all", Limit: 1, Query: "\xff"},
 	} {
 		f := fixtureFor(ctx)
@@ -179,5 +210,16 @@ func TestListValidationAndEmptyPage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "counts", "list"}) || f.query.ProjectID != projectID || f.query.State != "merged" || f.query.Limit != 100 {
 		t.Fatalf("query %+v trace %v", f.query, f.trace)
+	}
+}
+
+func TestListAuthorScopeUsesSameSnapshot(t *testing.T) {
+	ctx := context.Background()
+	author := int64(9007199254740993)
+	f := fixtureFor(ctx)
+	f.counts = store.GitHubPRCounts{All: 2, ProjectTotal: 7}
+	page, err := NewReader(f, true).List(ctx, principal, projectID, ListRequest{State: "closed", Query: "match", Limit: 2, AuthorID: &author})
+	if err != nil || page.AuthorID == nil || *page.AuthorID != author || page.Counts != f.counts || f.query.AuthorID == nil || *f.query.AuthorID != author || f.countsQuery.AuthorID == nil || *f.countsQuery.AuthorID != author || !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "counts", "list"}) {
+		t.Fatalf("page=%+v query=%+v countsQuery=%+v trace=%v err=%v", page, f.query, f.countsQuery, f.trace, err)
 	}
 }

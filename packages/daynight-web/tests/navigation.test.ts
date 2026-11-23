@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserNavigation, type DirtyDraft } from '../src/app/navigation';
-import { myTasksHistory } from '../src/app/page-history';
+import { myTasksHistory, workerHistory } from '../src/app/page-history';
 
 let owner: BrowserNavigation;
 beforeEach(() => { owner = new BrowserNavigation(window); });
@@ -181,6 +181,22 @@ describe('window navigation admission', () => {
     expect(owner.decision()).not.toBeNull();
   });
 
+  it('reports busy until a cancelled history traversal has actually restored its origin', () => {
+    const start = history.state;
+    owner.navigate('/account'); const original = history.state;
+    owner.register(draft());
+    const changes: boolean[] = [];
+    owner.subscribeDecision(() => changes.push(owner.isBusy()));
+    vi.spyOn(history, 'go').mockImplementation(() => {});
+    arrival(start, '/projects');
+    expect(owner.isBusy()).toBe(true);
+    owner.cancel();
+    expect(owner.isBusy()).toBe(true);
+    arrival(original, '/account');
+    expect(owner.isBusy()).toBe(false);
+    expect(changes).toEqual([true, true, false]);
+  });
+
   it('runs the keep-editing continuation only after history restoration, while its draft remains live', () => {
     const start = history.state;
     owner.navigate('/account'); const original = history.state;
@@ -224,6 +240,16 @@ describe('window navigation admission', () => {
     expect(owner.snapshot().pathname).toBe('/projects');
   });
 
+  it('distinguishes a native traversal between unindexed entries with the same URL', () => {
+    arrival({ foreign: 1 }, '/account#native');
+    const first = owner.snapshot();
+    expect(first.entryId).toBeNull();
+    arrival({ foreign: 2 }, '/account#native');
+    expect(owner.snapshot()).not.toBe(first);
+    expect(owner.snapshot()).toEqual(first);
+    expect(history.state).toEqual({ foreign: 2 });
+  });
+
   it('does not trust copied fragment markers or invalid indexes', () => {
     const initial = history.state;
     owner.register(draft());
@@ -238,8 +264,8 @@ describe('window navigation admission', () => {
   });
 
   it('publishes same-URL reading entries, preserves their identity on replacement and deduplicates choices', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account');
     const length = history.length;
     const initialId = owner.snapshot().entryId;
@@ -255,7 +281,7 @@ describe('window navigation admission', () => {
     expect(owner.snapshot().view).toEqual(tokens);
     expect(commit).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledTimes(2);
-    owner.setView({ ...tokens, selection: { ...tokens.selection } }, { onCommit: commit });
+    owner.setView(structuredClone(tokens), { onCommit: commit });
     owner.navigate('/account');
     expect(history.length).toBe(length + 1);
     expect(notify).toHaveBeenCalledTimes(2);
@@ -268,8 +294,8 @@ describe('window navigation admission', () => {
   });
 
   it('admits reading targets through draft protection and does not commit on cancel', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account'); owner.setView(profile, { replace: true });
     const current = owner.snapshot();
     const survives = vi.fn((_url: URL, view?: unknown) => view === profile);
@@ -287,9 +313,51 @@ describe('window navigation admission', () => {
     expect(commit).toHaveBeenCalledOnce();
   });
 
+  it('admits URL and reading together and writes once only after the draft decision', () => {
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
+    owner.navigate('/account?tab=overview'); owner.setView(profile, { replace: true });
+    const original = owner.snapshot(), source = history.state, length = history.length;
+    const push = vi.spyOn(history, 'pushState');
+    const replace = vi.spyOn(history, 'replaceState');
+    const commit = vi.fn();
+    const registration = draft({ survives: vi.fn(() => false) });
+    owner.register(registration);
+    owner.setView(tokens, { to: '/account?tab=configuration', onCommit: commit });
+    expect(registration.survives).toHaveBeenCalledWith(new URL('/account?tab=configuration', location.origin), tokens);
+    expect(owner.snapshot()).toBe(original);
+    expect(location.search).toBe('?tab=overview');
+    expect(push).not.toHaveBeenCalled(); expect(replace).not.toHaveBeenCalled();
+    owner.cancel();
+    expect(owner.snapshot()).toBe(original); expect(commit).not.toHaveBeenCalled();
+    owner.setView(tokens, { to: '/account?tab=configuration', onCommit: commit }); owner.confirm();
+    expect(push).toHaveBeenCalledOnce(); expect(replace).not.toHaveBeenCalled();
+    expect(history.length).toBe(length + 1);
+    expect(owner.snapshot()).toMatchObject({ search: '?tab=configuration', view: tokens });
+    expect(commit).toHaveBeenCalledOnce();
+    owner.setView(structuredClone(tokens), { to: '/account?tab=configuration', onCommit: commit });
+    expect(push).toHaveBeenCalledOnce(); expect(commit).toHaveBeenCalledOnce();
+    arrival(source, '/account?tab=overview');
+    expect(owner.decision()).not.toBeNull();
+    owner.confirm();
+    expect(owner.snapshot()).toMatchObject({ search: '?tab=overview', view: profile });
+    expect(() => owner.setView(profile, { to: 'https://elsewhere.invalid' })).toThrow();
+  });
+
+  it('replaces URL while retaining entry identity when the reading is unchanged', () => {
+    const reading = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    owner.navigate('/account#pending'); owner.setView(reading, { replace: true });
+    const id = owner.snapshot().entryId, length = history.length;
+    const commit = vi.fn();
+    owner.setView(reading, { to: '/account?tab=overview#pending', replace: true, onCommit: commit });
+    expect(history.length).toBe(length);
+    expect(owner.snapshot()).toMatchObject({ entryId: id, search: '?tab=overview', hash: '#pending', view: reading });
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
   it('passes the destination payload to guards during traversal and optional routed navigation', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account'); owner.setView(profile, { replace: true });
     const source = history.state;
     owner.setView(tokens);

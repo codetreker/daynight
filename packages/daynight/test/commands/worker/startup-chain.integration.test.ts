@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
-import { captureStartupDeadline, stopStartupChildren } from "../../helpers/startup-deadline.js";
+import { captureStartupDeadline, hasInitializeRequest, stopStartupChildren } from "../../helpers/startup-deadline.js";
 const fixture = vi.hoisted(() => ({ mode: "ready", requests: "", children: [] as ChildProcess[] }));
 vi.mock("node:net", () => ({ createServer: () => {
   const server = new EventEmitter() as EventEmitter & { listen: (endpoint: string, callback: () => void) => void; close: () => void };
@@ -66,7 +66,7 @@ test.each(["reject", "timeout"] as const)("real native initialize %s reaches the
   let settled = false;
   void running.finally(() => { settled = true; }).catch(() => {});
   try {
-    if (deadline) await deadline.expireAfterRequest(fixture.requests, requests => requests.some(request => JSON.parse(request).method === "initialize"));
+    if (deadline) await deadline.expireAfterRequest(fixture.requests, hasInitializeRequest);
     await expect(running).rejects.toThrow();
     const expected = mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" };
     expect(readControllerSnapshot(f.journal)).toMatchObject({ startup: expected, nativeSessionId: null, initialInputState: "not_submitted" });

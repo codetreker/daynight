@@ -28,7 +28,30 @@ export type ImageQualification = Readonly<{
 export type QualifiedImages = ImageQualification & Readonly<{ fingerprint: string }>;
 // Only independently qualified exact combinations belong here. Catalog claims
 // and a single visual success do not qualify a runtime combination.
-const qualifications: readonly ImageQualification[] = Object.freeze([]);
+//
+// Each row is one exact evidenced combination: the native binary digest,
+// declared route digest, model and platform observed in the referenced
+// evidence package. Limits are the largest values that package actually
+// delivered and the model answered correctly, not native or catalog maxima;
+// steer stays false because no same-turn steer receipt was collected.
+// evidenceId pins native evidence only; product-chain acceptance for the same
+// combination is required separately before a row ships.
+const codex0170DarwinArm64 = (modelId: string, maxImageBytes: string, maxMessageImageBytes: string): ImageQualification => ({
+  identity: { provider: "codex", nativeVersion: "0.170.0", nativeExecutableSha256: "9248cfeebec9b4cc3034d5114caab10fbf426cbfa79dba410c5fa1b72762abd6", sdkVersion: null, platform: "darwin", arch: "arm64", backendIdentity: "63f0adb320dcbb521cec93c8831f86816f0d19954083a222070a6cad69b8bc14", modelId },
+  evidenceId: "daynight-task:5f7c3a89-22c8-43a9-9cc7-6631287e1de2/evidence/codex-macos-0.170.0/evidence.zip",
+  evidenceSha256: "4ef100d8c1e64127a6bd4dc3eeccdbdb293be0ea9e3f515deb551fc8eb7dc049",
+  send: true,
+  steer: false,
+  inputMediaTypes: ["image/png", "image/jpeg", "image/webp"],
+  maxImageBytes,
+  maxMessageImageBytes,
+  maxImagesPerMessage: 8,
+  geometry: { version: 1, known: true, maxWidth: 16384, maxHeight: 16384, maxPixels: 33554432, maxFrames: 1 },
+});
+const qualifications: readonly ImageQualification[] = Object.freeze([
+  codex0170DarwinArm64("gpt-6-astra", "10461350", "20904114"),
+  codex0170DarwinArm64("gpt-6.2-astra", "10442582", "20883253"),
+]);
 const sha256 = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && value.trim() === value;
 const complete = (identity: ImageRuntimeIdentity): boolean => (identity.provider === "codex" || identity.provider === "copilot") && sha256(identity.nativeExecutableSha256) && text(identity.nativeVersion) && text(identity.modelId) && text(identity.platform) && text(identity.arch) && sha256(identity.backendIdentity) && (identity.provider === "codex" ? identity.sdkVersion === null : text(identity.sdkVersion));

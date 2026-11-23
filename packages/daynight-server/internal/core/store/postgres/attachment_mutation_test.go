@@ -31,6 +31,7 @@ func (tx *completionTx) Rollback(ctx context.Context) error {
 }
 
 func TestMutationCompletionAndCleanup(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	operationErr := errors.New("operation failure")
 	commitErr := errors.New("commit response lost")
 	cleanupErr := errors.New("rollback failure")
@@ -80,6 +81,7 @@ func TestMutationCompletionAndCleanup(t *testing.T) {
 }
 
 func TestMutationCancellationUsesIndependentCleanup(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	tx := &completionTx{}
 	completion, err := transactAttachment(ctx, tx, func(store.AttachmentMutationScope) error { cancel(); return nil })

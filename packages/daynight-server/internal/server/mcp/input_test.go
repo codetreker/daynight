@@ -127,7 +127,7 @@ func TestInputOversizeSkipsDispatchAndReleases(t *testing.T) {
 	e := inputEntry(t)
 	var calls atomic.Int32
 	schema := map[string]any{"type": "object"}
-	if err := e.RegisterTool(&sdk.Tool{Name: "input_probe", InputSchema: schema, OutputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	if err := e.RegisterTool(&sdk.Tool{Name: "input_probe", InputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: map[string]any{"ok": true}}, nil
 	}); err != nil {
@@ -187,7 +187,7 @@ func TestInputAndControlBudgetsAreIndependent(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan error, transport.MaxMCPInputOperations)
 	schema := map[string]any{"type": "object"}
-	err := e.RegisterTool(&sdk.Tool{Name: "blocked_control", InputSchema: schema, OutputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(&sdk.Tool{Name: "blocked_control", InputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		entered <- struct{}{}
 		<-release
 		return ToolResult{Data: map[string]any{"ok": true}}, nil

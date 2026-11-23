@@ -90,7 +90,7 @@ test("Codex tool arguments, errors and image ownership survive the production ti
     imageOccurrenceAcknowledged: imageId => f.journal.imageOccurrenceAcknowledged(imageId),
     imageRuntime: {
       getIntent: () => null, readState: key => f.journal.readNativeImageState(key), writeState: (key, value) => f.journal.writeNativeImageState(key, value),
-      createSpool: maximum => f.journal.media().createSpool(maximum), indexDirectory: () => f.journal.media().nativeIndexDirectory(), reserveIndex: additional => f.journal.media().reserveNativeIndex(additional), acquireIndexReservation: (additional, owner) => f.journal.acquireNativeIndexReservation(additional, owner),
+      createSpool: maximum => f.journal.media().createSpool(maximum), indexDirectory: () => f.journal.media().nativeIndexDirectory(), acquireIndexLease: owner => f.journal.acquireNativeIndexLease(owner),
     },
   };
   const items = [

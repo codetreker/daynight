@@ -24,8 +24,11 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. Project and search status, PR status, and tag match filters
-use the shared filter variant while retaining their separate values and behavior.
+an authenticated shell. Search status and PR status use the shared filter variant while retaining their
+separate values and behavior. Ordinary project status uses a custom checkbox
+popover and tag matching uses native radios. Their custom toolbar triggers share
+presentation parameters through the [selection presentation decision](2026-11-16-shared-selection-presentation.md),
+which retains this record's native structure and behavior ownership.
 Bot creation and assistant task forms and record filters also use the shared
 presentation while retaining their business selection rules.
 Management consumers use the same component: Team and
@@ -37,11 +40,11 @@ observation without making the component an event owner. ManagementDialog uses
 it before its ordinary Escape close, retaining native cancellation and stopping
 outward propagation while respecting prevented events and IME input.
 
-Session Provider settings, interaction form choices and terminal recording zoom
+Session Provider settings, single-value interaction form choices and terminal recording zoom
 use the shared component without moving their value or operation ownership.
-Pending presentation retains the confirmed Provider value. Multi-select responses
-still use native selected options as arrays, and recording zoom remains local
-player state.
+Pending presentation retains the confirmed Provider value, and recording zoom
+remains local player state. The [Session multi-select decision](../bug-fix/2026-11-20-session-form-multiselect.md)
+replaces the native list for form multi-select responses while preserving their arrays.
 
 BotSessionHost sets the Composer presentation touch mode after spreading caller
 configuration. Composer and ControlsPanel pass it to the common control; ordinary
@@ -72,11 +75,9 @@ Webhook owner and status filters use the filter variant; subscription and
 delivery filters use the full-width form variant. Their callers retain scope
 isolation, option eligibility and explicit delivery-filter application.
 
-Task platform and PR pagination use compact controls; Task organization and Step
-forms use fill-width form controls. Their callers retain confirmation, numeric
-conversion, drafts and real element refs. Task detail and Step draft handlers
-leave native Escape cancellation intact while preventing an open picker from
-closing the enclosing view or discarding a draft.
+Task platform and PR pagination use compact controls; Task organization uses fill-width form controls. Callers retain confirmation, numeric
+conversion, drafts and real element refs. Task detail handlers leave native Escape
+cancellation intact while preventing an open picker from closing the enclosing view.
 
 The native select policy enumerates every production TS/TSX and CSS input,
 including unreferenced files. TypeScript 7 project snapshots and AST traversal
@@ -144,9 +145,8 @@ input form. Native popup cancellation keeps current values and drafts intact.
 
 Worker configuration fields use the form/fill variant; the personal prompt
 preview uses filter/content. Their caller-owned drafts, inheritance and save
-timing remain separate from presentation. Control-mode adoption retains a real
-select ref with exactly the `herdr` and `web` options. Its nullable draft keeps
-no selection through the caller-owned layout effect.
+timing remain separate from presentation. The former control-mode select and
+nullable draft were removed by the [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md).
 
 The source guard makes direct native creation and internal skin forks fail normal
 quality checks, and static wrapper tokens let CSS analysis connect caller layout

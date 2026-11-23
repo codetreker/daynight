@@ -2,14 +2,13 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { prepareWorkerWorktreeFormat } from "../../../src/commands/worker/repository-admission.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -27,52 +26,45 @@ const fixture = () => {
   const marker = `daynight-worker:${JSON.stringify({ ...owner, leaf: "1:1", root: "2:2", common: "3:3" })}`;
   git(repo, ["worktree", "add", "--lock", "--reason", marker, "-b", `daynight/${owner.taskId}`, "--", cwd]);
   const admin = git(cwd, ["rev-parse", "--absolute-git-dir"]);
-  const paths = { ...resolveWorkerPaths(root), workerDirectory: path.join(root, "worker"), herdrDirectory: path.join(root, "herdr") }; mkdirSync(paths.workerDirectory, { recursive: true });
+  const paths = { ...resolveWorkerPaths(root), workerDirectory: path.join(root, "worker") }; mkdirSync(paths.workerDirectory, { recursive: true });
   const store = openWorkerStore(path.join(root, "state.sqlite"));
   const project = { projectId: owner.projectId, repoUrl: "https://example.test/repo.git", localPath: repo };
   const repository = { root: repo, commonDirectory, rootIdentity: "test", commonIdentity: "test" };
   const operation = createOperation();
-  return { root, repo, commonDirectory, owner, cwd, admin, paths, store, project, repository, operation, close: () => { operation.dispose(); store.close(); } };
+  const workerId = randomUUID(), serverOrigin = "https://daynight.example";
+  return { root, repo, commonDirectory, owner, cwd, admin, paths, store, project, repository, operation, workerId, serverOrigin, close: () => { operation.dispose(); store.close(); } };
 };
 
-it("activates migration for an existing locked checkout and retains its original cwd", async () => {
+it("leaves an unknown locked checkout untouched while publishing the format", async () => {
   const f = fixture();
   try {
-    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("absent backend should not start"); } });
-    const manifest = createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId);
-    expect(manifest).toMatchObject({ ...f.owner, directoryName: f.owner.taskId });
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(false);
+    const marker = readFileSync(path.join(f.admin, "locked"), "utf8");
+    writeFileSync(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), "unreadable legacy journal");
+    await prepareWorkerWorktreeFormat(f);
+    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+    expect(readFileSync(path.join(f.admin, "locked"), "utf8")).toBe(marker);
     expect(readFileSync(path.join(f.cwd, "tracked"), "utf8")).toBe("contents\n");
     expect(JSON.parse(readFileSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"), "utf8"))).toEqual({ version: 1 });
   } finally { f.close(); }
 });
 
-it("keeps the original marker and format closed when a retained backend cannot be observed", async () => {
-  const f = fixture();
-  try {
-    mkdirSync(path.join(f.paths.herdrDirectory, "c", "herdr", "sessions", "w"), { recursive: true });
-    const failure = new Error("original Herdr observation failed");
-    const herdr = { ensureInstance: async () => ({}), tasks: { listResources: async () => { throw failure; }, pendingStops: () => [] } } as unknown as WorkerHerdrAdapter;
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "linux", getHerdr: async () => herdr })).rejects.toBe(failure);
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
-    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
-    expect(readFileSync(path.join(f.cwd, "tracked"), "utf8")).toBe("contents\n");
-  } finally { f.close(); }
-});
-
-it("keeps the gate closed when a same-repository lifecycle belongs to an unobservable original server", async () => {
-  const f = fixture();
-  try {
-    writeFileSync(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), "journal fixture");
-    const failure = new Error("foreign original archive is unavailable");
-    const herdr = { lifecycle: { archive: { resources: () => [] }, migration: {
-      listLifecycles: () => [{ owner: { projectId: randomUUID() }, cwd: f.cwd }], listRetired: () => [],
-      assertOrigin: () => { throw failure; }, listBindings: async () => [],
-    } }, tasks: { pendingStops: () => [] } } as unknown as WorkerHerdrAdapter;
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => herdr })).rejects.toBe(failure);
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
-    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
-  } finally { f.close(); }
+it("does not adopt a Web journal belonging to another Worker or service", async () => {
+  for (const mismatch of ["worker", "service"] as const) {
+    const f = fixture();
+    try {
+      const marker = readFileSync(path.join(f.admin, "locked"), "utf8");
+      const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
+      const task = web.register({ ...f.owner, project: f.project,
+        serverOrigin: mismatch === "service" ? "https://other.example" : f.serverOrigin,
+        workerId: mismatch === "worker" ? randomUUID() : f.workerId, userId: randomUUID(),
+        configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+      web.bindWorktree(task, { repositoryPath: f.repo, commonDirectory: f.commonDirectory, worktreePath: f.cwd, branch: `daynight/${f.owner.taskId}` }, 2);
+      web.close();
+      await prepareWorkerWorktreeFormat(f);
+      expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+      expect(readFileSync(path.join(f.admin, "locked"), "utf8")).toBe(marker);
+    } finally { f.close(); }
+  }
 });
 
 it("imports an unlocked original checkout from its persisted Web binding", async () => {
@@ -80,11 +72,11 @@ it("imports an unlocked original checkout from its persisted Web binding", async
   try {
     git(f.repo, ["worktree", "unlock", "--", f.cwd]);
     const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
-    const task = web.register({ ...f.owner, project: f.project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(),
+    const task = web.register({ ...f.owner, project: f.project, serverOrigin: f.serverOrigin, workerId: f.workerId, userId: randomUUID(),
       configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
     web.bindWorktree(task, { repositoryPath: f.repo, commonDirectory: f.commonDirectory, worktreePath: f.cwd, branch: `daynight/${f.owner.taskId}` }, 2);
     web.close();
-    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("absent backend should not start"); } });
+    await prepareWorkerWorktreeFormat(f);
     expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toMatchObject({ ...f.owner, directoryName: f.owner.taskId });
     const reopened = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
     try { expect(reopened.getTask(f.owner)?.resources.worktree?.worktreePath).toBe(f.cwd); } finally { reopened.close(); }
@@ -101,11 +93,11 @@ it("imports another project's binding in the same repository without importing u
     const otherRoot = path.join(f.root, "other-repo"); mkdirSync(otherRoot);
     const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
     const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
-    const task = web.register({ ...foreign, project: { ...f.project, projectId: foreign.projectId }, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(), configuration }, 1);
+    const task = web.register({ ...foreign, project: { ...f.project, projectId: foreign.projectId }, serverOrigin: f.serverOrigin, workerId: f.workerId, userId: randomUUID(), configuration }, 1);
     web.bindWorktree(task, { repositoryPath: f.repo, commonDirectory: f.commonDirectory, worktreePath: foreignCwd, branch: `daynight/${foreign.taskId}` }, 2);
-    web.register({ ...unrelated, project: { ...f.project, projectId: unrelated.projectId, localPath: otherRoot }, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(), configuration }, 1);
+    web.register({ ...unrelated, project: { ...f.project, projectId: unrelated.projectId, localPath: otherRoot }, serverOrigin: f.serverOrigin, workerId: f.workerId, userId: randomUUID(), configuration }, 1);
     web.close();
-    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("absent backend should not start"); } });
+    await prepareWorkerWorktreeFormat(f);
     const manifests = createWorktreeManifestStore(f.commonDirectory);
     expect(manifests.read(foreign.worktreeId)).toMatchObject({ ...foreign, directoryName: foreign.taskId });
     expect(manifests.read(unrelated.worktreeId)).toBeNull();
@@ -123,7 +115,7 @@ it("retains the legacy lock when an unfinished Web execution has no observable o
     openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} }).close();
     const failure = new Error("original Session registration cannot be observed");
     const observed: unknown[] = [];
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); },
+    await expect(prepareWorkerWorktreeFormat({ ...f,
       verifyWebUnregistered: async (identity, signal) => { observed.push({ identity, signal }); throw failure; },
     })).rejects.toBe(failure);
     expect(observed).toEqual([{ identity: { projectId: f.owner.projectId, taskId: f.owner.taskId, claimId: f.owner.claimId }, signal: f.operation.signal }]);
@@ -139,13 +131,13 @@ it("accepts a missing Web record only after the exact original claim is proven u
     f.store.registerProject(f.project);
     f.store.activateTask(f.store.registerPending({ ...f.owner, agent: "codex", agentControlMode: "web" }));
     const observed: unknown[] = [];
-    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); },
+    await prepareWorkerWorktreeFormat({ ...f,
       verifyWebUnregistered: async (identity, signal) => { observed.push({ identity, signal }); },
     });
     expect(observed.length).toBeGreaterThan(0);
     expect(observed.every(value => JSON.stringify((value as { identity: unknown }).identity) === JSON.stringify({ projectId: f.owner.projectId, taskId: f.owner.taskId, claimId: f.owner.claimId }))).toBe(true);
-    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toMatchObject({ ...f.owner, directoryName: f.owner.taskId });
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(false);
+    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
   } finally { f.close(); }
 });
 
@@ -155,7 +147,7 @@ it("never treats a registered native Session as an unregistered Web claim", asyn
     f.store.registerProject(f.project);
     f.store.activateTask(f.store.registerPending({ ...f.owner, agent: "codex", agentControlMode: "web", sessionId: randomUUID() }));
     let called = false;
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); },
+    await expect(prepareWorkerWorktreeFormat({ ...f,
       verifyWebUnregistered: async () => { called = true; },
     })).rejects.toThrow("original Web execution evidence is missing");
     expect(called).toBe(false);
@@ -163,46 +155,3 @@ it("never treats a registered native Session as an unregistered Web claim", asyn
     expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
   } finally { f.close(); }
 });
-
-
-it("retains the old format when another project in the same repository has unobservable Herdr ownership", async () => {
-  const f = fixture();
-  try {
-    const otherProject = { ...f.project, projectId: randomUUID() };
-    const other = { projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID() };
-    f.store.registerProject(otherProject);
-    f.store.registerPending({ ...other, agent: "codex", agentControlMode: "herdr" });
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } })).rejects.toThrow("original Herdr backend cannot be observed");
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
-    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
-    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toBeNull();
-  } finally { f.close(); }
-}, 30_000);
-
-it("does not infer an unrelated repository when an unfinished Herdr binding is missing", async () => {
-  const f = fixture();
-  try {
-    const otherProject = { ...f.project, projectId: randomUUID() };
-    const other = { projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID() };
-    f.store.registerProject(otherProject);
-    f.store.registerPending({ ...other, agent: "codex", agentControlMode: "herdr" });
-    const original = f.store.getProject;
-    vi.spyOn(f.store, "getProject").mockImplementation(identity => identity.projectId === otherProject.projectId ? null : original(identity));
-    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } })).rejects.toThrow("unfinished Herdr task has no original repository binding");
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
-    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
-  } finally { vi.restoreAllMocks(); f.close(); }
-}, 30_000);
-
-it("does not block a repository for an unrelated Herdr task", async () => {
-  const f = fixture();
-  try {
-    const otherRoot = path.join(f.root, "other-repo"); mkdirSync(otherRoot);
-    const otherProject = { ...f.project, projectId: randomUUID(), localPath: otherRoot };
-    f.store.registerProject(otherProject);
-    f.store.registerPending({ projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID(), agent: "codex", agentControlMode: "herdr" });
-    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } });
-    expect(existsSync(path.join(f.admin, "locked"))).toBe(false);
-    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).not.toBeNull();
-  } finally { f.close(); }
-}, 30_000);

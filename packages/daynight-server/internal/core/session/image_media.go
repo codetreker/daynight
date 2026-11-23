@@ -47,10 +47,23 @@ func mediaIdentity(id, action string) string {
 	return uuid.NewSHA1(uuid.MustParse(id), []byte(action)).String()
 }
 func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any) (json.RawMessage, error) {
+	return s.controllerMediaFor(ctx, p, project, taskID, id, requestID, action, body, false)
+}
+
+func (s *Execution) controllerUploadMedia(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any) (json.RawMessage, error) {
+	return s.controllerMediaFor(ctx, p, project, taskID, id, requestID, action, body, true)
+}
+
+func (s *Execution) controllerMediaFor(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any, producer bool) (json.RawMessage, error) {
 	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
 		return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 			if !write {
 				return denied()
+			}
+			if producer {
+				if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+					return err
+				}
 			}
 			return work(tx, r)
 		})
@@ -153,11 +166,11 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				_ = json.Unmarshal(out, &v)
 				original, _ = base64.StdEncoding.Strict().DecodeString(v.Data)
 			}
-			raw, check, finish, err := s.mediaFileIO(ctx, access, completedRow, payload, original)
+			workCtx, raw, check, finish, err := s.mediaFileIO(ctx, access, completedRow, payload, original)
 			if err != nil {
 				return nil, err
 			}
-			err = access(ctx, func(tx *operationTx, r *record) error {
+			err = access(workCtx, func(tx *operationTx, r *record) error {
 				if err := check(tx, r); err != nil {
 					return err
 				}
@@ -168,7 +181,7 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				if e != nil {
 					return e
 				}
-				row, e := d.SessionMediaRequest(ctx, id, requestID)
+				row, e := d.SessionMediaRequest(workCtx, id, requestID)
 				if e != nil {
 					return e
 				}
@@ -181,7 +194,7 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				}
 				row.Expected = mediaExpected(row)
 				row.Result = payload
-				return saveMediaRequest(ctx, d, row)
+				return saveMediaRequest(workCtx, d, row)
 			})
 			err = errors.Join(err, finish())
 			if err != nil {
@@ -292,6 +305,41 @@ func (s *Execution) acceptMediaResponse(ctx context.Context, tx *operationTx, r 
 		}
 		if hasRaw {
 			return nil, fault("resource_conflict", "Media bytes must be durable before receipt completion.")
+		}
+	}
+	if r.OnlineMode == "relay" && row.Action == "retry_capture" {
+		var identity struct {
+			CaptureID string `json:"captureId"`
+			AttemptID string `json:"attemptId"`
+		}
+		if json.Unmarshal(row.Body, &identity) != nil || identity.CaptureID == "" {
+			return nil, conflict()
+		}
+		if _, err := uuid.Parse(identity.AttemptID); err != nil || row.RequestID != mediaIdentity(identity.AttemptID, "retry_capture") {
+			return nil, conflict()
+		}
+		resources, err := resourceDAO(tx)
+		if err != nil {
+			return nil, err
+		}
+		capture, err := resources.SessionCapture(ctx, r.Snapshot.SessionID, identity.CaptureID)
+		if err != nil {
+			return nil, err
+		}
+		if capture.Receipt.AttemptID == identity.AttemptID && capture.Validated != nil {
+			validated, err := sp.DecodeValidatedImage(row.Result)
+			if row.Error != nil || err != nil || !jsonEqual(encode(validated), encode(capture.Validated)) {
+				return nil, conflict()
+			}
+		}
+		if capture.Receipt.AttemptID == identity.AttemptID && capture.Receipt.State == "failed" && capture.Validated == nil && row.Error != nil && !jsonEqual(encode(capture.Receipt.Error), encode(row.Error)) {
+			return nil, conflict()
+		}
+		if row.Error != nil && capture.Receipt.AttemptID == identity.AttemptID && capture.Receipt.State == "reserved" {
+			capture.Receipt.State, capture.Receipt.ResourceID, capture.Receipt.Error = "failed", nil, row.Error
+			if err = saveImageCapture(ctx, resources, capture); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if e = saveMediaRequest(ctx, d, row); e != nil {

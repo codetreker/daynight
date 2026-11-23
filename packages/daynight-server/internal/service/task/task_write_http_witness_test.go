@@ -141,8 +141,48 @@ func (f *writeWitness) invoke() (model.Task, error) {
 
 type writeWitnessStore struct{ f *writeWitness }
 
-func (s *writeWitnessStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	panic(s.f.unexpected("ReadSnapshot"))
+func (s *writeWitnessStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if s.f.method != "status" || ctx.Value(writeWitnessContextKey{}) != s.f.ctx.Value(writeWitnessContextKey{}) {
+		panic(s.f.unexpected("ReadSnapshot"))
+	}
+	if ctx != s.f.ctx {
+		s.f.t.Fatal("lifecycle preflight changed caller context")
+	}
+	return run(&writeWitnessSnapshot{f: s.f})
+}
+
+type writeWitnessSnapshot struct {
+	store.SnapshotScope
+	f *writeWitness
+}
+
+func (s *writeWitnessSnapshot) ProjectDAO() store.ProjectReader {
+	return &writeWitnessProjectReader{f: s.f}
+}
+func (s *writeWitnessSnapshot) TaskDAO() store.TaskReader { return &writeWitnessTaskReader{f: s.f} }
+
+type writeWitnessProjectReader struct {
+	store.ProjectReader
+	f *writeWitness
+}
+
+func (r *writeWitnessProjectReader) ProjectAccess(_ context.Context, principal model.Principal, project string) (model.ProjectAccess, error) {
+	if principal != r.f.principal || project != r.f.project.ID {
+		r.f.t.Fatal("preflight changed principal or project")
+	}
+	return model.ProjectAccess{ProjectID: project, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
+}
+
+type writeWitnessTaskReader struct {
+	store.TaskReader
+	f *writeWitness
+}
+
+func (r *writeWitnessTaskReader) TaskHeader(_ context.Context, project, id string) (model.TaskHeader, error) {
+	if project != r.f.project.ID || id != r.f.target.ID {
+		r.f.t.Fatal("preflight changed target")
+	}
+	return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
 }
 func (s *writeWitnessStore) WriteProject(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 	f := s.f
@@ -160,6 +200,10 @@ func (s *writeWitnessStore) WriteProject(ctx context.Context, project string, ru
 
 type writeWitnessScope struct{ f *writeWitness }
 
+func (s *writeWitnessScope) GoalRelationDAO() store.GoalRelationEditor {
+	panic(s.f.unexpected("GoalRelationDAO"))
+}
+
 func (s *writeWitnessScope) ProjectDAO() store.ProjectWriteDAO {
 	s.f.checkContext(s.f.ctx)
 	s.f.step("ProjectDAO")
@@ -175,6 +219,9 @@ func (s *writeWitnessScope) EligibilityDAO() store.WebhookEligibilityDAO {
 }
 func (s *writeWitnessScope) CaptureDAO() store.WebhookCaptureDAO { panic(s.f.unexpected("CaptureDAO")) }
 func (s *writeWitnessScope) SessionDAO() store.ProjectSessionDAO { panic(s.f.unexpected("SessionDAO")) }
+func (s *writeWitnessScope) GoalDependencyDAO() store.GoalDependencyDAO {
+	panic(s.f.unexpected("GoalDependencyDAO"))
+}
 
 type writeWitnessProjectDAO struct{ f *writeWitness }
 type writeWitnessTaskDAO struct{ f *writeWitness }
@@ -242,6 +289,9 @@ func (d *writeWitnessTaskDAO) VisibleTaskIDs(context.Context, []string) ([]strin
 func (d *writeWitnessTaskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ActiveDependentIDs"))
 }
+func (d *writeWitnessTaskDAO) UnfinishedChildIDs(context.Context, string) ([]string, error) {
+	panic(d.f.unexpected("TaskWriteDAO.UnfinishedChildIDs"))
+}
 func (d *writeWitnessTaskDAO) Reachable(context.Context, string, string, store.DependencyReplacement) (bool, error) {
 	panic(d.f.unexpected("TaskWriteDAO.Reachable"))
 }
@@ -263,25 +313,9 @@ func (d *writeWitnessTaskDAO) DeleteTask(context.Context, string, bool) (model.T
 func (d *writeWitnessTaskDAO) TaskHeader(context.Context, string) (model.TaskHeader, error) {
 	panic(d.f.unexpected("TaskWriteDAO.TaskHeader"))
 }
-func (d *writeWitnessTaskDAO) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	panic(d.f.unexpected("TaskWriteDAO.TaskSteps"))
-}
-func (d *writeWitnessTaskDAO) InsertTaskStep(context.Context, string, model.TaskStep) error {
-	panic(d.f.unexpected("TaskWriteDAO.InsertTaskStep"))
-}
 func (d *writeWitnessTaskDAO) TouchTask(context.Context, string, time.Time) error {
 	panic(d.f.unexpected("TaskWriteDAO.TouchTask"))
 }
-func (d *writeWitnessTaskDAO) UpdateTaskStep(context.Context, string, model.TaskStep) error {
-	panic(d.f.unexpected("TaskWriteDAO.UpdateTaskStep"))
-}
-func (d *writeWitnessTaskDAO) MoveTaskStep(context.Context, string, string, int64, int64) error {
-	panic(d.f.unexpected("TaskWriteDAO.MoveTaskStep"))
-}
-func (d *writeWitnessTaskDAO) DeleteTaskStep(context.Context, string, string, int64, int64) error {
-	panic(d.f.unexpected("TaskWriteDAO.DeleteTaskStep"))
-}
-
 func TestTaskWriteOperationsDefaultBindings(t *testing.T) {
 	operations := NewTasks(nil).writeOperations
 	if reflect.ValueOf(operations.requireProjectWrite).Pointer() != reflect.ValueOf(projectcore.RequireProjectWrite).Pointer() ||
@@ -352,4 +386,37 @@ func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
 	panic(d.f.unexpected("RotateTagCatalogEpoch"))
 }
 
-func (s *writeWitnessScope) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }
+func (d *writeWitnessProjectDAO) RepositoryIdentity(context.Context) (*string, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryIdentity"))
+}
+func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
+}
+
+func (s *writeWitnessScope) BotBarrierDAO() store.BotBarrierDAO {
+	panic(s.f.unexpected("BotBarrierDAO"))
+}
+
+func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
+}
+
+func (s *writeWitnessScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
+}
+
+func (d *writeWitnessTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) HasTerminalAncestorGoal(context.Context, string) (bool, error) {
+	panic(d.f.unexpected("TaskWriteDAO.HasTerminalAncestorGoal"))
+}
+
+func (d *writeWitnessTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

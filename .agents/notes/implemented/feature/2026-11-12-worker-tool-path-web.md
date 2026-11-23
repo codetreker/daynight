@@ -12,12 +12,22 @@ an explicit reset and an unfinished edit.
 
 ## Decision
 
+The [two-tool protocol decision](../architecture/2026-11-17-worker-two-tool-protocol.md) supersedes the three-tool and mode portions of this decision. The original trade-offs below describe the earlier contract.
+
 The existing Worker configuration form preserves nullable choices and raw path
 drafts. Each tool has one input and an explicit automatic reset in a collapsed
 section. The form negotiates tool support independently and requires a supporting
 Worker report before editing. The same CAS, submitted snapshot, unknown-result
 query and navigation protection own all configuration fields. A lost capability
 does not erase a retained draft or authorize a hidden tool write.
+
+The software heading links directly to the same Worker's tool path section through
+existing tab navigation. A one-shot request belongs to the account, Worker and
+active configuration visit. The actual fields consume it after asynchronous
+loading by opening their native details, focusing the summary and scrolling it
+into view. Leaving configuration or changing identity retires an outstanding
+request. Manual expansion remains uncontrolled, so ordinary refresh cannot
+reopen a section the user closed. Existing editors and drafts remain mounted.
 
 Recovery of an unknown legacy save compares each omitted tool against the
 original baseline, the local draft and the current observed target. Untouched
@@ -32,29 +42,31 @@ separate. Current application requires matching cloud revision and choice,
 verified actual selection and an online observation. Missing or older facts
 remain readable without implying that the new target has applied. Bounded active
 groups expose incomplete inventory independently of target application.
-The software summary omits an unchecked context only when it has no actual,
+The software summary omits an unchecked Web observation only when it has no actual,
 candidate, reason, error or active selections and the zero-count inventory is
-complete and error-free. Other contexts retain their reported state and actual
+complete and error-free. Other Web observations retain their reported state and actual
 version; checking, pending and error remain visible beside an older actual.
-An empty summary uses one tool-level not-checked label. Details still consume
-the complete snapshot, and a missing tool report uses the legacy probe.
+An empty summary uses one tool-level not-checked label. Details select the Web observation from the complete snapshot, and a missing tool report uses the legacy probe. The [native-only presentation decision](../simplification/2026-11-17-worker-native-tool-presentation.md) records the display boundary.
 
 Tool states use the shared semantic palette: successful application, active
 checking, waiting and failure retain distinct labels and readable contrast.
 Local helper text and focus outlines meet the same contrast requirements without
 changing unrelated configuration styles.
 
-The [mode application decision](../bug-fix/2026-11-16-worker-tool-checks-and-mode-summary.md)
-separates the configuration summary's required tools from this complete software
-inventory and adds bounded checks for adopted choices. The configuration section
-is named Tool launch paths in English and 工具启动路径 in Chinese.
-
 This consumes the [negotiated configuration decision](../architecture/2026-11-11-worker-tool-path-configuration.md).
 The [Web specification](../../../../docs/spec/daynight-web.md#云端运行配置) owns
 the interaction requirements; the [Web design](../../../../docs/design/daynight-web.md#worker-云端配置编辑)
 owns data flow and preservation behavior.
 
+The [configuration source decision](../architecture/2026-11-17-web-worker-configuration-source.md) preserves unknown target data through this lifecycle.
+
 ## Alternatives
+
+**Scroll from the shortcut click handler.** On the first visit the configuration
+fields do not exist until their independent read finishes. Letting the mounted
+fields consume a scoped request handles that delay without polling the DOM or
+replaying navigation on later refreshes. A persistent forced-open state would
+override the user's subsequent collapse.
 
 **Save tool paths separately.** A second write flow would need another revision,
 unknown-result ledger and navigation owner, while the service already stores a
@@ -71,9 +83,8 @@ granting a stale full-projection write.
 installation or mode. Displaying that pair would invent a successful selection
 and hide older running instances.
 
-**Show every unchecked context in the summary.** At the original decision,
-unused slots could remain unchecked indefinitely, making normal operation look
-like an unfinished check.
+**Show every unchecked context in the summary.** Unused slots can remain
+unchecked indefinitely, making normal operation look like an unfinished check.
 Filtering only demonstrably empty slots avoids hiding uncertain inventory or
 diagnostic information, which remains available in the expanded details.
 

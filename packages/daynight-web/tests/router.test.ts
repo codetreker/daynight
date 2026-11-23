@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, replaceRoute, taskDetailUrl } from "../src/app/router";
+import { buildGoalGraphUrl, buildTaskChainUrl, invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseGoalGraphUrl, parseLoginReturnPath, parseRoute, parseTaskChainUrl, projectSectionUrl, replaceRoute, taskDetailUrl } from "../src/app/router";
 import { browserNavigation } from '../src/app/navigation';
 import { projectSettingsUrl, type ProjectSettingsTab } from '../src/app/project-settings-route';
 
@@ -9,11 +9,67 @@ const projectId = "a0000000-0000-0000-0000-000000000001";
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 describe("route parsing", () => {
+  it("builds a stable Goal graph address and validates the original query before defaults", () => {
+    const url = new URL(buildGoalGraphUrl(projectId.toUpperCase(), taskId.toUpperCase()));
+    expect(url.origin).toBe(window.location.origin);
+    expect(url.pathname + url.search).toBe(`/projects/${projectId}?tab=tasks&goalGraph=${taskId}`);
+    expect(parseGoalGraphUrl(url.pathname, url.search)).toEqual({ kind: 'goal', goalId: taskId });
+    expect(parseGoalGraphUrl(url.pathname, `${url.search}&other=1`)).toEqual({ kind: 'goal', goalId: taskId });
+    expect(isLoginReturnPath(url.pathname + url.search)).toBe(true);
+    expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: url.pathname + url.search })}`)).toBe(url.pathname + url.search);
+    for (const search of [
+      `?goalGraph=${taskId}`,
+      `?tab=overview&goalGraph=${taskId}`,
+      `?tab=tasks&tab=tasks&goalGraph=${taskId}`,
+      '?tab=tasks&goalGraph=',
+      '?tab=tasks&goalGraph=bad',
+      `?tab=tasks&goalGraph=${taskId.toUpperCase()}`,
+      `?tab=tasks&goalGraph=${taskId}&goalGraph=${taskId}`,
+      `?tab=tasks&goalGraph=${taskId}&chain=${taskId}`,
+      `?tab=tasks&goalGraph=${taskId}&chain=`,
+    ]) expect(parseGoalGraphUrl(url.pathname, search)).toEqual({ kind: 'invalid' });
+    expect(parseGoalGraphUrl(url.pathname, `?tab=tasks&chain=${taskId}`)).toEqual({ kind: 'none' });
+    expect(parseGoalGraphUrl(`/projects/bad`, url.search)).toEqual({ kind: 'none' });
+    expect(parseGoalGraphUrl(`${url.pathname}/tasks/${taskId}`, url.search)).toEqual({ kind: 'none' });
+    expect(parseTaskChainUrl(url.pathname, `?tab=tasks&chain=${taskId}&goalGraph=${taskId}`)).toEqual({ kind: 'none' });
+    expect(() => buildGoalGraphUrl('bad', taskId)).toThrow();
+    expect(() => buildGoalGraphUrl(projectId, 'bad')).toThrow();
+  });
+
+  it("builds a same-origin chain link and accepts exactly one canonical query witness on the tasks tab", () => {
+    const url = new URL(buildTaskChainUrl(projectId, taskId));
+    expect(url.origin).toBe(window.location.origin);
+    expect(url.pathname + url.search).toBe(`/projects/${projectId}?tab=tasks&chain=${taskId}`);
+    expect(parseTaskChainUrl(url.pathname, url.search)).toEqual({ kind: 'chain', taskId });
+    expect(isLoginReturnPath(url.pathname + url.search)).toBe(true);
+    for (const search of ['?tab=tasks&chain=bad', `?tab=tasks&chain=${taskId}&chain=${taskId}`, `?tab=tasks&chain=${taskId.toUpperCase()}`]) {
+      expect(parseTaskChainUrl(url.pathname, search)).toEqual({ kind: 'invalid' });
+    }
+    expect(parseTaskChainUrl(url.pathname, `?tab=prs&chain=${taskId}`)).toEqual({ kind: 'none' });
+    expect(parseTaskChainUrl(`${url.pathname}/tasks/${taskId}`, `?tab=tasks&chain=${taskId}`)).toEqual({ kind: 'none' });
+    expect(() => buildTaskChainUrl('bad', taskId)).toThrow();
+    expect(() => buildTaskChainUrl(projectId, 'bad')).toThrow();
+  });
   it("maps the project list and canonicalizes decoded UUIDs", () => {
     expect(parseRoute("/projects")).toEqual({ kind: "projects" });
     expect(parseRoute("/")).toEqual({ kind: "notFound" });
-    expect(parseRoute(`/projects/${projectId.toUpperCase()}`)).toEqual({ kind: "project", projectId });
-    expect(parseRoute(`/projects/%61${projectId.slice(1)}`)).toEqual({ kind: "project", projectId });
+    expect(parseRoute(`/projects/${projectId.toUpperCase()}`)).toEqual({ kind: "project", projectId, tab: null });
+    expect(parseRoute(`/projects/%61${projectId.slice(1)}`)).toEqual({ kind: "project", projectId, tab: null });
+  });
+
+  it("parses and builds project section URLs and retains valid login destinations", () => {
+    for (const tab of ["overview", "statistics", "tasks", "prs", "tags"] as const) {
+      const url = projectSectionUrl(projectId, tab);
+      expect(url).toBe(`/projects/${projectId}?tab=${tab}`);
+      expect(parseRoute(`/projects/${projectId}`, `?other=1&tab=${tab}`)).toEqual({ kind: "project", projectId, tab });
+      expect(isLoginReturnPath(url)).toBe(true);
+      expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: url })}`)).toBe(url);
+    }
+    for (const search of ["?tab=", "?tab=invalid", "?tab=tasks&tab=tasks", "?tab=%ZZ"]) {
+      expect(parseRoute(`/projects/${projectId}`, search)).toEqual({ kind: "notFound" });
+      expect(isLoginReturnPath(`/projects/${projectId}${search}`)).toBe(false);
+    }
+    expect(() => projectSectionUrl("bad", "tasks")).toThrow();
   });
 
   it("parses complete attachment identities without normalizing filename case or literal percent escapes", () => {
@@ -31,10 +87,8 @@ describe("route parsing", () => {
     expect(parseRoute(task, "?tab=session")).toEqual({ kind: "task", projectId, taskId, tab: "session", path: null });
     expect(taskDetailUrl(projectId, taskId, { tab: "session", path: null })).toBe(`${task}?tab=session`);
     expect(parseRoute(task, "?tab=attachments")).toEqual({ kind: "task", projectId, taskId, tab: "attachments", path: null });
-    expect(parseRoute(task, "?tab=steps")).toEqual({ kind: "task", projectId, taskId, tab: "steps", path: null });
-    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: null })).toBe(`${task}?tab=steps`);
-    expect(parseRoute(`${task}/attachments/result.md`, "?tab=steps")).toEqual({ kind: "attachment", projectId, taskId, tab: "steps", path: "result.md" });
-    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: "result.md" })).toBe(`${task}/attachments/result.md?tab=steps`);
+    expect(parseRoute(task, "?tab=steps")).toEqual({ kind: "task", projectId, taskId, tab: "overview", path: null });
+    expect(parseRoute(`${task}/attachments/result.md`, "?tab=steps")).toEqual({ kind: "attachment", projectId, taskId, tab: "attachments", path: "result.md" });
     expect(isLoginReturnPath(`${task}?tab=steps`)).toBe(true);
     expect(parseRoute(`${task}/attachments/docs/a.md`, "?tab=overview")).toEqual({ kind: "attachment", projectId, taskId, tab: "overview", path: "docs/a.md" });
     for (const search of ["?tab=", "?tab=invalid", "?tab=overview&tab=attachments", "?tab=%ZZ"]) expect(parseRoute(task, search)).toEqual({ kind: "notFound" });
@@ -59,6 +113,27 @@ describe("route parsing", () => {
     `/projects/${projectId}?ignored=true`, `/projects/${projectId}#task`, "/projects/%ED%A0%80",
   ])("rejects unknown or invalid path %s", (pathname) => {
     expect(parseRoute(pathname)).toEqual({ kind: "notFound" });
+  });
+});
+
+describe("GitHub App invitation route", () => {
+  it("preserves a fragment-free destination through login", () => {
+    expect(parseAuthRoute("/github-app-admin-invitations")).toEqual({ kind: "githubAppInvitations" });
+    expect(isLoginReturnPath("/github-app-admin-invitations")).toBe(true);
+    expect(isLoginReturnPath("/github-app-admin-invitations#dn_gai_secret")).toBe(false);
+  });
+});
+
+describe("GitHub App management routes", () => {
+  it("supports the list and canonical detail, including login returns", () => {
+    expect(parseAuthRoute("/github-apps")).toEqual({ kind: "githubApps", appId: null });
+    expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}`)).toEqual({ kind: "githubApps", appId: taskId });
+    expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}/admins`)).toEqual({ kind: "githubAppAdmins", appId: taskId });
+    expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}/teams`)).toEqual({ kind: "githubAppTeams", appId: taskId });
+    expect(isLoginReturnPath(`/github-apps/${taskId}/teams`)).toBe(true);
+    expect(parseAuthRoute("/github-apps/not-a-uuid/teams")).toEqual({ kind: "notFound" });
+    expect(isLoginReturnPath(`/github-apps/${taskId}`)).toBe(true);
+    for (const path of ["/github-apps/", "/github-apps/bad", `/github-apps/${taskId}/extra`]) expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
   });
 });
 
@@ -102,7 +177,7 @@ describe("navigation", () => {
       expect(window.location.pathname).toBe(`/projects/${projectId}`);
       expect(window.history.length).toBe(previousLength + 1);
       expect(subscriber).toHaveBeenCalledOnce();
-      expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId });
+      expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId, tab: null });
       navigate("/projects");
       expect(window.location.pathname).toBe("/projects");
       expect(subscriber).toHaveBeenCalledTimes(2);
@@ -119,7 +194,7 @@ describe("navigation", () => {
       window.history[direction]();
     });
     await move("back");
-    expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId });
+    expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId, tab: null });
     await move("forward");
     expect(parseRoute(window.location.pathname)).toEqual({ kind: "projects" });
   });
@@ -163,6 +238,22 @@ describe("explicit login destinations", () => {
   });
 });
 
+describe("Account settings routes", () => {
+  it("parses explicit selections and preserves them through login", () => {
+    for (const [search, tab] of [["", "profile"], ["?tab=profile", "profile"], ["?tab=tokens", "tokens"], ["?tab=prompt", "prompt"], ["?other=value&tab=prompt&authError=login_failed", "prompt"]] as const) {
+      expect(parseAuthRoute("/account", search)).toEqual({ kind: "account", selection: { kind: "tab", tab } });
+      const path = `/account${search}`;
+      expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
+      expect(new URL(loginUrl(path), window.location.origin).searchParams.get("returnPath")).toBe(path);
+    }
+  });
+  it("retains account context for empty, unknown and duplicate selections", () => {
+    for (const search of ["?tab=", "?tab=unknown", "?tab=%ZZ", "?tab=tokens&tab=tokens", "?tab=profile&tab=prompt"]) {
+      expect(parseAuthRoute("/account", search)).toEqual({ kind: "account", selection: { kind: "invalid" } });
+    }
+  });
+});
+
 describe("Project settings routes", () => {
   const path = `/projects/${projectId}/settings`;
 
@@ -193,6 +284,9 @@ describe("Team workspace routes", () => {
     expect(parseAuthRoute(`/teams/${projectId}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
     expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
     expect(parseAuthRoute(`/teams/${projectId}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/github-apps`)).toEqual({ kind: "teamGitHubApps", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/github-apps/extra`)).toEqual({ kind: "notFound" });
+    expect(isLoginReturnPath(`/teams/${projectId}/github-apps`)).toBe(true);
     expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
     expect(parseAuthRoute("/my-tasks")).toEqual({ kind: "myTasks" });
     expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: "/my-tasks" })}`)).toBe("/my-tasks");

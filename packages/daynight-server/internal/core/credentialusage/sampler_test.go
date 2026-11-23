@@ -151,11 +151,72 @@ func TestRetriesAndNewBudget(t *testing.T) {
 	s.Seal()
 	take(t, s, 0)
 	c.advance(time.Second)
-	b = take(t, s, 1)
-	complete(t, s, b, Committed, Failure{})
-	if v := s.Snapshot(); v.Unknown != 1 || v.Pending != 0 {
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Unknown != 1 || v.Abandoned != 2 || v.Pending != 0 {
 		t.Fatalf("new candidate %+v", v)
 	}
+}
+
+func TestUnknownDoesNotReplayAndRetainsNewerInflightEvent(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	b := take(t, s, 1)
+	c.advance(3 * time.Second)
+	newer := obs(1, c.now)
+	record(t, s, newer, Accepted)
+	complete(t, s, b, Unknown, Failure{Code: CodeWriteOutcomeUnknown, Cause: CauseUnknown})
+	if v := s.Snapshot(); v.Failed != 1 || v.Unknown != 1 || v.Abandoned != 1 || v.Pending != 1 || v.OldestPendingAge != 0 {
+		t.Fatalf("unknown completion: %+v", v)
+	}
+	faults := s.Faults()
+	if len(faults) != 1 || faults[0].Latest.Code != CodeWriteOutcomeUnknown || faults[0].Latest.Observation != old {
+		t.Fatalf("unknown diagnostic: %+v", faults)
+	}
+	s.Seal()
+	take(t, s, 0)
+	for i := 0; i < MaxAttempts; i++ {
+		c.advance(RetryInterval)
+		b = take(t, s, 1)
+		if b.Observations[0] != newer {
+			t.Fatalf("attempt %d replayed old event: %+v", i, b.Observations)
+		}
+		if i == MaxAttempts-1 {
+			complete(t, s, b, Committed, Failure{})
+		} else {
+			complete(t, s, b, NotCommitted, Failure{Code: CodeWriteFailed, Cause: CauseDatabase})
+		}
+	}
+	c.advance(RetryInterval)
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Abandoned != 1 || v.Pending != 0 || v.Exhausted != 0 {
+		t.Fatalf("newer completion: %+v", v)
+	}
+}
+
+func TestUnknownRetainsReplayGuardAfterDiagnosticAcknowledgement(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	b := take(t, s, 1)
+	complete(t, s, b, Unknown, Failure{Code: CodeWriteOutcomeUnknown, Cause: CauseUnknown})
+	fault := s.Faults()[0]
+	if !s.AcknowledgeFault(old.Key(), fault.Revision) {
+		t.Fatal("fault acknowledgement failed")
+	}
+	c.advance(RetryInterval)
+	record(t, s, old, Coalesced)
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Abandoned != 1 || v.Exhausted != 1 || v.Dirty != 0 {
+		t.Fatalf("unknown replay guard: %+v", v)
+	}
+	newer := obs(1, c.now)
+	record(t, s, newer, Accepted)
+	b = take(t, s, 1)
+	if b.Observations[0] != newer {
+		t.Fatalf("wrong observation: %+v", b.Observations)
+	}
+	complete(t, s, b, Committed, Failure{})
 }
 
 func TestNewerEventReplacesRetryAndGetsFreshBudget(t *testing.T) {

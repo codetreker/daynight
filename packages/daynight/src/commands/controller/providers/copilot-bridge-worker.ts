@@ -1,6 +1,8 @@
+import { NativeDispatchRejectedError, retainDispatchedOutcome } from "./native-rpc.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
+import { assertNativeLifecycleAdmission, freezeNativeLifecycleFence, type NativeLifecycleFence } from "../native-lifecycle.js";
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import { encodeCopilotBridgeImages, exportCopilotBridgeMedia, type CopilotBridgeImageInput } from "./copilot-bridge-media.js";
 import { startCopilotFrameProxy } from "./copilot-frame.js";
@@ -8,9 +10,11 @@ import { CopilotRouteObserver } from "./copilot-route-observation.js";
 
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (...args: never[]) => Error & { code: number } };
-const errorValue = (error: unknown) => ({ kind: error instanceof ResponseError ? "response" : "unknown", ...(error instanceof ResponseError ? { code: error.code } : {}), message: error instanceof Error ? error.message.slice(0, 4096) : "Copilot bridge operation failed; outcome is unknown." });
+const errorValue = (error: unknown) => ({ kind: error instanceof NativeDispatchRejectedError ? "not_dispatched" : error instanceof ResponseError ? "response" : "unknown", ...(error instanceof ResponseError ? { code: error.code } : {}), message: error instanceof Error ? error.message.slice(0, 4096) : "Copilot bridge operation failed; outcome is unknown." });
 let client: CopilotClient | undefined, session: CopilotSession | undefined;
 const route = new CopilotRouteObserver();
+let nativeLifecycleFence: NativeLifecycleFence | undefined;
+const assertDispatch = (): void => { if (nativeLifecycleFence) assertNativeLifecycleAdmission(nativeLifecycleFence); };
 let observingRoute = false, changingRoute = false;
 let proxy: Awaited<ReturnType<typeof startCopilotFrameProxy>> | undefined;
 let closing = false, stoppingClient = false, fatalFailure = false, initializing = false, openingSession = false, sending = false, history = false;
@@ -111,12 +115,14 @@ const callback = (sessionId: string, name: string) => async (...args: unknown[])
     // Preserve the SDK's callback-before-event order and shared object identity
     // across serialization. This identity grants no permission by itself.
     const permissionIdentity = randomUUID(); permissionIdentities.set(args[0], permissionIdentity);
-    return request({ method: "callback", sessionId, callback: name, args, permissionIdentity });
+    const result = await request({ method: "callback", sessionId, callback: name, args, permissionIdentity });
+    assertDispatch(); return result;
   }
   // SDK callback dispatch can precede its identity-bearing event in one stack.
   // Drain that event before the Controller attempts to bind the callback.
   await Promise.resolve(); await eventWork;
-  return request({ method: "callback", sessionId, callback: name, args });
+  const result = await request({ method: "callback", sessionId, callback: name, args });
+  assertDispatch(); return result;
 };
 const invoke = async (target: unknown, parts: readonly string[], args: unknown[]): Promise<unknown> => {
   if (!parts.length || parts.length > 8 || parts.some(part => !/^[A-Za-z][A-Za-z0-9]*$/.test(part) || ["constructor", "prototype", "__proto__"].includes(part))) throw new Error("Invalid Copilot SDK call path.");
@@ -128,9 +134,12 @@ const invoke = async (target: unknown, parts: readonly string[], args: unknown[]
 };
 async function operation(method: string, args: unknown[]): Promise<unknown> {
   if (method === "initialize") {
-    if (client || initializing || args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || !/^[a-f0-9]{64}$/.test(args[1])) throw new Error("Invalid Copilot bridge initialization.");
+    if (client || initializing || (args.length !== 2 && args.length !== 3) || typeof args[0] !== "number" || typeof args[1] !== "string" || !/^[a-f0-9]{64}$/.test(args[1])) throw new Error("Invalid Copilot bridge initialization.");
     initializing = true;
+    if (args.length === 3) nativeLifecycleFence = freezeNativeLifecycleFence(args[2]);
+    assertDispatch();
     proxy = await startCopilotFrameProxy(args[0], error => { if (!stoppingClient) fatal(error); });
+    assertDispatch();
     client = new CopilotClient({ connection: RuntimeConnection.forUri(`127.0.0.1:${proxy.port}`, { connectionToken: args[1] }) });
     await client.start(); return {};
   }
@@ -152,14 +161,15 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     // Always own the sole subscription; the facade fans it out without another SDK connection.
     mutable.onEvent = (event: unknown) => enqueueEvent(id, event);
     for (const name of names) if (name !== "onEvent") mutable[name] = callback(id, name);
-    session = opening === "createSession" ? await client.createSession(config) : await client.resumeSession(id, config);
+    assertDispatch();
+    session = await retainDispatchedOutcome(() => opening === "createSession" ? client!.createSession(config) : client!.resumeSession(id, config));
     if (session.sessionId !== id) throw new Error("Copilot SDK session identity differs.");
     return { sessionId: id };
   }
   if (method === "observeRoute") {
     if (!session || args.length !== 1 || args[0] !== session.sessionId || observingRoute || changingRoute || sending) return null;
     observingRoute = true;
-    try { return await route.read(session); } finally { observingRoute = false; }
+    try { assertDispatch(); return await route.read(session); } finally { observingRoute = false; }
   }
   if (method === "sendImages") {
     if (!session || args[0] !== session.sessionId || sending || observingRoute || changingRoute) throw new Error("Copilot image send is unavailable or already in progress.");
@@ -171,7 +181,8 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
       const allowed = await request({ method: "image_admission", sessionId: session.sessionId, admissionId: args[2] });
       if (allowed !== true || closing || fatalFailure) throw new Error("Copilot image admission ended before native dispatch.");
       if (!route.matches(args[3], session.sessionId)) throw new Error("Copilot route observation changed before image dispatch.");
-      return await session.send(input);
+      assertDispatch();
+      return await retainDispatchedOutcome(() => session!.send(input));
     }
     finally { sending = false; }
   }
@@ -201,7 +212,10 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     stoppingClient = true;
     await session?.disconnect();
   }
-  try { return await invoke(owner, rawParts, input); }
+  try {
+    if (!["disconnect", "stop", "forceStop", "rpc.runtime.shutdown", "rpc.interruptMainTurn", "rpc.eventLog.read", "ping", "getStatus", "getSessionMetadata"].includes(path)) assertDispatch();
+    return await retainDispatchedOutcome(() => invoke(owner, rawParts, input));
+  }
   finally { if (isSend) sending = false; if (changesRoute) changingRoute = false; }
 }
 async function receive(message: Record<string, unknown>): Promise<void> {

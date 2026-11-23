@@ -81,9 +81,17 @@ func (d monitorDB) ReadSnapshot(ctx context.Context, f func(store.SnapshotScope)
 }
 
 type monitorStore struct {
+	save      func(context.Context, store.MonitoringIdentity, store.MonitoringCandidate) (store.MonitoringReceipt, error)
 	cas       func(context.Context, store.MonitoringIdentity, *string, store.MonitoringCandidate) (store.MonitoringCASResult, error)
 	read      func(context.Context, store.MonitoringIdentity) (store.MonitoringReadResult, error)
 	summaries func(context.Context, []store.MonitoringIdentity) (store.MonitoringSummariesResult, error)
+}
+
+func (m monitorStore) Save(ctx context.Context, id store.MonitoringIdentity, c store.MonitoringCandidate) (store.MonitoringReceipt, error) {
+	if m.save == nil {
+		panic("unexpected Save")
+	}
+	return m.save(ctx, id, c)
 }
 
 func (m monitorStore) CompareAndSet(ctx context.Context, id store.MonitoringIdentity, r *string, c store.MonitoringCandidate) (store.MonitoringCASResult, error) {
@@ -162,6 +170,105 @@ func serviceRules(t *testing.T, events *[]string) monitoringRules {
 		}
 		return json.RawMessage(`{"public":true}`), nil
 	}}
+}
+
+func TestDirectMonitoringService(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+		code    string
+	}{
+		{"saved", nil, ""}, {"unavailable", errors.New("offline"), "monitoring_unavailable"},
+		{"unknown", fmt.Errorf("transport: %w", store.ErrMonitoringWriteOutcomeUnknown), "monitoring_write_outcome_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{}
+			s, _ := monitorFixture(t, &events)
+			direct := monitoring.DirectObservation(serviceObservation(t))
+			delete(direct, "runId")
+			delete(direct, "sequence")
+			s.SetMonitoringStore(monitorStore{save: func(ctx context.Context, id store.MonitoringIdentity, c store.MonitoringCandidate) (store.MonitoringReceipt, error) {
+				events = append(events, "save")
+				if id.UserID != serviceUser || id.WorkerID != serviceWorker || c.Sequence != "1" || c.RunID == serviceRun {
+					t.Fatalf("candidate identity: %+v %+v", id, c)
+				}
+				parsed, err := monitoring.ParseStoredObservation(c.Body)
+				if err != nil || parsed["runId"] != c.RunID || parsed["sequence"] != "1" {
+					t.Fatalf("candidate body: %s %v", c.Body, err)
+				}
+				if _, err := monitoring.ParseStoredSummary(c.Summary); err != nil {
+					t.Fatal(err)
+				}
+				return store.MonitoringReceipt{ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}, tc.failure
+			}})
+			receipt, sample, err := s.saveDirectMonitoring(context.Background(), servicePrincipal(), serviceWorker, direct, serviceRules(t, &events))
+			if tc.code != "" {
+				serviceFault(t, err, tc.code)
+				if !errors.Is(err, tc.failure) {
+					t.Fatalf("cause lost: %v", err)
+				}
+				return
+			}
+			if err != nil || sample == "" || receipt.ReceivedAt != serviceNow || receipt.ExpiresAt.Sub(receipt.ReceivedAt) != time.Hour {
+				t.Fatalf("receipt %+v %q %v", receipt, sample, err)
+			}
+			if !reflect.DeepEqual(events, []string{"scopes", "snapshot", "admit", "sources", "validate", "save"}) {
+				t.Fatalf("events %v", events)
+			}
+		})
+	}
+}
+
+func TestSaveDirectMonitoringUsesBusinessRules(t *testing.T) {
+	events := []string{}
+	s, _ := monitorFixture(t, &events)
+	direct := monitoring.DirectObservation(serviceObservation(t))
+	delete(direct, "runId")
+	delete(direct, "sequence")
+	s.SetMonitoringStore(monitorStore{save: func(_ context.Context, id store.MonitoringIdentity, c store.MonitoringCandidate) (store.MonitoringReceipt, error) {
+		if id.UserID != serviceUser || id.WorkerID != serviceWorker || c.Sequence != "1" {
+			t.Fatalf("candidate identity: %+v %+v", id, c)
+		}
+		return store.MonitoringReceipt{ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}, nil
+	}})
+	receipt, sample, err := s.SaveDirectMonitoring(context.Background(), servicePrincipal(), serviceWorker, direct)
+	if err != nil || sample == "" || receipt.ReceivedAt != serviceNow || receipt.ExpiresAt.Sub(receipt.ReceivedAt) != time.Hour {
+		t.Fatalf("receipt %+v %q %v", receipt, sample, err)
+	}
+}
+
+func TestDirectMonitoringRefusalsDoNotSave(t *testing.T) {
+	for _, kind := range []string{"principal", "worker", "claim", "input"} {
+		t.Run(kind, func(t *testing.T) {
+			events := []string{}
+			s, reader := monitorFixture(t, &events)
+			s.SetMonitoringStore(monitorStore{}) // All unexpected storage calls panic.
+			p := servicePrincipal()
+			direct := monitoring.DirectObservation(serviceObservation(t))
+			delete(direct, "runId")
+			delete(direct, "sequence")
+			rules := serviceRules(t, &events)
+			var expected string
+			switch kind {
+			case "principal":
+				p = model.Principal{}
+				expected = "unauthenticated"
+			case "worker":
+				reader.workers = func(context.Context, string, []string, time.Time) ([]string, error) { return nil, nil }
+				expected = "not_found"
+			case "claim":
+				rules.validateExecution = func(monitoring.Observation, store.WorkerMonitoringSources, string, string) error {
+					return &model.Fault{Code: "invalid_input", Message: "claim mismatch"}
+				}
+				expected = "invalid_input"
+			case "input":
+				direct["sequence"] = "1"
+				expected = "invalid_input"
+			}
+			_, _, err := s.saveDirectMonitoring(context.Background(), p, serviceWorker, direct, rules)
+			serviceFault(t, err, expected)
+		})
+	}
 }
 func TestMonitoringServiceWriteCAS(t *testing.T) {
 	for _, tc := range []struct {

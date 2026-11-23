@@ -106,11 +106,13 @@ func (p *serverProcess) stop(t *testing.T) {
 type fixture struct {
 	context      context.Context
 	origin       string
+	callbackURL  string
 	client       *http.Client
 	userID       string
 	databaseURL  string
 	s2sSharedKey string
 	process      *serverProcess
+	restart      func(func())
 }
 
 func verifyServerBuild(t *testing.T) string {
@@ -201,12 +203,16 @@ type githubFixtureConfig struct {
 	privateKey, caFile, proxyURL string
 }
 
-func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixtureConfig) *fixture {
+func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixtureConfig, extraEnvironment ...string) *fixture {
 	t.Helper()
 	binary := verifyServerBuild(t)
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Fatal("integration requires its test environment's isolated PostgreSQL")
+	}
+	redisURL := os.Getenv("DAYNIGHT_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Fatal("integration requires its run-owned Redis")
 	}
 	runRoot := integrationRunRoot(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
@@ -270,15 +276,8 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	query.Set("search_path", schema)
 	query.Set("timezone", "UTC")
 	parsed.RawQuery = query.Encode()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	origin := "http://" + address
+	proxy := newPublicProxy(t)
+	origin := proxy.origin
 	callbackURL := origin + "/api/v1/auth/callback"
 	resources.GatewayCallback = callbackURL
 	gateway := testauth.StartGatewayWithResources(t, callbackURL, stopped, func(resource testauth.GatewayResources) error {
@@ -301,16 +300,14 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	})
 	s2sSharedKey := rand.Text() + rand.Text()
 	configuration := map[string]any{
-		"s2s":       map[string]any{"allowed_origin": "https://client.example", "shared_key": s2sSharedKey},
-		"server":    map[string]any{"listen_address": address, "public_origin": origin, "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
-		"database":  map[string]any{"url": parsed.String()},
-		"storage":   map[string]any{"root": "attachments"},
-		"uniauth":   map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
-		"task_sync": map[string]any{"overlap": "10s"},
-		"webhook":   map[string]any{"enabled": true},
-	}
-	if github != nil {
-		configuration["github"] = map[string]any{"enabled": true, "app_id": 13, "private_key_file": github.privateKey, "webhook_secret": "integration-only-secret"}
+		"s2s":        map[string]any{"allowed_origin": "https://client.example", "shared_key": s2sSharedKey},
+		"server":     map[string]any{"listen_address": "127.0.0.1:0", "public_origin": origin, "preview_origin": testauth.PreviewOrigin(origin), "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
+		"database":   map[string]any{"url": parsed.String()},
+		"monitoring": map[string]any{"redis_url": redisURL},
+		"storage":    map[string]any{"root": "attachments"},
+		"uniauth":    map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
+		"task_sync":  map[string]any{"overlap": "10s"},
+		"webhook":    map[string]any{"enabled": true},
 	}
 	if imageDecoder {
 		dir, node := os.Getenv("DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR"), os.Getenv("DAYNIGHT_INTEGRATION_NODE_PATH")
@@ -344,6 +341,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		}
 	}
 	command.Env = append(command.Env, "DAYNIGHT_INTEGRATION_RUN_ROOT="+runRoot)
+	command.Env = append(command.Env, extraEnvironment...)
 	if github != nil {
 		command.Env = append(command.Env, "HTTPS_PROXY="+github.proxyURL, "NO_PROXY=localhost,127.0.0.1,::1", "SSL_CERT_FILE="+github.caFile)
 	}
@@ -358,6 +356,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		close(process.exited)
 	}()
 	t.Cleanup(func() { process.stop(t) })
+	t.Cleanup(proxy.clearBackend)
 	identity, err := identifyProcess(command.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -368,43 +367,44 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	}
 	readyClient := &http.Client{Timeout: time.Second}
 	t.Cleanup(readyClient.CloseIdleConnections)
-	deadline := time.NewTimer(15 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/readyz", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		response, err := readyClient.Do(request)
-		if err == nil {
-			_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-			closeErr := response.Body.Close()
-			if errors.Join(readErr, closeErr) != nil {
-				t.Fatal(errors.Join(readErr, closeErr))
-			}
-			if response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case <-process.exited:
-			t.Fatalf("integration Server stopped before readiness: %v\n%s", process.waitErr, process.logs.String())
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-deadline.C:
-			t.Fatalf("integration Server did not become ready\n%s", process.logs.String())
-		case <-ticker.C:
-		}
-	}
+	proxy.setBackend(waitForBackend(t, ctx, process, readyClient, origin))
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, origin, "alice")
 	token := testauth.CreatePAT(t, browser, origin)
 	browser.CloseIdleConnections()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
-	f := &fixture{context: ctx, origin: origin, databaseURL: parsed.String(), s2sSharedKey: s2sSharedKey, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
+	f := &fixture{context: ctx, origin: origin, callbackURL: callbackURL, databaseURL: parsed.String(), s2sSharedKey: s2sSharedKey, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
+	f.restart = func(prepare func()) {
+		t.Helper()
+		proxy.clearBackend()
+		process.stop(t)
+		f.client.CloseIdleConnections()
+		readyClient.CloseIdleConnections()
+		if !stopped() || process.waitErr != nil {
+			t.Fatal("original integration Server did not stop cleanly before restart")
+		}
+		prepare()
+		restarted := exec.Command(binary, "--root", root)
+		restarted.Env = command.Env
+		next := &serverProcess{command: restarted, exited: make(chan struct{}), logs: &processLog{}}
+		restarted.Stdout, restarted.Stderr = next.logs, next.logs
+		if err := restarted.Start(); err != nil {
+			t.Fatal(err)
+		}
+		process = next
+		f.process = next
+		go func() { next.waitErr = restarted.Wait(); close(next.exited) }()
+		identity, err := identifyProcess(restarted.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resources.Server = &identity
+		if err := writeResources(); err != nil {
+			t.Fatal(err)
+		}
+		proxy.setBackend(waitForBackend(t, ctx, next, readyClient, origin))
+	}
 	response, body := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
 	var page api.ProjectPage
 	if err := json.Unmarshal(body, &page); err != nil {
@@ -420,6 +420,65 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	return f
 }
 
+// waitForBackend discovers the bound address from complete lifecycle events and
+// checks readiness directly before the public listener can route to it.
+func waitForBackend(t *testing.T, ctx context.Context, process *serverProcess, client *http.Client, origin string) string {
+	t.Helper()
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	address := ""
+	for {
+		if address == "" {
+			lines := strings.Split(process.logs.String(), "\n")
+			for _, line := range lines[:len(lines)-1] {
+				var event struct {
+					Type      string `json:"type"`
+					Component string `json:"component"`
+					Phase     string `json:"phase"`
+					Address   string `json:"address"`
+				}
+				if json.Unmarshal([]byte(line), &event) == nil && event.Type == "lifecycle" && event.Component == "server" && event.Phase == "listening" {
+					host, port, err := net.SplitHostPort(event.Address)
+					if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+						t.Fatalf("invalid integration Server listening address %q", event.Address)
+					}
+					address = event.Address
+					break
+				}
+			}
+		}
+		if address != "" {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/readyz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Host = strings.TrimPrefix(origin, "http://")
+			response, err := client.Do(request)
+			if err == nil {
+				_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+				closeErr := response.Body.Close()
+				if err := errors.Join(readErr, closeErr); err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode == http.StatusOK {
+					return address
+				}
+			}
+		}
+		select {
+		case <-process.exited:
+			t.Fatalf("integration Server stopped before readiness: %v\n%s", process.waitErr, process.logs.String())
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("integration Server did not become ready\n%s", process.logs.String())
+		case <-ticker.C:
+		}
+	}
+}
+
 type tokenTransport struct {
 	token string
 	next  http.RoundTripper
@@ -431,7 +490,7 @@ func (r tokenTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	return r.next.RoundTrip(copy)
 }
 
-func (f *fixture) request(t *testing.T, method, path, contentType string, body []byte, status int) (*http.Response, []byte) {
+func (f *fixture) request(t *testing.T, method, path, contentType string, body []byte, status int, headers ...http.Header) (*http.Response, []byte) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(f.context, method, f.origin+path, bytes.NewReader(body))
 	if err != nil {
@@ -439,6 +498,13 @@ func (f *fixture) request(t *testing.T, method, path, contentType string, body [
 	}
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
+	}
+	for _, header := range headers {
+		for key, values := range header {
+			for _, value := range values {
+				request.Header.Add(key, value)
+			}
+		}
 	}
 	response, err := f.client.Do(request)
 	if err != nil {
@@ -455,7 +521,7 @@ func (f *fixture) request(t *testing.T, method, path, contentType string, body [
 	return response, data
 }
 
-func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any, status int) T {
+func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any, status int, headers ...http.Header) T {
 	t.Helper()
 	var body []byte
 	if input != nil {
@@ -465,7 +531,7 @@ func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any
 			t.Fatal(err)
 		}
 	}
-	_, data := f.request(t, method, path, "application/json", body, status)
+	_, data := f.request(t, method, path, "application/json", body, status, headers...)
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("decode %s %s: %v: %s", method, path, err, data)
@@ -475,8 +541,13 @@ func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any
 
 func createProject(t *testing.T, f *fixture, name string) api.Project {
 	t.Helper()
-	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: "https://github.com/example/integration", ExpectedUserID: f.userID}, http.StatusCreated)
-	if project.ID == "" || project.Name != name {
+	return createProjectAtRepository(t, f, name, "https://github.com/example/integration-"+rand.Text())
+}
+
+func createProjectAtRepository(t *testing.T, f *fixture, name, repository string) api.Project {
+	t.Helper()
+	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: repository, ExpectedUserID: f.userID}, http.StatusCreated)
+	if project.ID == "" || project.Name != name || project.RepoURL != repository {
 		t.Fatalf("created project identity/content differs: %+v", project)
 	}
 	return project

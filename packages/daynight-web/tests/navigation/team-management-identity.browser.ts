@@ -37,7 +37,7 @@ const install = async (page: Page): Promise<State> => {
   return state;
 };
 const start = async (page: Page) => { await page.goto(`/teams/${teamId}/settings`); await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible(); };
-const openDelete = async (page: Page) => { await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
+const openDelete = async (page: Page) => { const details = page.locator('details.team-delete'); await details.locator('summary').click(); await details.locator('button').click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
 const foreground = async (page: Page, state: State) => {
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
   const other = await page.context().newPage(); await other.goto('about:blank');
@@ -75,7 +75,7 @@ test('preserves unknown through foreground resource checks without replay', asyn
   await expect(dialog.getByRole('alert')).toContainText('result is unknown');
   const check = await foreground(page, state);
   await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  expect(state.writes).toBe(1); await expect(page.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
+  expect(state.writes).toBe(1); await expect(page.locator('details.team-delete button')).toHaveCount(0);
   await check.other.close();
 });
 
@@ -125,7 +125,7 @@ test('retains the create dialog input on foreground return', async ({ page }) =>
 test('keeps the narrow navigation and focus during foreground checks', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const state = await install(page); await page.goto('/projects');
-  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
   const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
   const link = drawer.getByRole('link', { name: 'Projects' });
   await link.focus();
@@ -145,7 +145,7 @@ test('keeps the Chinese narrow create dialog and selection during foreground che
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   const state = await install(page); await page.goto('/projects');
-  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await page.getByRole('button', { name: '打开导航' }).click();
   await page.locator('.team-selector .team-switch').click();
   await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '创建 Team' });

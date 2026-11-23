@@ -62,7 +62,7 @@ describe("Bot frozen model selection", () => {
 
 describe("Native effort transport", () => {
   it.each(["codex", "claude", "copilot"] as const)("preserves dynamically reported %s efforts for native validation", provider => {
-    const normalized = normalizeWorkerNative({ agent: provider, model: "native-model", args: ["--effort", "older"] }, "web", { agentReasoningEffort: "native-new-level" }, true, true);
+    const normalized = normalizeWorkerNative({ agent: provider, model: "native-model", args: ["--effort", "older"] }, { agentReasoningEffort: "native-new-level" }, true, true);
     expect(normalized.native.args).toEqual(["--effort", "native-new-level"]);
     expect(parseProviderArguments(provider, normalized.native.args, true).effort).toBe("native-new-level");
     expect(() => assertNativeModelSelection(provider, { model: "native-model", effort: "native-new-level" }, { model: "native-model", effort: "native-new-level", models: [{ id: "native-model", efforts: ["native-new-level"] }] })).not.toThrow();
@@ -70,7 +70,6 @@ describe("Native effort transport", () => {
     expect(() => assertNativeModelSelection(provider, { model: "native-model", effort: "native-new-level" }, { model: "native-model", models: [{ id: "native-model", efforts: ["low"] }] })).toThrow(/support/);
   });
   it("maps Copilot none through both native launch modes", () => {
-    expect(normalizeWorkerNative({ agent: "copilot", model: "m", args: [] }, "web", { agentReasoningEffort: "none" }).native.args).toEqual(["--effort", "none"]);
-    expect(normalizeWorkerNative({ agent: "copilot", model: "m", args: [] }, "herdr", { agentReasoningEffort: "none" }).native.args).toEqual(["--reasoning-effort", "none"]);
+    expect(normalizeWorkerNative({ agent: "copilot", model: "m", args: [] }, { agentReasoningEffort: "none" }).native.args).toEqual(["--effort", "none"]);
   });
 });

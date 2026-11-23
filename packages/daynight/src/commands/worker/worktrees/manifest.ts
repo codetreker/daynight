@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import path from "node:path";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
-import { decodeStrictSessionJson } from "../../../session/v2/values.js";
+import { decodeStrictJson } from "../../../strict-json.js";
 import type { ClaimIdentity, ResourceOwner } from "../types.js";
 import { canonicalWorktreeId, manifestPath } from "./paths.js";
 
@@ -10,7 +10,7 @@ export type WorktreeManifest = ResourceOwner & { schemaVersion: 1; directoryName
 export type WorktreeManifestStore = {
   read(worktreeId: string): WorktreeManifest | null;
   list(): WorktreeManifest[];
-  findClaim(identity: ClaimIdentity): WorktreeManifest | null;
+  lookupOwner(identity: ResourceOwner): { byWorktreeId: WorktreeManifest | null; byClaim: WorktreeManifest | null };
   publish(manifest: WorktreeManifest): WorktreeManifest;
   remove(expected: WorktreeManifest): void;
 };
@@ -45,7 +45,7 @@ export const createWorktreeManifestStore = (commonDirectory: string): WorktreeMa
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino) throw new Error(`Worktree manifest changed during read: ${file}`);
-      const result = parse(decodeStrictSessionJson(readFileSync(fd), 16384));
+      const result = parse(decodeStrictJson(readFileSync(fd), 16384));
       if (durable) fsyncSync(fd);
       return result;
     } finally { closeSync(fd); }
@@ -71,7 +71,14 @@ export const createWorktreeManifestStore = (commonDirectory: string): WorktreeMa
   };
   return {
     read, list,
-    findClaim: identity => { const key = claimKey(identity); return list().find(value => claimKey(value) === key) ?? null; },
+    lookupOwner: identity => {
+      const worktreeId = canonicalWorktreeId(identity.worktreeId), key = claimKey(identity);
+      const manifests = list();
+      return {
+        byWorktreeId: manifests.find(value => value.worktreeId === worktreeId) ?? null,
+        byClaim: manifests.find(value => claimKey(value) === key) ?? null,
+      };
+    },
     publish: input => {
       const value = parse(input);
       ensureDurableDirectory(parent);

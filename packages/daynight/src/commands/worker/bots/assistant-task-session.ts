@@ -4,6 +4,8 @@ import { validateServerToken, validateTokenTransport } from "../../../config/ser
 import { assertSessionFence, parseSessionCommand, parseSessionOperation, type SessionCommand, type SessionOperation } from "../../../session/protocol.js";
 import type { BotSessionApi } from "./session-api.js";
 import { parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
+import { withLifecycleReservation } from "../lifecycle-context.js";
+import { classifyLifecycleSessionOperation } from "../lifecycle-request-recovery.js";
 
 export class AssistantTaskSessionError extends Error {
   constructor(readonly outcomeUnconfirmed: boolean, readonly code: string, readonly status?: number) {
@@ -17,13 +19,14 @@ const refusalCodes = new Set(["invalid_input", "unauthorized", "unauthenticated"
 /** The caller persists the complete command before send. Neither method retries a request. */
 export const createAssistantTaskSessionTransport = (options: {
   owner: BotOwner; serverToken: string; sessionApi: Pick<BotSessionApi, "readSession">; fetch?: typeof globalThis.fetch;
+  canSend?(record: BotRecord): boolean;
 }) => {
   const owner = Object.freeze(parseBotOwner(options.owner)), token = validateServerToken(options.serverToken);
   validateTokenTransport(owner.serverOrigin);
   const checkCommand = (record: BotRecord, input: SessionCommand, sending: boolean): SessionCommand => {
     const binding = parseBotOwner(record.owner);
-    if (binding.serverOrigin !== owner.serverOrigin || binding.ownerUserId !== owner.ownerUserId || binding.workerId !== owner.workerId) throw new AssistantTaskSessionError(false, "identity_mismatch");
-    const bot = parseBot(record.observed, owner), intent = record.intent, command = parseSessionCommand(input);
+    if (binding.serverOrigin !== owner.serverOrigin || binding.ownerUserId !== owner.ownerUserId) throw new AssistantTaskSessionError(false, "identity_mismatch");
+    const bot = parseBot(record.observed, binding), intent = record.intent, command = parseSessionCommand(input);
     if (bot.id !== record.botId || bot.deletion !== null || intent === null || record.definition === null
       || intent.sessionId !== bot.sessionId || intent.executionId !== bot.testExecutionId
       || record.definition.sessionId !== bot.sessionId || record.definition.testExecutionId !== bot.testExecutionId
@@ -34,6 +37,9 @@ export const createAssistantTaskSessionTransport = (options: {
       throw new AssistantTaskSessionError(false, "identity_mismatch");
     }
     return command;
+  };
+  const checkHosting = (record: BotRecord): void => {
+    if (options.canSend === undefined ? record.owner.workerId !== owner.workerId : !options.canSend(record)) throw new AssistantTaskSessionError(false, "not_ready");
   };
   const request = async (command: SessionCommand, signal: AbortSignal, sending: boolean): Promise<SessionOperation> => {
     const operationUrl = `/api/v1/test-sessions/${command.sessionId}/operations/${command.operationId}`;
@@ -98,15 +104,18 @@ export const createAssistantTaskSessionTransport = (options: {
       let command: SessionCommand;
       try {
         command = checkCommand(record, input, true);
+        checkHosting(record);
         const snapshot = await options.sessionApi.readSession(record, signal);
         assertSessionFence(snapshot, command);
         if (!snapshot.synchronized || snapshot.connectionState !== "connected" || snapshot.lifecycle !== "active"
           || snapshot.activity !== "idle" || snapshot.currentTurnId !== null || !snapshot.operations.canSend) throw new AssistantTaskSessionError(false, "not_ready");
+        // A hosting fence can change while the Session preflight is in flight.
+        checkHosting(record);
       } catch (error) {
         if (error instanceof AssistantTaskSessionError) throw error;
         throw new AssistantTaskSessionError(false, "preflight_failed");
       }
-      return request(command, signal, true);
+      return withLifecycleReservation("assistant", { kind: "assistant_input", botId: record.botId, sessionId: command.sessionId, executionId: command.testExecutionId ?? null, executionGeneration: command.executionGeneration }, () => request(command, signal, true), command.operationId, classifyLifecycleSessionOperation);
     },
     readOperation: (record: BotRecord, input: SessionCommand, signal: AbortSignal): Promise<SessionOperation> => request(checkCommand(record, input, false), signal, false),
   };

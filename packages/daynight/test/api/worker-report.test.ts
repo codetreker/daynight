@@ -15,14 +15,14 @@ const report: WorkerReport = {
   memory: { state: "ok", checkedAt: time, value: { usedBytes: 1024, totalBytes: 4096 } },
   disk: { state: "error", checkedAt: time, code: "permission_denied" },
   versions: {
-    daynight: "0.26.0", herdr: { state: "not_running", checkedAt: time },
+    daynight: "0.26.0",
     codex: { state: "ok", checkedAt: time, value: "0.100.0" }, copilot: { state: "not_installed", checkedAt: time },
   },
   taskInventory: null,
 };
 const operations: Operation[] = [];
 const response = (value: unknown = receipt, status = 200, principal: string | undefined = userId): Response => new Response(stringifyApiJson(value), {
-  status, headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) },
+  status, headers: { "Content-Type": "application/json", "Daynight-Worker-Tool-Paths": "2", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) },
 });
 const client = (fetch: typeof globalThis.fetch, options: { readonly operation?: Operation; readonly expectedUserId?: string } = {}) => {
   const operation = options.operation ?? createOperation({ limits: { totalMs: 1_000, requestMs: 500 } });

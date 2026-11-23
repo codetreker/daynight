@@ -60,7 +60,10 @@ func PrepareUpdate(ctx context.Context, dao store.TaskWriteDAO, id string, input
 		return Mutation{}, err
 	}
 	if !model.EqualOptional(current.ParentID, values.ParentID) {
-		if err := ValidateParent(ctx, dao, values.ParentID); err != nil {
+		if current.ParentType == model.TaskTypeTask {
+			return Mutation{}, &model.Fault{Code: "task_parent_immutable", Message: "An ordinary task parent cannot be changed."}
+		}
+		if err := validateUpdateParent(ctx, dao, values.ParentID); err != nil {
 			return Mutation{}, err
 		}
 	}
@@ -71,7 +74,11 @@ func PrepareUpdate(ctx context.Context, dao store.TaskWriteDAO, id string, input
 }
 
 func PrepareStatus(ctx context.Context, dao store.TaskWriteDAO, principal model.Principal, id string, input SetTaskStatus) (Mutation, error) {
-	current, err := dao.Task(ctx, id)
+	read := dao.Task
+	if input.Status == model.TaskInProgress {
+		read = dao.TaskForStart
+	}
+	current, err := read(ctx, id)
 	if errors.Is(err, model.ErrNotFound) {
 		return Mutation{}, NotFound(err)
 	}

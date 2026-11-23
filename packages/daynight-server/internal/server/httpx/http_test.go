@@ -163,6 +163,16 @@ func TestQueryAndPageRequest(t *testing.T) {
 	}
 }
 
+func TestInsufficientScopeUsesLegacyForbiddenEnvelope(t *testing.T) {
+	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	WriteError(w, request, quietLogger(), "test", "read", &model.Fault{Code: "insufficient_scope", Message: "The credential has insufficient scope."})
+	assertHTTPError(t, w, http.StatusForbidden, "forbidden")
+	if got := w.Header().Get("Daynight-Scope-Status"); got != "insufficient_scope" {
+		t.Fatalf("scope status: %q", got)
+	}
+}
+
 func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	for _, tc := range []struct {
 		code   string
@@ -171,11 +181,12 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		{"unauthenticated", 401}, {"forbidden", 403}, {"invalid_input", 400}, {"invalid_tag_filter", 400}, {"payload_too_large", 413}, {"controller_offline", 503},
 		{"unsupported_native_selection", 409}, {"unsupported_selection", 409}, {"unknown_default", 409}, {"stale_configuration", 409},
 		{"capability_error", 503}, {"cleanup_unknown", 503}, {"io_error", 503}, {"offline", 503}, {"unsupported", 501}, {"timeout", 504}, {"cancelled", 409}, {"busy", 429}, {"limit_exceeded", 413}, {"invalid_cursor", 400}, {"invalid_path", 400},
-		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"tag_not_found", 404}, {"write_outcome_unknown", 503},
-		{"github_repository_mismatch", 409},
+		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"user_not_found", 404}, {"tag_not_found", 404}, {"write_outcome_unknown", 503},
+		{"github_repository_mismatch", 409}, {"project_repository_conflict", 409}, {"project_repository_identity_unavailable", 409},
 		{"archive_conflict", 409}, {"archive_incomplete", 409},
+		{"task_unfinished_children", 409}, {"task_parent_terminal", 409}, {"task_parent_immutable", 409},
 		{"invalid_image", 400}, {"image_integrity", 400}, {"image_decode_failed", 400}, {"component_unsupported", 409}, {"quota_exceeded", 409}, {"resource_in_use", 409}, {"capability_changed", 409}, {"media_outcome_unknown", 503}, {"resource_busy", 429},
-		{"configuration_not_initialized", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
+		{"configuration_not_initialized", 409}, {"worker_task_tag_filter_unsupported", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -222,6 +233,31 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	w := httptest.NewRecorder()
 	WriteError(w, httptest.NewRequest("GET", "/", nil), quietLogger(), "test", "write", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault})
 	assertHTTPError(t, w, 500, "internal_error")
+}
+
+func TestScopeRefusalPreservesHTTPEnvelopeAndSuppressesUncertainResults(t *testing.T) {
+	fault := &model.Fault{Code: "insufficient_scope", Message: "Credential scope is insufficient."}
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+		header string
+	}{
+		{"refused", fault, http.StatusForbidden, "forbidden", "insufficient_scope"},
+		{"not committed", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, http.StatusForbidden, "forbidden", "insufficient_scope"},
+		{"unknown commit", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}, http.StatusInternalServerError, "internal_error", ""},
+		{"mixed failure", errors.Join(fault, errors.New("independent failure")), http.StatusInternalServerError, "internal_error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			WriteError(w, httptest.NewRequest("PATCH", "/", nil), quietLogger(), "team", "change", tc.err)
+			assertHTTPError(t, w, tc.status, tc.code)
+			if got := w.Header().Get("Daynight-Scope-Status"); got != tc.header {
+				t.Fatalf("scope status = %q, want %q", got, tc.header)
+			}
+		})
+	}
 }
 
 type shortWriter struct {

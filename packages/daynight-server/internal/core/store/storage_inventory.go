@@ -1,6 +1,10 @@
 package store
 
-import sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+import (
+	"encoding/json"
+
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+)
 
 // StorageInventory is a read-only database snapshot used after restoring the
 // database and file volume from the same stopped-writer backup cut.
@@ -11,7 +15,29 @@ type StorageInventory struct {
 	Resources                     []SessionResourceRecord
 	Objects                       []StorageObject
 	InlineResources               []StorageInlineResource
+	ArchiveFilesV2                []StorageArchiveFileV2
+	ArchiveBundle                 *ArchiveBundle
+	ArchiveTimeline               *StorageArchiveTimeline
 }
+
+// StorageArchiveFileV2 retains the facts needed to verify a resumable upload
+// and its durable receipt without treating unconfirmed staging as required data.
+type StorageArchiveFileV2 struct {
+	UploadVersion                                         int
+	FileID, Purpose, SHA256, State, Path, SuccessorFileID string
+	ByteLength, AcceptedOffset, TimelineRevision          int64
+	Resource, TerminalError                               json.RawMessage
+	StagingReleased                                       bool
+}
+
+// StorageArchiveTimeline identifies the bundle's current timeline independently
+// of its upload version. It is read from the same snapshot as the bundle.
+type StorageArchiveTimeline struct {
+	FileID, State, Path, SHA256                  string
+	UploadVersion                                int
+	ByteLength, AcceptedOffset, TimelineRevision int64
+}
+
 type StorageArchive struct {
 	SchemaVersion int
 	Path, SHA256  string

@@ -33,6 +33,7 @@ func waitForStartupTaskLock(ctx context.Context, database *Store, blocker uint32
 }
 
 func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	var releases []func()
 	var finished []<-chan struct{}

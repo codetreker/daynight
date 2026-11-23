@@ -2,12 +2,15 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botStores from "../../../src/commands/worker/bots/store.js";
 import * as executionStores from "../../../src/commands/worker/bots/execution-store.js";
+import * as assistantRuntime from "../../../src/commands/worker/bots/runtime.js";
+import * as botProcess from "../../../src/commands/worker/bots/process.js";
+import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
 import { bot } from "./bot-store.fixtures.js";
 
 const mocks = vi.hoisted(() => ({ collector: vi.fn() }));
@@ -21,16 +24,94 @@ const fixture = async () => {
   vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => openStore(createMemoryDatabase(), options));
   vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((_file, options) => openExecutions(createMemoryDatabase(), options));
   const paths = resolveWorkerPaths(home); await mkdir(paths.workerDirectory, { recursive: true });
+  // Routing checks the source migration receipt independently of the controlled
+  // inventory collaborators, so retain a real current-format source database.
+  const source = openStore(paths.databaseFile, { onMigration: () => {} });
+  source.close();
   let configuration: ExecutionConfiguration | null = null;
   const options = { homeDirectory: home, packageDirectory: home, workingDirectory: home, paths,
     owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" },
     serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", configuration: () => configuration, canAdmitNewExecution: () => true,
     pollIntervalMs: () => 60_000, recoveryLimit: () => 3, emit: () => {} };
   const sample = { assistantHost: { protocolVersion: 1, defaultProvider: "codex" }, issues: [] };
-  const collect = vi.fn(async () => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });
+  const collect = vi.fn(async (_operation: Operation) => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });
   return { options, collect, sample, set: (value: ExecutionConfiguration | null) => { configuration = value; } };
 };
 const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
+
+it("stops original local Bots without credentials while management rejects execution and network requests", async () => {
+  const f = await fixture(); f.set(native);
+  const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
+  let store!: ReturnType<typeof openStore>;
+  vi.spyOn(botStores, "openBotStore").mockImplementation((_file: Parameters<typeof openStore>[0], options: Parameters<typeof openStore>[1]) => store = openStore(createMemoryDatabase(), options));
+  const createProcess = botProcess.createBotProcess;
+  const shutdown = vi.fn<(record: Parameters<ReturnType<typeof createProcess>["shutdown"]>[0], signal: AbortSignal) => Promise<void>>();
+  const process = vi.spyOn(botProcess, "createBotProcess").mockImplementation((options: Parameters<typeof createProcess>[0]) => {
+    const original = createProcess(options); shutdown.mockImplementation(original.shutdown);
+    return { ...original, shutdown };
+  });
+  const host = createWorkerBotHost({ ...f.options, serverToken: undefined, managementOnly: true }); cleanups.push(host.close);
+  const record = store.observe(f.options.owner, bot(), 1);
+  const operation = createOperation(); cleanups.push(operation.dispose);
+  await expect(host.run(operation.signal)).rejects.toThrow("cannot start Bot execution");
+  expect(await host.collect(operation)).toBeUndefined(); expect(f.collect).not.toHaveBeenCalled();
+  const dependency = process.mock.calls[0]![0];
+  expect(dependency.canAdmitNewExecution()).toBe(false);
+  await expect(dependency.sessionApi.readSession(record, operation.signal)).rejects.toMatchObject({ code: "credentials_unavailable" });
+  await host.shutdown();
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(shutdown.mock.calls[0]![0]).toMatchObject({ owner: f.options.owner, botId: record.botId });
+  expect(store.get(f.options.owner, record.botId)).toEqual(record);
+  await host.close();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("requires credentials before opening storage for ordinary Bot execution", async () => {
+  const f = await fixture();
+  const before = vi.mocked(botStores.openBotStore).mock.calls.length;
+  expect(() => createWorkerBotHost({ ...f.options, serverToken: undefined })).toThrow("Original Worker credentials are unavailable");
+  expect(vi.mocked(botStores.openBotStore).mock.calls).toHaveLength(before);
+});
+
+it("retains resources after failed shutdown and permits an explicit successful re-observation before close", async () => {
+  const f = await fixture(), failure = new Error("Original writer stop is unconfirmed");
+  const shutdown = vi.fn<() => Promise<void>>(async () => { throw failure; });
+  vi.spyOn(assistantRuntime, "createManagedAssistantRuntime").mockReturnValue({ run: async () => {}, closeAdmission: () => {}, snapshot: () => ({}), shutdown } as never);
+  const host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  await expect(host.shutdown()).rejects.toBe(failure);
+  await expect(host.close()).rejects.toThrow("storage locks are retained");
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(host.requiresCopilot()).toBe(false);
+  shutdown.mockImplementation(async () => {});
+  await host.shutdown();
+  await host.close();
+  expect(shutdown).toHaveBeenCalledTimes(2);
+  expect(() => host.requiresCopilot()).toThrow(/closed|closing/);
+});
+
+it("retains the real Bot storage lock when process resource cleanup fails", async () => {
+  const f = await fixture();
+  vi.mocked(botStores.openBotStore).mockRestore();
+  vi.mocked(executionStores.openBotExecutionStore).mockRestore();
+  const localOptions = { stateDirectory: f.options.paths.stateDirectory, legacyDatabaseFile: f.options.paths.databaseFile, owner: f.options.owner, onMigration: () => undefined };
+  const initial = openLocalBotStores(localOptions);
+  const record = initial.store.observe(f.options.owner, bot(), 1); initial.close();
+  const createProcess = botProcess.createBotProcess;
+  const close = vi.fn(async () => {}).mockRejectedValueOnce(new Error("Original process cleanup is unconfirmed"));
+  vi.spyOn(botProcess, "createBotProcess").mockImplementation(options => ({ ...createProcess(options), close }));
+  const host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  expect(host.requiresCopilot()).toBe(false);
+  await expect(host.close()).rejects.toThrow("storage locks are retained");
+  expect(host.requiresCopilot()).toBe(false);
+  const competing = openLocalBotStores(localOptions);
+  try { expect(() => competing.store.get(f.options.owner, record.botId)).toThrow(/instance lock/i); }
+  finally { competing.close(); }
+  await host.close();
+  const reopened = openLocalBotStores(localOptions);
+  try { expect(reopened.store.get(f.options.owner, record.botId)).toEqual(record); }
+  finally { reopened.close(); }
+  expect(close).toHaveBeenCalledTimes(2);
+});
 
 it("omits unsupported configuration and discards a capability probe spanning a cloud change", async () => {
   const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);
@@ -41,6 +122,36 @@ it("omits unsupported configuration and discards a capability probe spanning a c
   expect(await host.collect(operation)).toBeUndefined();
   expect(await host.collect(operation)).toBe(f.sample);
   await host.close(); expect(await host.collect(operation)).toBeUndefined();
+});
+
+it("keeps storage usable while admission is closed and avoids starting capability probes", async () => {
+  const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  const operation = createOperation(); cleanups.push(operation.dispose);
+  f.set(native);
+  host.closeAdmission("disable");
+  expect(await host.collect(operation)).toBeUndefined();
+  expect(f.collect).not.toHaveBeenCalled();
+  expect(host.snapshot()).toMatchObject({ closed: true });
+  expect(host.requiresCopilot()).toBe(false);
+  await host.shutdown(); await host.close();
+});
+
+it("cancels an active capability collection before releasing Bot stores", async () => {
+  const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  const operation = createOperation(); cleanups.push(operation.dispose); f.set(native);
+  let probeSignal!: AbortSignal;
+  f.collect.mockImplementationOnce(async collection => {
+    probeSignal = collection.signal;
+    await new Promise<void>(resolve => collection.signal.addEventListener("abort", () => resolve(), { once: true }));
+    return f.sample;
+  });
+  const collecting = host.collect(operation);
+  expect(host.snapshot().probes).toBe(1);
+  host.closeAdmission();
+  expect(probeSignal.aborted).toBe(true);
+  expect(await collecting).toBeUndefined(); await host.shutdown();
+  expect(host.snapshot().probes).toBe(0);
+  expect(operation.signal.aborted).toBe(false);
 });
 
 it("closes both actual SQLite handles when a later host constructor fails", async () => {

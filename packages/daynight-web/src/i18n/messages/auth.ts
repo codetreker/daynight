@@ -7,6 +7,7 @@ export type AuthMessages = {
   readonly roles: Readonly<Record<ProjectRole, string>>;
   readonly shell: {
     readonly sidebar: {
+      readonly open: string;
       readonly expand: string;
       readonly collapse: string;
       readonly close: string;
@@ -144,6 +145,7 @@ export type AuthMessages = {
     readonly repository: string;
     readonly repositoryHint: string;
     readonly error: string;
+    readonly repositoryConflict: string;
     readonly unknown: string;
     readonly checkProjects: string;
     readonly observedProjects: string;
@@ -254,9 +256,7 @@ export type AuthMessages = {
       readonly revokeLabel: (args: { readonly name: string }) => string;
     };
     readonly members: {
-      readonly eyebrow: string;
       readonly title: string;
-      readonly subtitle: (args: { readonly projectName: string }) => string;
       readonly invite: string;
       readonly loading: string;
       readonly memberNotice: string;
@@ -314,7 +314,6 @@ export type AuthMessages = {
     readonly settings: {
       readonly eyebrow: string;
       readonly title: string;
-      readonly scopeHint: string;
       readonly alertTitle: string;
       readonly description: string;
       readonly scope: string;

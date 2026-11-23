@@ -5,6 +5,7 @@ import { DependencyEdges } from './DependencyEdges';
 import { TaskInspectionContext, useTaskInspection, type TaskInspection } from './inspection';
 import type { CanvasLayout } from './layout';
 import { TaskNode, type TaskFlowNode } from './TaskNode';
+import { GraphReadingHintProvider, useGraphReadingHint } from './GraphReadingHint';
 import '@xyflow/react/dist/style.css';
 
 const nodeTypes = { task: TaskNode };
@@ -62,7 +63,7 @@ const InitialViewport = ({ viewportFactory, revision, onReset, framingReady, onS
   return null;
 };
 
-export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClearInspection, viewportFactory, framingKey, framingRevision, onFramingReset, minZoom, maxZoom, fitViewOptions, framingReady = true, onSizeChange, onFitView, overlay }: {
+const TaskGraphCanvasContent = ({ canvasId, nodes, geometry, inspection, onClearInspection, viewportFactory, framingKey, framingRevision, onFramingReset, minZoom, maxZoom, fitViewOptions, framingReady = true, onSizeChange, onFitView, overlay, emptyState }: {
   canvasId: string;
   nodes: TaskFlowNode[];
   geometry: CanvasLayout;
@@ -79,8 +80,11 @@ export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClear
   onSizeChange?: (width: number, height: number) => void;
   onFitView?: () => void;
   overlay?: ReactNode;
+  emptyState?: ReactNode;
 }) => {
   const { messages: { graph: m } } = useI18n();
+  const hint = useGraphReadingHint();
+  useLayoutEffect(() => { hint.reposition(); }, [geometry, hint]);
   const canvas = useMemo(() => (
     <ReactFlow<TaskFlowNode>
       id={canvasId}
@@ -97,6 +101,8 @@ export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClear
       edgesReconnectable={false}
       elementsSelectable={false}
       onPaneClick={onClearInspection}
+      onMoveStart={(event) => { if (event) hint.dismiss(); }}
+      onMove={(event) => { if (!event) hint.reposition(); }}
       connectOnClick={false}
       deleteKeyCode={null}
       panActivationKeyCode={null}
@@ -116,8 +122,11 @@ export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClear
         </ControlButton>}
       </Controls>
     </ReactFlow>
-  ), [nodes, canvasId, framingKey, geometry, viewportFactory, framingRevision, onFramingReset, onClearInspection, minZoom, maxZoom, fitViewOptions, framingReady, onSizeChange, onFitView, overlay, m]);
+  ), [nodes, canvasId, framingKey, geometry, viewportFactory, framingRevision, onFramingReset, onClearInspection, minZoom, maxZoom, fitViewOptions, framingReady, onSizeChange, onFitView, overlay, m, hint]);
   return <div className="task-graph-canvas"><TaskInspectionContext value={inspection}>{canvas}</TaskInspectionContext>
     {overlay && <div style={{ position: 'absolute', inset: 0, background: '#fafbfe' }}>{overlay}</div>}
+    {emptyState && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none' }}>{emptyState}</div>}
   </div>;
 };
+
+export const TaskGraphCanvas = (props: Parameters<typeof TaskGraphCanvasContent>[0]) => <GraphReadingHintProvider><TaskGraphCanvasContent {...props} /></GraphReadingHintProvider>;

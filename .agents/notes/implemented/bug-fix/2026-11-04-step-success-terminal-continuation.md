@@ -8,6 +8,8 @@ A valid Step write can be confirmed while its asynchronous collection admission 
 
 ## Decision
 
+The [Web Steps retirement](../simplification/2026-11-23-retire-web-task-steps.md) supersedes this Web-specific decision. The following records the former implementation and its rationale.
+
 The successful Steps continuation re-enters the shared mutation stage after collection admission. It waits for same-identity verification, then checks disposal, deletion, detail admission, the current operation, and the source-specific generation and read ticket before scheduling project and parent refreshes. Summary tickets retain cache and project-revision qualification. Direct tickets retain persistent history, opening and request qualification; they do not acquire a synthetic cache generation.
 
 The [local mutation settlement decision](../architecture/2026-11-11-task-mutation-local-settlement.md) separates local completion from this qualified continuation without weakening the deletion check.

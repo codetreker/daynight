@@ -5,7 +5,7 @@ import { WORKER_TIME, WORKER_USER, workerDetail, workerId, workerPage } from '..
 import { configurationResource, configurationValue } from '../helpers/worker-configuration';
 
 export const targetWorker = workerId(1);
-export const toolPaths = { codex: { kind: 'auto' }, copilot: { kind: 'auto' }, herdr: { kind: 'auto' } } as const;
+export const toolPaths = { codex: { kind: 'auto' }, copilot: { kind: 'auto' } } as const;
 export const toolActual = (tool: Tool, context: ToolContext, overrides: Partial<ToolPathActual> = {}): ToolPathActual => ({
   selection: { kind: 'auto' }, selectionKey: (tool === 'codex' ? '1' : tool === 'copilot' ? '2' : '3').repeat(64),
   entryPath: tool === 'copilot' && context === 'web' ? '/opt/daynight/runtime/copilot' : `/opt/installed/bin/${tool}`,
@@ -17,14 +17,10 @@ export const toolObservation = (tool: Tool, context: ToolContext, overrides: Par
   tool, context, configurationSource: 'cloud', targetRevision: '1', target: { kind: 'auto' }, state: 'applied', reason: null,
   actual: toolActual(tool, context), candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null, ...overrides,
 });
-export const toolReport = (entries = [toolObservation('codex', 'web'), toolObservation('codex', 'herdr'), toolObservation('copilot', 'web'), toolObservation('copilot', 'herdr'), toolObservation('herdr', 'herdr')]): ToolPathTelemetry => ({ schemaVersion: 1, observedAt: WORKER_TIME, entries });
-export const observedConfiguration = (revision = '1', value: WorkerConfigurationValue = { ...configurationValue(), agentControlMode: 'web', toolPaths }): WorkerConfigurationResource => {
-  const items = (['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode'] as const)
+export const toolReport = (entries = [toolObservation('codex', 'web'), toolObservation('copilot', 'web')]): ToolPathTelemetry => ({ schemaVersion: 1, observedAt: WORKER_TIME, entries });
+export const observedConfiguration = (revision = '1', value: WorkerConfigurationValue = { ...configurationValue(), toolPaths }): WorkerConfigurationResource => {
+  const items = (['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native'] as const)
     .map(kind => ({ key: { kind }, appliedValue: value[kind], targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null }) as WorkerConfigurationOutcome);
-  for (const project of value.projects) {
-    items.push({ key: { kind: 'projectPreparation', projectId: project.projectId }, appliedValue: true, targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
-    items.push({ key: { kind: 'projectNative', projectId: project.projectId }, appliedValue: { ...value.native, ...project.nativeOverrides }, targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
-  }
   return { ...configurationResource(revision, value), observationRevision: '1', observation: { baseRevision: '0', desiredRevision: revision, reportedAt: WORKER_TIME, items } };
 };
 export const pathChoice = (path: string): Extract<ToolPathChoice, { kind: 'path' }> => ({ kind: 'path', path });
@@ -45,7 +41,7 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
     writes: [] as { revision: string; value: WorkerConfigurationValue }[], events: [] as string[],
     configurationGate: null as ReturnType<typeof deferredRead> | null,
     workerGate: null as ReturnType<typeof deferredRead> | null,
-    mode: 'success' as 'success' | 'conflict' | 'unknown', unknownReads: false,
+    mode: 'success' as 'success' | 'conflict' | 'unknown', unknownReads: false, workerFail: false,
     configurationReads: 0, workerReads: 0,
   };
   const personal = { id: workerId(90), kind: 'personal', name: null };
@@ -63,13 +59,14 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
     if (path === `/api/v1/me/workers/${targetWorker}`) {
       state.workerReads++;
       if (state.workerGate !== null) { state.workerGate.started(); await state.workerGate.promise; }
+      if (state.workerFail) return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'worker-fixture' } }, 503);
       const detail = structuredClone(state.detail);
       if (!service) delete (detail.worker.telemetry as { toolPaths?: unknown }).toolPaths;
-      return send(detail, 200, service ? { 'Daynight-Worker-Tool-Paths': '1' } : {});
+      return send(detail, 200, service ? { 'Daynight-Worker-Tool-Paths': '2' } : {});
     }
     if (path === `/api/v1/me/workers/${targetWorker}/prompt`) return send({ scope: 'worker', scopeId: targetWorker, revision: '0', text: '', updatedAt: null });
     if (path === `/api/v1/me/workers/${targetWorker}/configuration`) {
-      const toolsNegotiated = service && request.headers()['daynight-worker-tool-paths'] === '1';
+      const toolsNegotiated = service && request.headers()['daynight-worker-tool-paths'] === '2';
       state.events.push(request.method());
       if (request.method() === 'PUT') {
         state.writes.push(request.postDataJSON());
@@ -87,7 +84,7 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
       }
       const resource = structuredClone(state.resource);
       if (!toolsNegotiated && resource.desired !== null) delete (resource.desired.value as { toolPaths?: unknown }).toolPaths;
-      return send(resource, 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Control-Mode': '1', ...(toolsNegotiated ? { 'Daynight-Worker-Tool-Paths': '1' } : {}) });
+      return send(resource, 200, { 'Daynight-Worker-Configuration': '1', ...(toolsNegotiated ? { 'Daynight-Worker-Tool-Paths': '2' } : {}) });
     }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'tool-paths' } }, 404);
   });

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
@@ -48,6 +49,7 @@ type Workers struct {
 	store            workerStore
 	prompts          store.PromptSnapshotReader
 	monitoring       store.MonitoringStore
+	authorization    AuthorizationSource
 }
 
 func NewWorkers(database workerStore) *Workers {
@@ -82,7 +84,11 @@ func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, wor
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	results, err := promptservice.Batch(readCtx, s.prompts, principal, workerID, selectors)
+	reader := s.prompts
+	if s.authorization != nil {
+		reader = authorizedPromptReader{reader: reader, authorization: s.authorization, principal: principal}
+	}
+	results, err := promptservice.Batch(readCtx, reader, principal, workerID, selectors)
 	if err != nil {
 		code := "unavailable"
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(readCtx.Err(), context.DeadlineExceeded) {
@@ -100,6 +106,7 @@ func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, wor
 }
 
 type WorkerPage struct {
+	Aliases    []model.WorkerAlias
 	ObservedAt time.Time
 	Items      []workerprotocol.WorkerSummary
 	NextCursor *string
@@ -126,6 +133,10 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		return WorkerReportResult{}, workercore.InputLimit(err)
 	}
 	if input.Configuration != nil {
+		var archiveSessions *bool
+		if input.Configuration.Bootstrap != nil {
+			archiveSessions = input.Configuration.Bootstrap.ArchiveSessions
+		}
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
 			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
@@ -134,9 +145,18 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		if err != nil {
 			return WorkerReportResult{}, err
 		}
+		// The archive target is stored outside the base JSON and therefore is
+		// omitted from its normalization round trip.
+		if input.Configuration.Bootstrap != nil {
+			input.Configuration.Bootstrap.ArchiveSessions = archiveSessions
+		}
 	}
 	var result WorkerReportResult
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
+		authorization, err := s.reportAdmission(ctx, scope, principal, input.Configuration != nil)
+		if err != nil {
+			return err
+		}
 		tx := scope.WorkerDAO()
 		admission, err := scope.AdmitWorker(ctx, principal.UserID, workerID, workercore.ActiveWindow)
 		if err != nil {
@@ -165,7 +185,11 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 			return workercore.InputLimit(err)
 		}
 		if input.Configuration != nil {
-			result.Configuration, err = s.report.exchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			if authorization != nil {
+				result.Configuration, err = workercore.ExchangeConfigurationAuthorized(ctx, tx, *authorization, workerID, *input.Configuration)
+			} else {
+				result.Configuration, err = s.report.exchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			}
 			if err != nil {
 				return err
 			}
@@ -211,6 +235,9 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	result := WorkerPage{Items: []workerprotocol.WorkerSummary{}}
 	var records store.WorkerSummaryPage
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if err := s.readAdmission(ctx, snapshot, principal, scopepolicy.WorkerRead); err != nil {
+			return err
+		}
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
@@ -223,6 +250,7 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 	}
 	for _, item := range records.Items {
+		result.Aliases = append(result.Aliases, item.Alias)
 		result.Items = append(result.Items, workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount})
 	}
 	if records.HasMore {
@@ -247,6 +275,9 @@ func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID s
 	var result WorkerDetailResult
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if err := s.readAdmission(ctx, snapshot, principal, scopepolicy.WorkerRead); err != nil {
+			return err
+		}
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {

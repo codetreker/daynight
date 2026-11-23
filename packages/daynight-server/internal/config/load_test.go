@@ -27,6 +27,7 @@ func lookupValues(values map[string]string) func(string) (string, bool) {
 
 const validBase = `server:
   public_origin: https://daynight.example
+  preview_origin: https://preview.daynight.example
 database:
   url: postgres://db
 uniauth:
@@ -66,6 +67,31 @@ webhook:
 	}
 	if _, err := os.Stat(filepath.Join(root, "data")); !os.IsNotExist(err) {
 		t.Fatal("loading created storage")
+	}
+}
+
+func TestAzureStorageLayers(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "config.yml", validBase+`storage:
+  backend: azure-blob
+  azure:
+    endpoint: https://account.blob.core.windows.net
+    container: original
+    managed_identity_client_id: selected
+`)
+	writeLayer(t, root, "config.local.yml", "storage:\n  azure:\n    container: overridden\n")
+	c, err := LoadServer(root, lookupValues(nil))
+	if err != nil || c.Storage.Backend != "azure-blob" || c.Storage.Azure.Container != "overridden" || c.Storage.Azure.ManagedIdentityClientID != "selected" {
+		t.Fatalf("Azure layers: %+v %v", c.Storage, err)
+	}
+	_, err = LoadServer(root, lookupValues(map[string]string{"DAYNIGHT_STORAGE_BACKEND": ""}))
+	var failure *configvalue.ConfigurationError
+	if !errors.As(err, &failure) || failure.Field != "storage.backend" || failure.Origin.EnvName != "DAYNIGHT_STORAGE_BACKEND" {
+		t.Fatalf("empty backend: %#v", err)
+	}
+	_, err = LoadServer(root, lookupValues(map[string]string{"DAYNIGHT_STORAGE_AZURE_CONNECTION_STRING": "private-secret"}))
+	if err == nil || strings.Contains(err.Error(), "private-secret") {
+		t.Fatalf("mixed credentials: %v", err)
 	}
 }
 func TestInvalidYAMLNeverHiddenByLaterLayers(t *testing.T) {
@@ -115,7 +141,7 @@ mcp:
 `)
 	_, err = LoadServer(root, lookupValues(nil))
 	var f *configvalue.ConfigurationError
-	if !errors.As(err, &f) || f.Field != "mcp.temp_budget_bytes" || f.Origin.Source != "config.yml" || f.Origin.Line != 10 {
+	if !errors.As(err, &f) || f.Field != "mcp.temp_budget_bytes" || f.Origin.Source != "config.yml" || f.Origin.Line != 11 {
 		t.Fatalf("alias origin: %#v", err)
 	}
 }
@@ -192,6 +218,7 @@ func TestAllYAMLFields(t *testing.T) {
 	writeLayer(t, root, "config.yml", `server:
   listen_address: 127.0.0.1:0
   public_origin: https://daynight.example
+  preview_origin: https://preview.daynight.example
   startup_timeout: 2s
   shutdown_timeout: 3s
   allow_http_test_origin: false
@@ -231,6 +258,7 @@ func TestServerSemanticFailureOrigins(t *testing.T) {
 	for _, tc := range []struct{ name, layer, field, source, phase string }{
 		{"blank storage", "storage: {root: ' '}\n", "storage.root", "config.local.yml", "validate"},
 		{"public origin", "server: {public_origin: 'invalid'}\n", "server.public_origin", "config.local.yml", "validate"},
+		{"preview origin", "server: {preview_origin: 'https://external.example'}\n", "server.preview_origin", "config.local.yml", "validate"},
 		{"callback", "uniauth: {callback_url: 'https://daynight.example/mcp'}\n", "uniauth.callback_url", "config.local.yml", "validate"},
 		{"mcp origin", "mcp: {allowed_origins: ['https://client.example/path']}\n", "mcp.allowed_origins", "config.local.yml", "validate"},
 		{"credential", "uniauth: {app_id: 'private:bad'}\n", "uniauth.app_id", "config.local.yml", "validate"},

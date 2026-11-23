@@ -153,3 +153,64 @@ it('propagates the original accounting error on an online partial ACK without de
     await rm(home, { recursive: true, force: true });
   }
 });
+
+it('reconciles remote daynight messages but never relays local Worker input after reconnect', async () => {
+  const base = path.resolve(import.meta.dirname, '../../../../../.tmp/controller-tests');
+  await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, 'online-worker-'));
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing test relay address');
+  const ticket: ControllerLaunchTicket = {
+    schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(),
+    sessionId: randomUUID(), executionGeneration: '1', serverOrigin: `http://127.0.0.1:${address.port}`,
+    projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(),
+    provider: 'codex', cwd: home, nativeHome: path.join(home, '.codex'), configuration: { agent: 'codex', agentControlMode: 'web', model: null, args: [], recoveryLimit: 2 },
+    initialOperationId: randomUUID(), initialPrompt: 'Initial input', resumeNativeSessionId: null, credentialFile: path.join(home, 'grant.json'),
+    ipcEndpoint: path.join(home, 'c.sock'), ipcSecret: 'a'.repeat(64), createdAt: new Date().toISOString(),
+  };
+  await writeFile(ticket.credentialFile, JSON.stringify({ token: 'local-test-token', expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
+  const journal = openControllerLifecycleStore(path.join(home, 'journal.sqlite'), ticket, { database: createMemoryDatabase(), contentOwnedLocally: true });
+  const payload = { content: [{ type: 'text', text: 'continue' }], expectedTurnId: null, origin: 'daynight' };
+  const local = journal.prepareOperation({ operationId: randomUUID(), kind: 'worker_input', payload });
+  const remote = journal.prepareOperation({ operationId: randomUUID(), kind: 'send_message', payload });
+  journal.markDispatching(local.operationId); journal.recordOperation(local.operationId, 'unknown');
+  journal.markDispatching(remote.operationId); journal.recordOperation(remote.operationId, 'provider_accepted', { disposition: 'started' });
+  const frames: ReturnType<typeof parseControllerMessage>[][] = [];
+  const errors: unknown[] = [];
+  let relay: ReturnType<typeof createControllerRelay> | undefined;
+  server.on('connection', socket => {
+    const index = frames.length, epoch = String(index + 1), received: ReturnType<typeof parseControllerMessage>[] = [];
+    frames.push(received);
+    const fence = { protocol: 'daynight.session.v1', sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: '1', connectionEpoch: epoch };
+    socket.on('message', raw => {
+      const message = parseControllerMessage(JSON.parse(raw.toString())); received.push(message);
+      if (message.type === 'hello') {
+        const session = { ...snapshotFixture, ...fence, historyEpoch: randomUUID(), lastEventSeq: '0', lastTimelineSeq: '0', identity: { ...snapshotFixture.identity, projectId: ticket.projectId, taskId: ticket.taskId, workerId: ticket.workerId, worktreeId: ticket.worktreeId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId } };
+        socket.send(JSON.stringify({ type: 'welcome', protocol: fence.protocol, connectionEpoch: epoch, session, lastAckedSourceSeq: '0', limits: RELAY_LIMITS }));
+      } else if (message.type === 'reconcile') socket.send(JSON.stringify({ ...fence, type: 'reconcile_result', operations: [] }));
+    });
+  });
+  try {
+    relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand: async () => { throw new Error('Unexpected native input'); }, onError: error => errors.push(error) });
+    await vi.waitFor(() => expect(relay!.connected()).toBe(true));
+    const reconcile = (index: number) => frames[index]!.find(message => message.type === 'reconcile');
+    expect(reconcile(0)).toMatchObject({ operations: [{ operationId: remote.operationId, state: 'provider_accepted' }] });
+    relay.receipt(journal.getOperation(local.operationId)!);
+    relay.receipt(journal.getOperation(remote.operationId)!);
+    await vi.waitFor(() => expect(frames[0]!.filter(message => message.type === 'operation_receipt')).toHaveLength(1));
+    expect(frames[0]!.find(message => message.type === 'operation_receipt')).toMatchObject({ operation: { operationId: remote.operationId } });
+    const reconnect = once(server, 'connection', { signal: AbortSignal.timeout(5000) });
+    [...server.clients][0]!.close();
+    await reconnect;
+    await vi.waitFor(() => expect(relay!.connected()).toBe(true));
+    expect(reconcile(1)).toMatchObject({ operations: [{ operationId: remote.operationId, state: 'provider_accepted' }] });
+    expect(errors).toEqual([]);
+  } finally {
+    relay?.close(); journal.close();
+    for (const client of server.clients) client.terminate();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await rm(home, { recursive: true, force: true });
+  }
+});

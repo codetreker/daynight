@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { startCommand } from "../src/command.ts";
-import { cliEnvironment, expect, topology } from "./fixtures.ts";
+import { cliEnvironment, expect, topology, startOwnedCommand } from "./fixtures.ts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgZGL+DwABFAEG9O6t0QAAAABJRU5ErkJggg==", "base64");
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -30,10 +29,10 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
   await copyFile(path.join(import.meta.dirname, "native-image-peer.mjs"), peer); await chmod(peer, 0o700);
   await writeFile(path.join(directory, "plot.png"), png, { mode: 0o600 });
   let output = "", sessionId: string | undefined;
-  const command = startCommand(process.execPath, [topology.cliEntry, "controller", "codex", "--ask-for-approval", "never", "Render and save the local plot"], {
+  const command = await startOwnedCommand(process.execPath, [topology.cliEntry, "controller", "codex", "--ask-for-approval", "never", "Render and save the local plot"], {
     cwd: directory, env: { ...cliEnvironment, PATH: `${binaries}${path.delimiter}${process.env.PATH}`, CODEX_HOME: path.join(directory, "native") }, timeoutMs: 120_000,
     onOutput: (_channel, chunk) => { output += chunk; sessionId = output.match(/Test Session: .*\/test-sessions\/([0-9a-f-]{36})/)?.[1]; },
-  });
+  }, true);
   let exited = false;
   void command.finished.then(() => { exited = true; }, () => { exited = true; });
   try {

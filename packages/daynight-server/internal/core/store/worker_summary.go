@@ -8,6 +8,7 @@ import (
 
 // WorkerSummary is the list projection, including the original cursor position.
 type WorkerSummary struct {
+	Alias                model.WorkerAlias
 	WorkerID             string
 	CreatedAt            time.Time
 	LastReportedAt       time.Time

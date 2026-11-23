@@ -9,7 +9,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -20,7 +19,6 @@ const (
 	ArchiveV1Read ArchiveMode = iota + 1
 	ArchiveV1Upload
 	ArchiveV2Read
-	ArchiveV2Upload
 )
 
 // ArchiveOperation owns one instance and one original-owner permit until Close.
@@ -41,11 +39,31 @@ type ArchiveOperation struct {
 
 // RetainedArchive owns its exact original bytes and the permit protecting them.
 type RetainedArchive struct {
-	Data      []byte
-	operation *ArchiveOperation
-	closeFn   func() error
-	closeOnce sync.Once
-	closeErr  error
+	Data        []byte
+	operation   *ArchiveOperation
+	timelineCtx context.Context
+	closeFn     func() error
+	closeOnce   sync.Once
+	closeErr    error
+}
+
+// GateContext cancels retained output if its archive or timeline gate is lost.
+func (r *RetainedArchive) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if r.timelineCtx == nil {
+		return r.operation.GateContext(parent)
+	}
+	// MCP may finish the producing tool call before sending its response.
+	held, release := filestorage.GateCleanupContext(r.timelineCtx)
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(held, func() { cancel(context.Cause(held)) })
+	if cause := filestorage.GateError(held); cause != nil {
+		cancel(cause)
+	}
+	return ctx, func() {
+		stop()
+		release()
+		cancel(context.Canceled)
+	}
 }
 
 func (r *RetainedArchive) Close() error {
@@ -72,11 +90,11 @@ func (s *Execution) TryReserveArchivePreflight() (*ArchivePreflightReservation, 
 	select {
 	case s.archivePreflightSlots <- struct{}{}:
 	default:
-		return nil, archiveBusy()
+		return nil, archiveBusy("preflight_full")
 	}
-	if len(s.archiveSlots) != 0 {
+	if len(s.archiveSlots) == cap(s.archiveSlots) {
 		<-s.archivePreflightSlots
-		return nil, archiveBusy()
+		return nil, archiveBusy("instance_full")
 	}
 	return &ArchivePreflightReservation{engine: s.Engine}, nil
 }
@@ -133,7 +151,7 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 		return nil, err
 	}
 	defer reservation.release()
-	if mode < ArchiveV1Read || mode > ArchiveV2Upload {
+	if mode < ArchiveV1Read || mode > ArchiveV2Read {
 		return nil, errors.New("invalid archive mode")
 	}
 	if err := ctx.Err(); err != nil {
@@ -151,7 +169,7 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		return nil, archiveBusy()
+		return nil, archiveBusy("instance_full")
 	}
 	admitted := false
 	defer func() {
@@ -166,10 +184,14 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	if s.files == nil {
 		return nil, errors.New("archive residency gate unavailable")
 	}
-	permit, err := s.files.TryAcquireResidency(ctx, "session/archive/owner/"+owner)
+	sessionID, err := model.CanonicalID(id)
+	if err != nil {
+		return nil, err
+	}
+	permit, err := s.files.TryAcquireArchive(ctx, owner, sessionID, s.archiveOwnerLimit, false)
 	if err != nil {
 		if onlyArchiveGateBusy(err) {
-			return nil, errors.Join(archiveBusy(), err)
+			return nil, errors.Join(archiveBusy("owner_busy"), err)
 		}
 		return nil, err
 	}
@@ -177,7 +199,18 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	return &ArchiveOperation{execution: s, principal: p, project: project, task: taskID, id: id, owner: owner, mode: mode, permit: permit}, nil
 }
 
-func archiveBusy() error { return fault("resource_busy", "Session archive capacity is unavailable.") }
+// ArchiveCapacityError identifies the admission stage while preserving the public fault.
+type ArchiveCapacityError struct {
+	Stage string
+	Cause error
+}
+
+func (e *ArchiveCapacityError) Error() string { return e.Cause.Error() }
+func (e *ArchiveCapacityError) Unwrap() error { return e.Cause }
+
+func archiveBusy(stage string) error {
+	return &ArchiveCapacityError{Stage: stage, Cause: fault("resource_busy", "Session archive capacity is unavailable.")}
+}
 
 func (op *ArchiveOperation) Close() error {
 	if op == nil {
@@ -196,6 +229,15 @@ func (op *ArchiveOperation) Close() error {
 	return op.closeErr
 }
 
+// GateContext follows the caller's context and cancels if the archive gate is lost.
+// The returned cancel function releases the context without releasing the archive permit.
+func (op *ArchiveOperation) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if op == nil {
+		return ctx, func() {}
+	}
+	return filestorage.GateContext(ctx, op.permit)
+}
+
 func (op *ArchiveOperation) check(mode ArchiveMode) error {
 	if op == nil || op.closed || op.mode != mode {
 		return errors.New("invalid or closed archive operation")
@@ -209,18 +251,9 @@ func (op *ArchiveOperation) PutArchive(ctx context.Context, data []byte) (sp.Arc
 	if err := op.check(ArchiveV1Upload); err != nil {
 		return sp.ArchiveStatus{}, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	out, err := op.execution.putArchive(ctx, op, data)
-	op.markCommit(err)
-	return out, err
-}
-
-func (op *ArchiveOperation) PutTerminalArchive(ctx context.Context, data []byte) (v2.Message, error) {
-	op.mu.Lock()
-	defer op.mu.Unlock()
-	if err := op.check(ArchiveV2Upload); err != nil {
-		return v2.Message{}, err
-	}
-	out, err := op.execution.putTerminalArchive(ctx, op, data)
 	op.markCommit(err)
 	return out, err
 }
@@ -260,8 +293,8 @@ func (op *Operation) ArchivePreflight(ctx context.Context, scope store.SessionSc
 	if err != nil {
 		return "", err
 	}
-	v2Mode := mode == ArchiveV2Read || mode == ArchiveV2Upload
-	upload := mode == ArchiveV1Upload || mode == ArchiveV2Upload
+	v2Mode := mode == ArchiveV2Read
+	upload := mode == ArchiveV1Upload
 	if (v2Mode && m.Backend != "herdr") || (!v2Mode && m.Backend != "web") || m.Project != project || m.Task != taskID || (project == "") != m.Test {
 		return "", conflict()
 	}

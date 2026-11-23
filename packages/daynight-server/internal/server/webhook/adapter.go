@@ -16,7 +16,10 @@ func (a Adapter) Catalog(ctx context.Context, p model.Principal) (any, error) {
 
 func serviceOwner(o Owner) webhookservice.Owner { return webhookservice.Owner{Kind: o.Kind, ID: o.ID} }
 func (a Adapter) List(ctx context.Context, p model.Principal, o Owner, q ListQuery) (any, error) {
-	return a.Service.List(ctx, p, serviceOwner(o), webhookservice.ListQuery{Query: q.Query, Enabled: q.Enabled, Limit: q.Limit, Cursor: q.Cursor})
+	return a.Service.List(ctx, p, serviceOwner(o), serviceListQuery(q))
+}
+func serviceListQuery(q ListQuery) webhookservice.ListQuery {
+	return webhookservice.ListQuery{Query: q.Query, Enabled: q.Enabled, ClientKey: q.ClientKey, Limit: q.Limit, Cursor: q.Cursor}
 }
 func (a Adapter) Get(ctx context.Context, p model.Principal, o Owner, id string) (any, error) {
 	return a.Service.Get(ctx, p, serviceOwner(o), id)
@@ -28,10 +31,14 @@ func (a Adapter) Secret(ctx context.Context, p model.Principal, o Owner, id stri
 	return a.Service.Secret(ctx, p, serviceOwner(o), id)
 }
 func (a Adapter) Mutate(ctx context.Context, p model.Principal, o Owner, m Mutation) (MutationResult, error) {
-	input := webhookservice.Mutation{Kind: m.Kind, EndpointID: m.EndpointID, OperationID: m.OperationID, IssuedAt: m.IssuedAt, ExpectedUserID: m.ExpectedUserID, IfVersion: m.IfVersion, RequestSHA256: m.RequestSHA256, Name: m.Name, Enabled: m.Enabled, HasSubscriptions: m.HasSubscriptions, Subscriptions: m.Subscriptions, ConfirmProjectIDs: m.ConfirmProjectIDs, Mode: m.Mode}
+	result, err := a.Service.Mutate(ctx, p, serviceOwner(o), serviceMutation(m))
+	return MutationResult{Body: result.Body, Replay: result.Replay}, err
+}
+
+func serviceMutation(m Mutation) webhookservice.Mutation {
+	input := webhookservice.Mutation{Kind: m.Kind, EndpointID: m.EndpointID, OperationID: m.OperationID, IssuedAt: m.IssuedAt, ExpectedUserID: m.ExpectedUserID, IfVersion: m.IfVersion, RequestSHA256: m.RequestSHA256, Name: m.Name, Enabled: m.Enabled, HasSubscriptions: m.HasSubscriptions, Subscriptions: m.Subscriptions, ConfirmProjectIDs: m.ConfirmProjectIDs, Mode: m.Mode, ReturnReceipt: m.ReturnReceipt, ClientKey: m.ClientKey}
 	if m.Destination != nil {
 		input.Destination = &webhookservice.Destination{Kind: m.Destination.Kind, AdapterVersion: m.Destination.AdapterVersion, URL: m.Destination.URL}
 	}
-	result, err := a.Service.Mutate(ctx, p, serviceOwner(o), input)
-	return MutationResult{Body: result.Body, Replay: result.Replay}, err
+	return input
 }

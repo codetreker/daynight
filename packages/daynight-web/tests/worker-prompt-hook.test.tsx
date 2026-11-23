@@ -19,6 +19,8 @@ vi.mock('../src/features/projects/ProjectAccess', async importOriginal => ({ ...
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const projectId = '22222222-2222-4222-8222-222222222222';
+const workerId = '33333333-3333-4333-8333-333333333333';
+const otherWorkerId = '44444444-4444-4444-8444-444444444444';
 const scopes: TaskCacheScope[] = [];
 const scope = () => { const instance = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(instance); return instance; };
 const wrapper = (instance: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={instance}>{children}</TaskCacheProvider>;
@@ -36,6 +38,81 @@ const target = { scope: 'user' } as const;
 afterEach(() => { vi.restoreAllMocks(); project.current = null; for (const instance of scopes.splice(0)) instance.dispose(); invalidateAuthRequests(); });
 
 describe('prompt editor lifecycle', () => {
+  it('clears both Worker purposes on an admitted denial and rejects a late receipt', async () => {
+    const put = deferred<Response>(); let denied = false;
+    const resource = (id: string, text: string, revision = '1') => ({ scope: 'worker', scopeId: id, revision, text, updatedAt: '2026-11-09T10:00:00Z' });
+    const fetch = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+      const id = url.includes(otherWorkerId) ? otherWorkerId : workerId;
+      if (options.method === 'PUT') return put.promise;
+      if (denied && id === workerId && url.endsWith('/prompt')) return Promise.resolve(error(404, 'not_found'));
+      return Promise.resolve(response(resource(id, url.endsWith('/reviewer-prompt') ? 'review old' : 'worker old')));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => ({
+      worker: useWorkerPrompt({ scope: 'worker', workerId }, { readEnabled: true }),
+      reviewer: useWorkerPrompt({ scope: 'worker', workerId, purpose: 'reviewer' }, { readEnabled: true }),
+      other: useWorkerPrompt({ scope: 'worker', workerId: otherWorkerId }, { readEnabled: true }),
+    }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => { result.current.worker.edit('worker draft'); result.current.reviewer.edit('review draft'); result.current.other.edit('other draft'); });
+    let saving!: Promise<void>; act(() => { saving = result.current.reviewer.save(); }); await flush();
+    denied = true; act(() => result.current.worker.refresh()); await flush();
+    await act(async () => saving);
+    expect(result.current.worker.unavailable).toBe(true); expect(result.current.worker.draft).toBe('');
+    expect(result.current.reviewer.unavailable).toBe(true); expect(result.current.reviewer.resource).toBeNull(); expect(result.current.reviewer.draft).toBe('');
+    expect(result.current.other.unavailable).toBe(false); expect(result.current.other.draft).toBe('other draft');
+    put.resolve(response(resource(workerId, 'review draft', '2'))); await flush();
+    expect(result.current.reviewer.unavailable).toBe(true); expect(result.current.reviewer.resource).toBeNull();
+  });
+  it('does not propagate an unverified old-service 404', async () => {
+    let missing = false;
+    const fetch = vi.fn().mockImplementation((url: string) => {
+      if (missing && url.endsWith('/reviewer-prompt')) return Promise.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found', requestId: 'old' } }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
+      return Promise.resolve(response({ scope: 'worker', scopeId: workerId, revision: '1', text: 'old', updatedAt: '2026-11-09T10:00:00Z' }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => ({
+      worker: useWorkerPrompt({ scope: 'worker', workerId }, { readEnabled: true }),
+      reviewer: useWorkerPrompt({ scope: 'worker', workerId, purpose: 'reviewer' }, { readEnabled: true }),
+    }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => { result.current.worker.edit('worker draft'); result.current.reviewer.edit('review draft'); });
+    missing = true; act(() => result.current.reviewer.refresh()); await flush();
+    expect(result.current.reviewer.read).toBe('error');
+    expect(result.current.worker.unavailable).toBe(false); expect(result.current.worker.draft).toBe('worker draft');
+    expect(result.current.reviewer.unavailable).toBe(false); expect(result.current.reviewer.draft).toBe('review draft');
+  });
+  it('keeps purpose drafts, revisions and a delayed save independent', async () => {
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+      if (options.method === 'PUT') return put.promise;
+      return Promise.resolve(response(url.endsWith('/reviewer-prompt') ? value('4', 'review old') : value('1', 'worker old')));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ selected }: { selected: 'worker' | 'reviewer' }) => ({
+      worker: useWorkerPrompt({ scope: 'user', purpose: 'worker' }, { readEnabled: selected === 'worker' }),
+      reviewer: useWorkerPrompt({ scope: 'user', purpose: 'reviewer' }, { readEnabled: selected === 'reviewer' }),
+    }), { wrapper: wrapper(scope()), initialProps: { selected: 'worker' } });
+    await flush(); act(() => result.current.worker.edit('worker draft'));
+    let saving!: Promise<void>; act(() => { saving = result.current.worker.save(); }); await flush();
+    rerender({ selected: 'reviewer' }); await flush();
+    act(() => result.current.reviewer.edit('review draft'));
+    put.resolve(response(value('2', 'worker draft'))); await act(async () => saving); await flush();
+    expect(result.current.worker.baseline?.revision).toBe('2');
+    expect(result.current.reviewer.baseline?.revision).toBe('4');
+    expect(result.current.reviewer.draft).toBe('review draft');
+    expect(result.current.reviewer.dirty).toBe(true);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT').map(([url]) => url)).toEqual(['/api/v1/me/worker-prompt']);
+  });
+  it('retains an oversized reviewer draft and does not send it', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(value('0', ''))); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt({ scope: 'user', purpose: 'reviewer' }, { readEnabled: true }), { wrapper: wrapper(scope()) });
+    await flush();
+    const exact = '界'.repeat(10922) + 'ab';
+    act(() => result.current.edit(exact)); expect(result.current.tooLarge).toBe(false);
+    act(() => result.current.edit(exact + 'a')); expect(result.current.tooLarge).toBe(true);
+    await act(async () => result.current.save());
+    expect(result.current.draft).toBe(exact + 'a'); expect(result.current.dirty).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('freezes the submission and preserves edits while its PUT is pending', async () => {
     const put = deferred<Response>();
     const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old'))).mockImplementationOnce(() => put.promise);

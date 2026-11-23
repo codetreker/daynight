@@ -14,13 +14,13 @@ import (
 // Captured writes are proposals, not evidence of persistence.
 type executorStore struct {
 	t        *testing.T
-	write    func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
+	write    func(context.Context, string, func(store.GitHubWorkDAO) error) (store.Completion, error)
 	snapshot func(context.Context, func(store.SnapshotScope) error) error
 }
 
-func (s *executorStore) WriteProject(ctx context.Context, id string, f func(store.ProjectWriteScope) error) (store.Completion, error) {
+func (s *executorStore) WriteWork(ctx context.Context, id string, f func(store.GitHubWorkDAO) error) (store.Completion, error) {
 	if s.write == nil {
-		s.t.Fatal("unexpected WriteProject")
+		s.t.Fatal("unexpected WriteWork")
 	}
 	return s.write(ctx, id, f)
 }
@@ -31,13 +31,6 @@ func (s *executorStore) ReadSnapshot(ctx context.Context, f func(store.SnapshotS
 	}
 	return s.snapshot(ctx, f)
 }
-
-type executorWriteScope struct {
-	store.ProjectWriteScope
-	dao store.GitHubWriteDAO
-}
-
-func (s executorWriteScope) GitHubDAO() store.GitHubWriteDAO { return s.dao }
 
 type executorSnapshotScope struct {
 	store.SnapshotScope
@@ -65,13 +58,14 @@ func (d executorReadDAO) PullRequest(ctx context.Context, id string, n int64) (g
 }
 
 type executorWriteDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	connection func(context.Context) (githubpr.Connection, error)
 	clock      func(context.Context) (time.Time, error)
 	due        func(context.Context, time.Time) (bool, error)
 	claim      func(context.Context, store.GitHubClaim) (bool, error)
 	renew      func(context.Context, store.GitHubLease, time.Time) (bool, error)
 	valid      func(context.Context, store.GitHubLease) (bool, error)
+	facts      func(context.Context, store.GitHubLease, int64, int64, *time.Time) (store.GitHubPublicationFacts, bool, error)
 	publish    func(context.Context, store.GitHubLease, []githubpr.PullRequest) (bool, error)
 	repository func(context.Context, store.GitHubLease, store.GitHubRepositoryObservation) (bool, error)
 	unseen     func(context.Context, store.GitHubLease, string, int64, int) ([]int64, bool, error)
@@ -98,6 +92,9 @@ func (d executorWriteDAO) Renew(ctx context.Context, l store.GitHubLease, t time
 }
 func (d executorWriteDAO) ValidLease(ctx context.Context, l store.GitHubLease) (bool, error) {
 	return d.valid(ctx, l)
+}
+func (d executorWriteDAO) PublicationFacts(ctx context.Context, l store.GitHubLease, repo, number int64, at *time.Time) (store.GitHubPublicationFacts, bool, error) {
+	return d.facts(ctx, l, repo, number, at)
 }
 func (d executorWriteDAO) Publish(ctx context.Context, l store.GitHubLease, p []githubpr.PullRequest) (bool, error) {
 	return d.publish(ctx, l, p)
@@ -132,6 +129,7 @@ type executorRemote struct {
 	verify       func(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	resolve      func(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	list         func(context.Context, int64, string, string, func([]githubpr.Observation) error) error
+	listAll      func(context.Context, int64, int64, string, string, func([]remote.PullSummary) error) (bool, error)
 	pull         func(context.Context, int64, string, string, int64) (githubpr.Observation, error)
 }
 
@@ -150,4 +148,11 @@ func (r executorRemote) ListOpen(c context.Context, i int64, o, n string, visit 
 }
 func (r executorRemote) PullRequest(c context.Context, i int64, o, repo string, n int64) (githubpr.Observation, error) {
 	return r.pull(c, i, o, repo, n)
+}
+
+func (r executorRemote) ListAll(c context.Context, i, repositoryID int64, o, n string, visit func([]remote.PullSummary) error) (bool, error) {
+	if r.listAll == nil {
+		return false, nil
+	}
+	return r.listAll(c, i, repositoryID, o, n, visit)
 }

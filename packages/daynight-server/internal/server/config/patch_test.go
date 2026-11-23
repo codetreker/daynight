@@ -10,12 +10,13 @@ import (
 func TestPatchPreservesOmittedAndAppliesExplicitValues(t *testing.T) {
 	c := DefaultConfig()
 	c.AllowHTTPTestOrigin = true
+	c.PreviewOrigin = "https://preview.example.test"
 	empty, disabled := "", false
 	duration := configvalue.DurationString("3s")
-	if err := (Patch{PublicOrigin: &empty, StartupTimeout: &duration, AllowHTTPTestOrigin: &disabled}).ApplyTo(&c); err != nil {
+	if err := (Patch{PublicOrigin: &empty, PreviewOrigin: &empty, StartupTimeout: &duration, AllowHTTPTestOrigin: &disabled}).ApplyTo(&c); err != nil {
 		t.Fatal(err)
 	}
-	if c.ListenAddress != "127.0.0.1:8787" || c.PublicOrigin != "" || c.StartupTimeout != 3*time.Second || c.ShutdownTimeout != 10*time.Second || c.AllowHTTPTestOrigin {
+	if c.ListenAddress != "127.0.0.1:8787" || c.PublicOrigin != "" || c.PreviewOrigin != "" || c.StartupTimeout != 3*time.Second || c.ShutdownTimeout != 10*time.Second || c.AllowHTTPTestOrigin {
 		t.Fatalf("patch result: %+v", c)
 	}
 	bad := configvalue.DurationString("bad-secret")

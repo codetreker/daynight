@@ -1,5 +1,6 @@
+import { receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
-import { buildHerdrAgentArguments } from "../../../src/commands/worker/herdr/arguments.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +9,9 @@ import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import { ApiError } from "../../../src/api/client.js";
+import { taskTagFilterKey } from "../../../src/api/task-tag-filter.js";
 import { createOperation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -19,7 +21,7 @@ import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
@@ -27,11 +29,10 @@ vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAs
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/native-version.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }),
 }));
@@ -50,9 +51,9 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
-const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
+const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-startup-tests");
   await mkdir(parent, { recursive: true });
@@ -81,7 +82,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
     return {
       archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
-        if (!current.readyProjectIds?.includes(uuid(1))) return;
+        if (!current.readyProjectIds?.includes(uuid(1)) || !current.repositories.some(repository => repository.project.projectId === uuid(1))) return;
         try { check(current); } finally { cancellation.abort(); }
       }),
       shutdown: vi.fn(async () => true),
@@ -92,7 +93,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
-  mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
+  mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
@@ -102,7 +103,6 @@ beforeEach(() => {
     reportConfiguration: vi.fn(), report: vi.fn(),
   });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
-  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
   mocks.probe.mockResolvedValue("0.164.0");
   mocks.coordinator.mockReturnValue(coordinator(async () => {}));
@@ -115,41 +115,99 @@ afterEach(async () => {
 });
 
 
-it("keeps cloud configuration current for new sessions and resumes the same native session after a Worker restart", async () => {
+it("keeps cloud configuration current and retains frozen Web identity for recovery after a Worker restart", async () => {
   const f = await fixture();
   const document = { ...f.document, worker: { ...f.document.worker, agent: "codex", model: "stale-local-model", args: ["--search"] } };
   const source = stringify(document);
   await writeFile(f.paths.configFile, source);
   const remote = mocks.remote(); mocks.remote.mockClear();
-  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--search"] } } });
+  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--sandbox", "workspace-write"] } } });
   remote.configuration.mockResolvedValue(resource(target("previous-cloud-model")));
   const savedSession = uuid(800);
-  const cwd = path.join(f.repository.path, ".worktrees", "daynight", uuid(801));
+  const claim = { projectId: uuid(1), taskId: uuid(802), claimId: uuid(803) };
   const firstCancel = new AbortController(); cancellations.add(firstCancel);
   finishAtTick(firstCancel, options => {
+    expect(options).not.toHaveProperty("taskTagFilterKey");
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("previous-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "previous-cloud-model", "--search"]);
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "workspace-write"]);
+    const task = options.store.activateTask(options.store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }));
+    const web = options.webStore!;
+    web.register({ ...task, worktreeId: uuid(801), project: options.repositories[0]!.project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { ...configuration, toolLaunch: frozenToolLaunch() } }, Date.now());
+    web.initializeWebExecution(claim, Date.now());
+    web.updateWebExecution(claim, { launchSubmission: "acknowledged" }, Date.now());
+    web.bindNativeSession(claim, { source: "controller", sessionId: savedSession }, Date.now());
+    web.beginCleanup(claim, { kind: "shutdown", deadline: Date.now() + 1000 }, Date.now());
+    web.clearShutdown(claim, Date.now());
   });
   await runWorker({ ...f, signal: firstCancel.signal });
-  remote.configuration.mockResolvedValue(resource(target("current-cloud-model")));
+  remote.configuration.mockResolvedValue(resource({ ...target("current-cloud-model"), revision: "2" }));
   const restartedCancel = new AbortController(); cancellations.add(restartedCancel);
   finishAtTick(restartedCancel, options => {
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("current-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "current-cloud-model", "--search"]);
-    expect(fresh).not.toContain("stale-local-model");
-    expect(fresh).not.toContain("previous-cloud-model");
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "workspace-write"]);
+    const retained = options.webStore!.getTask(claim)!;
+    expect(retained.resources.nativeSession).toEqual({ source: "controller", sessionId: savedSession });
+    expect(retained.configuration).toMatchObject({ model: "previous-cloud-model", args: ["--sandbox", "workspace-write"] });
+    const execution = retained.webExecution!;
+    const resumed = options.webStore!.beginWebGeneration(claim, { executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, nativeSessionId: savedSession, nativeStopped: true }, Date.now());
+    expect(resumed.webExecution!.executionGeneration).toBe("2");
+    expect(resumed.resources.nativeSession).toEqual({ source: "controller", sessionId: savedSession });
+    expect(resumed.configuration).toEqual(retained.configuration);
   });
   await runWorker({ ...f, signal: restartedCancel.signal });
   expect(remote.configuration).toHaveBeenCalledTimes(2);
   expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+}, 30_000);
+
+it("publishes the persisted tag filter proof and rereads authority after a stale acquisition hint", async () => {
+  const f = await fixture();
+  const firstFilter = { names: ["Backend"], match: "any" as const };
+  const nextFilter = { names: ["urgent", "backend"], match: "all" as const };
+  const target = (revision: string, taskTagFilter: typeof firstFilter | typeof nextFilter): WorkerCloudDesired => ({ ...desired(), revision, value: { ...desired().value, taskTagFilter } });
+  const remote = mocks.remote(); mocks.remote.mockClear();
+  remote.configuration.mockResolvedValueOnce(resource(target("1", firstFilter))).mockResolvedValue(resource(target("2", nextFilter)));
+  let channel!: NonNullable<ReporterOptions["configuration"]>;
+  const reported = reporter();
+  mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
+  const cancellation = new AbortController(); cancellations.add(cancellation);
+  let checkedInitial = false, hintSent = false;
+  let failure: unknown;
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    let current = options;
+    return {
+      archiveYield: () => false,
+      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      tick: vi.fn(async () => {
+        try {
+          if (!current.readyProjectIds?.includes(uuid(1)) || current.repositories.length === 0) return;
+          if (!checkedInitial) {
+            checkedInitial = true;
+            expect(current.taskTagFilterKey).toBe(taskTagFilterKey(firstFilter));
+            const checkpoint = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
+            expect(checkpoint.currentItems).toContainEqual(expect.objectContaining({ value: expect.objectContaining({ key: { kind: "taskTagFilter" }, state: "applied", appliedValue: current.taskTagFilterKey }) }));
+            const operation = createOperation({ signal: cancellation.signal });
+            try {
+              await channel.prepare!(operation);
+              expect(remote.configuration).toHaveBeenCalledOnce();
+              current.onConfigurationStale!();
+              expect(reported.trigger).toHaveBeenCalledOnce();
+              await channel.prepare!(operation);
+              expect(remote.configuration).toHaveBeenCalledTimes(2);
+            } finally { operation.dispose(); }
+            hintSent = true;
+          }
+          if (hintSent && current.taskTagFilterKey === taskTagFilterKey(nextFilter)) cancellation.abort();
+        } catch (error) { failure = error; cancellation.abort(); }
+      }),
+      shutdown: vi.fn(async () => true),
+    };
+  });
+  await runWorker({ ...f, signal: cancellation.signal });
+  if (failure !== undefined) throw failure;
+  expect(checkedInitial).toBe(true);
+  expect(hintSent).toBe(true);
+  expect(remote.configuration).toHaveBeenCalledTimes(2);
+  expect(remote.reportConfiguration).not.toHaveBeenCalled();
 }, 30_000);

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,9 +21,14 @@ import (
 
 func prepareArchiveSession(t *testing.T, database *postgres.Store) (model.Task, string) {
 	t.Helper()
+	return prepareArchiveSessionForProject(t, database, 1)
+}
+
+func prepareArchiveSessionForProject(t *testing.T, database *postgres.Store, projectNumber int) (model.Task, string) {
+	t.Helper()
 	_, owner, _ := testAuthRecords(t, database)
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, model.TaskDone)
+	project := queryProject(t, database, projectNumber)
+	task := queryTask(t, database, project.ID, projectNumber+1, model.TaskDone)
 	id, claim := uuid.NewString(), uuid.NewString()
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
 		return dao.InsertTaskSession(t.Context(), store.SessionRegistration{
@@ -173,7 +177,7 @@ type sessionStoreSeed struct {
 
 type sessionStoreSuite struct {
 	database  *postgres.Store
-	truncate  string
+	tables    testutil.FixtureTableReset
 	sequences []sessionStoreSequence
 	seeds     []sessionStoreSeed
 	used      bool
@@ -200,7 +204,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names, qualified []string
+	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -208,7 +212,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 			t.Fatal(err)
 		}
 		names = append(names, name)
-		qualified = append(qualified, pgx.Identifier{schema, name}.Sanitize())
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -216,9 +219,13 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	}
 	mutableTables := []string{
 		"assistant_task_appendix",
+		"assistant_task_appendix_validations",
 		"assistant_task_claim_operations",
 		"assistant_task_events",
+		"assistant_task_inbox_receipts",
+		"assistant_task_inboxes",
 		"assistant_task_inquiries",
+		"assistant_task_item_closures",
 		"assistant_task_items",
 		"assistant_task_manual_versions",
 		"assistant_task_proposals",
@@ -227,10 +234,17 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"bot_configuration_preferences",
 		"bot_effort_preferences",
 		"bot_model_preferences",
+		"bot_recovery",
+		"bot_recovery_operations",
 		"bot_worker_preferences",
 		"bots",
 		"device_authorization_limits",
 		"device_authorizations",
+		"github_app_admin_invitations",
+		"github_app_admins",
+		"github_app_team_grants",
+		"github_apps",
+		"goal_dependency_revisions",
 		"login_transactions",
 		"oauth_access_tokens",
 		"oauth_authorizations",
@@ -242,10 +256,13 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"private_transfers",
 		"private_upload_chunks",
 		"project_github",
+		"project_github_coverage",
 		"project_github_pending_prs",
+		"project_github_repositories",
 		"project_grants",
 		"project_invitations",
 		"project_ownership",
+		"project_pr_review_assignments",
 		"project_pull_requests",
 		"project_tags",
 		"projects",
@@ -253,6 +270,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"session_archive_chunks",
 		"session_archive_files",
 		"session_archive_migrations",
+		"session_archive_retention",
 		"session_archives",
 		"session_events",
 		"session_image_captures",
@@ -274,7 +292,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"task_dependencies",
 		"task_properties",
 		"task_sessions",
-		"task_steps",
 		"task_tags",
 		"task_thread_messages",
 		"task_threads",
@@ -282,6 +299,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"team_invitations",
 		"team_members",
 		"teams",
+		"usage_records",
 		"users",
 		"webhook_attempts",
 		"webhook_bindings",
@@ -293,13 +311,16 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"webhook_operations",
 		"webhook_signing_keys",
 		"webhook_subscriptions",
+		"worker_lifecycle",
+		"worker_lifecycle_observations",
+		"worker_lifecycle_operations",
 		"worker_prompts",
 		"workers",
 	}
 	if !slices.Equal(names, mutableTables) {
 		t.Fatalf("shared Session fixture mutable tables changed: %v", names)
 	}
-	suite.truncate = "TRUNCATE " + strings.Join(qualified, ",") + " RESTART IDENTITY"
+	suite.tables = testutil.NewFixtureTableReset(schema, names)
 	rows, err = suite.database.Pool.Query(ctx, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind='S' ORDER BY c.relname`, schema)
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +338,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names, []string{"bots_creation_order_seq", "project_grant_versions", "team_member_versions", "webhook_delivery_queue_order_seq"}) {
+	if !slices.Equal(names, []string{"bots_creation_order_seq", "github_app_admin_versions", "project_grant_versions", "team_member_versions", "webhook_delivery_queue_order_seq"}) {
 		t.Fatalf("shared Session fixture sequences changed: %v", names)
 	}
 	for _, name := range names {
@@ -362,7 +383,7 @@ func (suite *sessionStoreSuite) reset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rollbackSessionTestTransaction(t, tx)
-	if _, err := tx.Exec(ctx, suite.truncate); err != nil {
+	if err := suite.tables.Truncate(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	// setval also restores the standalone sequences and is not transactional.

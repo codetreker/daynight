@@ -4,7 +4,7 @@ import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
 import { syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "./configuration-exchange.js";
 import type { WorkerConfigurationExchange } from "./configuration-exchange.js";
@@ -53,6 +53,7 @@ export const createWorkerReporter = (options: {
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
   configuration?: WorkerConfigurationExchange;
+  executionActive?: () => boolean;
   now?: () => number;
 }): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
@@ -107,7 +108,7 @@ export const createWorkerReporter = (options: {
     (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
   const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
     if (seen.has(error)) return true;
-    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (error instanceof OwnedCommandCleanupError) return hasUnconfirmedOwnedCommandCleanup(error);
     if (isCancellation(error)) return false;
     // Keep mixed aggregates intact when any independent failure remains. A cause
     // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
@@ -125,14 +126,14 @@ export const createWorkerReporter = (options: {
         phase = "collect";
         const sample = await options.collect(operation);
         for (const issue of sample.issues) {
-          if (hasHerdrCommandCleanupFailure(issue.error)) {
+          if (hasOwnedCommandCleanupFailure(issue.error)) {
             retainCleanupFailure(issue.error);
             if (stopped) fail(issue.component, "collect", issue.error, issue.code);
           }
         }
         operation.check();
         const unavailable = new Set(sample.issues.map(issue => issue.component));
-        for (const component of ["os", "cpu", "memory", "disk", "herdr", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
+        for (const component of ["os", "cpu", "memory", "disk", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
           if (!unavailable.has(component)) recover(component, "collect");
         }
         for (const issue of sample.issues) fail(issue.component, "collect", issue.error, issue.code);
@@ -140,7 +141,7 @@ export const createWorkerReporter = (options: {
         phase = options.configuration === undefined ? "send" : "configuration";
         return Object.freeze({ ...sample.telemetry, taskInventory: inventory });
       };
-      if (options.configuration === undefined) {
+      if (options.configuration === undefined || options.executionActive?.() === false) {
         const report = await collect();
         phase = "send";
         await options.send(report, operation);
@@ -159,7 +160,7 @@ export const createWorkerReporter = (options: {
       options.configuration?.prompts?.failCycle();
       pendingPrompt = false;
       if (options.configuration?.prompts !== undefined) deferPromptCycle = true;
-      if (hasHerdrCommandCleanupFailure(error)) {
+      if (hasOwnedCommandCleanupFailure(error)) {
         fail("report", phase, error);
         retainCleanupFailure(error);
       } else if (!stopped) fail("report", phase, error);

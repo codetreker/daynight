@@ -1,13 +1,17 @@
 import type { ComponentProps } from 'react';
 
+// Usage requests are independent of Goal membership and Session observation.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 // These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
 vi.mock('../src/app/router', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/app/router')>(),
   taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+  buildGoalGraphUrl: (projectId: string, goalId: string) => `http://localhost/projects/${projectId}?tab=tasks&goalGraph=${goalId}`,
 }));
 import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskSummary, TaskSync, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
@@ -27,12 +31,15 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import { statesForSummaries } from './helpers/taskSync';
 import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
 import { ApiError } from '../src/api/client';
+import { installGraphMeasurements } from './graph-measurements';
+import { ProjectListGraphHost } from '../src/features/task-graph/ProjectListGraphHost';
 
 vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
 beforeEach(() => {
   vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: 'epoch', nextCursor: null });
   vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([]);
 });
+afterEach(() => vi.unstubAllGlobals());
 
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -62,6 +69,108 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it.each(['en', 'zh-CN'] as const)('opens an empty Goal from its graph header through the graph reading action in %s', locale => {
+    installGraphMeasurements();
+    const value = snapshot([empty]);
+    const openGraphTask = vi.fn(), openTask = vi.fn(), close = vi.fn();
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const view = createLocaleRender(locale, { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+      <GoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[empty]} total={1} workerMachines={value.workerMachines}
+        onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={openGraphTask} onOpenListTask={noop} onOpenListChain={noop}
+        openGraphTarget={{ kind: 'goal', goalId: empty.id }} onCloseChain={close} onOpenTask={openTask} graphError={new Error('Refresh failed')} />
+    </TaskExecutionClockProvider></TaskPauseProvider>, { container: root });
+    try {
+      const dialog = screen.getByRole('dialog');
+      const details = within(dialog).getByRole('button', { name: locale === 'en' ? 'Goal details' : 'Goal 详情' });
+      expect(details).toHaveAttribute('type', 'button');
+      expect(details).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(details.closest('header')).toBeInTheDocument();
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(locale === 'en' ? 'Refresh failed' : '刷新失败');
+      fireEvent.click(details);
+      expect(openGraphTask).toHaveBeenLastCalledWith(empty.id, details);
+      fireEvent.click(dialog.querySelector<HTMLButtonElement>('.graph-fullscreen-toggle')!);
+      expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
+      fireEvent.click(details);
+      expect(openGraphTask).toHaveBeenCalledTimes(2);
+      expect(openTask).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+      view.rerender(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+        <ProjectListGraphHost projectId={projectId} index={value.index} summaries={value.summaries} target={{ kind: 'goal', goalId: empty.id }}
+          onOpenTask={openTask} onOpenChain={noop} onClose={close} onRestoreFocus={noop} />
+      </TaskExecutionClockProvider></TaskPauseProvider>);
+      const chainViewDetails = within(screen.getByRole('dialog')).getByRole('button', { name: locale === 'en' ? 'Goal details' : 'Goal 详情' });
+      fireEvent.click(chainViewDetails);
+      expect(openTask).toHaveBeenCalledWith(empty.id, chainViewDetails);
+      expect(close).not.toHaveBeenCalled();
+    } finally { view.unmount(); root.remove(); }
+  });
+
+  it.each(['en', 'zh-CN'] as const)('copies each readable Goal ID with localized feedback in %s without toggling or opening it', async locale => {
+    let reject!: (error: Error) => void;
+    const write = vi.fn().mockReturnValueOnce(new Promise<void>((_resolve, fail) => { reject = fail; })).mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+    const openGoal = vi.fn(), openGraph = vi.fn();
+    createLocaleRender(locale, { taskCache: true })(list(snapshot(tasks), openGoal, vi.fn(), vi.fn(), openGraph));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const id = card.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const copy = within(card).getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
+    expect(id).toHaveTextContent(goal.id);
+    expect(fireEvent.mouseDown(id)).toBe(true);
+    fireEvent.click(id);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(copy); fireEvent.click(copy);
+    expect(copy).toBeDisabled(); expect(write).toHaveBeenCalledExactlyOnceWith(goal.id);
+    await act(async () => reject(new Error('denied')));
+    expect(within(card).getByRole('alert')).toHaveTextContent(locale === 'en' ? 'Could not copy the Goal ID. Select and copy it manually.' : '无法复制 Goal ID，请选中并手动复制。');
+    fireEvent.click(within(card).getByRole('alert'));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(id).toHaveTextContent(goal.id);
+    fireEvent.click(copy);
+    expect(await within(card).findByRole('status')).toHaveTextContent(locale === 'en' ? 'Copied' : '已复制');
+    fireEvent.click(within(card).getByRole('status'));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(write).toHaveBeenCalledTimes(2);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(id); fireEvent.click(copy);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(openGoal).not.toHaveBeenCalled(); expect(openGraph).not.toHaveBeenCalled();
+  });
+
+  it('keeps empty and completed Goal IDs readable when clipboard is unavailable', async () => {
+    vi.stubGlobal('navigator', {});
+    createLocaleRender('en', { taskCache: true })(list(snapshot(tasks)));
+    for (const id of [other.id, empty.id]) {
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${id}"]`)!;
+      expect(card.querySelector('.goal-list-id .task-row-id')).toHaveTextContent(id);
+      fireEvent.click(within(card).getByRole('button', { name: 'Copy Goal ID' }));
+      expect(await within(card).findByRole('alert')).toHaveTextContent('Could not copy the Goal ID. Select and copy it manually.');
+      expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'false');
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)('does not apply an old Goal copy %s after its row is replaced', async result => {
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const write = vi.fn().mockReturnValueOnce(new Promise<void>((done, fail) => { resolve = done; reject = fail; })).mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+    const tree = (item: TaskSummary) => {
+      const value = snapshot([item]);
+      return <TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+        <GoalList summaries={value.summaries} projectId={projectId} index={value.index} goals={[item]} total={1} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+      </TaskExecutionClockProvider></TaskPauseProvider>;
+    };
+    const view = createLocaleRender('en', { taskCache: true })(tree(goal));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Goal ID' }));
+    expect(screen.getByRole('button', { name: 'Copy Goal ID' })).toBeDisabled();
+    view.rerender(tree(other));
+    await act(async () => { if (result === 'resolve') resolve(); else reject(new Error('denied')); });
+    expect(screen.queryByRole('status')).toBeNull(); expect(screen.queryByRole('alert')).toBeNull();
+    const copy = screen.getByRole('button', { name: 'Copy Goal ID' });
+    expect(copy).toBeEnabled(); fireEvent.click(copy);
+    expect(await screen.findByRole('status')).toHaveTextContent('Copied');
+    expect(write).toHaveBeenLastCalledWith(other.id);
+  });
+
   it('filters every Goal direct scope with one condition while retaining the complete chain context', async () => {
     vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
     vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));
@@ -78,7 +187,7 @@ describe('Goal list', () => {
     </TaskExecutionClockProvider></TaskPauseProvider>);
     const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
     const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
@@ -98,15 +207,15 @@ describe('Goal list', () => {
     expect(titles()).toEqual([]);
     expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
     expect(within(card).getByText('No tasks match the filters')).toBeVisible();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Any selected' }));
     expect(titles()).toEqual(['child', 'sibling', 'standalone']);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Untagged only' }));
     expect(titles()).toEqual(['untagged']);
     expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
     expect(titles()).toEqual(['untagged']);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Untagged only' }));
     expect(within(card).getByText('standalone', { selector: '.task-row-title' })).toBeInTheDocument();
     expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
@@ -284,7 +393,7 @@ describe('Goal list', () => {
     expect([...first.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
     expect([...second.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
     expect(first.querySelector('.root-toggle')).toBeNull();
-    expect(within(first).getByText('已暂停')).toBeVisible();
+    expect(within(first).getByText('受阻')).toBeVisible();
     expect(first.querySelector('.task-duration')).toHaveTextContent('10 分钟');
     const child = document.getElementById('chain-task-goal-goal-child')!;
     fireEvent.click(child);
@@ -440,11 +549,11 @@ describe('Goal list', () => {
       fireEvent.click(aggregate);
       expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
       expect(openSession).not.toHaveBeenCalled();
-      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
-      fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
+      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Untagged only' }));
       expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
-      fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Untagged only' }));
       const session = firstCard.querySelector<HTMLButtonElement>('.task-row .session-status-action')!;
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);

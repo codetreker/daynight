@@ -20,6 +20,10 @@ it('retries only the failed attachment image with its unchanged encoded URL', ()
   fireEvent.error(broken);
   expect(screen.getByRole('alert', { name: 'Broken' })).toHaveTextContent('Unable to load the attachment image. Try again.');
   expect(view.container.querySelector('p > span.markdown-image-error')).not.toBeNull();
+  const signIn = screen.getByRole('link', { name: 'Sign in to preview' });
+  expect(signIn).toHaveAttribute('href', 'https://preview.daynight.test/auth/sso/start');
+  expect(signIn).toHaveAttribute('target', '_blank');
+  expect(signIn).toHaveAttribute('rel', 'noopener noreferrer');
   fireEvent.click(screen.getByRole('button', { name: 'Retry image' }));
   const retried = screen.getByRole('img', { name: 'Broken' });
   expect(retried).not.toBe(broken);
@@ -100,7 +104,22 @@ it('retries linked images without following the enclosing Markdown link', () => 
   const base = { kind: 'root' } as const;
   render(<MarkdownContent className="test-markdown" attachmentBase={base} text="[![Image](bad.png)](other.md)" resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, root)} onLinkClick={onLinkClick} />);
   fireEvent.error(screen.getByRole('img'));
+  fireEvent.click(screen.getByRole('link', { name: 'Sign in to preview' }));
+  expect(onLinkClick).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Retry image' }));
   expect(onLinkClick).not.toHaveBeenCalled();
   expect(screen.getByRole('img')).toHaveAttribute('src', `${root}bad.png`);
+});
+
+
+it('ignores a native image load that arrives after pausing', () => {
+  const source = '![Native](https://example.com/image.png)';
+  const view = render(markdown(source));
+  const image = screen.getByRole('img', { name: 'Native' });
+  view.rerender(markdown(source, true));
+  expect(image).not.toHaveAttribute('src');
+  fireEvent.load(image);
+  expect(image).not.toHaveAttribute('src');
+  view.rerender(markdown(source));
+  expect(image).toHaveAttribute('src', 'https://example.com/image.png');
 });

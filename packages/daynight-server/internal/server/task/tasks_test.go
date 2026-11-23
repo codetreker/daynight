@@ -100,6 +100,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 		t.Fatal("todo response lost classification")
 	}
 	f.mutation(&current, nil, nil, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(current)
 	assertProjectError(t, projectRequest(f.handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
 	f.page([]model.Task{done, pending, current}, nil, nil)
 	page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), ""), http.StatusOK)
@@ -343,6 +344,9 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			want["reachable:"+id] = 1
 		}
 	}
+	if current != nil && result != nil && current.Status != result.Status && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if result != nil {
 		want["mutation"] = 1
 		if current != nil {
@@ -372,6 +376,14 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, id, current.ID)
 			return copyTaskHTTPTask(*current), nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, id, current.ID)
+			return []string{}, nil
 		}
 	}
 	if validateDependencies {
@@ -491,6 +503,7 @@ func (f *externalHTTPFixture) status(before, after model.Task) api.Task {
 		result = &after
 	}
 	f.mutation(&before, &values, result, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, externalHTTPAPI(before), string(after.Status))
 	externalHTTPCheck(f.t, got, externalHTTPAPI(after))
 	return got
@@ -697,6 +710,9 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 	if status && before != nil && before.Status == model.TaskDone && result.Status != model.TaskDone {
 		want["dependents"] = 1
 	}
+	if status && before != nil && changed && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if changed {
 		want["save"] = 1
 		if before != nil {
@@ -737,6 +753,14 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 		writer.ActiveDependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
 			f.require(ctx, f.project.ID)
 			plan.Called("dependents")
+			platformHTTPCheck(f.t, id, before.ID)
+			return []string{}, nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			f.require(ctx, f.project.ID)
+			plan.Called("children")
 			platformHTTPCheck(f.t, id, before.ID)
 			return []string{}, nil
 		}
@@ -857,6 +881,7 @@ func platformHTTPStatus(f *taskHTTPFixture, before model.Task, to model.TaskStat
 	values := platformHTTPValues(before)
 	values.Status = to
 	platformHTTPWrite(f, &before, values, after, true, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, platformHTTPAPI(before), string(to))
 	platformHTTPCheck(f.t, got, platformHTTPAPI(after))
 	return after

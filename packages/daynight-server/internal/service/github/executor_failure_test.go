@@ -3,26 +3,16 @@ package github
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
-type failureScope struct {
-	store.ProjectWriteScope
-	dao store.GitHubWriteDAO
-}
-
-func (s failureScope) GitHubDAO() store.GitHubWriteDAO { return s.dao }
-
 type failureDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	method    string
 	remaining *int
 	cause     error
@@ -42,68 +32,68 @@ func (d failureDAO) Connection(ctx context.Context) (githubpr.Connection, error)
 	if err := d.fail("connection"); err != nil {
 		return githubpr.Connection{}, err
 	}
-	return d.GitHubWriteDAO.Connection(ctx)
+	return d.GitHubWorkDAO.Connection(ctx)
 }
 func (d failureDAO) ObservedAt(ctx context.Context) (time.Time, error) {
 	if err := d.fail("clock"); err != nil {
 		return time.Time{}, err
 	}
-	return d.GitHubWriteDAO.ObservedAt(ctx)
+	return d.GitHubWorkDAO.ObservedAt(ctx)
 }
 func (d failureDAO) SaveRuntime(ctx context.Context, l store.GitHubLease, w store.GitHubRuntimeWrite) (bool, error) {
 	if err := d.fail("runtime"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.SaveRuntime(ctx, l, w)
+	return d.GitHubWorkDAO.SaveRuntime(ctx, l, w)
 }
 func (d failureDAO) Renew(ctx context.Context, l store.GitHubLease, until time.Time) (bool, error) {
 	if err := d.fail("renew"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.Renew(ctx, l, until)
+	return d.GitHubWorkDAO.Renew(ctx, l, until)
 }
 func (d failureDAO) PublishRepository(ctx context.Context, l store.GitHubLease, o store.GitHubRepositoryObservation) (bool, error) {
 	if err := d.fail("repository"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.PublishRepository(ctx, l, o)
+	return d.GitHubWorkDAO.PublishRepository(ctx, l, o)
 }
 func (d failureDAO) Pending(ctx context.Context, l store.GitHubLease, now time.Time, limit int) ([]store.GitHubPendingPR, bool, error) {
 	if err := d.fail("pending"); err != nil {
 		return nil, false, err
 	}
-	return d.GitHubWriteDAO.Pending(ctx, l, now, limit)
+	return d.GitHubWorkDAO.Pending(ctx, l, now, limit)
 }
 func (d failureDAO) UnseenActive(ctx context.Context, l store.GitHubLease, poll string, after int64, limit int) ([]int64, bool, error) {
 	if err := d.fail("unseen"); err != nil {
 		return nil, false, err
 	}
-	return d.GitHubWriteDAO.UnseenActive(ctx, l, poll, after, limit)
+	return d.GitHubWorkDAO.UnseenActive(ctx, l, poll, after, limit)
 }
 func (d failureDAO) AckPending(ctx context.Context, l store.GitHubLease, number int64, request string) (bool, error) {
 	if err := d.fail("ack"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.AckPending(ctx, l, number, request)
+	return d.GitHubWorkDAO.AckPending(ctx, l, number, request)
 }
 func (d failureDAO) HasPending(ctx context.Context, l store.GitHubLease) (bool, bool, error) {
 	if err := d.fail("hasPending"); err != nil {
 		return false, false, err
 	}
-	return d.GitHubWriteDAO.HasPending(ctx, l)
+	return d.GitHubWorkDAO.HasPending(ctx, l)
 }
 func (d failureDAO) ReschedulePending(ctx context.Context, l store.GitHubLease, number int64, request string, next time.Time) (bool, error) {
 	if err := d.fail("reschedule"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.ReschedulePending(ctx, l, number, request, next)
+	return d.GitHubWorkDAO.ReschedulePending(ctx, l, number, request, next)
 }
 
 func injectFailure(f *pollFixture, method string, nth int, cause error) {
 	write := f.db.write
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return write(ctx, id, func(s store.ProjectWriteScope) error {
-			return work(failureScope{ProjectWriteScope: s, dao: failureDAO{GitHubWriteDAO: s.GitHubDAO(), method: method, remaining: &nth, cause: cause}})
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+		return write(ctx, id, func(source store.GitHubWorkDAO) error {
+			return work(failureDAO{GitHubWorkDAO: source, method: method, remaining: &nth, cause: cause})
 		})
 	}
 }
@@ -179,11 +169,7 @@ func TestExecutorCancellationStopsWithoutCompletion(t *testing.T) {
 		cancel()
 		return remote.CheckpointRequest(ctx)
 	}
-	exec, err := NewExecutor(f.db, r, 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = exec.Execute(ctx, testProject); !errors.Is(err, context.Canceled) {
+	if err := f.preparedRun(r).execute(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
 	}
 	if len(f.runtimes) != 1 || len(f.publications) != 0 {
@@ -196,21 +182,13 @@ func TestExecutorClosedUnknownHintDoesNotCreateHistory(t *testing.T) {
 	f.workKind = "webhook"
 	f.connection.NextPollAt = nil
 	f.hints = []store.GitHubPendingPR{{Number: 5, Generation: 7, RequestID: "request"}}
-	f.db.snapshot = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		dao := executorReadDAO{pull: func(_ context.Context, id string, number int64) (githubpr.PullRequest, error) {
-			if id != testProject || number != 5 {
-				t.Fatal("wrong lookup")
-			}
-			return githubpr.PullRequest{}, model.ErrNotFound
-		}}
-		return work(executorSnapshotScope{dao: dao})
-	}
+	f.facts = func(int64, *time.Time) store.GitHubPublicationFacts { return store.GitHubPublicationFacts{} }
 	// This ack belongs to an intentionally unpublished historical PR.
 	write := f.db.write
 	var acks int
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return write(ctx, id, func(s store.ProjectWriteScope) error {
-			return work(failureScope{ProjectWriteScope: s, dao: skipHistoricalDAO{GitHubWriteDAO: s.GitHubDAO(), acks: &acks}})
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+		return write(ctx, id, func(source store.GitHubWorkDAO) error {
+			return work(skipHistoricalDAO{GitHubWorkDAO: source, acks: &acks})
 		})
 	}
 	r := f.remote()
@@ -229,7 +207,7 @@ func TestExecutorClosedUnknownHintDoesNotCreateHistory(t *testing.T) {
 }
 
 type skipHistoricalDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	acks *int
 }
 
@@ -330,7 +308,7 @@ func TestExecutorRateLimitedHintStopsRemainingRequests(t *testing.T) {
 	}
 }
 
-type validLeaseDAO struct{ store.GitHubWriteDAO }
+type validLeaseDAO struct{ store.GitHubWorkDAO }
 
 func (d validLeaseDAO) ValidLease(context.Context, store.GitHubLease) (bool, error) {
 	return true, nil
@@ -347,13 +325,13 @@ func TestExecutorReschedulesHintsWhenRepositoryUnavailable(t *testing.T) {
 			storeErr := errors.New("reschedule failed")
 			write := f.db.write
 			count := 1
-			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-				return write(ctx, id, func(s store.ProjectWriteScope) error {
-					var dao store.GitHubWriteDAO = validLeaseDAO{GitHubWriteDAO: s.GitHubDAO()}
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return write(ctx, id, func(source store.GitHubWorkDAO) error {
+					var dao store.GitHubWorkDAO = validLeaseDAO{GitHubWorkDAO: source}
 					if failReschedule {
-						dao = failureDAO{GitHubWriteDAO: dao, method: "reschedule", remaining: &count, cause: storeErr}
+						dao = failureDAO{GitHubWorkDAO: dao, method: "reschedule", remaining: &count, cause: storeErr}
 					}
-					return work(failureScope{ProjectWriteScope: s, dao: dao})
+					return work(dao)
 				})
 			}
 			r := f.remote()
@@ -401,5 +379,101 @@ func TestExecutorStopsWhenFailedHintCannotBeRescheduled(t *testing.T) {
 	}
 	if len(f.runtimes) != 1 || f.runtimes[0].ReleaseClaim || len(f.publications) != 0 {
 		t.Fatalf("unexpected completion: %+v", f.runtimes)
+	}
+}
+
+type publicationFailureDAO struct {
+	store.GitHubWorkDAO
+	method string
+	cause  error
+}
+
+func (d publicationFailureDAO) PublicationFacts(ctx context.Context, l store.GitHubLease, repo, number int64, at *time.Time) (store.GitHubPublicationFacts, bool, error) {
+	if d.method == "facts" {
+		return store.GitHubPublicationFacts{}, false, d.cause
+	}
+	return d.GitHubWorkDAO.PublicationFacts(ctx, l, repo, number, at)
+}
+func (d publicationFailureDAO) Publish(ctx context.Context, l store.GitHubLease, items []githubpr.PullRequest) (bool, error) {
+	if d.method == "publish" {
+		return false, d.cause
+	}
+	return d.GitHubWorkDAO.Publish(ctx, l, items)
+}
+
+func TestPublicationRejectsInvalidAndFailedWrites(t *testing.T) {
+	for _, method := range []string{"invalid", "facts", "publish", "unknown"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPollFixture(t)
+			cause := errors.New("controlled publication failure")
+			write := f.db.write
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return write(ctx, id, func(source store.GitHubWorkDAO) error {
+					return work(publicationFailureDAO{GitHubWorkDAO: source, method: method, cause: cause})
+				})
+			}
+			if method == "unknown" {
+				f.unknownPublish = true
+			}
+			o := observation(5, "open", f.now)
+			if method == "invalid" {
+				o.BaseRepositoryID = 99
+			}
+			run := f.preparedRun(f.remote())
+			count, err := run.publishCount(context.Background(), []githubpr.Observation{o}, nil)
+			if err == nil || count != 0 {
+				t.Fatalf("count=%d error=%v", count, err)
+			}
+			if (method == "facts" || method == "publish") && (!errors.Is(err, cause) || !errors.Is(err, errTransaction)) {
+				t.Fatalf("lost transaction error: %v", err)
+			}
+			if method == "unknown" && !errors.Is(err, errUnknown) {
+				t.Fatalf("unknown result: %v", err)
+			}
+			if method != "unknown" && len(f.publications) != 0 {
+				t.Fatalf("unexpected writes: %v", f.publications)
+			}
+			if f.renews != 0 {
+				t.Fatalf("renewed after failed publication: %d", f.renews)
+			}
+		})
+	}
+}
+
+func TestPublicationSkipsUnknownTerminalOutsideCoverage(t *testing.T) {
+	f := newPollFixture(t)
+	f.facts = func(int64, *time.Time) store.GitHubPublicationFacts { return store.GitHubPublicationFacts{} }
+	run := f.preparedRun(f.remote())
+	count, err := run.publishCount(context.Background(), []githubpr.Observation{observation(5, "closed", f.now)}, nil)
+	if err != nil || count != 0 || len(f.publications) != 0 || f.renews != 1 {
+		t.Fatalf("count=%d err=%v publications=%v renews=%d", count, err, f.publications, f.renews)
+	}
+}
+
+func TestPublicationRejectsDatabaseAndStaleObservationFailures(t *testing.T) {
+	for _, method := range []string{"connection", "clock", "stale"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPollFixture(t)
+			cause := errors.New("controlled scope failure")
+			if method != "stale" {
+				injectFailure(f, method, 1, cause)
+			} else {
+				f.facts = func(int64, *time.Time) store.GitHubPublicationFacts {
+					return store.GitHubPublicationFacts{Current: &githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{State: "merged", GitHubUpdatedAt: f.now}}}
+				}
+			}
+			run := f.preparedRun(f.remote())
+			count, err := run.publishCount(context.Background(), []githubpr.Observation{observation(5, "open", f.now)}, nil)
+			if count != 0 || len(f.publications) != 0 || f.renews != 0 {
+				t.Fatalf("count=%d publications=%v renews=%d", count, f.publications, f.renews)
+			}
+			if method == "stale" {
+				if !errors.Is(err, errObservationConflict) {
+					t.Fatalf("error=%v", err)
+				}
+			} else if !errors.Is(err, cause) || !errors.Is(err, errTransaction) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }

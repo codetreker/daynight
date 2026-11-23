@@ -18,14 +18,17 @@
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
 请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal。
 读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。普通上传、覆盖和删除使用持有
-目标和 Parent SHARE 锁的事务，按 UUID 顺序取得最终锁并在新语句复核 Parent；Parent 变化返回
-`resource_conflict`，不追加锁或重放。随后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
+目标物理行 SHARE 锁的事务，锁后读取 `COALESCE(deleted_at, ancestor_deleted_at)`。祖先删除传播同样更新目标行，因此与资料操作串行。随后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
 再检查 Task 有效删除状态、路径，执行文件操作并通过同一事务写入元数据，直至事务完成才释放资源锁。
 该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
-凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
-相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
+生产凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。显式 scoped 服务
+另按[凭据 Scope 内部合同](credential-scope-internal.md#附件准入)在资源可见性确认后、
+元数据或文件副作用前检查对应业务权限；其 Open 在取得目标 gate 后权威复核原凭据，
+已经打开的流保留原有完成语义。完整上传回执保留原创建时间，因此准入同时需要上传
+和读取权限。生产装配使用 scoped 入口。
+Web 使用 Task 独立 origin 与预览凭据，保留普通 iframe 和相对资源。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
 
 ## 目标与操作单位
 
@@ -64,9 +67,9 @@ mockup/
 | 当前结构 | 集成方式 |
 |---|---|
 | [Task 模型](../../packages/daynight-server/internal/core/model/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
-| [HTTP 组装](../../packages/daynight-server/internal/server/server.go)在同一 mux 注册 API 和内嵌页面 | 附件 API 与预览复用同一服务及 origin |
+| [HTTP 组装](../../packages/daynight-server/internal/server/server.go)按 Host 分发主站、预览 SSO 和 Task 预览 | 主站 API 和页面保持现有入口；Task Host 仅提供对应附件预览 |
 | [JSON 解码](../../packages/daynight-server/internal/server/httpx/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
-| [附件迁移](../../packages/daynight-server/internal/core/store/postgres/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
+| [附件迁移](../../packages/daynight-server/internal/core/store/postgres/schema/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
 | [CLI API 客户端](../../packages/daynight/src/api/client.ts)区分 JSON、字节与空响应 | 复用期限、取消、错误及元数据预算；原始文件流不经过 JSON 解码 |
 | [CLI 上下文](../../packages/daynight/src/cli/context.ts)提供 text 与 bytes 输出 | `stdoutBytes` 可等待且保留背压，`closeStdoutBytes` 负责命令结束前的输出清理 |
 | [任务详情](../../packages/daynight-web/src/features/task-detail/TaskDetailDialog.tsx)独立加载 task | 组合附件区域，附件 hook 独立持有分页、写状态和预览，保持图和详情读取行为 |
@@ -132,8 +135,7 @@ LocalStorage 准备根目录时探测实际大小写能力；Linux 不支持时�
 case folding 模拟文件系统规则。创建父目录前、发布临时文件、打开和删除时均受
 该检查保护；命名空间修改由同一实例的锁串行化。别名写入返回已有路径冲突响应，
 不写入元数据；原文件内容和目录保持不变。这不提供不同大小写名称共存能力。
-大小写检查不改变业务寻址；跨进程目标 gate 另保护同一路径的附件操作。Linux gate 保留真实共存测试，
-macOS APFS 专项仍可显式运行，日常开发无需镜像。
+大小写检查保留业务寻址规则。同一路径的附件操作由目标 gate 协调。macOS APFS 专项可显式运行，日常开发无需镜像。
 [开发文件系统覆盖决策](../../.agents/notes/archived/testing/2026-10-23-native-development-filesystem-coverage.md)
 记录这项平台覆盖取舍。
 
@@ -197,13 +199,13 @@ type Storage interface {
 - 缺失、非法路径和 I/O 错误保留可识别原因及错误链。接口不要求 `io.Seeker`，也不
   提供通用 Stat、Scan 或版本操作。
 
-LocalStorage 在目标文件所在目录创建内部临时文件，流式写完并关闭后再替换目标。
-内部短锁保护当前实例的目录准备、发布和删除；附件用例另持有跨进程目标 gate，覆盖文件 I/O 与 PG 操作。
-空内部目录可以在发布时让位于文件，非空目录和仍有上传临时文件的目录保持冲突；
-通用文件操作本身不隐式取得业务目标 gate。
+LocalStorage 在目标目录创建临时文件，流式写完并关闭后再发布。实例内的短锁保护目录准备、发布和删除。附件用例另持有目标 gate，覆盖文件 I/O 与 PostgreSQL 操作。空目录可以在发布时让位于文件，非空目录和仍有上传临时文件的目录保持冲突。通用文件操作由业务调用方决定是否持有 gate。
 
-存储 gate 接口按控制域和键取得可取消的 permit。本地后端在固定控制目录内分别为目标与私有域使用 256 个持久锁文件条带，结合进程内准入和操作系统 advisory lock 协调共享根的实例；对象清理不能删除锁文件。条带碰撞会串行化无关操作。私有传输持有私有 permit 时再进入附件目标 gate，调用方不得重复取得目标 gate。permit 的生命周期独立于数据库连接，失去数据库锁不代表文件操作已经停止。
-活跃 I/O 另用非阻塞、完整 key 的 ResidencyGate；用户和 Task 槽按操作族、规范 UUID 和槽号命名，使用完整 key hash 的稳定控制文件与本地引用计数，避免条带碰撞造成无关 owner 被拒。释放关闭句柄并移除本地零引用项，但不 unlink 锁文件：其他实例可能已打开旧 inode。控制文件可持续存在，累计磁盘量不受该机制约束。
+Azure 对象适配器使用一个容器和逻辑 bucket 前缀。附件 key 保留 project、Task 分片与 Task ID，并以原始相对路径 UTF-8 的 SHA-256 作为末段；在线访问、MCP 发布和迁移使用同一映射。写入先在本地 scratch 完整接收输入，再发布固定 Blob；读取流在重开时受首次 ETag 约束，避免覆盖后混合不同版本。私有对象清理由类型化命名空间的完整前缀分页枚举，逐项确认删除。对象字节沿用 PG 预算，本地 scratch 的写入受实际磁盘约束。服务装配选择后端并注入 gate；Azure 流式归档使用独立的暂存能力。
+
+本地后端配置 `DAYNIGHT_REDIS_URL` 后，同一存储部署的服务使用同一个 Redis 数据库协调 gate；未配置时使用进程内 gate。Azure 后端使用进程内 gate，支持单个 Server 实例，即使 Redis 用于监控也不提供跨进程存储排他。目标域和私有域各有 256 个条带，同槽操作互斥。用户和 Task 上传槽、归档 owner 槽及媒体 lease 使用完整键，分别按所属操作族和业务身份派生。普通目标、私有和媒体操作等待到取得锁或 context 结束，容量探测立即返回占用状态。私有传输先取得其命名空间 permit，再进入附件目标 gate。
+
+Redis 租约持有随机令牌，TTL 为 30 秒，服务在持有期间每 10 秒续租。获取使用调用方的等待 context，成功后独立续租到 permit 关闭。续租和释放原子校验令牌，过期持有者不能续租或删除后继租约。确认租约失效后取消实际使用该 permit 的操作，文件发布和删除前向 Redis 重新核对所有相关令牌。附件用例在文件 I/O 后、更新元数据前和提交事务前复核租约。Redis 操作失败会返回错误，服务不会切换成进程内锁。Redis 租约约束仍持有租约的操作，文件系统本身无法撤回已经开始的系统调用。共享文件内容仍由文件存储提供。机制取舍见 [Redis 存储 gate 决策](../../.agents/notes/implemented/architecture/2026-11-19-redis-storage-gates.md)。
 
 替换前的普通写入失败或取消，清理本次调用拥有的临时文件并报告错误及清理失败。文件存储记录发布事实：复制、Sync 或 Close 在发布前失败为 `NotPublished`，进入可能改变目标的发布后无法确定结果为 `Unknown`，明确发布成功为 `Published`；错误链保留原始原因。用户可访问
 的路径不会指向正在写入的半个文件；内部临时名不属于附件路径或历史版本。
@@ -211,7 +213,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 替换实现需要满足目标平台的完整文件发布语义。存储模块仅保证一次文件写入的结果，
 不扩展为文件系统与 PG 的事务，也不增加进程异常后的扫描清理服务。
 
-后续存储后端实现同一个 bucket/path 契约；task 逻辑路径、API 和 CLI 用法保持稳定。
+存储后端实现同一个 bucket/path 契约；task 逻辑路径、API 和 CLI 用法保持稳定。
 
 ## PostgreSQL 元数据
 
@@ -257,8 +259,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 
 文件操作与 PG 更新不属于同一事务。文件已经替换或删除后，PG 更新可能失败；进程
 也可能在两者之间退出。因此可能出现文件与元数据不匹配、文件有内容但无附件记录，
-或附件记录仍存在而文件已经缺失。共享目标 gate 防止同一路径的成功覆盖、删除和打开交错，
-不承诺跨介质原子提交或失败后的一致性。
+或附件记录仍存在而文件已经缺失。有效的目标 permit 串行化同一路径的覆盖、删除和打开。文件与 PostgreSQL 的失败边界包括租约失效时已经开始的文件操作。
 
 该问题是已接受的限制。错误必须明确返回，发布可能已经发生时须保留该事实；客户端不
 隐式重试写操作。目标 gate 不提供补偿、回滚、状态机、对账、后台回收或自动
@@ -278,7 +279,7 @@ T = /api/v1/projects/{projectId}/tasks/{taskId}
 | `PUT T/attachments/files/{path...}` | 上传一个文件，相同完整路径覆盖 |
 | `GET T/attachments/files/{path...}` | 返回原始文件内容，用于 CLI 读取和下载 |
 | `DELETE T/attachments/files/{path...}` | 删除指定文件 |
-| `GET T/preview/{path...}` | 以浏览器 inline 方式提供文件及相对资源 |
+| `GET T/preview/{path...}` | 主站跳转至 Task Host，后者以 inline 方式提供文件及相对资源 |
 
 上传请求体直接携带文件字节，`Content-Type` 表达文件 MIME。上传端按文件类型选择
 合法 MIME，无法识别时使用 `application/octet-stream`；服务拒绝非法 header 值。
@@ -314,14 +315,35 @@ body { background: white; }
 文件 URL 的 query 不作为文件路径，允许相对资源使用普通缓存参数。路径守卫只对
 附件请求检测原始命名空间意图，不能因后续 parent 段或冗余前缀将修改重定向到旧
 JSON 路由；正常既有路由行为保持原义。
-所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败使用既有 HTTP 错误
-信封、requestId 和日志规则，保留原始错误链。
+所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败保留原始错误链与 requestId；除独立预览的文档失败页外，使用既有 HTTP 错误信封和日志规则。
 
-原始读取使用下载响应头，预览使用 inline 响应头，并以实际打开文件的大小发送内容。
+主站原始读取使用 attachment 和 nosniff，Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。主站预览 GET 跳转至 Task Host，HEAD 留在主站鉴权并检查文件。显式 scoped 注册的 HEAD 进入同一 Open 读取准入；GET 跳转与独立 Task Host 的 preview Cookie 认证保持原合同。
 列表与可覆盖的文件使用 `Cache-Control: no-store`，刷新后读取当前内容。
 `path_conflict` 映射 409；存储记录存在而磁盘内容缺失仍为 500，不能被 not_found
 错误链误判。流式中止只记录附件操作错误，现有日志包装器直接重抛 ErrAbortHandler，
 保留真正 panic 的原有脱敏处理。
+
+### 独立 Task 预览 Host
+
+preview 分发在主 mux 和 CORS 之前保留整个预览命名空间。bare Host 仅提供 SSO；
+单层规范 UUID 子域的独立 mux 仅注册 `GET T/preview/{path...}`（含 HEAD），
+PathGuard 在 ServeMux 规范化之前检查原始路径，Host 中的 UUID 必须与路径中的 taskId
+一致。非法、嵌套、尾点或端口异常的 preview Host 拒绝，不能落回主站。Task 和 Goal
+均以自身 ID 命名，其内容通过同一个附件 Open 完成项目、成员、归属和删除检查。
+
+独立入口以 preview Cookie 调用 Identity 的 Authenticate，再通过附件 Open 执行受保护内容准入。规范 Task Host 的 GET/HEAD 在 Open 成功后、响应字节或 304 发出前，按原预览散列复核并续共享 session：允许同源请求、受支持的同站 iframe 文档导航和显式用户发起的顶层文档导航。跨站自动请求、其他同站子资源及缺失或矛盾的来源元数据不续期；失败授权不续期，预览活动不能替主站制造活动。续期失败关闭已打开流并返回原错误，不发送内容。时间与锁合同由[浏览器 session 设计](daynight-auth.md#主站-session-与-pat)拥有。成功保留
+原字节、MIME、inline 和 no-store，HEAD 无正文。document 响应带
+`Origin-Agent-Cluster: ?1`。缺失或失效 Cookie 的 document/iframe GET 根据原始 URL
+创建短期 SSO 记录并跳转到 bare Host；complete 验证 Cookie 后返回原 GET，原始 query
+不嵌套到 SSO 跳转，fragment 由浏览器继承。子资源、fetch 和 HEAD 返回非 HTML 错误；
+缺少 Fetch Metadata 时返回 401 及 SSO 入口。权限、缺失、删除或存储错误不触发 SSO。
+文档失败页保留状态码，按 Accept-Language 选择中英文，转义动态内容并提供同 URL
+重试及 401 新标签 SSO 入口。文档及 SSO 错误页允许主站和配置的 preview 子域作为
+frame 祖先，以便 Task 内容嵌套的 iframe 在登录失败时仍能显示恢复操作。主站 shell 根据配置注入 `daynight-preview-origin` meta，
+以最终字节计算 Content-Length；Web 同步读取 meta 构造 Task origin，所有主 mux 的旧预览 GET 跳转到对应 Task Host。
+
+[独立预览 Host 决策](../../.agents/notes/implemented/architecture/2026-11-16-task-preview-host.md)
+记录分发和恢复的取舍；[鉴权架构](daynight-auth.md#显式浏览器预览-sso)拥有 SSO 合同。
 
 ## 请求生命周期与诊断
 
@@ -373,16 +395,28 @@ Enter/空格继续有效。`TaskAttachmentsPanel`、表单及目录控件保留�
 
 附件面板使用占满可用正文的 `attachment-split` grid：左侧
 `attachment-sidebar` 放置文件树、刷新和上传；右侧 `attachment-preview-pane`
-放置所选文件预览，以竖向分隔线区分。桌面左栏 250px，窄屏使用紧凑比例，在 320px
-继续保持左右位置。每一级可收缩 flex/grid 子元素明确 `min-width: 0` 与
-`min-height: 0`，对话框正文和面板隐藏溢出，外层不额外滚动。概览拥有独立滚动区，
+放置所选文件预览，以竖向分隔线区分。宽面板的左栏为 250px；附件面板不宽于 768px 时，
+应用紧凑左轨 `max(124px, 30%, min(37%, 180px))`，右轨占剩余宽度；宽视口内的窄面板也使用紧凑左轨，
+320px 下仍保持左右位置并为文件辨认和预览分配空间。每一级可收缩 flex/grid 子元素明确 `min-width: 0` 与
+`min-height: 0`，普通视口的对话框正文和面板隐藏溢出，外层不额外滚动。概览拥有独立滚动区，
 其元数据侧栏继续沿用看板响应式布局。
 
-左栏可独立纵向滚动，右侧以非滚动预览标题和可伸缩正文组成。共用面板直接从当前选中
+文件树的逻辑嵌套保持完整，视觉缩进由每行的深度决定，父列表不累加内边距。
+桌面每层 12px、累计上限 60px；421–768px 每层 8px、累计上限 24px；
+不超过 420px 每层 5px、累计上限 15px。目录标题和文件行共享预算，超过上限的
+路径继续通过目录折叠结构和完整文件路径辨认。不超过 768px 时隐藏装饰文件图标，
+文件名使用可用列宽换行，文件大小独占次行；操作菜单在行末保持至少 28×28 CSS px，
+不参与文件名收缩。连续长字符允许列内断行。缩进和宽度变化不改变目录展开、文件选择
+或上传草稿的组件身份。[缩进预算决策](../../.agents/notes/implemented/bug-fix/2026-11-20-attachment-tree-indent-budget.md)
+记录空间分配的取舍。
+
+左栏可独立纵向滚动，右侧由预览标题和可伸缩正文组成；普通视口标题不滚动。共用面板直接从当前选中
 附件的 `createdAt` 和 `updatedAt` 渲染两组 `time`，原始值保存在 `dateTime`，显示值
 使用站内 locale 和浏览器时区的秒精度格式。桌面文件信息按内容收缩，最大宽度 240px，
 与时间块间隔 16px；操作靠右。一个 `dl` 以直接的 `dt`/`dd` 子元素建立共用两列网格，
 最长标签决定标签列，数值列可收缩，两行数值因此对齐。窄屏按组换行并可将标签和值上下排列；
+不宽于 600px 时新标签入口仅显示图标，保留完整可访问名称与 title，避免文字按钮换行挤掉预览正文。
+标题和操作使用共享 14px 档，时间使用 12px 档，各宽度保持所选档位。
 完整路径和类型保留在 DOM 与 title 中，显示受控截断，不能挤掉时间、下载和新标签页打开操作。
 `attachment-preview-body` 是 Markdown、文本/JSON/源码及大图的唯一纵向滚动
 所有者，渲染器内不再设置高度上限或嵌套纵向滚动。表格、代码只保留局部横向
@@ -391,27 +425,43 @@ Enter/空格继续有效。`TaskAttachmentsPanel`、表单及目录控件保留�
 纵向滚动。加载、错误、无选择及不支持类型在同一正文布局内显示。
 
 短视口压缩公共标题行、标题、页签、预览标题及底部间距，844×390 仍保留正文、
-关闭按钮和所有操作。高度不超过 500px 的全屏与普通带归属详情在足够宽时将预览标题压为同一行：
+关闭按钮和所有操作。高度不超过 500px 时，已加载的 Task 和 Goal 详情标题限制为一行高度，
+长标题沿用局部滚动以保留全文；字号仍使用共享 22px 档。全屏与普通带归属详情在足够宽时将预览标题压为同一行：
 文件信息按内容收缩，组间距压缩至 12px，时间继续共用列宽，路径和元数据沿用受控省略并保留完整 DOM/title；操作区不收缩，
 下载保留文本，新标签入口只显示图标并保留可访问名称与 title，标题及面板压缩内边距。
-在不高于 300px 且不宽于 600px 的极小视口中，文件信息压缩为一行，时间使用共用标签列和值列并与操作并列，
-为正文留出阅读空间。这些规则与公共全屏紧凑标题、元数据行及 footer 隐藏共同为 320×240 的预览正文和
+高度不超过 500px 时，预览标题最多占可用预览高度的 60%，并可键盘滚动；正文保留独立滚动空间。预览容器不宽于 600px 时，文件信息压缩为一行，时间标签和值按列内空间换行，操作与文件信息并列。附件面板至少保留 6rem，空间不足时详情正文可键盘滚动。这些规则与公共全屏紧凑标题、元数据行及 footer 隐藏共同为 320×240 的预览正文和
 原生 frame 分配非零可读空间。带 claim 的公共正文头部另按[归属布局](daynight-web.md#认领归属与强制撤回)独立有界滚动，普通/全屏都不能被长用户、账号或机器名称挤没附件正文。验证实际 clientHeight、文字/图像绘制与末尾滚动，
-只检查控件不能证明阅读区可用。隐藏标题仍可取得完整内容；布局保持原有 body/frame
-滚动所有权，不通过外层滚动或任意 reader 最低高度容纳右侧预览。内嵌预览标题在下载后紧邻提供新标签页打开链接；删除由左侧文件条目菜单提供。链接
+只检查控件不能证明阅读区可用。隐藏标题仍可取得完整内容；正文和 frame 保持各自的滚动所有权，外层滚动只在短视口内容超出时出现。内嵌预览标题在下载后紧邻提供新标签页打开链接；删除由左侧文件条目菜单提供。链接
 在远程准入有效时使用当前选择的元数据路径，即使正文请求仍未完成也保持正确地址。
 `attachmentPageUrl` 沿用 ID 与路径校验，生成逐段编码的独立页面 URL。选择与
 滚动所有权的理由见[分屏决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-split-view.md)。
 
-上传表单位于默认关闭的原生 `details` 内，`summary` 使用当前语言的“上传文件”
-文案。浏览器提供鼠标与键盘展开/收起以及折叠内容的焦点排除。表单始终挂载，收起
-不会清空文件、目标路径或校验状态；页签往返保留展开状态，project/task 身份变化
-随整个附件组件重置为收起。上传入口与文件树保留各自的展开状态。
+`AttachmentUpload` 持有同一个始终挂载的原生 `details`、表单、文件 input 与草稿，
+上传 controller 继续拥有网络写入、刷新和选择。默认关闭，宽版 `summary` 使用当前语言
+的“上传文件”。`TaskAttachmentsPanel` 观察 `attachment-split` 的实际内容宽度，
+小于 560 CSS px 时打开上传会在附件区显示全宽编辑视图；达到 560px 时恢复侧栏
+内的 disclosure。隐藏页签的零宽观测不重置有效布局。布局变化不移动或重建文件 input，
+因此原生 File 对象、目标路径、校验和在途操作保持同一身份。
+
+窄上传视图提供标题和返回文件，12px 横向内边距，独立可选择且可换行的完整已选文件名，
+以及目标输入下方靠右的提交按钮。目标文本字段在粗指针下遵循共享触屏字号规则，文字至少为 16 CSS px 并跟随更大的浏览器根字号；
+提示和写入错误属于表单。超高表单独立纵向滚动，背景树与预览保留几何和挂载状态并设为
+不可交互，保留其目录、选择及滚动。返回和 Escape 关闭当前上传并恢复入口焦点；
+Escape 在所属详情根节点先于外层详情关闭处理，即使焦点位于标题或页签也只关闭上传；
+尊重原生选择器、已处理事件、IME 和顶层确认的焦点所有权。
+断点变化保留仍可见输入的焦点；即将隐藏的返回控件或浏览控件将焦点转交给可见上传控件。
+进入窄上传视图时，面板同步关闭属于背景文件浏览的操作菜单，并将菜单内的焦点交给上传
+控件，避免菜单退出后向不可交互的原入口恢复焦点。删除确认是独立顶层对话框，保留其
+焦点与 Escape 所有权；关闭时若原文件入口和预览均已不可交互，则将焦点交给当前可见的
+上传控件，避免焦点落到文档根而使后续 Escape 关闭详情。
+页签往返与关闭上传保留草稿及展开状态，project/task 身份变化随整个附件组件重置。
 
 用户选择一个文件，目标路径初始为文件名，可改为多层相对路径；`mime` 4.1.1 按
 目标路径确定上传 Content-Type，未知类型使用 `application/octet-stream`。同路径
-直接覆盖，单文件提供下载和删除，成功后刷新附件区域，不修改详情、task 版本或图。
-页面沿用看板样式。
+直接覆盖。成功仍由现有 controller 刷新附件和选择目标，仅在身份、授权和提交草稿
+版本仍一致时清空草稿并关闭上传；同时展开目标祖先并聚焦上传文件。失败保留输入及错误，
+允许明确重试。单文件提供下载和删除，修改不改变详情、task 版本或图。布局选择与权衡见
+[窄容器上传决策](../../.agents/notes/implemented/bug-fix/2026-11-20-attachment-upload-width.md)。
 
 文件条目以并列的选择按钮和右侧“…”按钮组成，菜单绑定条目的完整路径，
 不借用预览选择。菜单进入浏览器 top layer 并按可用视口定位，保持任务详情的 DOM
@@ -444,25 +494,38 @@ reader，使用暂停代次及请求身份拒绝迟到结果，结束本地 busy
 预览及表单草稿继续由原资源持有。恢复时完整清单不自动重读；中断的不完整读取在后台重新遍历，只有所有页成功后才替换已发布清单，失败时保留原清单并显示错误。真实资源变化与撤权仍释放
 原状态。暂停中可更换本地选择，已加载的原生预览保持挂载以便选回；尚未建立文档的 frame、未加载的图片和 Markdown 图片不建立新的源。HTML 文档已建立但子资源仍未完成时，保留该文档和其中输入，不能以 iframe 的 `load` 事件作为唯一保留条件。下载、新标签及 Markdown 远程链接撤销 `href`
 和下载属性并保留可访问名称与禁用语义，本地 fragment 链接仍可使用。已加载的可信
-HTML 继续遵循普通同源 iframe 的执行模型，不提供独立的脚本或子资源网络隔离。
+HTML 继续在 Task origin 的普通 iframe 中执行，不与主站或其他 Task 共享 origin。
 
 覆盖成功增加预览 revision；删除成功仅在目标为当前选择时清空预览，删除其他路径
-保留当前预览内容及组件身份，刷新清单不会额外增加其 revision。手动刷新发现所选文件的 `updatedAt` 改变时重新请求正文；
-`path/updatedAt` 作为预览组件身份，使同路径的图片和 frame 重新挂载。HTTP 的
+保留当前预览内容及组件身份，刷新清单不会额外增加其 revision。手动刷新发现所选文件的
+`updatedAt` 改变时更新内容；图片继续以 `path/updatedAt` 管理组件身份。HTTP 的
 `Cache-Control: no-store` 保持可覆盖路径的当前读取语义。
+
+HTML/PDF 在所选元数据准入、组件启用且未暂停时发布可挂载快照，不发主站 HEAD；
+仅文本和 Markdown 异步读取正文。原生快照携带 `updatedAt` 和 `reloadRevision`，与
+scope/path 一起无歧义序列化作为 frame 身份，实际 src URL 变化也会建立新文档。外层
+wrapper 对原生预览使用稳定 path key，避免实时元数据和快照各自触发重建。相同清单、
+普通元数据刷新、页签及全屏切换保持 frame；显式重载、文件版本变化及成功覆盖建立
+新文档。暂停保留快照及其原生身份，同身份恢复不重载。
+
+成功覆盖已准入的当前 scope/path 时，`useAttachments` 在写入所有权检查后使用 PUT 返回
+的 Attachment 更新权威所选元数据，并在同周期更新列表、选择、revision 和写状态，再启动
+清单刷新。默认和要求完整清单的调用方均在刷新 pending 时保留已准入快照；不伪造
+complete 或 cursor。新路径和未经确认的 URL 选择仍遵守完整清单准入。相同返回元数据
+不再次重载，失败或未知写入不提前发布成功。
 
 | 类型 | 预览机制 |
 |---|---|
 | Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 图表组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
-| PDF | HEAD 检查后交给浏览器原生 iframe |
+| PDF | 直接交给 Task origin 的浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
-| HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
+| HTML | 直接在 Task origin 的普通 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
-调用方提供。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
-隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](daynight-task-inspection.md#mermaid-图表)，
+`MarkdownContent` 将 URL 转换、图片分类与链接激活接入[公共 Markdown 视图](shared-markdown.md)，
+公共视图拥有 CommonMark/GFM、Mermaid 图表及样式。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](shared-markdown.md#mermaid-图表)，
 内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、
@@ -475,7 +538,7 @@ Task/Goal 描述和 Markdown 附件共享同一个附件图片 renderer。调用
 root/document 基准；渲染入口保留 URL 转换前的原始引用，并沿用
 `resolveAttachmentReference()` 识别相对附件图片，不能通过转换后的 URL 前缀推断来源。
 每张附件图片持有自身
-加载、错误和重试身份，失败时显示当前语言错误与普通重试按钮；重试只重新挂载
+加载、错误和重试身份，失败时显示当前语言错误、普通重试按钮和新标签 SSO 入口；重试只重新挂载
 该图片的请求，继续使用原 URL，保留 query/fragment，不改变正文、清单或上层
 预览身份。原生 URL 图片继续使用原生行为。暂停沿用附件控制器的远程准入状态，
 阻止未加载或新图片建立源和执行重试，保留已加载图片；来源或请求代次切换后，
@@ -484,41 +547,26 @@ root/document 基准；渲染入口保留 URL 转换前的原始引用，并沿�
 [附件图片重试决策](../../.agents/notes/implemented/feature/2026-11-16-markdown-attachment-image-retry.md)
 保存请求所有权和原始引用分类的取舍。
 
-HTML 入口是固定同源 URL，例如：
+HTML 入口使用 Task origin，例如：
 
 ```text
-/api/v1/projects/{projectId}/tasks/{taskId}/preview/mockup/index.html
+https://<taskId>.preview.daynight.cc/api/v1/projects/{projectId}/tasks/{taskId}/preview/mockup/index.html
 ```
 
-HTML/PDF 的 HEAD 可用性检查只判断响应状态和 requestId，不尝试读取不存在的 JSON
-body。成功后 frame 正常 GET 文件和其资源；HEAD 仅证明入口可用，实际 HTML
-交互和 PDF 绘制仍需由真实 frame 验证。入口中的 `./assets/style.css`、
+HTML/PDF 的 frame 直接 GET 文件和其资源。ready 表示可建立源，frame 的 load 只结束
+导航等待提示，均不能证明 HTTP 成功或实际绘制。服务器能够响应的业务错误由预览域
+文档错误页保留状态、requestId 和同 URL 重试；传输失败由浏览器表现。父页在下载前
+提供本地重载按钮，保留 URL 的编码、query 和 fragment，不增加 cache-busting 参数；
+暂停时按钮禁用，点击处理也同步检查暂停，防止渲染与点击间的竞态。父页不使用跨域
+load/error 猜测状态，也不增加探测、消息桥或超时推断。入口中的 `./assets/style.css`、
 `./assets/app.js` 和相对 fetch URL 按浏览器规则读取同目录结构，不改写文件内容；
-以 `/` 开头的地址仍指向主站根目录。HTML 附件属于可信项目代码，拥有主应用同源
-权限，普通 iframe 不使用 sandbox；不增加专用预览 session/token、独立 origin/
-端口、Service Worker 或离线文件系统。[鉴权架构](daynight-auth.md)在附件请求
-准入时验证登录态，并在文件 I/O 前检查项目成员，保留可信 HTML 的同源执行约定。
+以 `/` 开头的地址指向 Task origin 根目录。普通 iframe 不使用 sandbox，Web 不提供
+Service Worker 或离线文件系统；同一 Task 文件共享 origin，与主站和其他 Task 隔离。[鉴权架构](daynight-auth.md)在附件请求准入时验证凭据，并在文件 I/O 前检查项目成员。
 
 居中详情对话框拥有 body portal、背景 inert、共享滚动锁和被动卸载后的焦点恢复；其普通尺寸、概览滚动与详情页签由[看板设计](daynight-web.md#居中任务详情)说明，附件页签的分屏和右侧滚动由本节拥有。全屏沿用同一附件控制器、面板、文件输入及 frame，不改变 path/timestamp 预览身份或发起新的内容请求；应用拥有的滚动位置按新布局合法范围恢复，frame 内部滚动继续归原生文档或阅读器。
 
-`AttachmentKeyboardOwner` 由共享详情 Surface 经 Reading 和附件面板传到预览，包含
-活动阅读容器的 `root` 与语义 `onEscape`。弹窗始终提供 owner，独立页仅全屏时
-提供。`TrustedFrame` 在 load 时记录当前同源 document；document 或 owner root 变化时
-释放旧监听，回调 ref 保持最新。document 的 keydown 监听对每个 Escape/Tab 事件
-临时注册专属 Window 冒泡处理器，排在子应用当前已有的 Window 消费者之后；处理器
-只处理同一事件，检查 `defaultPrevented` 后同步执行 Escape 或边界 Tab。子应用在
-Document 或 Window 消费的快捷键均不会触发外层操作。
-
-每个临时处理器使用 `AbortController` signal 释放；父窗口的零延迟清理定时器处理
-事件被停止传播后留下的处理器。清理只使用 signal 和父窗口定时器，不访问可能已因
-跨源导航而不可访问的 WindowProxy。document/owner 变化、停用及卸载同时移除
-Document 监听并释放全部待处理器；退出独立页全屏不重建 frame。`dialogFocusables`
-使用 `tabbable` 6.5.0 的生产默认可见性检查，边界 Tab/Shift+Tab 围绕当前 owner root
-与 frame 控件处理。
-PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
-键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
-[全屏阅读决策](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)
-拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
+跨源 frame 不安装文档键盘桥；HTML 和 PDF 使用原生键盘行为，详情提供明确的
+关闭、退出和返回控件。frame 身份和已建立文档的暂停保留与键盘桥无关。
 
 ## 独立附件阅读页
 
@@ -549,13 +597,9 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 
 独立详情的整页尺寸链在实际高度的标题与页签后为面板分配余下空间。共享分栏及
 断点保持左侧独立滚动；右侧预览正文承担 Markdown、文本和图片滚动，HTML/PDF
-由拟合正文的 iframe 内文档滚动。所有可收缩层保持零最小尺寸，外壳隐藏外溢，不
-以固定头高减法或 frame 最低高度产生嵌套滚动。
+由拟合正文的 iframe 内文档滚动。普通视口的可收缩层保持零最小尺寸并隐藏外溢；短视口的附件面板保留最低高度，外壳在空间不足时可滚动。
 
-`AttachmentPreview` 接收可选的语义键盘 owner。普通独立详情不提供 owner；全屏
-专注阅读提供当前 Surface 的 root/onEscape，即使 frame 已加载也会安装桥，退出
-立即释放。内部原生删除确认继续拥有当前层焦点和键盘交互；弹窗的焦点圈定、
-frame document/owner/卸载清理和关闭恢复按上述共享规则执行。
+独立页面和弹窗共用预览与其生命周期；原生删除确认继续拥有当前层焦点和键盘交互。
 
 Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 no-store index。
 附件原始路径守卫在 ServeMux 清理或重定向前验证路径，保留中间 `..` 掩盖命名空间
@@ -645,8 +689,7 @@ localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保�
 开发环境持久卷。实现取舍由[部署决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 拥有。
 
-上传、下载和预览继续经过同一个 gateway；对应代理规则必须支持二进制请求与流式
-响应，并沿用既有生命周期策略。本设计不另设一套任意文件大小或时限参数。
+主站上传、下载和 HEAD 继续经过既有 gateway；部署须将 bare preview 和 wildcard Task Host 的 DNS、TLS/SNI 与原始 Host 路由到服务。切流前验证这些入口和 SSO 回跳，并确保所有副本就绪，不混用仍在主站内联的旧实例。回滚保持隔离，或先关闭旧主站 preview GET。代理须支持二进制请求与流式响应；服务启动不探测外部 DNS/TLS，部署必须独立核验。
 
 数据库与附件目录构成一组备份材料。停止全部服务实例和其他直接数据库或文件写入方后，
 通过 `pg_dump` 备份 PG，并使用同一生产镜像的非 root `tar` 容器备份附件根目录；
@@ -692,7 +735,10 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
   既有 project 选择、帮助及补全。
 - Web：详情页签与状态保留、共用完整附件页的两种展示、独立模式地址同步与前进后退、
   项目页嵌入模式和独立页子层选择的前进后退、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
-  结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。
+  结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。记录 HTML/PDF 主文档
+  请求的 method、origin 和 path，确认直接 GET 且无同文件主站 HEAD；验证同时间戳覆盖、显式重载、
+  版本变化、两种库存准入下延迟刷新时的单次文档重建，以及失败写入和暂停竞态。错误页、SSO、
+  传输失败恢复与已建立文档保留分别验证，load 不代替实际 HTML 交互或 PDF 绘制。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 
@@ -718,11 +764,13 @@ MCP 附件列表使用普通批量数据库读取及完整项的条数分页；c
 
 私有传输生命周期先持久化调用方提供的 UUID、用户、稳定授权主体、方向、目标和不可变参数，再允许创建以该 UUID 命名的私有对象。PAT 使用凭据 ID，OAuth 使用 Grant ID；每次外部调用重新检查当前凭据和任务权限。重复 ID 只有完整绑定相同时返回已有记录。私有内容使用独立命名空间和 UUID 对象名，不使用调用方的物理路径；其范围读取直接定位偏移。
 
+显式 scoped 服务还在事务准入点检查当前业务权限，详见[凭据 Scope 内部合同](credential-scope-internal.md#附件准入)。生产装配使用 scoped 附件入口与事务内策略复核。
+
 每个用户最多保留四个未关闭传输。跨实例账本分别记录保留总量与尚未确认物化的部分：文件发布和回执确认前，未物化部分继续保守占用；实际删除私有命名空间并确认关闭后才返还总量和槽位。配置预算以及磁盘余量采样分别限制分配；物理 I/O 仍可能失败。提交目标可能同时需要私有块和目标临时副本，部署容量必须覆盖所需文件大小和并发。终态与核对数据保留 24 小时，空闲期限为 60 分钟，最长为 24 小时。
 
 上传块的 UUID、偏移、长度、hash 和私有对象地址分别持久保存；回执与预留消费在同一短事务提交。重复块只有身份、偏移、长度和 hash 均一致才返回已有回执。新块在预留或写私有对象前检查累计实际字节不超过 5 MiB。提交先检查声明长度、已确认偏移和上限，再验证整体 hash，保留目标暂存容量，并以原 transfer 的唯一 operation 进入 committing。已确认块按偏移流式读取，完整文件无需物化到内存；最终发布的共享 reader 也独立检查上限。5 MiB 可由 begin、十个 512 KiB chunk 和 commit 完成，普通 MCP 请求外壳仍限 4 MiB。
 
-每次外部调用重新检查当前凭据和任务权限，私有传输保留其凭据及项目授权的加锁准入。分块写入先锁 transfer，再按资源锁计划锁目标和 Parent 并以新语句检查 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住目标和 Parent 并再次检查 Project 和 Task 生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
+每次外部调用重新检查当前凭据和任务权限，私有传输保留其凭据及项目授权的加锁准入。分块写入先锁 transfer，再锁目标物理行并检查有效删除与 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住目标物理行并再次检查 Project 和 Task 有效生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
 
 私有文件操作持有与数据库事务独立的跨进程 namespace gate，获取后重新检查状态和权限。清理先持久化 `cleanup_pending`、取消本实例操作，再等待同一 gate 并删除整个受限命名空间；文件删除失败保留清理责任和账目。租约失效不会释放活着的文件 permit。提交操作失联时保留 `unknown` 和原操作标识，原 permit 持有者仍可记录同一操作后来取得的可证结果，包括 Project 删除前已提交的正式附件结果；这不重新准入已删除 Project。Project 删除后的临时分块仍按私有传输机制清理，清理范围仅限私有命名空间，不删除或改写正式附件。启动扫描和每十分钟的有界维护可跨重启续扫；应用关闭时取消并等待维护器和持有的操作，再释放底层存储。普通状态查询不占文件 I/O 槽，也不等待共享容量账本。决策及权衡见[私有传输生命周期](../../.agents/notes/implemented/architecture/2026-11-06-private-transfer-lifecycle.md)。
 

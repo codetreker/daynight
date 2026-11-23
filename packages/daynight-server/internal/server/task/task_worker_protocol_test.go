@@ -70,19 +70,11 @@ func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 	}
 	t.Run("legacy claim", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
-		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			assertWorkerProtocolContext(t, ctx, false)
-			if input.AgentControlMode != model.AgentControlModeHerdr {
-				t.Fatal("legacy claim lost default mode")
-			}
-			return returned, nil
-		}
-		response := protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, workerClaimBody(returned.Version-1)), "")
-		decodeResponse[api.Task](t, response, http.StatusOK)
-		if strings.Contains(response.Body.String(), "agentControlMode") {
-			t.Fatal("legacy claim received extended schema")
+		body := workerClaimBody(1)
+		delete(body, "agentControlMode")
+		assertProjectError(t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), ""), http.StatusBadRequest, "invalid_input")
+		if h.Tasks.TotalCalls() != 0 {
+			t.Fatal("legacy claim reached service")
 		}
 	})
 }
@@ -136,6 +128,13 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 						h := newHTTPFixture(t, io.Discard)
 						path, method, body := workerHTTPPath(), http.MethodPost, workerClaimBody(returned.Version)
 						body["agent"], body["agentControlMode"] = string(configuration.provider), string(configuration.mode)
+						if operation == "claim" && configuration.mode == model.AgentControlModeHerdr {
+							assertProjectError(t, protocolRequest(h, method, path, jsonBody(t, body), protocol), http.StatusBadRequest, "invalid_input")
+							if h.Tasks.TotalCalls() != 0 {
+								t.Fatal("Herdr claim reached service")
+							}
+							return
+						}
 						check := func(ctx context.Context, p model.Principal, projectID, taskID string) error {
 							assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 							assertWorkerProtocolContext(t, ctx, protocol == "2")

@@ -43,7 +43,7 @@ export const WorkerRefresh = ({ refresh, refreshing, readEnabled }: { readonly r
 
 const WorkerErrorDetail = ({ error }: { readonly error: unknown }) => {
   const { messages: { workers: m, common } } = useI18n();
-  return <><p>{error instanceof TaskCacheError ? m.cacheStorageError : error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : m.readError : m.readError}</p>
+  return <><p>{error instanceof TaskCacheError ? m.cacheStorageError : error instanceof ApiError ? error.kind === 'server' && error.code === 'invalid_input' && error.serverMessage === 'Unsupported Worker tool paths protocol.' ? m.upgradeService : error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? error.code === 'worker_tool_paths_upgrade' ? m.upgradeService : m.protocolError : m.readError : m.readError}</p>
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 

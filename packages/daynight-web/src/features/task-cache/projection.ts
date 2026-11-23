@@ -1,4 +1,4 @@
-import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
+import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerMachine } from "../../api/types";
 import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { sameTaskTags } from "../../api/task-tags";
 import { buildGraphIndex, GraphDataError, type GraphIndex } from "../task-graph/model";
@@ -22,7 +22,8 @@ const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
 export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
-  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.title === right.title && left.titlePreview === right.titlePreview &&
+  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId &&
+  (left.parentTaskId === undefined || right.parentTaskId === undefined || left.parentTaskId === right.parentTaskId) && left.title === right.title && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
@@ -30,13 +31,17 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) && sameTime(left.cancelledAt, right.cancelledAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
+// Goal detail responses omit the acceptance edges carried only by TaskSync.
+export const sameDetailSummary = (synchronized: TaskSummary, detail: TaskSummary): boolean =>
+  sameSummary(synchronized, detail.type === "goal" ? { ...detail, dependsOn: synchronized.dependsOn, externalDependsOn: synchronized.externalDependsOn } : detail);
+
 export const sameProject = (left: Project, right: Project): boolean =>
   left.id === right.id && left.name === right.name && left.repoUrl === right.repoUrl &&
   left.ownership.teamId === right.ownership.teamId && left.ownership.version === right.ownership.version &&
   left.settings.version === right.settings.version && left.settings.executionWarningMinutes === right.settings.executionWarningMinutes &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
-export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">> };
+export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, WorkerMachine> };
 
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], dependencyStates: ReadonlyMap<string, TaskDependencyState>, observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
@@ -53,10 +58,10 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
     else summary.proposed++;
     return { ...task, blockedBy, ready };
   });
-  const workerMachines = new Map<string, Pick<WorkerClaim, "state" | "machine">>();
+  const workerMachines = new Map<string, WorkerMachine>();
   for (const task of ordered) {
     const claim = readWorkerClaim(task.properties);
-    if (claim !== undefined) workerMachines.set(task.id, { state: claim.state, machine: claim.machine });
+    if (claim !== undefined) workerMachines.set(task.id, { state: claim.state, machine: claim.machine, userId: claim.userId, workerId: claim.workerId });
   }
   const graph: TaskGraph = { project, observedAt, tasks, summary };
   return { graph, index: buildGraphIndex(graph), workerMachines, pausedTaskIds: new Set(ordered.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), versions: new Map(ordered.map((task) => [task.id, task.version])) };

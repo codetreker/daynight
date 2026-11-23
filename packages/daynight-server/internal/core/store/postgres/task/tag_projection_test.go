@@ -45,7 +45,7 @@ func TestTaskTagSelectedProjections(t *testing.T) {
 		($3,$6,'goal','alpha','todo','2020-01-03',NULL),($4,$6,'goal','hidden','todo','2020-01-04',now()),
 		($5,$7,'task','foreign','todo','2020-01-05',NULL)`, a, b, goal, hidden, foreign, f.project, f.other)
 	mustOK(t, err)
-	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,parent_id) VALUES($1,$2,'task','hidden child',$3)`, hiddenChild, f.project, hidden)
+	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,parent_id,ancestor_deleted_at) SELECT $1,$2,'task','hidden child',$3,deleted_at FROM tasks WHERE id=$3`, hiddenChild, f.project, hidden)
 	mustOK(t, err)
 	_, err = f.tx.Exec(ctx, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$4,'One','one',now(),now()),($2,$4,'Two','two',now(),now()),($3,$5,'Other','other',now(),now())`, tag1, tag2, otherTag, f.project, f.other)
 	mustOK(t, err)

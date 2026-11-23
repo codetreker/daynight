@@ -68,26 +68,31 @@ upload tombstone. A resource with no remaining references receives a durable
 `gc_pending` marker under the Session lock. New references and covering leases
 cannot revive it; existing exact reader and writer locks remain held through
 physical cleanup and the final database confirmation. Its row remains until
-those barriers finish, preserving both its content accounting and original identity
-for reconciliation after cleanup errors or unknown commits. Cleanup sweeps the exact typed upload namespace,
-not only paths with committed chunk rows: durable file publication can precede
-a failed or uncertain chunk-row commit. A shared upload payload gate joins late
-read-response writers before the durable sweep and final accounting decision.
-A completed prepare error does not prove that no Controller files remain.
-After reading the exact durable failed prepare, service release carries the
-original spec. The Controller verifies that spec or writes a released tombstone
-when no preparation exists, preventing delayed prepare replay. A successful
-prepare keeps its original release body; an unknown prepare must first finish.
-Preparation records name their random private path before creating or flushing
-the file, so an error leaves a reclaimable identity rather than a rowless file.
-Controller relay and local release share the temporary-storage classifier,
-including lazy media-directory and budget-ledger initialization before a local
-release can begin. Typed storage, metadata-capacity and local reader-busy failures
-remain separate from identity, format, safety and native-use refusals. Only that release-specific response keeps the original durable service
-request pending for cleanup under the same request ID, body and fence. Existing
-terminal results remain immutable. Files and cleanup responsibility remain
-through unknown, cancelled and failed cleanup until all barriers confirm completion.
-Fixed upload expiry follows the same mechanism;
+those barriers finish, preserving both its content accounting and original
+identity for reconciliation after cleanup errors or unknown commits. Cleanup
+sweeps the exact typed upload namespace, not only paths with committed chunk
+rows: durable file publication can precede a failed or uncertain chunk-row
+commit. A shared upload payload gate joins late read-response writers before the
+durable sweep and final accounting decision. A completed prepare error does not
+prove that no Controller files remain. After reading the exact durable failed
+prepare, service release carries the original spec. The Controller verifies that
+spec or writes a released tombstone when no preparation exists, preventing
+delayed prepare replay. A successful prepare keeps its original release body; an
+unknown prepare must first finish. Preparation records name their random private
+path before creating or flushing the file, so an error leaves a reclaimable
+identity rather than a rowless file. Controller relay and local release share
+the temporary-storage classifier, including lazy media-directory initialization
+before a local release can begin. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes cumulative media accounting and its initialization failures. The later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes disk predictions; the [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission. Typed storage
+and local reader-busy failures remain separate from identity, format, safety and
+native-use refusals. Only that release-specific response keeps the original
+durable service request pending for cleanup under the same request ID, body and
+fence. Existing terminal results remain immutable. Files and cleanup
+responsibility remain through unknown, cancelled and failed cleanup until all
+barriers confirm completion. Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
 references survive expiry. Historical upload queries retain the original actor
@@ -184,9 +189,11 @@ The [actual content capacity decision](2026-11-13-session-actual-content-capacit
 replaces the former fixed archive and future-volume reservations.
 Deletion closes admission and joins physical operations before its final sweep.
 Ordinary media admission also reaps crash-orphaned leases across the deployment.
-It ends the listing transaction before trying each original filesystem lock,
-retains busy owners, and holds an acquired lock through confirmed deletion of
-that exact lease. A timeout or uncertain commit never clears the counters.
+It ends the listing transaction before trying each original owner gate,
+retains busy owners, and holds an acquired permit through confirmed deletion of
+that exact lease. A timeout or uncertain commit leaves the counters intact.
+[Redis storage gates](2026-11-19-redis-storage-gates.md) own expiry and recovery
+of the synchronization keys.
 The immutable archive barrier includes unresolved content-changing commands and
 resource associations; unrelated unknown control receipts retain their original
 identity without preventing publication of complete message history.

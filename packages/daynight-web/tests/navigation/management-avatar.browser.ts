@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs } from "../helpers/credentialScopes";
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -28,6 +29,7 @@ const install = async (page: Page, src: string, png: string) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     requests.push(`${request.method()} ${path}`);
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send({ id: userId, personalTeam: personal, name, email, emailVerified: true, avatarUrl: src });
     if (path === '/api/v1/teams') return send({ items: [team(teamId)], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}` || path === `/api/v1/teams/${personalId}`) return send(team(path.split('/').at(-1)!));
@@ -36,8 +38,8 @@ const install = async (page: Page, src: string, png: string) => {
       { ...membership(memberId), profile: { name: 'Bob', email: 'bob@example.test', avatarUrl: src } },
     ] });
     if (path === `/api/v1/teams/${teamId}/invitations` || path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === '/api/v1/me/tokens') return send({ items: [] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [] });
+    if (path === '/api/v2/me/tokens') return send({ items: [] });
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -55,7 +57,7 @@ const checkAvatar = async (avatar: Locator, src: string, size: number) => {
   })).toEqual({ width: size, height: size, radius: '50%', overflow: 'hidden', imageWidth: size, imageHeight: size, fit: 'cover', alt: '', hidden: 'true' });
 };
 
-for (const width of [1360, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+for (const width of [1280, 390, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`management avatars decode and preserve account and member layouts at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const png = await portrait(page), src = locale === 'en' ? imageUrl : png;
@@ -67,10 +69,10 @@ for (const width of [1360, 390, 320]) for (const locale of ['en', 'zh-CN']) {
     await expect(page.locator('.profile-info .person-meta')).toHaveText(email);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const tabs = page.getByRole('navigation', { name: locale === 'en' ? 'Account settings' : '账户设置' });
-    await tabs.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据' }).click();
-    await tabs.getByRole('button', { name: locale === 'en' ? 'User prompt' : '用户级 Prompt' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'User prompt' : '用户级 Prompt' }).click();
     await expect(page.locator('.worker-prompt-text')).toHaveValue('Original prompt');
-    await tabs.getByRole('button', { name: locale === 'en' ? 'Profile' : '个人资料' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'Profile' : '个人资料' }).click();
     await checkAvatar(page.locator('.profile-info .management-avatar'), src, 49);
     await expect(page.getByRole('button', { name: locale === 'en' ? 'Sign out' : '退出登录' })).toBeVisible();
 
@@ -115,8 +117,8 @@ test('a delayed invalid image keeps the profile size and does not retry on reren
     const failedAttempts = attempts;
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
     const tabs = page.getByRole('navigation', { name: '账户设置' });
-    await tabs.getByRole('button', { name: '访问凭据' }).click();
-    await tabs.getByRole('button', { name: '个人资料' }).click();
+    await tabs.getByRole('link', { name: '访问凭据' }).click();
+    await tabs.getByRole('link', { name: '个人资料' }).click();
     await expect(avatar.locator('img')).toHaveCount(0);
     expect(attempts).toBe(failedAttempts);
   } finally { gate.resolve(); }

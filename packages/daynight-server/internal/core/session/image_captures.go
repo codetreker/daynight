@@ -87,6 +87,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 			return nil, e
 		}
 	case "register":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		request, e := sp.DecodeImageCaptureRequest(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image occurrence registration.")
@@ -191,6 +194,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 			s.scheduleCapture(tx, r, capture)
 		}
 	case "commit":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		input, e := sp.DecodeImageCaptureCommit(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image capture completion.")
@@ -225,6 +231,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		}
 		s.scheduleCapture(tx, r, capture)
 	case "failed":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		var body struct {
 			CaptureID string        `json:"captureId"`
 			AttemptID string        `json:"attemptId"`
@@ -292,10 +301,12 @@ func (s *Execution) scheduleCapture(tx *operationTx, r *record, capture store.Se
 			}
 			err = worker.copyCapture(ioContext, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture)
 			if failure := imageFailureEvidence(err); failure != nil {
-				cleanup, stop := context.WithTimeout(context.WithoutCancel(ioContext), 5*time.Second)
+				cleanupParent, cancelCleanupGate := filestorage.GateCleanupContext(ioContext)
+				cleanup, stop := context.WithTimeout(cleanupParent, 5*time.Second)
 				settleErr := worker.settleCaptureFailure(cleanup, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture, failure)
 				err = errors.Join(err, settleErr)
 				stop()
+				cancelCleanupGate()
 			}
 			err = errors.Join(err, finish())
 			if err != nil {
@@ -314,6 +325,8 @@ func (s *Execution) settleCaptureFailure(ctx context.Context, p model.Principal,
 		return err
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	hasUpload := false
 	err = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
 		d, e := resourceDAO(tx)
@@ -524,6 +537,13 @@ func verifyImageOccurrence(ctx context.Context, tx *operationTx, r *record, occu
 	var ledger archiveLedger
 	if json.Unmarshal(bundle.Ledger, &ledger) != nil {
 		return conflict()
+	}
+	if ledger.ContentPolicy == "task_body" && bundle.Phase == "active" && ledger.HistoryEpoch == r.Snapshot.HistoryEpoch && ledger.SourceThrough == decimal(r.SourceSeq) && ledger.HistoryID == bundle.HistoryID && ledger.TargetSourceEpoch == "" && (ledger.SourceEpoch == "" || ledger.SourceEpoch == sourceEpoch(r)) {
+		for _, position := range ledger.OnlineImageOccurrences {
+			if jsonEqual(encode(position), encode(occurrence)) {
+				return nil
+			}
+		}
 	}
 	for _, position := range ledger.Occurrences {
 		if position.ImageID == occurrence.ImageID && position.EntryID == occurrence.EntryID && position.Container == occurrence.Container && model.EqualOptional(position.PartID, occurrence.PartID) && model.EqualOptional(position.SourceRevision, occurrence.SourceRevision) && model.EqualOptional(position.SourceTextSHA256, occurrence.SourceTextSHA256) && model.EqualOptional(position.CallIDSHA256, archiveCallIDSHA256(occurrence.CallID)) {

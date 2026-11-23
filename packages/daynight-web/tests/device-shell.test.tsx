@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopeCatalog } from "./helpers/credentialScopes";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
@@ -8,7 +9,7 @@ const render = createLocaleRender("zh-CN");
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const other = { ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" };
 const code = "BCDFG-HJKLM";
-const inspection = () => ({ userCode: code, expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" });
+const inspection = () => ({ userCode: code, expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending", catalogRevision: credentialScopeCatalog.catalogRevision });
 const response = (body: unknown, status = 200, principal = user.id) => new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...(status === 401 ? {} : { "Daynight-User-ID": principal }) } });
 
 beforeEach(() => {
@@ -41,17 +42,17 @@ describe("device authorization shell integration", () => {
     let finishIdentity!: (value: Response) => void;
     const fetcher = vi.fn((url: string) => {
       if (url === "/api/v1/me") return new Promise<Response>((resolve) => { finishIdentity = resolve; });
-      return Promise.resolve(url.endsWith("/inspect") ? response(inspection()) : response(null, 204));
+      return Promise.resolve(url === "/api/v1/me/credential-scope-catalog" ? response(credentialScopeCatalogs) : url.endsWith("/inspect") ? response(inspection()) : response(null, 204));
     });
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
     expect(fetcher).toHaveBeenCalledTimes(1);
     await act(async () => finishIdentity(response(user)));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "与我的终端显示的授权码一致" }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
     fireEvent.click(screen.getByRole("button", { name: "授权 CLI" }));
     await screen.findByRole("heading", { name: "CLI 已获授权" });
-    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/v1/me", "/api/v1/auth/device/inspect", "/api/v1/auth/device/decision"]);
-    expect(fetcher).toHaveBeenLastCalledWith("/api/v1/auth/device/decision", expect.objectContaining({ body: JSON.stringify({ userCode: code, decision: "approve", expectedUserId: user.id }) }));
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/v1/me", "/api/v2/auth/device/inspect", "/api/v1/me/credential-scope-catalog", "/api/v2/auth/device/decision"]);
+    expect(fetcher).toHaveBeenLastCalledWith("/api/v2/auth/device/decision", expect.objectContaining({ body: JSON.stringify({ userCode: code, decision: "approve", expectedUserId: user.id, catalogRevision: credentialScopeCatalog.catalogRevision, scopes: credentialScopeCatalog.defaultScopes }) }));
     expect(document.title).toBe("授权 CLI · Daynight");
   });
 
@@ -65,9 +66,9 @@ describe("device authorization shell integration", () => {
   });
 
   it("retains the selected code and blocks approval after a shared account change", async () => {
-    const fetcher = vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(user) : response(inspection(), 200, user.id)));
+    const fetcher = vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(user) : url === "/api/v1/me/credential-scope-catalog" ? response(credentialScopeCatalogs) : response(inspection(), 200, user.id)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-    const checkbox = await screen.findByRole("checkbox");
+    const checkbox = await screen.findByRole("checkbox", { name: "与我的终端显示的授权码一致" });
     fireEvent.click(checkbox);
     act(() => {
       localStorage.setItem("daynight.activeUser", JSON.stringify(other.id));

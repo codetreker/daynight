@@ -1,4 +1,4 @@
-import { parseSessionInput, parseImageError, imageId, imageText, imageDecimal, imageInteger, parseImageCapabilities, parseImageBudget, parseMarkdownImagePart, parseMarkdownImageMetadata, type ImageError, type MarkdownImageMetadata, type SessionInput, type ImagePart, type ImageUnavailablePart, type MarkdownImagePart, type ImageCapabilities, type ImageBudget } from "./image-values.js";
+import { parseSessionInput, parseImageError, parseStoredImageError, imageId, imageText, storedImageText, imageDecimal, imageInteger, parseImageCapabilities, parseImageBudget, parseMarkdownImagePart, parseStoredMarkdownImagePart, parseMarkdownImageMetadata, parseStoredMarkdownImageMetadata, type ImageError, type MarkdownImageMetadata, type SessionInput, type ImagePart, type ImageUnavailablePart, type MarkdownImagePart, type ImageCapabilities, type ImageBudget } from "./image-values.js";
 export * from "./image-values.js";
 import { parseSessionControls, type SessionControls } from "./controls.js";
 // This wire contract is shared with the browser and must not import Node modules.
@@ -143,6 +143,15 @@ const text = (value: unknown, allowEmpty = false): string => {
   if (typeof value !== "string" || value.length > 1_048_576 || !value.isWellFormed() || value.includes("\0") || (!allowEmpty && !/[^\p{White_Space}]/u.test(value)) || textBytes.encode(value).byteLength > 1_048_576) return invalid();
   return value;
 };
+const storedText = (value: unknown, allowEmpty = false): string => {
+  if (typeof value !== "string" || !value.isWellFormed() || value.includes("\0") || (!allowEmpty && !/[^\p{White_Space}]/u.test(value))) return invalid();
+  return value;
+};
+const storedKey = (value: unknown): string => storedText(value);
+const storedList = <T>(value: unknown, parse: (value: unknown) => T): T[] => {
+  if (!Array.isArray(value)) return invalid();
+  return value.map(parse);
+};
 const key = (value: unknown): string => {
   const result = text(value);
   return textBytes.encode(result).byteLength <= 256 ? result : invalid();
@@ -186,11 +195,6 @@ export const assertSessionFence = (actual: SessionFence & { readonly connectionE
   }
 };
 const approvalAction = (value: unknown): ApprovalAction => oneOf(value, ["allow_once", "allow_session", "reject"]);
-const option = (value: unknown): InteractionOption => {
-  const data = object(value, ["id", "label"]);
-  return { id: key(data.id), label: text(data.label) };
-};
-const options = (value: unknown): InteractionOption[] => unique(list(value, option), (item) => item.id);
 export const parseInteractionResponse = (value: unknown): InteractionResponse => {
   if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
   if (value.kind === "dismiss") { object(value, ["kind"]); return { kind: "dismiss" }; }
@@ -297,107 +301,124 @@ export const parseSessionOperation = (value: unknown): SessionOperation => {
   const error = data.error === null ? null : object(data.error, ["code", "message"]);
   return { protocol: protocol(data.protocol), ...fence(data), operationId: id(data.operationId), kind: oneOf(data.kind, ["send_message", "cancel", "interaction_response", "update_setting", "execute_command", "refresh_controls"]), state: oneOf(data.state, ["accepted", "offered", "dispatching", "provider_accepted", "confirmed", "failed", "rejected", "expired", "unknown"]), providerResult: nullable(data.providerResult, (value) => oneOf(value, ["started", "queued", "handled"])), error: error === null ? null : { code: key(error.code), message: text(error.message) } };
 };
-export const parseSessionResource = (value: unknown): SessionResource => {
+const protocolText = text, protocolKey = key, protocolList = list;
+const parseResource = (value: unknown, stored: boolean): SessionResource => {
+  const key = stored ? storedKey : protocolKey, text = stored ? storedText : protocolText;
   const extended = value && typeof value === "object" && Object.hasOwn(value, "revision");
   const data = object(value, ["resourceId", "status", "name", "mediaType", "byteLength", "sha256", "error", ...(extended ? ["revision", "width", "height", "frameCount"] : [])]);
-  const result: SessionResource = { resourceId: id(data.resourceId), status: oneOf(data.status, ["pending", "available", "failed", "unavailable"]), name: extended ? imageText(data.name) : key(data.name), mediaType: nullable(data.mediaType, key), byteLength: nullable(data.byteLength, (value) => sequence(value, true)), sha256: nullable(data.sha256, key), error: nullable(data.error, text) };
+  const result: SessionResource = { resourceId: id(data.resourceId), status: oneOf(data.status, ["pending", "available", "failed", "unavailable"]), name: extended ? (stored ? storedImageText(data.name) : imageText(data.name)) : key(data.name), mediaType: nullable(data.mediaType, key), byteLength: nullable(data.byteLength, (value) => sequence(value, true)), sha256: nullable(data.sha256, key), error: nullable(data.error, text) };
   if (result.sha256 !== null && !/^[a-f0-9]{64}$/.test(result.sha256)) return invalid();
   if (result.mediaType !== null && !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(result.mediaType)) return invalid();
   if (result.status === "available" && (result.sha256 === null || result.mediaType === null || result.byteLength === null || result.error !== null)) return invalid();
   if (extended) {
-    Object.assign(result, { revision: imageDecimal(data.revision), width: nullable(data.width, v => imageInteger(v, 16384)), height: nullable(data.height, v => imageInteger(v, 16384)), frameCount: nullable(data.frameCount, v => imageInteger(v, 256)) });
+    Object.assign(result, { revision: imageDecimal(data.revision), width: nullable(data.width, v => imageInteger(v, stored ? Number.MAX_SAFE_INTEGER : 16384)), height: nullable(data.height, v => imageInteger(v, stored ? Number.MAX_SAFE_INTEGER : 16384)), frameCount: nullable(data.frameCount, v => imageInteger(v, stored ? Number.MAX_SAFE_INTEGER : 256)) });
     const known = [result.width, result.height, result.frameCount].filter(v => v !== null).length;
     const image = /^image\//.test(result.mediaType ?? "");
     if (image && !["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"].includes(result.mediaType!)) return invalid();
-    if (known !== 0 && known !== 3 || result.status === "available" && image && known !== 3 || known === 3 && (!image || result.width! * result.height! > 33554432 || result.width! * result.height! * result.frameCount! > 67108864)) return invalid();
-    if (result.status === "available") { if (BigInt(result.byteLength!) < 1n || BigInt(result.byteLength!) > 10485760n) return invalid(); }
+    if (known !== 0 && known !== 3 || result.status === "available" && image && known !== 3 || known === 3 && (!image || !stored && (result.width! * result.height! > 33554432 || result.width! * result.height! * result.frameCount! > 67108864))) return invalid();
+    if (result.status === "available") { if (BigInt(result.byteLength!) < 1n || !stored && BigInt(result.byteLength!) > 10485760n) return invalid(); }
     else if (result.mediaType !== null || result.byteLength !== null || result.sha256 !== null || known !== 0 || (result.status === "pending" ? result.error !== null : result.error === null)) return invalid();
   }
   return result;
 };
-const formField = (value: unknown): FormField => {
-  if (typeof value !== "object" || value === null || !("type" in value)) return invalid();
-  const extra = value.type === "text" ? ["sensitive"] : value.type === "number" ? ["min", "max"] : value.type === "boolean" ? [] : ["options"];
-  const data = object(value, ["fieldId", "label", "required", "type", ...extra]);
-  const base = { fieldId: key(data.fieldId), label: text(data.label), required: bool(data.required) };
-  if (data.type === "text") return { ...base, type: "text", sensitive: bool(data.sensitive) };
-  if (data.type === "number") {
-    const min = nullable(data.min, finite), max = nullable(data.max, finite);
-    if (min !== null && max !== null && min > max) return invalid();
-    return { ...base, type: "number", min, max };
-  }
-  if (data.type === "boolean") return { ...base, type: "boolean" };
-  return { ...base, type: oneOf(data.type, ["select", "multiselect"]), options: nonempty(options(data.options)) };
-};
-export const parseSessionInteraction = (value: unknown): SessionInteraction => {
-  if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
-  const extra = value.kind === "approval" ? ["detail", "actions"] : value.kind === "question" ? ["questions", "canDismiss"] : ["fields", "canDismiss"];
-  const data = object(value, ["interactionId", "revision", "state", "title", "kind", ...extra]);
-  const base = { interactionId: id(data.interactionId), revision: sequence(data.revision), state: oneOf(data.state, ["pending", "resolved", "expired"]), title: text(data.title) };
-  if (data.kind === "approval") return { ...base, kind: "approval", detail: text(data.detail, true), actions: nonempty(unique(list(data.actions, approvalAction), (item) => item)) };
-  if (data.kind === "question") {
-    return { ...base, kind: "question", canDismiss: bool(data.canDismiss), questions: nonempty(unique(list(data.questions, (value) => {
-      const item = object(value, ["questionId", "label", "options", "multiple", "allowCustom", "required", "sensitive"]);
-      const result = { questionId: key(item.questionId), label: text(item.label), options: options(item.options), multiple: bool(item.multiple), allowCustom: bool(item.allowCustom), required: bool(item.required), sensitive: bool(item.sensitive) };
-      if (result.options.length === 0 && !result.allowCustom) return invalid();
-      return result;
-    }), (item) => item.questionId)) };
-  }
-  if (data.kind === "form") return { ...base, kind: "form", canDismiss: bool(data.canDismiss), fields: nonempty(unique(list(data.fields, formField), (item) => item.fieldId)) };
-  return invalid();
-};
-const messagePart = (value: unknown): MessagePart => {
-  if (typeof value !== "object" || value === null || !("type" in value)) return invalid();
-  if (value.type === "text") { const data = object(value, ["type", "text"]); return { type: "text", text: text(data.text, true) }; }
-  if (value.type === "resource") { const data = object(value, ["type", "resourceId", "label"]); return { type: "resource", resourceId: id(data.resourceId), label: text(data.label) }; }
-  if (value.type === "markdown") return parseMarkdownImagePart(value);
-  if (value.type === "image") { const data = object(value, ["type", "imageId", "resourceId", "label"]); return { type: "image", imageId: imageId(data.imageId), resourceId: imageId(data.resourceId), label: imageText(data.label) }; }
-  if (value.type === "image_unavailable") { const data = object(value, ["type", "imageId", "label", "error"]); return { type: "image_unavailable", imageId: imageId(data.imageId), label: imageText(data.label), error: parseImageError(data.error) }; }
-  return invalid();
-};
-export const parseTimelineEntry = (value: unknown): TimelineEntry => {
-  if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
-  const enriched = Object.hasOwn(value, "imageProjectionError");
-  const common = ["entryId", "entrySeq", "revision", "kind", ...(enriched ? ["imageProjectionError"] : [])];
-  const extras: Record<string, readonly string[]> = {
-    user_message: ["content", ...(Object.hasOwn(value, "origin") ? ["origin"] : [])], assistant_message: ["content"], reasoning: ["text", ...(enriched ? ["markdown"] : [])], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
-    interaction: ["interaction"], error: ["code", "message"], compaction: ["summary"], todo: ["items"],
+export const parseSessionResource = (value: unknown): SessionResource => parseResource(value, false);
+export const parseStoredSessionResource = (value: unknown): SessionResource => parseResource(value, true);
+const timelineParsers = (stored: boolean) => {
+  const text = stored ? storedText : protocolText, key = stored ? storedKey : protocolKey, list = stored ? storedList : protocolList;
+  const option = (value: unknown): InteractionOption => {
+    const data = object(value, ["id", "label"]);
+    return { id: key(data.id), label: text(data.label) };
   };
-  const kind = oneOf(value.kind, ["user_message", "assistant_message", "reasoning", "tool_call", "interaction", "error", "compaction", "todo"]);
-  const data = object(value, [...common, ...extras[kind]!]);
-  if (enriched && !["user_message", "assistant_message", "reasoning", "tool_call"].includes(kind)) return invalid();
-  const base = { entryId: id(data.entryId), entrySeq: sequence(data.entrySeq), revision: sequence(data.revision), ...(enriched ? { imageProjectionError: nullable(data.imageProjectionError, parseImageError) } : {}) };
-  if (base.imageProjectionError && base.imageProjectionError.code !== "source_unavailable") return invalid();
-  const content = (raw: unknown): readonly MessagePart[] => {
-    const parts = list(raw, messagePart);
-    if (!enriched && parts.some(part => part.type !== "text" && part.type !== "resource")) return invalid();
-    const partIds = new Set<string>(), imageIds = new Set<string>();
-    for (const part of parts) {
-      if (part.type === "markdown") {
-        if (partIds.has(part.partId)) return invalid(); partIds.add(part.partId);
-        for (const binding of [...(part.bindings ?? []), ...part.retainedImages]) {
-          if (imageIds.has(binding.imageId)) return invalid(); imageIds.add(binding.imageId);
-        }
-      } else if (part.type === "image" || part.type === "image_unavailable") {
-        if (imageIds.has(part.imageId)) return invalid(); imageIds.add(part.imageId);
-      }
+  const options = (value: unknown): InteractionOption[] => unique(list(value, option), (item) => item.id);
+  const formField = (value: unknown): FormField => {
+    if (typeof value !== "object" || value === null || !("type" in value)) return invalid();
+    const extra = value.type === "text" ? ["sensitive"] : value.type === "number" ? ["min", "max"] : value.type === "boolean" ? [] : ["options"];
+    const data = object(value, ["fieldId", "label", "required", "type", ...extra]);
+    const base = { fieldId: key(data.fieldId), label: text(data.label), required: bool(data.required) };
+    if (data.type === "text") return { ...base, type: "text", sensitive: bool(data.sensitive) };
+    if (data.type === "number") {
+      const min = nullable(data.min, finite), max = nullable(data.max, finite);
+      if (min !== null && max !== null && min > max) return invalid();
+      return { ...base, type: "number", min, max };
     }
-    if (base.imageProjectionError && !parts.some((part, index) => part.type === "markdown" && index > 0 && parts[index - 1]?.type === "text" && part.text === "" && part.complete && !part.truncated && part.bindings?.length === 0)) return invalid();
-    return parts;
+    if (data.type === "boolean") return { ...base, type: "boolean" };
+    return { ...base, type: oneOf(data.type, ["select", "multiselect"]), options: nonempty(options(data.options)) };
   };
-  if (kind === "user_message") return { ...base, kind, content: content(data.content), ...(Object.hasOwn(data, "origin") ? { origin: oneOf(data.origin, ["user", "daynight"]) } : {}) };
-  if (kind === "assistant_message") return { ...base, kind, content: content(data.content) };
-  if (kind === "reasoning") {
-    const body = text(data.text, true), markdown = enriched ? parseMarkdownImageMetadata(data.markdown, body, !!base.imageProjectionError) : null;
-    if (markdown && (markdown.bindings === null) !== !!base.imageProjectionError) return invalid();
-    return { ...base, kind, text: body, ...(markdown ? { markdown } : {}) };
-  }
-  if (kind === "tool_call") return { ...base, kind, callId: key(data.callId), name: key(data.name), input: text(data.input, true), output: content(data.output), status: oneOf(data.status, ["running", "completed", "failed"]), truncated: bool(data.truncated) };
-  if (kind === "interaction") return { ...base, kind, interaction: parseSessionInteraction(data.interaction) };
-  if (kind === "error") return { ...base, kind, code: key(data.code), message: text(data.message) };
-  if (kind === "compaction") return { ...base, kind, summary: text(data.summary, true) };
-  return { ...base, kind: "todo", items: unique(list(data.items, (value) => { const item = object(value, ["id", "text", "status"]); return { id: key(item.id), text: text(item.text), status: oneOf(item.status, ["pending", "in_progress", "completed"]) }; }), (item) => item.id) };
+  const parseSessionInteraction = (value: unknown): SessionInteraction => {
+    if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
+    const extra = value.kind === "approval" ? ["detail", "actions"] : value.kind === "question" ? ["questions", "canDismiss"] : ["fields", "canDismiss"];
+    const data = object(value, ["interactionId", "revision", "state", "title", "kind", ...extra]);
+    const base = { interactionId: id(data.interactionId), revision: sequence(data.revision), state: oneOf(data.state, ["pending", "resolved", "expired"]), title: text(data.title) };
+    if (data.kind === "approval") return { ...base, kind: "approval", detail: text(data.detail, true), actions: nonempty(unique(list(data.actions, approvalAction), (item) => item)) };
+    if (data.kind === "question") {
+      return { ...base, kind: "question", canDismiss: bool(data.canDismiss), questions: nonempty(unique(list(data.questions, (value) => {
+        const item = object(value, ["questionId", "label", "options", "multiple", "allowCustom", "required", "sensitive"]);
+        const result = { questionId: key(item.questionId), label: text(item.label), options: options(item.options), multiple: bool(item.multiple), allowCustom: bool(item.allowCustom), required: bool(item.required), sensitive: bool(item.sensitive) };
+        if (result.options.length === 0 && !result.allowCustom) return invalid();
+        return result;
+      }), (item) => item.questionId)) };
+    }
+    if (data.kind === "form") return { ...base, kind: "form", canDismiss: bool(data.canDismiss), fields: nonempty(unique(list(data.fields, formField), (item) => item.fieldId)) };
+    return invalid();
+  };
+  const messagePart = (value: unknown): MessagePart => {
+    if (typeof value !== "object" || value === null || !("type" in value)) return invalid();
+    if (value.type === "text") { const data = object(value, ["type", "text"]); return { type: "text", text: text(data.text, true) }; }
+    if (value.type === "resource") { const data = object(value, ["type", "resourceId", "label"]); return { type: "resource", resourceId: id(data.resourceId), label: text(data.label) }; }
+    if (value.type === "markdown") return (stored ? parseStoredMarkdownImagePart : parseMarkdownImagePart)(value);
+    if (value.type === "image") { const data = object(value, ["type", "imageId", "resourceId", "label"]); return { type: "image", imageId: imageId(data.imageId), resourceId: imageId(data.resourceId), label: stored ? storedImageText(data.label) : imageText(data.label) }; }
+    if (value.type === "image_unavailable") { const data = object(value, ["type", "imageId", "label", "error"]); return { type: "image_unavailable", imageId: imageId(data.imageId), label: stored ? storedImageText(data.label) : imageText(data.label), error: (stored ? parseStoredImageError : parseImageError)(data.error) }; }
+    return invalid();
+  };
+  const parseTimelineEntry = (value: unknown): TimelineEntry => {
+    if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
+    const enriched = Object.hasOwn(value, "imageProjectionError");
+    const common = ["entryId", "entrySeq", "revision", "kind", ...(enriched ? ["imageProjectionError"] : [])];
+    const extras: Record<string, readonly string[]> = {
+      user_message: ["content", ...(Object.hasOwn(value, "origin") ? ["origin"] : [])], assistant_message: ["content"], reasoning: ["text", ...(enriched ? ["markdown"] : [])], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
+      interaction: ["interaction"], error: ["code", "message"], compaction: ["summary"], todo: ["items"],
+    };
+    const kind = oneOf(value.kind, ["user_message", "assistant_message", "reasoning", "tool_call", "interaction", "error", "compaction", "todo"]);
+    const data = object(value, [...common, ...extras[kind]!]);
+    if (enriched && !["user_message", "assistant_message", "reasoning", "tool_call"].includes(kind)) return invalid();
+    const base = { entryId: id(data.entryId), entrySeq: sequence(data.entrySeq), revision: sequence(data.revision), ...(enriched ? { imageProjectionError: nullable(data.imageProjectionError, stored ? parseStoredImageError : parseImageError) } : {}) };
+    if (base.imageProjectionError && base.imageProjectionError.code !== "source_unavailable") return invalid();
+    const content = (raw: unknown): readonly MessagePart[] => {
+      const parts = list(raw, messagePart);
+      if (!enriched && parts.some(part => part.type !== "text" && part.type !== "resource")) return invalid();
+      const partIds = new Set<string>(), imageIds = new Set<string>();
+      for (const part of parts) {
+        if (part.type === "markdown") {
+          if (partIds.has(part.partId)) return invalid(); partIds.add(part.partId);
+          for (const binding of [...(part.bindings ?? []), ...part.retainedImages]) {
+            if (imageIds.has(binding.imageId)) return invalid(); imageIds.add(binding.imageId);
+          }
+        } else if (part.type === "image" || part.type === "image_unavailable") {
+          if (imageIds.has(part.imageId)) return invalid(); imageIds.add(part.imageId);
+        }
+      }
+      if (base.imageProjectionError && !parts.some((part, index) => part.type === "markdown" && index > 0 && parts[index - 1]?.type === "text" && part.text === "" && part.complete && !part.truncated && part.bindings?.length === 0)) return invalid();
+      return parts;
+    };
+    if (kind === "user_message") return { ...base, kind, content: content(data.content), ...(Object.hasOwn(data, "origin") ? { origin: oneOf(data.origin, ["user", "daynight"]) } : {}) };
+    if (kind === "assistant_message") return { ...base, kind, content: content(data.content) };
+    if (kind === "reasoning") {
+      const body = text(data.text, true), markdown = enriched ? (stored ? parseStoredMarkdownImageMetadata : parseMarkdownImageMetadata)(data.markdown, body, !!base.imageProjectionError) : null;
+      if (markdown && (markdown.bindings === null) !== !!base.imageProjectionError) return invalid();
+      return { ...base, kind, text: body, ...(markdown ? { markdown } : {}) };
+    }
+    if (kind === "tool_call") return { ...base, kind, callId: key(data.callId), name: key(data.name), input: text(data.input, true), output: content(data.output), status: oneOf(data.status, ["running", "completed", "failed"]), truncated: bool(data.truncated) };
+    if (kind === "interaction") return { ...base, kind, interaction: parseSessionInteraction(data.interaction) };
+    if (kind === "error") return { ...base, kind, code: key(data.code), message: text(data.message) };
+    if (kind === "compaction") return { ...base, kind, summary: text(data.summary, true) };
+    return { ...base, kind: "todo", items: unique(list(data.items, (value) => { const item = object(value, ["id", "text", "status"]); return { id: key(item.id), text: text(item.text), status: oneOf(item.status, ["pending", "in_progress", "completed"]) }; }), (item) => item.id) };
+  };
+  return { parseSessionInteraction, parseTimelineEntry };
 };
+const publicTimeline = timelineParsers(false), storedTimeline = timelineParsers(true);
+export const parseSessionInteraction = publicTimeline.parseSessionInteraction;
+export const parseTimelineEntry = publicTimeline.parseTimelineEntry;
+export const parseStoredTimelineEntry = storedTimeline.parseTimelineEntry;
 export const parseSessionEvent = (value: unknown): SessionEvent => {
   const data = object(value, ["protocol", ...fenceKeys(value), "connectionEpoch", "eventSeq", "historyEpoch", "kind", "payload"]);
   const base = { protocol: protocol(data.protocol), ...fence(data), connectionEpoch: sequence(data.connectionEpoch, data.kind === "snapshot"), eventSeq: sequence(data.eventSeq), historyEpoch: key(data.historyEpoch) };

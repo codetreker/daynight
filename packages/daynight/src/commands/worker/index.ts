@@ -3,26 +3,24 @@ import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
-import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
+import type { ResourceRecoveryRequest } from "./resource-recovery.js";
 import type { WorkerControlRequest } from "./control.js";
 import type { WorkerRepositoryCommandRequest } from "./configuration-guide.js";
 import { workerDefinition } from "./definition.js";
 
 export type WorkerCommandDependencies = {
-  resources: (options: { homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
+  resources: (options: { homeDirectory: string; request: ResourceRecoveryRequest; output: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   setup: (context: CliContext) => Promise<void>;
-  attach: (options: { homeDirectory: string }) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
   run: (options: { homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   manage: (options: { homeDirectory: string; packageDirectory: string; version: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
-  resources: async options => (await import("./runtime.js")).runWorkerResources(options),
+  resources: async options => (await import("./resource-recovery-runtime.js")).runCompletedWebResourceRecovery(options),
   setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
-  attach: async (options) => (await import("./attach.js")).attachWorker(options),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
-  run: async (options) => (await import("./runtime.js")).runWorker(options),
+  run: async (options) => (await import("./runtime.js")).runManagedWorker(options),
   manage: async (options) => (await import("./runtime.js")).runWorkerControl(options),
 };
 
@@ -34,10 +32,6 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   }
   if (command.command.name === "setup") {
     await dependencies.setup(context);
-    return;
-  }
-  if (command.command.name === "attach") {
-    await dependencies.attach({ homeDirectory: context.homeDirectory() });
     return;
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });
@@ -53,6 +47,18 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   };
   const option = (name: string): string => command.options.get(name) as string;
   const rawProject = command.options.get("--project") as string | undefined;
+  if (command.command.name === "disable" || command.command.name === "resume" || command.path.at(-2) === "lifecycle") {
+    await (await import("./lifecycle-command.js")).runWorkerLifecycleCommand({ kind: command.command.name as "disable" | "resume" | "show", workerId: uuid(option("--worker-id"), "Worker ID") }, context);
+    return;
+  }
+  if (command.command.name === "migrate-bot" || command.command.name === "migrated-bot-history") {
+    await (await import("./bots/migration-command.js")).runWorkerBotMigration({ botId: uuid(command.values[0]!, "Bot ID"), kind: command.command.name === "migrate-bot" ? "migrate" : "history", confirmed: command.options.has("--confirm") }, context);
+    return;
+  }
+  if (command.command.name === "repair-markdown") {
+    await (await import("./repair-markdown.js")).runWorkerMarkdownRepair({ taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") }, context);
+    return;
+  }
   if (command.path.at(-2) === "repo") {
     const request: WorkerRepositoryCommandRequest = command.command.name === "list"
       ? { kind: "list", json: command.options.has("--json") }
@@ -61,18 +67,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     return;
   }
   if (command.path.at(-2) === "resources") {
-    let request: WorkerResourceCommandRequest;
-    if (command.command.name === "list") request = { kind: "list" };
-    else {
-      const target = { taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") };
-      if (command.command.name === "retry") request = { ...target, kind: "retry" };
-      else {
-        const action = option("--action");
-        if (action !== "abandon" && action !== "delete") throw new UsageError("Resource action must be abandon or delete.", help);
-        if (!command.options.has("--confirm")) throw new UsageError("Resource disposal requires --confirm.", help);
-        request = { ...target, kind: "dispose", action, operationId: uuid(option("--operation-id"), "Operation ID"), confirmed: true };
-      }
-    }
+    const request: ResourceRecoveryRequest = { taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(command.options.has("--worktree-id") ? { worktreeId: uuid(option("--worktree-id"), "Worktree ID") } : {}), confirmed: command.options.has("--confirm") };
     await dependencies.resources({ homeDirectory: context.homeDirectory(), request, output: value => context.stdout(value) });
     return;
   }

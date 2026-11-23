@@ -33,7 +33,7 @@ func workerSnapshotReportBody() map[string]any {
 		"os":     probe(map[string]any{"type": "Linux", "release": "6.8", "version": "kernel", "arch": "x64"}),
 		"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 12.5}),
 		"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("0.9.5"), "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
 		"taskInventory": map[string]any{"observedAt": now, "claims": []any{}}}
 }
 
@@ -169,13 +169,52 @@ func capacityExpectedSnapshot(t *testing.T, user, worker string, body map[string
 }
 
 type capacityReportOperations struct {
-	t             *testing.T
-	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
-	sync          func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
-	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
-	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
-	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
-	configuration func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+	reviewPullRequests     func(context.Context, model.Principal, string, model.PageRequest) (workerservice.ReviewPullRequestPage, error)
+	reviewParticipation    func(context.Context, model.Principal, string) (model.WorkerReviewParticipation, error)
+	putReviewParticipation func(context.Context, model.Principal, string, string, bool) (model.WorkerReviewParticipation, error)
+	t                      *testing.T
+	alias                  func(context.Context, model.Principal, string) (model.WorkerAlias, error)
+	putAlias               func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
+	report                 func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	sync                   func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
+	put                    func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	get                    func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
+	list                   func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
+	configuration          func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+}
+
+func (s *capacityReportOperations) ReviewPullRequests(ctx context.Context, p model.Principal, id string, page model.PageRequest) (workerservice.ReviewPullRequestPage, error) {
+	if s.reviewPullRequests == nil {
+		return workerservice.ReviewPullRequestPage{}, s.unexpected("ReviewPullRequests")
+	}
+	return s.reviewPullRequests(ctx, p, id, page)
+}
+
+func (s *capacityReportOperations) ReviewParticipation(ctx context.Context, p model.Principal, id string) (model.WorkerReviewParticipation, error) {
+	if s.reviewParticipation == nil {
+		return model.WorkerReviewParticipation{}, s.unexpected("ReviewParticipation")
+	}
+	return s.reviewParticipation(ctx, p, id)
+}
+
+func (s *capacityReportOperations) PutReviewParticipation(ctx context.Context, p model.Principal, id, expected string, enabled bool) (model.WorkerReviewParticipation, error) {
+	if s.putReviewParticipation == nil {
+		return model.WorkerReviewParticipation{}, s.unexpected("PutReviewParticipation")
+	}
+	return s.putReviewParticipation(ctx, p, id, expected, enabled)
+}
+
+func (s *capacityReportOperations) Alias(ctx context.Context, p model.Principal, id string) (model.WorkerAlias, error) {
+	if s.alias == nil {
+		return model.WorkerAlias{}, s.unexpected("Alias")
+	}
+	return s.alias(ctx, p, id)
+}
+func (s *capacityReportOperations) PutAlias(ctx context.Context, p model.Principal, id, expected string, v *string) (model.WorkerAlias, error) {
+	if s.putAlias == nil {
+		return model.WorkerAlias{}, s.unexpected("PutAlias")
+	}
+	return s.putAlias(ctx, p, id, expected, v)
 }
 
 func (s *capacityReportOperations) unexpected(method string) error {
@@ -228,6 +267,10 @@ func (s *capacityReportOperations) PutConfiguration(ctx context.Context, princip
 
 func (s *capacityReportOperations) PutMonitoring(context.Context, model.Principal, string, *string, monitoring.Observation) (monitoring.Receipt, error) {
 	return monitoring.Receipt{}, s.unexpected("PutMonitoring")
+}
+
+func (s *capacityReportOperations) SaveDirectMonitoring(context.Context, model.Principal, string, monitoring.DirectObservation) (monitoring.DirectReceipt, string, error) {
+	return monitoring.DirectReceipt{}, "", s.unexpected("SaveDirectMonitoring")
 }
 
 func (s *capacityReportOperations) GetMonitoring(context.Context, model.Principal, string) (monitoring.DetailResponse, error) {
@@ -290,7 +333,7 @@ func (f *capacityReportOperationFixture) reportRequest(body map[string]any, call
 		Configuration: nil,
 	}
 	if protocol == "1" {
-		want.Configuration = capacityDecode[*model.WorkerConfigurationExchange](f.t, body["configuration"])
+		want.Configuration = configurationHTTPExchange(f.t, body["configuration"])
 	}
 	used := 0
 	f.operations.report = func(ctx context.Context, principal model.Principal, worker string, input model.WorkerReport) (workerservice.WorkerReportResult, error) {
@@ -320,10 +363,14 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 	f.t.Helper()
 	f.authCalls = 0
 	var response *httptest.ResponseRecorder
-	if protocol == "" {
+	if protocol == "" && !strings.HasSuffix(path, "/configuration") {
 		response = projectRequest(f.handler, method, path, body)
 	} else {
-		response = configurationHTTPRequest(f.handler, method, path, body, protocol)
+		if protocol == "" {
+			response = configurationHTTPRequest(f.handler, method, path, body)
+		} else {
+			response = configurationHTTPRequest(f.handler, method, path, body, protocol)
+		}
 	}
 	if f.authCalls != 1 {
 		f.t.Fatalf("credential calls = %d, want 1", f.authCalls)
@@ -336,9 +383,24 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 
 func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls int, result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
 	f.t.Helper()
-	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
-	want.PreserveAgentControlMode = true
-	want.PreserveToolPaths = true
+	want := configurationHTTPModel(f.t, body["value"])
+	fields := body["value"].(map[string]any)
+	if _, exists := fields["preferPlatformSpecificTasks"]; exists {
+		converted := make(map[string]any, len(fields))
+		for key, value := range fields {
+			converted[key] = value
+		}
+		delete(converted, "preferPlatformSpecificTasks")
+		converted["platformTaskMode"] = want.PlatformTaskMode
+		body["value"] = converted
+	}
+	want.PreserveArchiveSessions = true
+	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
+	want.PreserveSudoCleanup = !present
+	_, present = body["value"].(map[string]any)["enableWindowsProcessCleanup"]
+	want.PreserveWindowsProcessCleanup = !present
+	_, present = body["value"].(map[string]any)["taskTagFilter"]
+	want.PreserveTaskTagFilter = !present
 	revision := body["revision"].(string)
 	used := 0
 	f.operations.put = func(ctx context.Context, principal model.Principal, worker, actualRevision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
@@ -434,7 +496,9 @@ func (f *capacityReportOperationFixture) listRequest(result workerservice.Worker
 	return response
 }
 
-func boundedUTF8(size int) string { return strings.Repeat("界", size/3) + strings.Repeat("x", size%3) }
+func boundedUTF8(size int) string {
+	return strings.Repeat("界", size/3) + strings.Repeat("x", size%3)
+}
 
 func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	tests := []struct {
@@ -445,9 +509,6 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		{"machine", 256, func(b map[string]any, s string) { b["machine"].(map[string]any)["name"] = s }},
 		{"cwd", 4096, func(b map[string]any, s string) { b["workingDirectory"] = s }},
 		{"daynight", 256, func(b map[string]any, s string) { b["versions"].(map[string]any)["daynight"] = s }},
-		{"herdr", 256, func(b map[string]any, s string) {
-			b["versions"].(map[string]any)["herdr"].(map[string]any)["value"] = s
-		}},
 		{"codex", 256, func(b map[string]any, s string) {
 			b["versions"].(map[string]any)["codex"] = map[string]any{"state": "ok", "checkedAt": "2026-10-29T00:00:00Z", "value": s}
 		}},
@@ -530,7 +591,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			value := configurationHTTPValue()
 			tc.set(value, tc.valid)
-			saved := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+			saved := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
 			if tc.changed {
 				saved.Desired.Revision = "2"
 				saved.Desired.UpdatedAt = capacityObservedAt.Add(1)
@@ -551,7 +612,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 			projects[i] = map[string]any{"projectId": fmt.Sprintf("%08x-0000-4000-8000-000000000001", i+1), "nativeOverrides": map[string]any{}}
 		}
 		value["projects"] = projects[:128]
-		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
 		got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, current), http.StatusOK)
 		if !reflect.DeepEqual(got, current) {
 			t.Fatal("equal configuration response changed revision or content")
@@ -565,10 +626,10 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		for i := range items {
 			items[i] = map[string]any{"key": map[string]any{"kind": "projectPreparation", "projectId": uuid.NewString()}, "targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil}
 		}
-		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-1]}
+		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-5]}
 		body := configurationHTTPReportBody(nil, obs)
 		want := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: model.WorkerConfigurationReceipt{
-			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
+			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
 		}}
 		result := workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &want.Configuration}
 		response := f.reportRequest(body, 1, result, nil, "1")

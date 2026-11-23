@@ -15,11 +15,15 @@ func eventAttention(kind string) (bool, error) {
 	switch kind {
 	case "report", "escalation", "result_unknown", "proposal_pending", "inquiry_timed_out", "takeover", "claim_lost":
 		return true, nil
-	case "update", "resolved", "direct_success", "proposal_decided", "appendix_added", "inquiry", "answer", "transfer", "intervention", "trigger":
+	case "update", "resolved", "direct_success", "proposal_decided", "appendix_added", "inquiry", "answer", "transfer", "intervention", "trigger", "retrospective", InboundEventType:
 		return false, nil
 	default:
 		return false, invalid("Event type is invalid.")
 	}
+}
+func knownEventType(kind string) bool {
+	_, err := eventAttention(kind)
+	return err == nil
 }
 func (m *Module) systemEvent(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask, target, kind string, payload any, now time.Time) (model.AssistantTaskEvent, error) {
 	return m.systemEventID(ctx, dao, task, uuid.NewString(), target, kind, payload, now)
@@ -33,6 +37,13 @@ func (m *Module) systemEventID(ctx context.Context, dao store.AssistantTaskDAO, 
 	if err != nil {
 		return model.AssistantTaskEvent{}, err
 	}
+	return insertSystemEvent(ctx, dao, task, id, target, kind, attention, data, now)
+}
+
+// insertSystemEvent stores already encoded payload bytes unchanged, so callers
+// that own a canonical encoding are not re-escaped by json.Marshal.
+func insertSystemEvent(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask, id, target, kind string, attention bool, data json.RawMessage, now time.Time) (model.AssistantTaskEvent, error) {
+	var err error
 	event := model.AssistantTaskEvent{ID: id, OwnerUserID: task.OwnerUserID, TaskID: task.ID, TargetBotID: target, Type: kind, State: "pending", Payload: data, Attention: attention, CreatedAt: now}
 	event.RequestFingerprint, err = fingerprint(event)
 	if err != nil {
@@ -48,6 +59,7 @@ func (m *Module) systemEventID(ctx context.Context, dao store.AssistantTaskDAO, 
 	return event, nil
 }
 func (m *Module) AddEvent(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input EventInput) (model.AssistantTaskEvent, error) {
+	actor = actor.requiringBranches("AddEvent", "default")
 	var result model.AssistantTaskEvent
 	if !strictID(input.ID) || !strictID(input.TargetBotID) {
 		return result, invalid("Event and target Bot identities are required.")
@@ -100,6 +112,7 @@ func (m *Module) AddEvent(ctx context.Context, dao store.AssistantTaskDAO, actor
 	return result, finishWork(ctx, dao, actor, task, now)
 }
 func (m *Module) AckEvent(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AckEventInput) (model.AssistantTaskEvent, error) {
+	actor = actor.requiringBranches("AckEvent", "default")
 	var result model.AssistantTaskEvent
 	if actor.BotID == nil {
 		return result, forbidden()
@@ -159,13 +172,17 @@ func (m *Module) AckEvent(ctx context.Context, dao store.AssistantTaskDAO, actor
 	return result, finishUser(ctx, dao, actor, task, now)
 }
 func (m *Module) ClearAttention(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, targetBotID string) error {
+	actor = actor.requiringBranches("ClearAttention", "default")
 	if actor.BotID != nil {
 		return forbidden()
 	}
-	if err := authorize(ctx, dao, actor); err != nil {
+	if err := authorizeIdentity(ctx, dao, actor); err != nil {
 		return err
 	}
 	if err := botOwner(ctx, dao, actor.Principal.UserID, targetBotID); err != nil {
+		return err
+	}
+	if err := scopeAdmission(ctx, dao, actor); err != nil {
 		return err
 	}
 	now, err := dao.Now(ctx)

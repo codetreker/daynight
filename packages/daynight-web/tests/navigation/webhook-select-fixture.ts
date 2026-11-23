@@ -30,6 +30,8 @@ export async function install(page: Page, locale: 'en' | 'zh-CN') {
         .filter(item => (q === '' || item.name.includes(q) || item.destination.displayUrl.includes(q)) && (enabled === null || String(item.enabled) === enabled));
       const start = Number(cursor ?? 0);
       body = { items: values.slice(start, start + 2), nextCursor: start + 2 < values.length ? String(start + 2) : null };
+    } else if (path.endsWith('/signing-secret')) {
+      body = { endpointId: id(20), configVersion: '1', keyId: id(6), scheme: 'standard-webhooks-v1', secret: `whsec_${Buffer.alloc(32, 7).toString('base64')}` };
     } else if (path.endsWith('/deliveries')) {
       deliveryQueries.push(url.search);
       body = { items: [], nextCursor: null, historyMayBeIncomplete: true, retention: { payloadRetentionSeconds: 604800, metadataRetentionSeconds: 2592000 } };

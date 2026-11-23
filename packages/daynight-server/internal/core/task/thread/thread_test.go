@@ -95,7 +95,7 @@ func (f *threadFixture) ThreadSides(context.Context, string, model.ThreadPositio
 
 func activeTask(t *testing.T, user string) (model.Task, string) {
 	t.Helper()
-	claim := model.WorkerClaim{ClaimID: "00000000-0000-4000-8000-000000000001", State: model.WorkerActive, UserID: user, WorkerID: "00000000-0000-4000-8000-000000000003", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000005", Phase: model.WorkerExecuting, ClaimedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	claim := model.WorkerClaim{ClaimID: "00000000-0000-4000-8000-000000000001", State: model.WorkerActive, UserID: user, WorkerID: "00000000-0000-4000-8000-000000000003", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "00000000-0000-4000-8000-000000000005", Phase: model.WorkerExecuting, ClaimedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	value, err := taskproperty.EncodeWorker(&claim)
 	if err != nil {
 		t.Fatal(err)

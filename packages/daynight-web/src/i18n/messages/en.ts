@@ -4,6 +4,7 @@ import { workspace } from "./en/workspace";
 import { graph } from "./en/graph";
 import { platform } from "./en/platform";
 import { automation } from "./en/automation";
+import { markdown } from "./en/markdown";
 import { inspection } from "./en/inspection";
 import { completion } from "./en/completion";
 import { execution } from "./en/execution";
@@ -18,6 +19,7 @@ export const en: Messages = {
   workers,
   graph,
   inspection,
+  markdown,
   automation,
   platform,
   auth,

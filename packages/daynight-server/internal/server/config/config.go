@@ -13,6 +13,7 @@ import (
 type Config struct {
 	ListenAddress       string        `yaml:"listen_address"`
 	PublicOrigin        string        `yaml:"public_origin"`
+	PreviewOrigin       string        `yaml:"preview_origin"`
 	StartupTimeout      time.Duration `yaml:"startup_timeout"`
 	ShutdownTimeout     time.Duration `yaml:"shutdown_timeout"`
 	AllowHTTPTestOrigin bool          `yaml:"allow_http_test_origin"`
@@ -25,6 +26,7 @@ type MetricsConfig struct {
 type Patch struct {
 	ListenAddress       *string                     `yaml:"listen_address"`
 	PublicOrigin        *string                     `yaml:"public_origin"`
+	PreviewOrigin       *string                     `yaml:"preview_origin"`
 	StartupTimeout      *configvalue.DurationString `yaml:"startup_timeout"`
 	ShutdownTimeout     *configvalue.DurationString `yaml:"shutdown_timeout"`
 	AllowHTTPTestOrigin *bool                       `yaml:"allow_http_test_origin"`
@@ -40,6 +42,9 @@ func (p Patch) ApplyTo(c *Config) error {
 	}
 	if p.PublicOrigin != nil {
 		c.PublicOrigin = *p.PublicOrigin
+	}
+	if p.PreviewOrigin != nil {
+		c.PreviewOrigin = *p.PreviewOrigin
 	}
 	for _, item := range []struct {
 		value *configvalue.DurationString
@@ -97,7 +102,7 @@ func (c *Config) ApplyEnvironmentRemaining(lookup func(string) (string, bool), m
 	for _, item := range []struct {
 		env, field string
 		dst        *string
-	}{{"DAYNIGHT_LISTEN_ADDR", "listen_address", &c.ListenAddress}, {"DAYNIGHT_PUBLIC_ORIGIN", "public_origin", &c.PublicOrigin}} {
+	}{{"DAYNIGHT_LISTEN_ADDR", "listen_address", &c.ListenAddress}, {"DAYNIGHT_PUBLIC_ORIGIN", "public_origin", &c.PublicOrigin}, {"DAYNIGHT_PREVIEW_ORIGIN", "preview_origin", &c.PreviewOrigin}} {
 		if v, ok := lookup(item.env); ok {
 			*item.dst = v
 			mark(item.field, item.env)
@@ -124,6 +129,9 @@ func (c Config) ValidateRequired() error {
 	if strings.TrimSpace(c.PublicOrigin) == "" {
 		return &configvalue.ConfigurationError{Field: "public_origin", Rule: "is required"}
 	}
+	if strings.TrimSpace(c.PreviewOrigin) == "" {
+		return &configvalue.ConfigurationError{Field: "preview_origin", Rule: "is required"}
+	}
 	return nil
 }
 func (c Config) Validate() error {
@@ -131,6 +139,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if _, err := listenerPort(c.ListenAddress); err != nil {
+		return err
+	}
+	if err := c.ValidatePreviewOrigin(); err != nil {
 		return err
 	}
 	return c.ValidateTimeouts()

@@ -3,6 +3,8 @@ package oauth
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,6 +80,30 @@ func TestRedirectMatching(t *testing.T) {
 		{"http://127.0.0.1:123/cb?x=1", "http://127.0.0.1:456/cb?x=2", false},
 		{"http://localhost:123/cb", "http://localhost:456/cb", false},
 		{"http://localhost:123/cb", "http://localhost:123/cb", true},
+		{"http://localhost/cb?x=1", "http://localhost:1/cb?x=1", true},
+		{"http://localhost/cb?x=1", "http://localhost:65535/cb?x=1", true},
+		{"http://localhost/cb", "http://localhost:80/cb", true},
+		{"http://localhost:80/cb", "http://localhost/cb", false},
+		{"http://localhost:80/cb", "http://localhost:080/cb", false},
+		{"http://localhost/cb", "http://localhost:0/cb", false},
+		{"http://localhost/cb", "http://localhost:65536/cb", false},
+		{"http://localhost/cb", "http://localhost:/cb", false},
+		{"http://localhost/cb", "http://localhost:bad/cb", false},
+		{"http://localhost", "http://localhost:123", true},
+		{"http://localhost", "http://localhost:123/", false},
+		{"http://localhost/cb", "http://localhost:123/%63b", false},
+		{"http://localhost/cb?x=1&y=2", "http://localhost:123/cb?y=2&x=1", false},
+		{"http://localhost/cb", "http://localhost:123/cb?", false},
+		{"http://localhost/cb", "http://127.0.0.1:123/cb", false},
+		{"http://localhost/cb", "http://[::1]:123/cb", false},
+		{"http://localhost/cb", "http://localhost.:123/cb", false},
+		{"http://localhost/cb", "http://sub.localhost:123/cb", false},
+		{"http://localhost/cb", "http://localhost.evil:123/cb", false},
+		{"http://localhost/cb", "http://LOCALHOST:123/cb", false},
+		{"http://localhost/cb", "http://user@localhost:123/cb", false},
+		{"http://localhost/cb", "http://localhost:123/cb#fragment", false},
+		{"http://localhost/cb", "https://localhost:123/cb", false},
+		{"https://localhost/cb", "https://localhost:123/cb", false},
 		{"http://evil.example/cb", "http://evil.example/cb", false},
 		{"https://user@client.example/cb", "https://user@client.example/cb", false},
 		{"https://client.example/cb#", "https://client.example/cb#", false},
@@ -92,6 +118,115 @@ func TestRedirectMatching(t *testing.T) {
 	}
 }
 
+// Public documents captured on 2026-11-16; extensions and capabilities are intact.
+func TestCIMDPublicClientDocuments(t *testing.T) {
+	for _, tc := range []struct {
+		file, id  string
+		redirects []string
+	}{
+		{"claude.json", "https://claude.ai/oauth/claude-code-client-metadata", []string{"http://localhost:49416/callback", "http://localhost:65535/callback", "http://127.0.0.1:123/callback"}},
+		{"copilot.json", "https://github.com/copilot/cli/client-metadata.json", []string{"http://127.0.0.1:123/", "http://127.0.0.1:456/callback"}},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "oauth", tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := ParseCIMDClientMetadata(raw, tc.id)
+			if err != nil || !reflect.DeepEqual(m.GrantTypes, []string{"authorization_code", "refresh_token"}) || !reflect.DeepEqual(m.ResponseTypes, []string{"code"}) {
+				t.Fatalf("public document: %+v %v", m, err)
+			}
+			for _, redirect := range tc.redirects {
+				snapshot, err := FreezeClient(tc.id, "cimd", m, time.Time{}, redirect)
+				if err != nil || snapshot.SelectedExactRedirect != redirect || !reflect.DeepEqual(snapshot.Redirects, m.RedirectURIs) || len(snapshot.MetadataDigest) != 64 {
+					t.Fatalf("freeze: %+v %v", snapshot, err)
+				}
+			}
+			if _, err := FreezeClient(tc.id, "cimd", m, time.Time{}, "http://127.0.0.1:123/other"); err != ErrInvalidClient {
+				t.Fatalf("unregistered path: %v", err)
+			}
+		})
+	}
+}
+
+func TestCIMDCapabilityIntersection(t *testing.T) {
+	const base = `{"client_id":"https://client.example/meta","redirect_uris":["http://localhost/cb"]`
+	for _, tc := range []struct {
+		name, fields string
+		grants       []string
+	}{
+		{"both omitted", "", []string{"authorization_code"}},
+		{"grants omitted", `,"response_types":["unknown","code","code"]`, []string{"authorization_code"}},
+		{"responses omitted", `,"grant_types":["refresh_token","other","authorization_code","authorization_code"]`, []string{"authorization_code", "refresh_token"}},
+		{"code only", `,"grant_types":["authorization_code"],"response_types":["code"]`, []string{"authorization_code"}},
+		{"unknown superset", `,"grant_types":["other","refresh_token","authorization_code","future"],"response_types":["token","code","future"]`, []string{"authorization_code", "refresh_token"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := ParseCIMDClientMetadata([]byte(base+tc.fields+`}`), "https://client.example/meta")
+			if err != nil || !reflect.DeepEqual(m.GrantTypes, tc.grants) || !reflect.DeepEqual(m.ResponseTypes, []string{"code"}) || m.TokenEndpointAuthMethod != "none" {
+				t.Fatalf("intersection: %+v %v", m, err)
+			}
+		})
+	}
+	for _, field := range []string{"grant_types", "response_types"} {
+		for _, invalid := range []string{`[]`, `null`, `"code"`, `{}`, `true`, `[""]`, `[null]`, `["authorization_code","code",null]`, `[null,"authorization_code","code"]`, `["authorization_code","code",1]`, `["authorization_code","code",{}]`, `["authorization_code","code",""]`} {
+			raw := base + `,"` + field + `":` + invalid + `}`
+			if got, err := ParseCIMDClientMetadata([]byte(raw), "https://client.example/meta"); err != ErrInvalidClientMetadata || !reflect.DeepEqual(got, ClientMetadata{}) {
+				t.Errorf("accepted malformed %s=%s: %+v %v", field, invalid, got, err)
+			}
+		}
+	}
+	for _, fields := range []string{
+		`,"grant_types":["urn:ietf:params:oauth:grant-type:device_code"]`,
+		`,"grant_types":["refresh_token"]`,
+		`,"grant_types":["unknown"]`,
+		`,"response_types":["token"]`,
+		`,"grant_types":["authorization_code"],"response_types":["unknown"]`,
+		`,"grant_types":["authorization_code"],"grant_types":["authorization_code"]`,
+		`,"response_types":["code"],"response_types":["code"]`,
+		`,"grant_types":["authorization_code","\ud800"]`,
+		`,"token_endpoint_auth_method":"client_secret_basic"`,
+		`,"scope":"other"`,
+		`,"redirect_uris":["http://localhost/cb"]`,
+	} {
+		if _, err := ParseCIMDClientMetadata([]byte(base+fields+`}`), "https://client.example/meta"); err != ErrInvalidClientMetadata {
+			t.Errorf("accepted invalid CIMD %s: %v", fields, err)
+		}
+	}
+	for _, tc := range []struct{ raw, id string }{
+		{base + `}`, ""},
+		{base + `}`, "other"},
+		{base, "https://client.example/meta"},
+		{base + `} {}`, "https://client.example/meta"},
+		{strings.Repeat(" ", MetadataLimit+1), "https://client.example/meta"},
+		{`{"client_id":"https://client.example/meta","redirect_uris":["http://localhost/cb","http://localhost/cb"]}`, "https://client.example/meta"},
+	} {
+		if _, err := ParseCIMDClientMetadata([]byte(tc.raw), tc.id); err != ErrInvalidClientMetadata {
+			t.Errorf("accepted invalid document: %v", err)
+		}
+	}
+}
+
+func TestCIMDPolicyDoesNotChangeStrictClientSources(t *testing.T) {
+	for _, capabilities := range []string{
+		`,"grant_types":["authorization_code","refresh_token","unknown"]`,
+		`,"response_types":["code","unknown"]`,
+	} {
+		base := `{"redirect_uris":["http://localhost/cb"]`
+		registered := []byte(base + `,"client_id":"https://client.example/meta"` + capabilities + `}`)
+		if _, err := ParseCIMDClientMetadata(registered, "https://client.example/meta"); err != nil {
+			t.Fatal(err)
+		}
+		for _, parse := range []func([]byte, string) (ClientMetadata, error){ParseClientMetadata, ParseStoredClientMetadata} {
+			if _, err := parse(registered, "https://client.example/meta"); err != ErrInvalidClientMetadata {
+				t.Fatalf("strict source accepted unknown capability: %v", err)
+			}
+		}
+		if _, err := ParseClientMetadata([]byte(base+capabilities+`}`), ""); err != ErrInvalidClientMetadata {
+			t.Fatalf("DCR accepted unknown capability: %v", err)
+		}
+	}
+}
 func TestStoredMetadataRequiresIdentity(t *testing.T) {
 	if _, err := ParseStoredClientMetadata([]byte(`{"redirect_uris":["https://client.example"]}`), ""); err != ErrInvalidClientMetadata {
 		t.Fatalf("missing identity: %v", err)

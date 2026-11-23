@@ -44,7 +44,6 @@ func ValidateReport(input model.WorkerReport) (model.WorkerReport, error) {
 		validateWorkerProbe(telemetry.Disk, "", func(value model.WorkerDisk) bool {
 			return workerBytes(value.AvailableBytes) && workerBytes(value.TotalBytes) && value.AvailableBytes <= value.TotalBytes
 		}),
-		validateWorkerProbe(telemetry.Versions.Herdr, "not_running", model.ValidWorkerText),
 		validateWorkerProbe(telemetry.Versions.Codex, "not_installed", model.ValidWorkerText),
 		validateWorkerProbe(telemetry.Versions.Copilot, "not_installed", model.ValidWorkerText),
 	}

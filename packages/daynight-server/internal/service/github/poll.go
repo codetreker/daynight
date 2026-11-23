@@ -8,6 +8,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
 func (r *run) poll(ctx context.Context) error {
@@ -25,30 +26,74 @@ func (r *run) poll(ctx context.Context) error {
 	if err != nil {
 		return r.pollFailure(ctx, err)
 	}
+	if err = r.discover(ctx, owner, name); err != nil {
+		if fatal(err) {
+			return err
+		}
+		if accessErr := r.confirmPRFailure(ctx, err); accessErr != nil {
+			return accessErr
+		}
+		return r.pollFailure(ctx, err)
+	}
 	r.log.InfoContext(ctx, "github open traversal", "phase", "fetch")
-	err = r.e.remote.ListOpen(ctx, *r.connection.InstallationID, owner, name, func(page []githubpr.Observation) error {
-		for start := 0; start < len(page); start += core.PublishLimit {
-			end := min(start+core.PublishLimit, len(page))
-			for _, o := range page[start:end] {
-				if o.State != "open" {
-					return errors.New("github open page contains non-open pull request")
-				}
+	err = r.remote.ListOpen(ctx, *r.connection.InstallationID, owner, name, func(page []githubpr.Observation) error {
+		var knownOpen []githubpr.Observation
+		batchSeen := map[int64]bool{}
+		flush := func() error {
+			if len(knownOpen) == 0 {
+				return nil
 			}
-			if e := r.publish(ctx, page[start:end], &r.lease.Token); e != nil {
+			err := r.publish(ctx, knownOpen, &r.lease.Token)
+			knownOpen = nil
+			batchSeen = map[int64]bool{}
+			return err
+		}
+		for _, o := range page {
+			if o.State != "open" {
+				return errors.New("github open page contains non-open pull request")
+			}
+			p, e := core.Normalize(o, r.project, *r.connection.RepositoryID, time.Time{}, &r.lease.Token)
+			if e != nil {
+				return e
+			}
+			facts, e := r.publicationFacts(ctx, p)
+			if e != nil {
+				return e
+			}
+			if facts.Current != nil && facts.Current.State == "open" {
+				if batchSeen[o.Number] {
+					if e = flush(); e != nil {
+						return e
+					}
+				}
+				r.rememberFacts(p.Number, facts)
+				knownOpen = append(knownOpen, o)
+				batchSeen[o.Number] = true
+				if len(knownOpen) == core.PublishLimit {
+					if e = flush(); e != nil {
+						return e
+					}
+				}
+				continue
+			}
+			if e = flush(); e != nil {
+				return e
+			}
+			checked, e := r.checkedDetail(ctx, owner, name, o.Number, []remote.PullSummary{{Number: o.Number, RepositoryID: o.BaseRepositoryID, State: o.State, UpdatedAt: o.UpdatedAt, ClosedAt: o.ClosedAt, MergedAt: o.MergedAt}})
+			if e != nil {
+				return e
+			}
+			if e = r.publish(ctx, []githubpr.Observation{checked}, &r.lease.Token); e != nil {
+				return e
+			}
+			if e = r.pollHint(ctx, owner, name); e != nil {
 				return e
 			}
 		}
-		// One hint per page bounds the work stolen from the poll.
-		hints, e := r.pending(ctx, 1)
-		if e != nil {
+		if e := flush(); e != nil {
 			return e
 		}
-		if len(hints) > 0 {
-			if e = r.hint(ctx, hints[0], owner, name); e != nil && (fatal(e) || fail(e).Code == "github_rate_limited") {
-				return e
-			}
-		}
-		return nil
+		return r.pollHint(ctx, owner, name)
 	})
 	if err != nil {
 		if fatal(err) {
@@ -69,7 +114,7 @@ func (r *run) poll(ctx context.Context) error {
 			break
 		}
 		for _, n := range numbers {
-			o, e := r.e.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, n)
+			o, e := r.checkedDetail(ctx, owner, name, n, nil)
 			if e != nil {
 				if accessErr := r.confirmPRFailure(ctx, e); accessErr != nil {
 					return accessErr
@@ -82,6 +127,15 @@ func (r *run) poll(ctx context.Context) error {
 			if e = r.publish(ctx, []githubpr.Observation{o}, &r.lease.Token); e != nil {
 				return r.pollFailure(ctx, e)
 			}
+			if e = r.pollHint(ctx, owner, name); e != nil {
+				if fatal(e) {
+					return e
+				}
+				if accessErr := r.confirmPRFailure(ctx, e); accessErr != nil {
+					return accessErr
+				}
+				return r.pollFailure(ctx, e)
+			}
 			after = n
 		}
 	}
@@ -90,6 +144,21 @@ func (r *run) poll(ctx context.Context) error {
 		w.ReleaseClaim = true
 	})
 }
+
+// A single hint at each publication boundary keeps both sources progressing.
+func (r *run) pollHint(ctx context.Context, owner, name string) error {
+	hints, err := r.pending(ctx, 1)
+	if err != nil {
+		return err
+	}
+	if len(hints) > 0 {
+		if err = r.hint(ctx, hints[0], owner, name, &r.lease.Token); err != nil && (fatal(err) || fail(err).Code == "github_rate_limited") {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *run) pollFailure(ctx context.Context, cause error) error {
 	if fatal(cause) {
 		return cause
@@ -101,16 +170,27 @@ func (r *run) pollFailure(ctx context.Context, cause error) error {
 	return errors.Join(cause, err)
 }
 func (r *run) publish(ctx context.Context, obs []githubpr.Observation, pollID *string) error {
+	_, err := r.publishCount(ctx, obs, pollID)
+	return err
+}
+
+func (r *run) publishCount(ctx context.Context, obs []githubpr.Observation, pollID *string) (int, error) {
+	defer func() {
+		for _, o := range obs {
+			delete(r.confirmed, o.Number)
+		}
+	}()
 	r.log.InfoContext(ctx, "github observation batch", "phase", "publish", "count", len(obs))
 	items := make([]githubpr.PullRequest, 0, len(obs))
 	for _, o := range obs {
 		p, err := core.Normalize(o, r.project, *r.connection.RepositoryID, time.Time{}, pollID)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		items = append(items, p)
 	}
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	count := 0
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		if _, e := d.Connection(c); e != nil {
 			return e
 		}
@@ -118,20 +198,41 @@ func (r *run) publish(ctx context.Context, obs []githubpr.Observation, pollID *s
 		if e != nil {
 			return e
 		}
+		eligible := make([]githubpr.PullRequest, 0, len(items))
 		for i := range items {
 			items[i].ObservedAt = now
+			facts, valid, err := d.PublicationFacts(c, r.lease, *r.connection.RepositoryID, items[i].Number, terminalAt(items[i]))
+			if err = require(valid, err); err != nil {
+				return err
+			}
+			if core.StaleObservation(items[i], facts) || r.changedSinceConfirmation(items[i], facts) {
+				return errObservationConflict
+			}
+			if core.EligibleFirstPublication(items[i], facts) {
+				eligible = append(eligible, items[i])
+			}
 		}
-		ok, e := d.Publish(c, r.lease, items)
-		return require(ok, e)
+		if len(eligible) == 0 {
+			return nil
+		}
+		ok, e := d.Publish(c, r.lease, eligible)
+		if err := require(ok, e); err != nil {
+			return err
+		}
+		count = len(eligible)
+		return nil
 	})
-	if e = committed(c, e); e != nil {
-		return e
+	if c.Outcome == store.TransactionNotCommitted && errors.Is(e, errObservationConflict) {
+		return 0, e
 	}
-	return r.renew(ctx)
+	if e = committed(c, e); e != nil {
+		return 0, e
+	}
+	return count, r.renew(ctx)
 }
 func (r *run) unseen(ctx context.Context, after int64) ([]int64, error) {
 	var numbers []int64
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		var ok bool
 		var e error
 		numbers, ok, e = d.UnseenActive(c, r.lease, r.lease.Token, after, 100)

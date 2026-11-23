@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { decideConsent, inspectConsent, isLoopbackCallback, type ConsentView } from '../../api/oauth-consent';
 import type { CurrentUser } from '../../api/auth-types';
@@ -93,7 +94,7 @@ export const OAuthConsentPage = ({ user, requestId, onSwitchAccount, onIdentityM
   const view = isReady ? state.view : null;
   const result = state.kind === 'result' ? state.result : null;
   const heading = state.kind === 'storage' ? m.service : state.kind === 'loading' ? m.loadingTitle : state.kind === 'error' ? state.invalid ? m.invalid : m.service : state.kind === 'unknown' ? m.unknown : result === 'approved' ? m.approved : result === 'denied' ? m.denied : result === 'expired' ? m.expired : result === 'approvedUnknown' ? m.approvedUnknown : m.title;
-  return <div className="invite-page device-page"><div className="brand" aria-label="Daynight"><span className="brand-mark" aria-hidden="true" />daynight</div><main className="invite-card device-card consent-card" aria-labelledby="consent-title"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p><h1 ref={title} id="consent-title" tabIndex={-1}>{heading}</h1>
+  return <div className="invite-page device-page"><div className="brand" aria-label="Daynight"><BrandMark className="brand-mark" surface="light" />daynight</div><main className="invite-card device-card consent-card" aria-labelledby="consent-title"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p><h1 ref={title} id="consent-title" tabIndex={-1}>{heading}</h1>
     {state.kind === 'loading' && <div className="device-loading" role="status"><span className="spinner" aria-hidden="true" /><p>{m.loading}</p></div>}
     {state.kind === 'storage' && <div className="device-result" role="alert"><p>{m.storage}</p><button className="button" type="button" onClick={() => read('initial')}>{m.retry}</button></div>}
     {state.kind === 'error' && <div className="device-result" role="alert"><div className="device-result-mark" aria-hidden="true">!</div><p>{state.invalid ? m.invalidDetail : m.serviceDetail}</p>{!state.invalid && <button className="button" type="button" onClick={() => read('initial')}>{m.retry}</button>}</div>}

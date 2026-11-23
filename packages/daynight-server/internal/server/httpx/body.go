@@ -131,11 +131,19 @@ func (b *trackedRequestBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+var discardLogger = slog.New(slog.DiscardHandler)
+
 // LimitRequestTarget rejects raw transport input before routing or query decoding.
 func LimitRequestTarget(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(r.RequestURI) > transport.MaxRequestTargetBytes || len(r.URL.RawQuery) > transport.MaxRawQueryBytes {
-			WriteError(w, r, logger, "server", "request_target", &URITooLongError{})
+			// The shared handler's logger stays immutable; each request selects
+			// its own, because the inbox request record is that route's only log output.
+			requestLogger := logger
+			if InboxRecordFrom(r.Context()) != nil {
+				requestLogger = discardLogger
+			}
+			WriteError(w, r, requestLogger, "server", "request_target", &URITooLongError{})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -185,7 +193,7 @@ func WriteBodyError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	}
 	logger.ErrorContext(r.Context(), "request body read failed", "type", "operation_error", "component", component, "phase", phase, "error_code", bodyErr.Code, "request_id", RequestID(r.Context()))
 	if bodyErr.Status != http.StatusRequestTimeout && bodyErr.Status != http.StatusRequestEntityTooLarge {
-		WriteJSON(w, r, logger, bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(r.Context())}})
+		writeJSON(w, r, logger, errorResponseComponent(component), bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(r.Context())}})
 		return
 	}
 	CloseUnreadBody(w, r)
@@ -196,7 +204,7 @@ func WriteBodyError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Second)
 	defer cancel()
-	WriteJSON(w, r.WithContext(ctx), logger, bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(ctx)}})
+	writeJSON(w, r.WithContext(ctx), logger, errorResponseComponent(component), bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(ctx)}})
 	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		LogFailure(logger, r.Context(), component, "body rejection flush", err)
 		panic(http.ErrAbortHandler)

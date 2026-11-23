@@ -67,16 +67,16 @@ func testProjectRetirementBatchesAndRollback(t *testing.T, db *postgres.Store) {
 			t.Fatalf("commit=%v: %d retired", commit, count)
 		}
 	}
-	var grantCleared, controlRetired bool
+	var grantCleared, terminalPreserved bool
 	err = db.Pool.QueryRow(ctx, `SELECT grant_hash IS NULL AND grant_expires_at IS NULL AND connection_expires_at IS NULL AND snapshot->'controls' IS NULL FROM task_sessions WHERE id=$1`, web).Scan(&grantCleared)
 	if err != nil || !grantCleared {
 		t.Fatalf("web grant: %v %v", grantCleared, err)
 	}
-	err = db.Pool.QueryRow(ctx, `SELECT terminal_state->>'ControlEpoch'='5' AND terminal_state->'Control'->>'state'='suspended' AND terminal_state->'ControlActor'='null'::jsonb FROM task_sessions WHERE id=$1`, terminal).Scan(&controlRetired)
-	if err != nil || !controlRetired {
-		t.Fatalf("terminal: %v %v", controlRetired, err)
+	err = db.Pool.QueryRow(ctx, `SELECT terminal_state = '{"ControlEpoch":"4","Control":{"connectionEpoch":"2","controlEpoch":"4","state":"manual","availableActions":["acquire_control"]},"ControlActor":{"UserID":"x"},"LastLeaseSeq":"4"}'::jsonb FROM task_sessions WHERE id=$1`, terminal).Scan(&terminalPreserved)
+	if err != nil || !terminalPreserved {
+		t.Fatalf("terminal: %v %v", terminalPreserved, err)
 	}
-	for sessionID, want := range map[string][]string{web: {"rejected", "unknown", "unknown", "confirmed"}, terminal: {"rejected", "unknown", "confirmed"}} {
+	for sessionID, want := range map[string][]string{web: {"rejected", "unknown", "unknown", "confirmed"}, terminal: {"queued", "dispatching", "confirmed"}} {
 		rows, err := db.Pool.Query(ctx, `SELECT receipt->>'state' FROM session_operations WHERE session_id=$1 ORDER BY operation_seq`, sessionID)
 		if err != nil {
 			t.Fatal(err)

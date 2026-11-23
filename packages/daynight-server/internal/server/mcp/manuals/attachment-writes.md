@@ -1,167 +1,50 @@
 # Publish and remove attachments
 
-Read this for attachment writes, alongside the complete
-[Write safety](daynight://manuals/write-safety.md) Resource. When paths or link
-bases are not already understood, read
-[Attachment reads](daynight://manuals/attachment-reads.md). Every operation uses
-the authenticated service, Project, Task and exact logical path or retained
-transfer binding. [Materials](daynight://manuals/materials.md) owns formal input
-and output sufficiency.
+Read [Overview](daynight://manuals/overview.md) first, and [Write safety](daynight://manuals/write-safety.md) for every write. If path/link rules are unknown, also read [Attachment reads](daynight://manuals/attachment-reads.md). [Materials](daynight://manuals/materials.md) owns formal input/output sufficiency.
 
-## Publication, replacement and independent resources
+## Publication boundaries
 
-`task_attachment_put` writes or replaces one path; an existing path is
-overwritten. There is no attachment `ifVersion` or conditional overwrite token.
-Attachment writes/removals do not change Task status, properties, version or
-update time. Confirm the intended path/content, coordinate concurrent writers
-and verify required published bytes; an unchanged Task version cannot freeze
-files. Existing private snapshots continue to represent their own bytes only.
+`task_attachment_put` creates or overwrites one exact path. There is no attachment `ifVersion` or conditional overwrite token. Writes/removals change no Task status, properties, version or update time; an unchanged Task version does not freeze files. Coordinate concurrent writers and verify intended published bytes, MIME type, path, links and supporting resources. Existing private download snapshots retain only their own bytes.
 
-Separate uploads, description updates and status changes have no shared rollback.
-Verify each required file's complete bytes, MIME type, path, links and supporting
-resources. Preserve confirmed paths and receipts and finish missing independent
-operations on the original resources. A matching file or later absence proves
-current facts, not which uncertain write caused them.
+Uploads, description replacement and status writes have no shared rollback. Retain each confirmed path/receipt and finish independent missing operations on original resources. Matching bytes or later absence establish current facts, not historical attribution of an uncertain write.
 
-Every write checks current credentials, Project write access and a live Task or
-Goal. A retained private transfer cannot preserve revoked access or override a
-deleted parent resource or its cleanup barrier.
+All writes require current credentials, Project write access and a live Task or Goal. Retained transfers bypass neither revoked access, deleted parents nor cleanup barriers.
 
-## Put a small complete file inline
+## Complete inline files
 
-Examples are separate `tools/call` params objects with fictional IDs and bytes;
-business data is under `structuredContent.data`. Replace identities with actual
-observations and retain generated transfer/chunk IDs before submission.
+Use `action: "inline"` with standard padded base64; decoded bytes are the file (`SGVsbG8K` represents exactly `Hello\n`). Empty files are allowed. The inline limit is 524,288 decoded bytes. A confirmed result has attachment metadata, `created` distinguishing creation/replacement and `writeOutcome: "confirmed"`.
 
-```json
-{
-  "name": "task_attachment_put",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "inline",
-    "path": "notes/greeting.txt",
-    "contentType": "text/plain; charset=utf-8",
-    "contentBase64": "SGVsbG8K"
-  }
-}
-```
-
-Standard padded base64 publishes the decoded bytes: here exactly `Hello\n`.
-Inline decoded content may be empty and is limited to 524,288 bytes. A confirmed
-result contains attachment metadata, `created` (creation versus replacement)
-and `writeOutcome: "confirmed"`. Inline content must be complete; use the
-resumable lifecycle for a larger file, whose complete-file limit is 5 MiB
-(5,242,880 bytes). Chunking does not increase that limit.
+Larger files use the upload lifecycle. Its complete-file limit is 5 MiB (5,242,880 bytes); chunking does not raise that limit.
 
 ## Retain one upload lifecycle
 
-`begin` reserves a binding, `chunk` stages private bytes, and `commit` publishes
-the target. Generate a canonical `transferId` before begin and retain owner,
-original authority (PAT or OAuth grant), Project, Task, exact path and content
-type. Reusing its ID with another binding fails; another credential for the same
-account is not interchangeable. All continuation requests revalidate authority,
-credentials and current access.
+`begin` reserves a binding, `chunk` stages private bytes and `commit` publishes. Before begin, generate and retain a canonical UUID `transferId` with owner account, original authority (PAT or OAuth grant), Project, Task, exact path and content type. Reusing the ID with a different binding fails; another credential for the same account is not interchangeable. Continuations revalidate authority, credentials and access.
 
-```json
-{
-  "name": "task_attachment_put",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "begin",
-    "path": "notes/greeting.txt",
-    "contentType": "text/plain; charset=utf-8",
-    "transferId": "55555555-5555-4555-8555-555555555555"
-  }
-}
-```
+Begin returns `state: "receiving"`, `nextOffset: "0"`, `expiresAt` and maximum chunk size. Each new chunk is nonempty and at most 524,288 decoded bytes. Generate a distinct chunk UUID and retain its exact offset, bytes and digest. Append only at observed `nextOffset`; gaps, overlaps and out-of-order appends fail.
 
-Begin returns `state: "receiving"`, `nextOffset: "0"`, `expiresAt` and maximum
-chunk size. A new chunk is nonempty and at most 524,288 decoded bytes. Generate a
-distinct chunk UUID and retain its exact offset, bytes and digest. Append only at
-the observed `nextOffset`; gaps, overlaps and out-of-order appends fail.
+Offsets/counts are canonical nonnegative decimal strings without leading zeros, signs, fractions or exponent notation. Optional `sha256` is the lowercase 64-digit decoded-byte digest. A confirmed chunk receipt contains `chunkId`, `offset`, `acceptedBytes`, `nextOffset`, `sha256`, `receipt` and `expiresAt`.
 
-```json
-{
-  "name": "task_attachment_put",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "chunk",
-    "transferId": "55555555-5555-4555-8555-555555555555",
-    "chunkId": "66666666-6666-4666-8666-666666666666",
-    "offset": "0",
-    "contentBase64": "SGVsbG8K",
-    "sha256": "66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18"
-  }
-}
-```
+`receipt: "accepted"` means staged bytes, not publication. While receiving, the same chunk ID/offset/size/digest can return `already_accepted`; different content conflicts. After a lost response, observe the original transfer before deciding continuation; do not choose a replacement ID or automatically replay.
 
-Offsets/counts are exact canonical nonnegative decimal strings, without leading
-zeros, signs, fractions or exponent notation. Optional `sha256` is the lowercase
-64-digit digest of decoded bytes. The confirmed receipt includes `chunkId`,
-`offset`, `acceptedBytes`, `nextOffset`, `sha256`, `receipt` and `expiresAt`.
-`receipt: "accepted"` identifies newly staged bytes, not publication. While
-receiving, the same chunk ID/offset/size/digest can return `already_accepted`;
-different content conflicts. A lost response does not justify a replacement ID
-or automatic replay. Observe the original transfer before a continuation decision.
+Use `action: "status"` under the same Project/Task/transfer ID to observe state, offset, expiry and cleanup. After a commit attempt it may also return `operationId`, `totalBytes`, `sha256`, `writeOutcome` and confirmed metadata. Status does not promise lifetime extension.
 
-Use `action: "status"` with the same Project/Task/transfer ID to inspect actual
-state, offset, expiry and cleanup. After a commit attempt it can also return
-`operationId`, `totalBytes`, `sha256`, `writeOutcome` and confirmed metadata.
-Status observation does not promise to extend lifetime.
+Commit supplies `totalBytes` equal to confirmed accepted bytes and an optional whole-file hash. The service validates complete staged content before publication. A confirmed publication records operation ID, completion outcome and metadata; private cleanup may finish later.
 
-```json
-{
-  "name": "task_attachment_put",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "commit",
-    "transferId": "55555555-5555-4555-8555-555555555555",
-    "totalBytes": "6",
-    "sha256": "66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18"
-  }
-}
-```
+## Observe completion and release private content
 
-Commit requires total size equal to confirmed accepted bytes; its optional hash
-is for the whole file, not one chunk. The service validates complete staged
-content before publication. Confirmed publication records an operation ID,
-completion outcome and attachment metadata; private cleanup can finish later.
-
-## Observe publication and clean up
-
-| State | Caller interpretation |
+| State | Interpretation |
 | --- | --- |
-| `receiving` | Private content may accept a valid next chunk or complete commit request. |
-| `committing` | Publication began; retain its operation identity and observe outcome. |
-| `committed` | A publication receipt exists; inspect completion and metadata. |
-| `unknown` | Publication is unresolved; neither rollback nor automatic replay is justified. |
-| `failed` | Inspect the recorded error and outcome before a new decision. |
-| `cleanup_pending` / `closed` | Private content is being reclaimed or reclaimed; retained operation facts determine publication. |
+| `receiving` | Can accept a valid next chunk or complete commit request |
+| `committing` | Publication began; retain its operation identity and observe |
+| `committed` | A publication receipt exists; inspect completion and metadata |
+| `unknown` | Publication unresolved; no inferred rollback or automatic replay |
+| `failed` | Inspect recorded error and completion outcome before another decision |
+| `cleanup_pending` / `closed` | Private content is being/is reclaimed; retained operation facts determine publication |
 
-Commit is not automatically repeatable. After a lost response use status under
-the original binding. A repeated commit after leaving receiving returns current
-facts with a state error, not fresh publication. A failure can carry confirmed
-write outcome after publication when receipt or cleanup work fails. Preserve it;
-staged chunk receipts and matching current bytes cannot manufacture a lost
-publication receipt.
+Commit is not automatically repeatable. After lost output, use status under the original binding. Repeated commit outside receiving returns current facts with a state error, not another publication. Failure may carry a confirmed outcome after publication if receipt/output/cleanup fails; retain that fact. Staged-chunk receipts and matching current bytes cannot manufacture a missing publication receipt.
 
-`action: "abort"` with the same Project/Task/transfer ID requests private
-cleanup and may return pending cleanup. It does not roll back an attachment that
-may already be published. Transfers have an initial one-hour idle and 24-hour
-hard lifetime; use actual returned expiry. Activity cannot renew beyond the hard
-deadline or revive expired/cleanup-bound state. Retain needed receipts before
-records are eventually reclaimed, and release unused content after use.
+`action: "abort"` requests private cleanup and may return pending cleanup; it does not roll back a possibly published attachment. Transfers have a one-hour initial idle and 24-hour hard lifetime. Activity cannot renew beyond the hard deadline or revive expired/cleanup-bound transfers; follow returned expiry. Retain needed receipts before record reclamation and release unused content after use.
 
 ## Remove one file
 
-`task_attachment_remove` accepts Project ID, Task ID and one exact registered
-`path`. It never removes directories or supporting files recursively. A
-confirmed result identifies the Project, Task and path with `removed: true`.
-Keep references valid across the authorized material set. Failure may follow
-file side effects: preserve reported completion, read current facts and make a
-new decision without inferring rollback or attributing later absence to the
-unknown request.
+`task_attachment_remove` removes one exact registered `path`, never directories or supporting resources recursively. Confirmed results identify Project, Task and path with `removed: true`. Preserve references across the authorized material set. Failure may follow file side effects: retain completion facts, inspect current state and reassess without inferring rollback or attributing later absence to the unknown request.

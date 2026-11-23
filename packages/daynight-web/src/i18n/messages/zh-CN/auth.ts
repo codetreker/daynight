@@ -7,7 +7,7 @@ export const auth: AuthMessages = {
   roles: { admin: "管理员", member: "成员" },
   shell: {
     sidebar: {
-      expand: "展开侧栏", collapse: "折叠侧栏", close: "关闭导航",
+      open: "打开导航", expand: "展开侧栏", collapse: "折叠侧栏", close: "关闭导航",
       readError: "无法读取侧栏偏好，当前使用展开布局。你仍可切换侧栏并重试保存。",
       invalidError: "保存的侧栏偏好无效，当前使用展开布局。请重新选择并保存。",
       writeError: "侧栏偏好尚未保存。当前布局仍可使用，请重试保存。",
@@ -78,6 +78,7 @@ export const auth: AuthMessages = {
     open: "＋ 创建项目", createFirst: "创建第一个项目", emptyDetail: "创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。",
     title: "创建私有项目", close: "关闭创建项目", intro: "项目仅对你和项目成员可见。创建后，你将成为项目管理员。",
     name: "项目名称", repository: "仓库地址", repositoryHint: "支持 HTTPS、SSH URL 或 git@host:team/project.git 格式。",
+    repositoryConflict: "目标 Team 已有同一仓库的项目。",
     error: "项目创建失败，请检查输入后重试。", unknown: "创建结果未知。发起新的创建前请先查看项目列表；列表不能确认原请求的结果。", checkProjects: "查看项目", observedProjects: "当前项目", checking: "正在加载项目…", checkFailed: "无法加载项目。", noProjects: "未找到项目。", loadMore: "加载更多项目", cancel: "取消", busy: "正在创建…", submit: "创建项目",
   },
   management: {
@@ -112,7 +113,7 @@ export const auth: AuthMessages = {
       grantUnknown: "服务端未确认这次成员变更。请先读取当前成员，再审阅新的变更。",
       grantObserved: "已读取当前成员；原写入结果仍未确认。请审阅当前单独授权后再操作。",
       readCurrentMembers: "读取当前成员",
-      eyebrow: "项目设置", title: "项目成员", subtitle: ({ projectName }) => `${projectName} · 管理协作成员与加入邀请`, invite: "邀请成员", loading: "正在加载项目成员…",
+      title: "项目成员", invite: "邀请成员", loading: "正在加载项目成员…",
       memberNotice: "你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。", membersTitle: "成员", accessDescription: "所有成员都可以读写项目资源。", memberColumn: "成员", roleColumn: "项目角色", actionColumn: "操作",
       effectiveColumn: "有效角色", teamColumn: "Team 继承", personalTeam: "个人", directColumn: "单独授权", noGrant: "无单独授权", noAccess: "无访问权限",
       grantChange: ({ before, after, effective }) => `单独授权：${before} → ${after}。变更后的项目角色：${effective}。`,
@@ -129,7 +130,6 @@ export const auth: AuthMessages = {
     settings: {
       eyebrow: "项目设置",
       title: "项目设置",
-      scopeHint: "设置仅适用于当前项目。",
       alertTitle: "任务执行提醒",
       description: "为允许 Agent 且执行时间过长的进行中任务显示「可能卡住了」。",
       scope: "项目级设置",

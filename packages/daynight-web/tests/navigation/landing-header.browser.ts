@@ -24,13 +24,21 @@ for (const state of ['pending', 'anonymous', 'unavailable', 'authenticated'] as 
         const geometry = await header.evaluate(element => ({ width: innerWidth, documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth), controls: [...element.querySelectorAll('a,select')].map(control => control.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({ left: rect.left, right: rect.right })) }));
         expect(geometry.width).toBe(width); expect(geometry.documentWidth).toBeLessThanOrEqual(width); expect(geometry.controls.length).toBeGreaterThan(1);
         for (const bounds of geometry.controls) { expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(width); }
+        const brand = header.locator('.brand');
+        await expect(brand).toHaveAttribute('href', '/');
+        await expect(brand.locator('svg[aria-hidden="true"]')).toBeVisible();
+        const mark = await brand.locator('svg').boundingBox();
+        const link = await brand.boundingBox();
+        expect(mark).not.toBeNull(); expect(link).not.toBeNull();
+        expect(mark!.width).toBeGreaterThanOrEqual(16); expect(mark!.height).toBe(mark!.width);
+        expect(mark!.x).toBeGreaterThanOrEqual(link!.x); expect(mark!.x + mark!.width).toBeLessThanOrEqual(link!.x + link!.width);
         const skin = await language.evaluate(element => {
           const wrapper = element.closest('.native-select')!;
           const arrow = wrapper.querySelector('.native-select__arrow')!;
           const box = element.getBoundingClientRect(), arrowBox = arrow.getBoundingClientRect();
           return { height: box.height, fontSize: getComputedStyle(element).fontSize, appearance: getComputedStyle(element).appearance, arrowWidth: arrowBox.width, arrowHeight: arrowBox.height, endGap: box.right - arrowBox.right, centerOffset: Math.abs(box.top + box.height / 2 - arrowBox.top - arrowBox.height / 2), localeDecoration: getComputedStyle(element.closest('.locale-control')!, '::after').content };
         });
-        expect(skin).toMatchObject({ height: 32, fontSize: '11px', appearance: 'none', arrowWidth: 10, arrowHeight: 10, localeDecoration: 'none' });
+        expect(skin).toMatchObject({ height: 32, fontSize: '14px', appearance: 'none', arrowWidth: 10, arrowHeight: 10, localeDecoration: 'none' });
         expect(Math.abs(skin.endGap - 12)).toBeLessThanOrEqual(1);
         expect(skin.centerOffset).toBeLessThanOrEqual(1);
       }

@@ -13,12 +13,13 @@ import (
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func RegisterDirectMemberRoutes(mux *http.ServeMux, members *teamservice.DirectMembers, auth *authhttp.Authentication, logger *slog.Logger) {
-	h := &teamHandler{addMember: members.AddMember, resolveMember: members.ResolveMember, logger: logger}
+func RegisterDirectMemberRoutes(mux httpx.RouteRegistrar, members *teamservice.DirectMembers, auth *authhttp.Authentication, logger *slog.Logger) {
+	h := &teamHandler{addMember: members.AddMember, resolveMember: members.ResolveMember, addExistingMember: members.AddExistingMember, logger: logger}
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members", auth.Require(h.addDirectMember))
+	mux.HandleFunc("POST /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.addExistingTeamMember))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members/resolve", auth.Require(h.resolveDirectMember))
-	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/resolve", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
+	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/resolve", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
 }
 
 func directMemberInput(w http.ResponseWriter, r *http.Request) (coreteam.AddTeamMember, error) {
@@ -65,18 +66,22 @@ func (h *teamHandler) addDirectMember(w http.ResponseWriter, r *http.Request, p 
 }
 
 func writeDirectMemberError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	writeMemberError(w, r, logger, "add_member", err)
+}
+
+func writeMemberError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, phase string, err error) {
 	if fault, classified := coreteam.WriteFault(err); classified && (fault.Code == "internal_error" || fault.Code == "write_outcome_unknown") {
-		writeTeamError(w, r, logger, "add_member", err)
+		writeTeamError(w, r, logger, phase, err)
 		return
 	}
 	if failed, _ := store.DatabaseErrorFacts(err); failed || httpx.ErrorKind(err) == "network" {
-		httpx.WriteError(w, r, logger, "team", "add_member", err)
+		httpx.WriteError(w, r, logger, "team", phase, err)
 		return
 	}
-	// Credential refusal can retain a missing credential row as its cause; it does not describe the Team.
-	if fault, known := httpx.KnownFault(err); known && fault.Code == "unauthenticated" {
-		httpx.WriteError(w, r, logger, "team", "add_member", err)
+	// A missing credential or target user is not a missing Team.
+	if fault, known := httpx.KnownFault(err); known && (fault.Code == "unauthenticated" || fault.Code == "user_not_found") {
+		httpx.WriteError(w, r, logger, "team", phase, err)
 		return
 	}
-	writeTeamError(w, r, logger, "add_member", err)
+	writeTeamError(w, r, logger, phase, err)
 }

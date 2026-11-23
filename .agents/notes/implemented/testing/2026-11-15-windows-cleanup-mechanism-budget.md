@@ -15,6 +15,8 @@ time for the remaining real mechanism on a delayed runner.
 
 ## Decision
 
+The [platform validation retirement](2026-11-18-retire-herdr-platform-validation.md) supersedes the dedicated fixture and checker described here. The original decisions and rationale remain below as history.
+
 The live .NET mechanism test injects a 20-second query deadline through the
 existing `execute` boundary and retains the 2-second observer cleanup budget.
 Its 30-second test timeout accommodates the query, observer cleanup and original

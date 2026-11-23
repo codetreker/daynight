@@ -106,7 +106,7 @@ func TestBotControllerWireCarriesTimelineKindAndAuthorizedOperation(t *testing.T
 		server.Close()
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	controller, response, err := websocket.Dial(ctx, strings.Replace(server.URL, "http://", "ws://", 1)+"/api/v1/controller-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + credential.Token}}})
+	controller, response, err := websocket.Dial(ctx, strings.Replace(server.URL, "http://", "ws://", 1)+"/api/v1/controller-channel", &websocket.DialOptions{Host: handler.authority, HTTPHeader: http.Header{"Authorization": {"Bearer " + credential.Token}}})
 	cancel()
 	if err != nil {
 		if response != nil && response.Body != nil {

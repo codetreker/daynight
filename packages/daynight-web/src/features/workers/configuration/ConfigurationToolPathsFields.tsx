@@ -1,13 +1,15 @@
+import { useLayoutEffect, useRef } from 'react';
 import type { WorkerConfigurationResource } from '../../../api/worker-configuration';
 import type { Tool, ToolPathChoice, ToolPathTelemetry } from '../../../api/worker-tool-paths';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { WorkerToolPathDetails } from '../WorkerToolPathDetails';
 import type { ConfigurationDraft, ParsedConfigurationDraft } from './model';
 
-const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
-const names = { codex: 'Codex', copilot: 'Copilot', herdr: 'Herdr' };
+const tools: readonly Tool[] = ['codex', 'copilot'];
+const names = { codex: 'Codex', copilot: 'Copilot' };
 
-export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onChange }: {
+export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onRevealToolPaths, onChange }: {
+  readonly onRevealToolPaths?: () => void;
   readonly resource: WorkerConfigurationResource;
   readonly value: ConfigurationDraft['toolPaths'];
   readonly telemetry: ToolPathTelemetry | undefined;
@@ -18,8 +20,21 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
   readonly onChange: (tool: Tool, choice: ToolPathChoice) => void;
 }) => {
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const revealed = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (onRevealToolPaths === undefined) { revealed.current = undefined; return; }
+    const details = detailsRef.current;
+    if (details === null || revealed.current === onRevealToolPaths) return;
+    revealed.current = onRevealToolPaths;
+    details.open = true;
+    const summary = details.querySelector('summary')!;
+    summary.focus({ preventScroll: true });
+    summary.scrollIntoView({ block: 'start', behavior: 'instant' });
+    onRevealToolPaths();
+  }, [onRevealToolPaths]);
   const unavailable = resource.toolPathsSupported !== true ? m.unsupportedService : telemetry === undefined ? m.unsupportedWorker : null;
-  return <details className="panel config-panel configuration-tool-paths">
+  return <details ref={detailsRef} className="panel config-panel configuration-tool-paths">
     <summary>{m.title}</summary>
     <div className="panel-body">
       <p className="configuration-field-detail" id="config-tool-paths-detail">{m.detail}</p>
@@ -30,7 +45,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
         return <div className="field configuration-tool-field" key={tool} data-tool={tool}>
           <label htmlFor={id}>{names[tool]}</label>
           <div className="configuration-tool-input">
-            <input id={id} type="text" spellCheck={false} autoComplete="off" value={choice?.kind === 'path' ? choice.path : ''}
+            <input data-touch-text="responsive" id={id} type="text" spellCheck={false} autoComplete="off" value={choice?.kind === 'path' ? choice.path : ''}
               placeholder={choice === null ? m.awaitingImport : m.auto} disabled={disabled || unavailable !== null}
               aria-invalid={error !== undefined} aria-describedby={description}
               onChange={event => onChange(tool, { kind: 'path', path: event.target.value })} />
@@ -38,8 +53,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
           </div>
           {error !== undefined && <p className="field-error" id={`${id}-error`}>{m.invalidPath}</p>}
           {changed[tool] && <p className="application-feedback"><span className="status-chip unsaved">{m.unsaved}</span></p>}
-          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online}
-            {...(resource.desired?.value.agentControlMode == null ? {} : { primaryContext: resource.desired.value.agentControlMode })} />
+          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online} />
         </div>;
       })}
     </div>

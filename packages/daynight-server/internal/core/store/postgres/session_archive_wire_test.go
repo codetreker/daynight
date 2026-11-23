@@ -17,6 +17,7 @@ import (
 )
 
 func TestSessionArchivePublicationAndFailureLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, failure := range []bool{false, true} {
 		t.Run(map[bool]string{false: "publication", true: "failure receipt"}[failure], func(t *testing.T) {
 			db := isolatedStore(t)

@@ -48,8 +48,33 @@ func newTaskFailureFixture(t *testing.T, ctx context.Context, outcome store.Tran
 		projects: &projectWriterMock{taskMockBase: base.withLabel("projects")},
 		tasks:    &taskWriterMock{taskMockBase: base.withLabel("tasks")},
 		sessions: &projectSessionMock{taskMockBase: base.withLabel("sessions")}}
+	f.tasks.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != target.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	f.scope.ProjectDAOFn = func() store.ProjectWriteDAO { return f.projects }
 	f.scope.TaskDAOFn = func() store.TaskWriteDAO { return f.tasks }
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(actual context.Context, projectID, id string) (model.TaskHeader, error) {
+		if actual != ctx || projectID != project.ID {
+			t.Fatal("preflight changed identity or context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: model.TaskTypeTask}, nil
+	}}
+	projectReader := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(actual context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || id != project.ID {
+			t.Fatal("preflight changed authorization")
+		}
+		return taskMockAccess(project, actor), nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight"), ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.database.ReadSnapshotFn = func(actual context.Context, run func(store.SnapshotScope) error) error {
+		if actual != ctx {
+			t.Fatal("preflight changed context")
+		}
+		return run(snapshot)
+	}
 	f.projects.ProjectAccessFn = func(actual context.Context, actor model.Principal) (model.ProjectAccess, error) {
 		if actual != ctx || actor != principal {
 			t.Fatal("Project access changed context or principal")
@@ -140,6 +165,7 @@ func TestTaskReadAndWriteDAOFailures(t *testing.T) {
 			reader.TasksFn = func(context.Context, string, store.TaskQuery) (store.TaskPage, error) { return store.TaskPage{}, cause }
 			f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
 			f.expectedWrites = 5
+			preflight := f.database.ReadSnapshotFn
 			f.database.ReadSnapshotFn = func(actual context.Context, work func(store.SnapshotScope) error) error {
 				if actual != ctx {
 					t.Fatal("snapshot changed context")
@@ -159,6 +185,7 @@ func TestTaskReadAndWriteDAOFailures(t *testing.T) {
 			_, updateErr := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
 			_, createErr := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "New"})
 			failures := []error{getErr, listErr, updateErr, createErr}
+			f.database.ReadSnapshotFn = preflight
 			for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 				_, err := tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: status})
 				failures = append(failures, err)

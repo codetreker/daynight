@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { registerOverlay } from '../src/app/overlay';
 import { browserNavigation } from '../src/app/navigation';
 import { useBrowserLocation } from '../src/app/browser-location';
-import { useMyTasksHistory } from '../src/app/use-page-history';
+import { useMyTasksHistory, useProjectHistory } from '../src/app/use-page-history';
 import { myTasksHistory, projectHistory, readProjectHistory, type MyTasksReading, type ProjectReading } from '../src/app/page-history';
 import { navigate } from '../src/app/router';
 import { DraftNavigationConfirmation, MyTasksDraftHost, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
@@ -184,6 +184,76 @@ it.each(['summary', 'direct'] as const)('protects a Project %s draft when the sa
   expect(readProjectHistory(navigation.snapshot().view, userId, projectId)!.detail!.source).toBe(otherSource);
   expect(screen.getByRole('textbox')).not.toBe(editor);
   expect(screen.getByRole('textbox')).toHaveValue('');
+});
+
+it('protects a Project draft on traversal when URL conflicts with the destination reading', () => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const projectPath = `/projects/${projectId}`;
+  const initial: ProjectReading = { section: 'prs', view: 'standalone', projectGraphWitness: null,
+    detail: { id: taskId, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+  history.replaceState(null, '', `${projectPath}?tab=prs`);
+  const navigation = browserNavigation();
+  const historyHook = renderHook(() => useProjectHistory(userId, projectId, true, { section: 'overview', view: 'standalone' }, scope));
+  act(() => historyHook.result.current.select(initial));
+  const target = history.state;
+  const next = { ...initial, section: 'tasks' } as const;
+  act(() => historyHook.result.current.select(next));
+  const source = history.state;
+  historyHook.unmount();
+  const discard = vi.fn();
+  renderWithLocale(<TaskCacheProvider scope={scope}><ProjectDraftHost projectId={projectId} taskId={taskId} source="summary" summaryType="task" insideProjectGraph={false} graphWitness={null}>
+    <TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>
+  </ProjectDraftHost></TaskCacheProvider>, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'retained draft' } });
+  const arrive = (state: unknown, url: string) => act(() => { history.replaceState(state, '', url); dispatchEvent(new PopStateEvent('popstate', { state })); });
+  arrive(target, `${projectPath}?tab=prs`);
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  arrive(source, `${projectPath}?tab=tasks`);
+  const conflict = { ...target, __daynightNavigation: { ...target.__daynightNavigation, view: projectHistory(userId, projectId, next) } };
+  arrive(conflict, `${projectPath}?tab=prs`);
+  expect(screen.getByRole('alertdialog')).toBeVisible();
+  expect(navigation.snapshot().search).toBe('?tab=tasks');
+  vi.spyOn(history, 'go').mockImplementation(() => {});
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  arrive(source, `${projectPath}?tab=tasks`);
+  expect(editor).toHaveValue('retained draft'); expect(discard).not.toHaveBeenCalled();
+  arrive(conflict, `${projectPath}?tab=prs`);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+  expect(discard).toHaveBeenCalledOnce(); expect(navigation.snapshot().search).toBe('?tab=prs');
+});
+
+it('protects a nested draft when a Goal URL conflicts with the retained reading', () => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const otherGoal = 'b0000000-0000-0000-0000-000000000002';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const path = `/projects/${projectId}`;
+  const initial: ProjectReading = { section: 'tasks', view: 'goals', projectGraphWitness: taskId,
+    detail: { id: taskId, source: 'summary', insideProjectGraph: true, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+  history.replaceState(null, '', `${path}?tab=tasks&goalGraph=${taskId}`);
+  const navigation = browserNavigation();
+  navigation.setView(projectHistory(userId, projectId, initial), { replace: true });
+  const discard = vi.fn();
+  renderWithLocale(<TaskCacheProvider scope={scope}><ProjectDraftHost projectId={projectId} taskId={taskId} source="summary" summaryType="goal" insideProjectGraph graphWitness={taskId}>
+    <TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>
+  </ProjectDraftHost></TaskCacheProvider>, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'preserve draft' } });
+  const next = { ...initial, detail: { ...initial.detail!, navigation: { tab: 'discussion' as const, path: null } } };
+  act(() => navigation.setView(projectHistory(userId, projectId, next)));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  act(() => navigation.setView(projectHistory(userId, projectId, next), { to: `${path}?tab=tasks&goalGraph=${otherGoal}` }));
+  expect(screen.getByRole('alertdialog')).toBeVisible();
+  expect(navigation.snapshot().search).toBe(`?tab=tasks&goalGraph=${taskId}`);
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect(editor).toHaveValue('preserve draft'); expect(discard).not.toHaveBeenCalled();
+  act(() => navigation.setView(projectHistory(userId, projectId, next), { to: `${path}?tab=tasks&goalGraph=${otherGoal}` }));
+  fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+  expect(discard).toHaveBeenCalledOnce();
+  expect(navigation.snapshot().search).toBe(`?tab=tasks&goalGraph=${otherGoal}`);
 });
 
 

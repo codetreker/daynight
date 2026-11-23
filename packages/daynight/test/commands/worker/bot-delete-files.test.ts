@@ -1,6 +1,7 @@
-import { openMediaBudgetLedger } from "../../../src/commands/controller/media/budget-ledger.js";
 import Database from "better-sqlite3";
 import { createServer } from "node:net";
+import { constants } from "node:fs";
+import * as filesystem from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,23 +9,27 @@ import { captureBotDeletionFiles, removeBotDeletionFile, type BotDeletionTarget 
 import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import type { BotExecution } from "../../../src/commands/worker/bots/execution-store.js";
-import { removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
+import { removeOwnedSourceDirectory } from "../../../src/commands/worker/owned-source-directory.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+
+vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>() }));
 
 const id = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const signal = () => new AbortController().signal;
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const fixture = async () => {
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+const fixture = async (dedicated = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/t15/files");
   await mkdir(base, { recursive: true });
   const home = await realpath(await mkdtemp(path.join(base, "h-")));
   cleanups.push(() => rm(home, { recursive: true, force: true }));
   vi.stubEnv("DN_CONFIG_DIR", path.join(home, "state"));
   const executionId = id(5), launchId = id(6), previousId = id(7);
-  const directory = controllerExecutionDirectory(home, executionId), ticket = controllerTicketPath(home, launchId), previousTicket = controllerTicketPath(home, previousId);
-  const alias = path.join(home, "state", "agent-cli-aliases", "execution-current");
-  const retainedAlias = path.join(home, "state", "agent-cli-aliases", "execution-previous");
+  const storage = dedicated ? resolveBotPaths(path.join(home, "state"), id(3)).directory : undefined;
+  const directory = controllerExecutionDirectory(home, executionId, storage), ticket = controllerTicketPath(home, launchId, storage), previousTicket = controllerTicketPath(home, previousId, storage);
+  const alias = path.join(storage ?? path.join(home, "state"), "agent-cli-aliases", "execution-current");
+  const retainedAlias = path.join(storage ?? path.join(home, "state"), "agent-cli-aliases", "execution-previous");
   const state = path.join(home, "state", "bots", id(3), "state");
   for (const target of [state, directory, path.dirname(ticket), alias, retainedAlias]) await mkdir(target, { recursive: true });
   for (const target of [path.join(state, "claim.json"), ticket, previousTicket, path.join(directory, "journal.sqlite"), path.join(directory, "journal.sqlite-wal"), path.join(directory, "credential.json"), path.join(directory, "pending.json"), path.join(directory, "receipt.json"), path.join(alias, "daynight"), path.join(retainedAlias, "dn")]) await writeFile(target, "private");
@@ -45,8 +50,108 @@ const fixture = async () => {
 };
 const metadata = async (target: string) => { const entry = await lstat(target, { bigint: true }); return `${entry.dev}:${entry.ino}`; };
 const captured = async (target: string, kind: BotDeletionTarget["kind"]): Promise<BotDeletionTarget> => ({ path: target, root: path.dirname(target), kind, identity: await metadata(target), rootIdentity: await metadata(path.dirname(target)), completed: false });
+const observeParentHandle = (target: BotDeletionTarget, configure: (handle: filesystem.FileHandle) => void) => {
+  const original = filesystem.open;
+  return vi.spyOn(filesystem, "open").mockImplementation(async (...args) => {
+    const handle = await original(...args);
+    if (args[0] === target.root) configure(handle);
+    return handle;
+  });
+};
+
+describe.skipIf(process.platform === "win32")("durable original execution removal", () => {
+  it("joins the original parent's real sync after removal before allowing completion", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory");
+    const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    let returned = false, synced = false;
+    const opened = observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => {
+        await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+        const parent = await handle.stat({ bigint: true });
+        expect(`${parent.dev}:${parent.ino}`).toBe(target.rootIdentity);
+        await sync(); synced = true; entered.resolve(); await finish.promise;
+      });
+    });
+    const removing = removeBotDeletionFile(target, signal()).then(() => { returned = true; });
+    try {
+      await Promise.race([entered.promise, removing.then(() => { throw new Error("Deletion returned before synchronizing its parent."); })]);
+      expect(synced).toBe(true); expect(returned).toBe(false);
+      expect(opened).toHaveBeenCalledWith(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } finally { finish.resolve(); await removing; }
+    expect(returned).toBe(true);
+  });
+
+  it("rejects a failed parent sync and resyncs the already absent original execution on retry", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), failure = Object.assign(new Error("parent sync failed"), { code: "EIO" });
+    let attempts = 0;
+    observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => { if (++attempts === 1) throw failure; await sync(); });
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toBe(failure);
+    await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(target.completed).toBe(false);
+    await removeBotDeletionFile(target, signal());
+    expect(attempts).toBe(2);
+  });
+
+  it("rejects an opened parent with a different identity without syncing it", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), sync = vi.fn();
+    observeParentHandle(target, handle => {
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementation(async () => {
+        const value = await stat({ bigint: true });
+        return { ...value, ino: value.ino + 1n };
+      });
+      vi.spyOn(handle, "sync").mockImplementation(sync);
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/identity/i);
+    expect(sync).not.toHaveBeenCalled(); expect(target.completed).toBe(false);
+  });
+
+  it.each([false, true])("preserves close failure and any preceding sync failure (%s)", async failSync => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), closeFailure = new Error("parent close failed"), syncFailure = new Error("parent sync failed");
+    observeParentHandle(target, handle => {
+      const close = handle.close.bind(handle);
+      if (failSync) vi.spyOn(handle, "sync").mockRejectedValue(syncFailure);
+      vi.spyOn(handle, "close").mockImplementation(async () => { await close(); throw closeFailure; });
+    });
+    if (failSync) await expect(removeBotDeletionFile(target, signal())).rejects.toMatchObject({ errors: [syncFailure, closeFailure] });
+    else await expect(removeBotDeletionFile(target, signal())).rejects.toBe(closeFailure);
+    expect(target.completed).toBe(false);
+  });
+});
 
 describe("Bot private file deletion", () => {
+  it("removes dedicated Bot payloads while retaining its SQLite receipt and other Bot and public files", async () => {
+    const f = await fixture(true);
+    const botPaths = resolveBotPaths(path.join(f.home, "state"), f.record.botId);
+    const retained = [botPaths.databaseFile, botPaths.lockFile,
+      path.join(resolveBotPaths(path.join(f.home, "state"), id(60)).directory, "store.sqlite"),
+        path.join(f.ticketValue.nativeHome, "config.toml"), path.join(f.ticketValue.nativeHome, "sessions", "shared.jsonl"),
+        path.join(f.home, ".copilot", "config.json"), path.join(f.home, ".copilot", "session-state", id(61), "events.jsonl"),
+      controllerTicketPath(f.home, f.record.intent!.launchId)];
+    for (const file of retained) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "retained"); }
+    await mkdir(botPaths.codexRecoveryDirectory, { recursive: true });
+    await writeFile(path.join(botPaths.codexRecoveryDirectory, "manifest.json"), "private recovery manifest");
+    await writeFile(path.join(botPaths.codexRecoveryDirectory, "snapshot.jsonl"), "private recovery history");
+    await mkdir(botPaths.claudeRecoveryDirectory, { recursive: true });
+    await writeFile(path.join(botPaths.claudeRecoveryDirectory, "mirror.sqlite"), "private Claude recovery history");
+    await mkdir(botPaths.copilotRecoveryDirectory, { recursive: true });
+    await writeFile(path.join(botPaths.copilotRecoveryDirectory, "recovery.sqlite"), "private Copilot recovery history");
+    const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
+    expect(targets.filter(target => target.path === botPaths.codexRecoveryDirectory)).toHaveLength(1);
+    expect(targets.filter(target => target.path === botPaths.claudeRecoveryDirectory)).toHaveLength(1);
+    expect(targets.filter(target => target.path === botPaths.copilotRecoveryDirectory)).toHaveLength(1);
+    expect(targets.some(target => target.path === f.ticketValue.nativeHome)).toBe(false);
+    for (const target of targets) await removeBotDeletionFile(target, signal());
+    for (const file of retained) expect(await readFile(file, "utf8")).toBe("retained");
+    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias, botPaths.codexRecoveryDirectory, botPaths.claudeRecoveryDirectory, botPaths.copilotRecoveryDirectory]) {
+      await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("captures only owned execution, launch and aliases while leaving cwd, native home and task worktrees intact", async () => {
     const f = await fixture();
     const unrelated = [path.join(f.home, "state", "bots", id(4), "state"), path.join(f.home, "state", "bots", id(3), "other"), path.join(f.home, "cwd"), path.join(f.home, ".codex"), path.join(f.home, ".worktrees", "task"), controllerExecutionDirectory(f.home, id(50))];
@@ -73,6 +178,19 @@ describe("Bot private file deletion", () => {
     expect(targets.map(target => target.path)).toEqual([f.state]);
     await removeBotDeletionFile(targets[0]!, signal());
     await expect(lstat(f.state)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
+  });
+
+  it("cleans Bot aliases left by interrupted preparation before launch intent persistence", async () => {
+    const f = await fixture();
+    f.record.intent = null;
+    const aliasRoot = path.join(resolveBotPaths(path.join(f.home, "state"), f.record.botId).directory, "agent-cli-aliases");
+    const alias = path.join(aliasRoot, "execution-interrupted", "daynight");
+    await mkdir(path.dirname(alias), { recursive: true }); await writeFile(alias, "private shim");
+    const targets = await captureBotDeletionFiles(f.home, f.record, null, signal());
+    expect(targets.map(target => target.path)).toEqual([f.state, aliasRoot]);
+    for (const target of targets) await removeBotDeletionFile(target, signal());
+    await expect(lstat(aliasRoot)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
 
@@ -248,7 +366,7 @@ describe("Bot private file deletion", () => {
 
   it("requires the captured inode inside the shared restricted directory remover", async () => {
     const f = await fixture();
-    await expect(removeHerdrSourceDirectory(path.dirname(f.directory), f.directory, undefined, { rootIdentity: await metadata(path.dirname(f.directory)), sourceIdentity: "0:0" })).rejects.toThrow(/identity/);
+    await expect(removeOwnedSourceDirectory(path.dirname(f.directory), f.directory, undefined, { rootIdentity: await metadata(path.dirname(f.directory)), sourceIdentity: "0:0" })).rejects.toThrow(/identity/);
     expect(await readFile(path.join(f.directory, "journal.sqlite"), "utf8")).toBe("private");
   });
 
@@ -257,17 +375,20 @@ describe("Bot private file deletion", () => {
     await expect(removeBotDeletionFile(target, AbortSignal.abort())).rejects.toThrow();
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
-  it("releases image budget only after the complete original execution sweep, retaining pins on failure", async () => {
+  it("deletes original execution files without releasing the retired media ledger", async () => {
     const f = await fixture(), state = path.join(f.home, "state"), executionId = f.execution.executionId;
-    const ledger = openMediaBudgetLedger(state, executionId); ledger.reserve(1024); ledger.close();
-    const reserved = () => { const db = new Database(path.join(state, "controller", "media", "budget.sqlite")); try { return (db.prepare("SELECT reserved_bytes FROM allocations WHERE execution_id=?").get(executionId) as { reserved_bytes: number } | undefined)?.reserved_bytes ?? null; } finally { db.close(); } };
+    const ledgerFile = path.join(state, "controller", "media", "budget.sqlite");
+    await mkdir(path.dirname(ledgerFile), { recursive: true });
+    const ledger = new Database(ledgerFile);
+    try { ledger.exec("CREATE TABLE allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL)"); ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(executionId, 9_000_000_000); } finally { ledger.close(); }
+    const reserved = () => { const db = new Database(ledgerFile, { readonly: true }); try { return (db.prepare("SELECT reserved_bytes FROM allocations WHERE execution_id=?").get(executionId) as { reserved_bytes: number } | undefined)?.reserved_bytes ?? null; } finally { db.close(); } };
     const target = await captured(f.directory, "directory"), privateImage = path.join(f.directory, "journal.sqlite.media-staging", "native", "pinned.bin");
     await mkdir(path.dirname(privateImage), { recursive: true }); await writeFile(privateImage, "native resume pin");
     const outside = path.join(f.home, "outside"); await writeFile(outside, "keep"); const unsafe = path.join(f.directory, "outside-link"); await symlink(outside, unsafe);
     await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/symbolic/);
-    expect(reserved()).toBe(1024); expect(await readFile(privateImage, "utf8")).toBe("native resume pin");
+    expect(reserved()).toBe(9_000_000_000); expect(await readFile(privateImage, "utf8")).toBe("native resume pin");
     await rm(unsafe); await removeBotDeletionFile(target, signal());
-    expect(reserved()).toBeNull(); await expect(lstat(f.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(reserved()).toBe(9_000_000_000); await expect(lstat(f.directory)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(outside, "utf8")).toBe("keep");
   });
 

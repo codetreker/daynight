@@ -2,10 +2,14 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -82,6 +86,7 @@ type sessionReadResponseWriter struct {
 	body     []byte
 	status   int
 	exceeded bool
+	started  bool
 }
 
 func (w *sessionReadResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -109,7 +114,7 @@ func (w *sessionReadResponseWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
-func (w *sessionReadResponseWriter) finish(r *http.Request) error {
+func (w *sessionReadResponseWriter) finish(r *http.Request, lease io.Closer) error {
 	if r.Context().Err() != nil {
 		return nil
 	}
@@ -120,6 +125,43 @@ func (w *sessionReadResponseWriter) finish(r *http.Request) error {
 		w.Header().Del("Content-Length")
 		w.Header().Set("Content-Type", "application/json")
 	}
+	if lease == nil {
+		return w.publish(body)
+	}
+	return w.publishRetained(r.Context(), lease, body)
+}
+
+func (w *sessionReadResponseWriter) publishRetained(parent context.Context, lease io.Closer, body []byte) error {
+	ctx, cancel := filestorage.GateContext(parent, lease)
+	defer cancel()
+	if err := filestorage.GateError(ctx); err != nil {
+		return err
+	}
+	controller := http.NewResponseController(w.ResponseWriter)
+	interrupted := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() {
+		var err error
+		if errors.Is(filestorage.GateError(ctx), filestorage.ErrGateLost) {
+			err = controller.SetWriteDeadline(time.Now())
+		}
+		interrupted <- err
+	})
+	err := w.publish(body)
+	// Keep the lease through the network flush, including bodies small enough
+	// for net/http to buffer until the handler returns.
+	if err == nil && w.started {
+		if flushErr := controller.Flush(); !errors.Is(flushErr, http.ErrNotSupported) {
+			err = flushErr
+		}
+	}
+	if !stop() {
+		err = errors.Join(err, <-interrupted)
+	}
+	return errors.Join(err, filestorage.GateError(ctx))
+}
+
+func (w *sessionReadResponseWriter) publish(body []byte) error {
+	w.started = w.status != 0 || len(body) != 0
 	if w.status != 0 {
 		w.ResponseWriter.WriteHeader(w.status)
 	}

@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, open } from "node:fs/promises";
@@ -8,7 +9,6 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
-import { controllerMetadataBudget, ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { replayStoppedControllerHistory, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
 const roots: string[] = [];
@@ -16,7 +16,7 @@ afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "pl
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
 const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
-const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket, stateDirectory: string): Promise<void> => {
+const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket): Promise<void> => {
   if (process.platform !== "win32") return;
   const db = new Database(journalPath);
   try {
@@ -27,7 +27,7 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
   const jobLease = {} as ControllerJobLease;
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   try {
-    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory, jobLease });
+    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { jobLease });
     expect(confirm).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, undefined, jobLease);
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
@@ -40,7 +40,7 @@ const fixture = async (count = 3, text = "durable", floor = false) => {
   for (let i = 0; i < count; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
   store.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }); store.markDispatching(ticket.initialOperationId); store.recordOperation(ticket.initialOperationId, "unknown");
   store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
-  await completeFixtureStop(journalPath, ticket, home);
+  await completeFixtureStop(journalPath, ticket);
   const read = () => { const db = new Database(journalPath, { readonly: true }); try { return { state: db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence,last_acknowledged,source_floor FROM execution").get(), operation: db.prepare("SELECT value FROM operations").get(), outbox: db.prepare("SELECT count(*) AS total FROM outbox").get(), batch: db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_tail'").get() }; } finally { db.close(); } };
   return { journalPath, ticket, read };
 };
@@ -81,7 +81,7 @@ test("stopped ACK reports its actual rollback and retains the original batch on 
     try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
     return acknowledged(batch);
   } }).then(() => null, (error: unknown) => error);
-  expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+  expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "rolled-back", connectionClosed: true, cause: { kind: "invalid-format", outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } } });
   expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
   expect(f.read().outbox).toEqual({ total: 101 });
   expect(f.read().batch).toEqual({ value: JSON.stringify(sent) });
@@ -93,15 +93,16 @@ test("a failed stopped ACK rollback retains both errors and does not invent an o
     const db = new Database(f.journalPath);
     try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
     vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (this.name === f.journalPath && sql === "ROLLBACK") throw rollbackFailure;
+      if (sqliteDisplayFilename(this.name) === f.journalPath && sql === "ROLLBACK") throw rollbackFailure;
       return exec.call(this, sql);
     });
     return acknowledged(batch);
   } }).then(() => null, (error: unknown) => error);
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect((failure as AggregateError).errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "unknown" });
-  expect((failure as AggregateError).errors[1]).toBe(rollbackFailure);
-  expect(sqliteAccess.sqliteTransactionOutcome(failure)).toBe("unknown");
+  expect(failure).toMatchObject({ kind: "operation-failed", outcome: "unknown", connectionClosed: true });
+  const errors = ((failure as Error).cause as AggregateError).errors;
+  expect(errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "unknown" });
+  expect(errors[1]).toBe(rollbackFailure);
+  expect(sqliteAccess.sqliteTransactionOutcome((failure as Error).cause)).toBe("unknown");
   expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
   expect(f.read().outbox).toEqual({ total: 101 });
 });
@@ -143,17 +144,10 @@ test("an active generation is rejected before transport", async () => {
   const send = vi.fn(); await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow("original stopped"); expect(send).not.toHaveBeenCalled();
 });
 
-test("stopped tail settlement above the normal metadata limit preserves the original batch across response loss and ACK", async () => {
+test("stopped tail settlement above the former metadata limit preserves the original batch across response loss and ACK", async () => {
   const f = await fixture(1), before = f.read();
   const retained = await open(path.join(`${f.journalPath}.pending-content`, "retained.tmp"), "wx", 0o600);
-  try { await retained.truncate(129 * 1048576); } finally { await retained.close(); }
-  const db = new Database(f.journalPath, { readonly: true });
-  try {
-    const budget = controllerMetadataBudget(f.journalPath, db);
-    expect(budget.bytes()).toBeGreaterThan(128 * 1048576);
-    expect(budget.bytes()).toBeLessThan(136 * 1048576);
-    expect(() => budget.assert()).toThrow(ControllerMetadataBudgetError);
-  } finally { db.close(); }
+  try { await retained.truncate(137 * 1048576); } finally { await retained.close(); }
   let original!: StoppedSourceTail;
   await expect(replayStoppedControllerHistory({ ...f, send: async batch => {
     original = batch;
@@ -172,17 +166,6 @@ test("stopped tail settlement above the normal metadata limit preserves the orig
   expect(after.outbox).toEqual({ total: 0 });
   expect(after.batch).toBeUndefined();
 });
-
-test("a stopped batch cannot consume metadata beyond the settlement reserve or discard its original events", async () => {
-  const f = await fixture(), before = f.read(), pending = `${f.journalPath}.pending-content`;
-  const retained = await open(path.join(pending, "retained.tmp"), "wx", 0o600);
-  try { await retained.truncate(136 * 1048576); } finally { await retained.close(); }
-  const send = vi.fn();
-  const failure = await replayStoppedControllerHistory({ ...f, send }).then(() => null, (error: unknown) => error);
-  expect(failure).toBeInstanceOf(ControllerMetadataBudgetError);
-  expect(send).not.toHaveBeenCalled(); expect(f.read()).toEqual(before);
-});
-
 
 test("stopped transport releases local storage ownership before sending and reacquires it before ACK", async () => {
   const f = await fixture();

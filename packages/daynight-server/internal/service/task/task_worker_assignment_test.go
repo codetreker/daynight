@@ -9,18 +9,19 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type workerCapturerMock struct {
 	taskMockBase
-	CaptureBatchFn func(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+	CaptureBatchFn func(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
 }
 
-func (capture *workerCapturerMock) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (capture *workerCapturerMock) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
 	capture.need("CaptureBatch", capture.CaptureBatchFn != nil)
-	return capture.CaptureBatchFn(ctx, dao, facts)
+	return capture.CaptureBatchFn(ctx, dao, actor, facts)
 }
 
 type workerWriteMock struct {
@@ -36,6 +37,16 @@ type workerWriteMock struct {
 	ExpectedAccessCalls int
 	ExpectedTaskReads   int
 	Current             model.Task
+	Admission           *workerClaimAdmissionMock
+}
+
+type workerClaimAdmissionMock struct {
+	check func(context.Context, string, string) error
+	read  func(context.Context, string, string) (*model.WorkerDesiredConfiguration, error)
+}
+
+func (m *workerClaimAdmissionMock) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+	return m.read(ctx, user, worker)
 }
 
 func workerMockWrite(t *testing.T, current model.Task, principal model.Principal) *workerWriteMock {
@@ -44,15 +55,33 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 	fixture := &workerWriteMock{t: t, Context: t.Context(), Current: current, ExpectedAccessCalls: 1, ExpectedTaskReads: 1}
 	fixture.Store = &taskStoreMock{taskMockBase: base.withLabel("store")}
 	fixture.Task = &taskWriterMock{taskMockBase: base.withLabel("task")}
+	fixture.Task.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != current.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	fixture.Project = &projectWriterMock{taskMockBase: base.withLabel("project")}
 	fixture.Session = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	fixture.Capture = &workerCapturerMock{taskMockBase: base.withLabel("capture")}
 	fixture.CaptureDAO = &captureDAOMock{taskMockBase: base.withLabel("captureDAO")}
+	fixture.Admission = &workerClaimAdmissionMock{check: func(ctx context.Context, user, worker string) error {
+		if ctx != fixture.Context || user != principal.UserID || worker == "" {
+			t.Fatal("changed lifecycle admission identity")
+		}
+		return nil
+	}, read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+		if ctx != fixture.Context || user != principal.UserID || worker == "" {
+			t.Fatalf("claim admission identity changed: user=%s worker=%s", user, worker)
+		}
+		return nil, nil
+	}}
 	scope := &taskProjectScopeMock{taskMockBase: base.withLabel("scope"),
-		ProjectDAOFn: func() store.ProjectWriteDAO { return fixture.Project },
-		TaskDAOFn:    func() store.TaskWriteDAO { return fixture.Task },
-		SessionDAOFn: func() store.ProjectSessionDAO { return fixture.Session },
-		CaptureDAOFn: func() store.WebhookCaptureDAO { return fixture.CaptureDAO },
+		ProjectDAOFn:              func() store.ProjectWriteDAO { return fixture.Project },
+		TaskDAOFn:                 func() store.TaskWriteDAO { return fixture.Task },
+		SessionDAOFn:              func() store.ProjectSessionDAO { return fixture.Session },
+		CaptureDAOFn:              func() store.WebhookCaptureDAO { return fixture.CaptureDAO },
+		WorkerClaimAdmissionDAOFn: func() store.WorkerClaimAdmissionDAO { return fixture.Admission },
 	}
 	reads, writes := 0, 0
 	fixture.Project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
@@ -77,6 +106,25 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 			return store.Completion{Outcome: store.TransactionNotCommitted}, err
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(ctx context.Context, projectID, id string) (model.TaskHeader, error) {
+		if ctx != fixture.Context || projectID != current.ProjectID || id != current.ID {
+			t.Fatal("worker preflight changed Task identity or context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: model.TaskTypeTask}, nil
+	}}
+	projectReader := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != fixture.Context || p != principal || projectID != current.ProjectID {
+			t.Fatal("worker preflight changed authorization")
+		}
+		return model.ProjectAccess{ProjectID: projectID, UserID: p.UserID, Role: model.ProjectMemberRole}, nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight"), ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+	fixture.Store.ReadSnapshotFn = func(ctx context.Context, run func(store.SnapshotScope) error) error {
+		if ctx != fixture.Context {
+			t.Fatal("worker preflight changed context")
+		}
+		return run(snapshot)
 	}
 	t.Cleanup(func() {
 		counts := map[string]int{}
@@ -136,7 +184,7 @@ func (fixture *workerWriteMock) ExpectUpdate(values store.TaskWrite, returned mo
 func (fixture *workerWriteMock) ExpectCapture(facts []protocol.Fact) {
 	fixture.t.Helper()
 	calls := 0
-	fixture.Capture.CaptureBatchFn = func(ctx context.Context, dao store.WebhookCaptureDAO, actual []protocol.Fact) error {
+	fixture.Capture.CaptureBatchFn = func(ctx context.Context, dao store.WebhookCaptureDAO, _ wm.Actor, actual []protocol.Fact) error {
 		calls++
 		if ctx != fixture.Context || dao != fixture.CaptureDAO || calls != 1 || !reflect.DeepEqual(actual, facts) {
 			fixture.t.Fatalf("worker capture: got %#v, want %#v", actual, facts)
@@ -181,7 +229,7 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 				descriptor := workerDescriptor()
 				claimedAt := before.UpdatedAt.Add(time.Second)
 				if assigned != nil && *assigned == claimant.UserID {
-					worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, UserID: claimant.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+					worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, UserID: claimant.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 					values := taskcore.CurrentWrite(before)
 					values.Status, values.Properties = model.TaskInProgress, testWithWorker(t, before.Properties, worker)
 					returned := before
@@ -214,4 +262,12 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 			})
 		}
 	}
+}
+
+func (m *workerClaimAdmissionMock) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	return m.check(ctx, user, worker)
+}
+
+func (m *workerClaimAdmissionMock) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }

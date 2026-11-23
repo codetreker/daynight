@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
@@ -72,11 +73,45 @@ func TestEnsureUserReturnsActualIdentityWithoutOverwritingProfile(t *testing.T) 
 	}
 }
 
+func finishProfileContention(t *testing.T, ctx context.Context, db *postgres.Store, holder pgx.Tx, prefix string, commitHolder bool, write func(context.Context, store.IdentityScope) error) {
+	t.Helper()
+	writerCtx, cancel := context.WithCancel(ctx)
+	result := make(chan error, 1)
+	stopped := make(chan struct{})
+	defer func() {
+		cancel()
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if err := holder.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("release profile lock holder: %v", err)
+		}
+		select {
+		case <-stopped:
+		case <-cleanup.Done():
+			t.Error("profile contender did not exit after cancellation and holder release")
+		}
+	}()
+	go func() {
+		defer close(stopped)
+		_, err := db.WriteIdentity(writerCtx, func(scope store.IdentityScope) error {
+			return write(writerCtx, scope)
+		})
+		result <- err
+	}()
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, prefix, holder.Conn().PgConn().PID())
+	if commitHolder {
+		requireNoError(t, holder.Commit(ctx))
+	} else {
+		requireNoError(t, holder.Rollback(ctx))
+	}
+	requireNoError(t, testutil.ReceiveQueryResult(t, ctx, result))
+}
+
 func TestEnsureUserReadsCommittedConcurrentWinner(t *testing.T) {
+	db := isolatedStore(t)
 	for _, mode := range []string{"ensure-commit", "ensure-rollback", "native-commit", "native-rollback"} {
 		commitWinner := mode == "ensure-commit" || mode == "native-commit"
-		t.Run(mode, func(t *testing.T) {
-			db := isolatedStore(t)
+		if !t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -101,22 +136,11 @@ func TestEnsureUserReadsCommittedConcurrentWinner(t *testing.T) {
 			candidate := model.User{ID: uuid.NewString(), UniAuthID: winner.UniAuthID}
 			var result model.User
 			var resultInserted bool
-			done := make(chan error, 1)
-			go func() {
-				_, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
-					var err error
-					result, resultInserted, err = sc.IdentityDAO().EnsureUser(ctx, candidate, now.Add(time.Hour))
-					return err
-				})
-				done <- err
-			}()
-			testutil.WaitForQueryLock(t, db.Pool, "INSERT INTO users")
-			if commitWinner {
-				requireNoError(t, tx.Commit(ctx))
-			} else {
-				requireNoError(t, tx.Rollback(ctx))
-			}
-			requireNoError(t, testutil.ReceiveQueryResult(t, ctx, done))
+			finishProfileContention(t, ctx, db, tx, "INSERT INTO users", commitWinner, func(ctx context.Context, sc store.IdentityScope) error {
+				var err error
+				result, resultInserted, err = sc.IdentityDAO().EnsureUser(ctx, candidate, now.Add(time.Hour))
+				return err
+			})
 			if commitWinner && (resultInserted || !reflect.DeepEqual(result, winningUser)) {
 				t.Fatalf("concurrent winner lost: %+v inserted=%t", result, resultInserted)
 			}
@@ -128,7 +152,10 @@ func TestEnsureUserReadsCommittedConcurrentWinner(t *testing.T) {
 			if count != 1 {
 				t.Fatalf("identity count=%d", count)
 			}
-		})
+			testutil.AssertPoolReusable(t, db.Pool)
+		}) {
+			return
+		}
 	}
 }
 
@@ -245,9 +272,9 @@ func TestLoginUpsertMergesNullableProfile(t *testing.T) {
 }
 
 func TestLoginUpsertSerializesWithProfilePatch(t *testing.T) {
+	db := isolatedStore(t)
 	for _, first := range []string{"patch", "login"} {
-		t.Run(first, func(t *testing.T) {
-			db := isolatedStore(t)
+		if !t.Run(first, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			user, _, _ := testutil.AuthRecords(t, db)
@@ -266,32 +293,28 @@ func TestLoginUpsertSerializesWithProfilePatch(t *testing.T) {
 			}
 			requireNoError(t, err)
 			var result model.User
-			done := make(chan error, 1)
-			go func() {
-				_, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
-					var err error
-					if first == "patch" {
-						result, err = sc.IdentityDAO().UpsertUser(ctx, login, now.Add(time.Minute))
-					} else {
-						result, err = sc.IdentityDAO().PatchUser(ctx, user.ID, patch)
-					}
-					return err
-				})
-				done <- err
-			}()
 			query := "INSERT INTO users"
 			if first == "login" {
 				query = "UPDATE users SET"
 			}
-			testutil.WaitForQueryLock(t, db.Pool, query)
-			requireNoError(t, tx.Commit(ctx))
-			requireNoError(t, testutil.ReceiveQueryResult(t, ctx, done))
+			finishProfileContention(t, ctx, db, tx, query, true, func(ctx context.Context, sc store.IdentityScope) error {
+				var err error
+				if first == "patch" {
+					result, err = sc.IdentityDAO().UpsertUser(ctx, login, now.Add(time.Minute))
+				} else {
+					result, err = sc.IdentityDAO().PatchUser(ctx, user.ID, patch)
+				}
+				return err
+			})
 			actual, facts, err := testutil.IdentityUser(ctx, db, user.ID)
 			requireNoError(t, err)
 			if !reflect.DeepEqual(result, actual) || actual.Name == nil || *actual.Name != patchName || actual.AvatarURL == nil || *actual.AvatarURL != loginAvatar || actual.ID != user.ID || !actual.CreatedAt.Equal(user.CreatedAt) || facts.ID != user.PersonalTeam.ID {
 				t.Fatalf("serialized profile returned=%+v persisted=%+v team=%+v", result, actual, facts)
 			}
-		})
+			testutil.AssertPoolReusable(t, db.Pool)
+		}) {
+			return
+		}
 	}
 }
 
@@ -335,7 +358,7 @@ func TestLoginMergedProfileAdmissionRollsBack(t *testing.T) {
 	svc := service.New(db, client, "https://daynight.example/auth/callback")
 	start, err := svc.StartLogin(ctx, "github", "/projects", secret.Random(""))
 	requireNoError(t, err)
-	result, err := svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding)
+	result, err := svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding, "")
 	var provider *model.IdentityProviderError
 	var violation *limit.Violation
 	if !errors.As(err, &provider) || provider.Code != "identity_unavailable" || !errors.As(err, &violation) || violation.Field != "profile" || result.LoginID != start.ID || result.Secret != "" {
@@ -351,16 +374,16 @@ func TestLoginMergedProfileAdmissionRollsBack(t *testing.T) {
 	if logins != 0 || sessions != 0 || teams != 0 {
 		t.Fatalf("pending=%d sessions=%d teams=%d", logins, sessions, teams)
 	}
-	_, err = svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding)
+	_, err = svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding, "")
 	if err == nil {
 		t.Fatal("consumed pending login replay succeeded")
 	}
 }
 
 func TestLoginAndPatchSameFieldFollowLockOrder(t *testing.T) {
+	db := isolatedStore(t)
 	for _, first := range []string{"patch", "login"} {
-		t.Run(first, func(t *testing.T) {
-			db := isolatedStore(t)
+		if !t.Run(first, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			user, _, _ := testutil.AuthRecords(t, db)
@@ -379,26 +402,19 @@ func TestLoginAndPatchSameFieldFollowLockOrder(t *testing.T) {
 			}
 			requireNoError(t, err)
 			var result model.User
-			done := make(chan error, 1)
-			go func() {
-				_, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
-					var err error
-					if first == "patch" {
-						result, err = sc.IdentityDAO().UpsertUser(ctx, login, now.Add(time.Minute))
-					} else {
-						result, err = sc.IdentityDAO().PatchUser(ctx, user.ID, patch)
-					}
-					return err
-				})
-				done <- err
-			}()
 			query := "INSERT INTO users"
 			if first == "login" {
 				query = "UPDATE users SET"
 			}
-			testutil.WaitForQueryLock(t, db.Pool, query)
-			requireNoError(t, tx.Commit(ctx))
-			requireNoError(t, testutil.ReceiveQueryResult(t, ctx, done))
+			finishProfileContention(t, ctx, db, tx, query, true, func(ctx context.Context, sc store.IdentityScope) error {
+				var err error
+				if first == "patch" {
+					result, err = sc.IdentityDAO().UpsertUser(ctx, login, now.Add(time.Minute))
+				} else {
+					result, err = sc.IdentityDAO().PatchUser(ctx, user.ID, patch)
+				}
+				return err
+			})
 			actual, facts, err := testutil.IdentityUser(ctx, db, user.ID)
 			requireNoError(t, err)
 			wantName := loginName
@@ -408,6 +424,9 @@ func TestLoginAndPatchSameFieldFollowLockOrder(t *testing.T) {
 			if !reflect.DeepEqual(result, actual) || actual.Name == nil || *actual.Name != wantName || actual.AvatarURL == nil || *actual.AvatarURL != patchAvatar || actual.ID != user.ID || !actual.CreatedAt.Equal(user.CreatedAt) || facts.ID != user.PersonalTeam.ID {
 				t.Fatalf("serialized profile returned=%+v persisted=%+v team=%+v", result, actual, facts)
 			}
-		})
+			testutil.AssertPoolReusable(t, db.Pool)
+		}) {
+			return
+		}
 	}
 }

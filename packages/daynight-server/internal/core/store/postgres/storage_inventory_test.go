@@ -1,18 +1,116 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
+
+func TestBackupInventoryExpiredArchiveRetainsIndependentResources(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := t.Context()
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	id, owner, project, task := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$1,$4,$1,'{}','{}')`, id, project, task, owner)
+	digest := strings.Repeat("a", 64)
+	exec(`INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path) VALUES($1,'ready',$2,7,'retired-manifest')`, id, digest)
+	file := uuid.NewString()
+	exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path) VALUES($1,$2,'timeline',$3,7,7,'complete','retired-timeline')`, id, file, digest)
+	exec(`INSERT INTO session_archive_chunks(session_id,file_id,chunk_offset,byte_length,sha256,object_path) VALUES($1,$2,0,7,$3,'retired-chunk')`, id, file, digest)
+	exec(`INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,source_byte_length,phase) VALUES($1,$2,'retired-source',$3,7,'files_durable')`, id, uuid.NewString(), digest)
+	data := []byte("retained original")
+	hash := sha256.Sum256(data)
+	resourceHash, length, mediaType := hex.EncodeToString(hash[:]), "17", "text/plain"
+	var sharedID, sharedPath string
+	for _, shared := range []bool{false, true} {
+		resource := uuid.NewString()
+		path, err := sessioncore.BlobAddress(project, owner, id, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor, err := json.Marshal(sp.Resource{ResourceID: resource, Name: "original", Status: "available", MediaType: &mediaType, ByteLength: &length, SHA256: &resourceHash})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(`INSERT INTO session_resources(session_id,resource_id,descriptor,blob_id,blob_path,gc_pending) VALUES($1,$2,$3,$2,$4,true)`, id, resource, descriptor, path)
+		if _, err := files.Put(ctx, sessionresource.Bucket, path, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		if shared {
+			sharedID, sharedPath = resource, path
+			exec(`INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$2,'native_resume','independent-owner')`, id, resource)
+		} else if err := files.Delete(ctx, sessionresource.Bucket, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// GC state by itself does not weaken verification of a readable archive.
+	if err := database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+		if v.Archive == nil || v.Migration == nil || len(v.Resources) != 2 || len(v.Objects) != 2 {
+			t.Fatalf("live storage closure omitted: %+v", v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO session_archive_retention(session_id,expired_at,reason) VALUES($1,now(),'expired')`, id)
+	verify := func() error {
+		return database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+			if v.Archive != nil || v.Migration != nil || len(v.Objects) != 0 || len(v.Resources) != 1 || v.Resources[0].Resource.ResourceID != sharedID {
+				t.Fatalf("expired storage closure: %+v", v)
+			}
+			return sessioncore.VerifyStorageBackup(ctx, files, v)
+		})
+	}
+	// Physical bytes are already gone but the durable cleanup receipt is pending.
+	if err := verify(); err != nil {
+		t.Fatalf("pending cleanup backup: %v", err)
+	}
+	exec(`UPDATE session_archive_retention SET cleaned_at=now() WHERE session_id=$1`, id)
+	if err := verify(); err != nil {
+		t.Fatalf("completed cleanup backup: %v", err)
+	}
+	if err := files.Delete(ctx, sessionresource.Bucket, sharedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing independent original ignored: %v", err)
+	}
+	if _, err := files.Put(ctx, sessionresource.Bucket, sharedPath, bytes.NewReader([]byte("corrupt"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); err == nil {
+		t.Fatal("corrupt independent original ignored")
+	}
+}
 
 func TestBackupReaderRequiresCurrentMigrationChainAndRemainsReadOnly(t *testing.T) {
 	url := scopedDatabaseURL(t)
@@ -48,6 +146,7 @@ func TestBackupReaderRequiresCurrentMigrationChainAndRemainsReadOnly(t *testing.
 }
 
 func TestBackupInventoryRejectsOrphansAndRetainsCallbackFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	owner, id, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -77,6 +176,7 @@ func TestBackupInventoryRejectsOrphansAndRetainsCallbackFailure(t *testing.T) {
 }
 
 func TestBackupReaderFailuresRedactConnectionDetails(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, url := range []string{"postgres://secret-user:secret-password@bad%host/db", "postgres://secret-user:secret-password@127.0.0.1:1/db?connect_timeout=1"} {
 		_, err := OpenReadOnly(context.Background(), url)
 		if err == nil || strings.Contains(err.Error(), "secret-") {
@@ -126,6 +226,8 @@ func TestBackupInventoryRetainsMigrationAndSkipsReleasedStagingTombstones(t *tes
 }
 
 func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
 	for _, tc := range []struct {
 		name     string
 		offset   int64
@@ -137,8 +239,7 @@ func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
 		{"numeric offset", 0, false}, {"noncanonical offset", 0, false}, {"missing state", 0, false},
 		{"bad hash", 0, false}, {"bad path", 0, false}, {"bad length", 0, false}, {"bad spec", 0, false}, {"bad receipt", 0, false}, {"wrong actor", 0, false}, {"invalid failure", 0, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			database := isolatedStore(t)
+		if !t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			owner, id, execution, upload := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 			if _, err := database.Pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, id, owner, execution); err != nil {
@@ -229,6 +330,33 @@ func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
 			if calls != 1 || err != nil {
 				t.Fatal("inventory failed", calls, err)
 			}
-		})
+		}) {
+			return
+		}
+		resetInventoryChunkFixture(t, database)
 	}
+}
+
+func resetInventoryChunkFixture(t *testing.T, database *Store) {
+	t.Helper()
+	testutil.AssertPoolReusable(t, database.Pool)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := database.Pool.Exec(ctx, `DELETE FROM session_image_chunks;
+DELETE FROM session_image_uploads;
+DELETE FROM task_sessions;`); err != nil {
+		t.Fatal(err)
+	}
+	// Inventory joins can hide orphan chunks after the Session or upload is removed.
+	var chunks, uploads, sessions int
+	if err := database.Pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM session_image_chunks),
+ (SELECT count(*) FROM session_image_uploads),
+ (SELECT count(*) FROM task_sessions)`).Scan(&chunks, &uploads, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 0 || uploads != 0 || sessions != 0 {
+		t.Fatalf("inventory chunk fixture retained rows: chunks=%d uploads=%d sessions=%d", chunks, uploads, sessions)
+	}
+	testutil.AssertPoolReusable(t, database.Pool)
 }

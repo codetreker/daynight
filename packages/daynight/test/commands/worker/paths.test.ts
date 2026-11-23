@@ -18,7 +18,6 @@ describe("fixed worker paths", () => {
       databaseFile: "/home/Worker User 用户/.daynight/worker/state.sqlite",
       configurationFile: "/home/Worker User 用户/.daynight/worker/configuration.json",
       lockFile: "/home/Worker User 用户/.daynight/worker/instance.lock",
-      herdrDirectory: "/home/Worker User 用户/.daynight/worker/h",
       logsDirectory: "/home/Worker User 用户/.daynight/worker/logs",
       temporaryDirectory: "/home/Worker User 用户/.daynight/worker/tmp",
     });
@@ -32,7 +31,6 @@ describe("fixed worker paths", () => {
       databaseFile: "C:\\Users\\Worker User 用户\\.daynight\\worker\\state.sqlite",
       configurationFile: "C:\\Users\\Worker User 用户\\.daynight\\worker\\configuration.json",
       lockFile: "C:\\Users\\Worker User 用户\\.daynight\\worker\\instance.lock",
-      herdrDirectory: "C:\\Users\\Worker User 用户\\.daynight\\worker\\h",
       logsDirectory: "C:\\Users\\Worker User 用户\\.daynight\\worker\\logs",
       temporaryDirectory: "C:\\Users\\Worker User 用户\\.daynight\\worker\\tmp",
     });

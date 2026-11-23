@@ -1,9 +1,9 @@
-import { NativeSelect } from '../../ui/native-select/NativeSelect';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { resolveProjectTags } from '../../api/task-tags';
 import type { TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { SelectTrigger } from '../../ui/selection-control/SelectTrigger';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectTags } from './useProjectTags';
 import { TagColorChip, TagColorFeedback } from './TagColor';
@@ -104,12 +104,13 @@ export const useTagFilter = (projectId: string, active = true) => {
 
 export type TagFilterController = ReturnType<typeof useTagFilter>;
 const messages = {
-  en: { manage: 'Manage tags', title: 'Tag filter', child: 'Child task tag filter', clear: 'Clear', search: 'Search tags', all: 'Match all (AND)', any: 'Match any (OR)', untagged: 'No tags', invalid: 'A selected tag is unavailable. Remove it to search again.', removed: 'unavailable', remove: 'Remove', loading: 'Loading tags…', empty: 'No tags yet.', noMatches: 'No matching tags.', error: 'Could not load tags.', resolveError: 'Could not check selected tags.', retry: 'Retry', next: 'Next', first: 'First page' },
-  'zh-CN': { manage: '管理标签', title: '标签筛选', child: '子 Task 标签筛选', clear: '清除', search: '搜索标签', all: '全部匹配（AND）', any: '任一匹配（OR）', untagged: '无标签', invalid: '选中的标签已不可用，请移除后重新查询。', removed: '已不可用', remove: '移除', loading: '正在读取标签…', empty: '还没有标签。', noMatches: '没有匹配的标签。', error: '无法读取标签。', resolveError: '无法核对选中的标签。', retry: '重试', next: '下一页', first: '首页' },
+  en: { manage: 'Manage tags', title: 'Tag filter', child: 'Child task tag filter', clear: 'Clear filter', search: 'Find tags', clearQuery: 'Clear tag search', all: 'All selected', any: 'Any selected', untagged: 'Untagged only', match: 'Match', oneRule: 'Choose at least two tags to change matching', untaggedRule: 'Matching does not apply to untagged items', invalid: 'A selected tag is unavailable. Remove it to search again.', removed: 'unavailable', remove: 'Remove', loading: 'Loading tags…', empty: 'No tags yet.', noMatches: 'No matching tags.', error: 'Could not load tags.', resolveError: 'Could not check selected tags.', retry: 'Retry', next: 'Next', first: 'First page' },
+  'zh-CN': { manage: '管理标签', title: '标签筛选', child: '子 Task 标签筛选', clear: '清空筛选', search: '查找标签', clearQuery: '清空查找词', all: '全部满足', any: '满足任一', untagged: '仅无标签', match: '匹配方式', oneRule: '选择至少两个标签时可切换匹配方式', untaggedRule: '仅无标签不使用匹配方式', invalid: '选中的标签已不可用，请移除后重新查询。', removed: '已不可用', remove: '移除', loading: '正在读取标签…', empty: '还没有标签。', noMatches: '没有匹配的标签。', error: '无法读取标签。', resolveError: '无法核对选中的标签。', retry: '重试', next: '下一页', first: '首页' },
 } as const;
 
 export const TagFilter = ({ controller, child = false, onManage }: { readonly controller: TagFilterController; readonly child?: boolean; readonly onManage?: () => void }) => {
   const { locale } = useI18n(); const m = messages[locale];
+  const matchId = useId();
   const { value, names, invalidIds, catalog, update } = controller;
   const title = child ? m.child : m.title;
   const colorIds = [...value.tagIds, ...(controller.open ? catalog.page?.items.map(tag => tag.id) ?? [] : [])];
@@ -118,23 +119,31 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const toggle = (tag: TaskTag, checked: boolean) => update({ ...value, untagged: false, tagIds: checked ? [...value.tagIds, tag.id] : value.tagIds.filter(id => id !== tag.id) }, { [tag.id]: tag.name });
   const clear = () => update({ ...value, tagIds: [], untagged: false });
   const count = value.untagged ? 1 : value.tagIds.length;
+  const matchDisabled = value.untagged || value.tagIds.length < 2;
+  const page = catalog.query === controller.query ? catalog.page : null;
   return <div className="tag-filter-wrap">
     <details ref={popover.rootRef} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={popover.onKeyDown}>
-      <summary ref={popover.triggerRef} className="tag-filter-trigger" onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}{count > 0 ? ` (${count})` : ''}</summary>
+      <SelectTrigger as="summary" ref={popover.triggerRef} density="filter" touchMode="responsive-target" focusTone="task" aria-expanded={controller.open} aria-invalid={controller.invalid || controller.error !== null || undefined} pending={controller.open && page === null && catalog.error === null} count={count} onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}</SelectTrigger>
       <div ref={popover.panelRef} className="tag-filter-panel">
-        <div className="tag-filter-head"><strong>{title}</strong><button type="button" onClick={clear}>{m.clear}</button></div>
-        <input ref={popover.searchRef} type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
-        <NativeSelect density="filter" focusTone="task" layout="fill" wrapperClassName="tag-filter-match" aria-label={`${title}: AND / OR`} value={value.tagMatch} disabled={value.untagged} onChange={event => update({ ...value, tagMatch: event.target.value as 'all' | 'any' })}><option value="all">{m.all}</option><option value="any">{m.any}</option></NativeSelect>
-        <label><input type="checkbox" checked={value.untagged} onChange={event => update({ ...value, untagged: event.target.checked, tagIds: event.target.checked ? [] : value.tagIds })} /> {m.untagged}</label>
-        {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></label>)}</div>}
-        {catalog.page?.nextCursor && <button type="button" onClick={catalog.next}>{m.next}</button>}
-        {catalog.cursor !== null && <button type="button" onClick={catalog.first}>{m.first}</button>}
-        {!child && onManage !== undefined && <div className="tag-filter-manage"><button type="button" onClick={onManage}>{m.manage}</button></div>}
+        <div className="tag-filter-head"><strong>{title}</strong><button className="tag-filter-text" type="button" disabled={count === 0} onClick={clear}>{m.clear}</button></div>
+        <div className="tag-filter-search">
+          <input ref={popover.searchRef} data-touch-text="coarse" type="search" aria-label={`${title}: ${m.search}`} placeholder={`${m.search}…`} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
+          {controller.query && <button className="tag-filter-search-clear" type="button" aria-label={m.clearQuery} onClick={() => { controller.setQuery(''); popover.searchRef.current?.focus(); }}>×</button>}
+        </div>
+        {catalog.error !== null && <p className="tag-filter-feedback" role="alert">{m.error} <button className="tag-filter-text" type="button" onClick={catalog.refresh}>{m.retry}</button></p>}
+        {page !== null ? page.items.length === 0 ? <div className="tag-filter-message"><p>{controller.query ? m.noMatches : m.empty}</p>{controller.query && <button className="tag-filter-text" type="button" onClick={() => { controller.setQuery(''); popover.searchRef.current?.focus(); }}>{m.clearQuery}</button>}</div> : <div className="tag-filter-options">{page.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /><TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></label>)}</div> : catalog.error === null && <div className="tag-filter-message">{m.loading}</div>}
+        {(page?.nextCursor || catalog.cursor !== null && page !== null) && <div className="tag-filter-pages">{catalog.cursor !== null && <button className="tag-filter-text" type="button" onClick={catalog.first}>{m.first}</button>}{page?.nextCursor && <button className="tag-filter-text" type="button" onClick={catalog.next}>{m.next}</button>}</div>}
+        <label className="tag-filter-untagged"><input type="checkbox" checked={value.untagged} onChange={event => update({ ...value, untagged: event.target.checked, tagIds: event.target.checked ? [] : value.tagIds })} />{m.untagged}</label>
+        <fieldset className="tag-filter-match" disabled={matchDisabled} aria-describedby={matchDisabled ? `${matchId}-reason` : undefined}>
+          <legend>{m.match}</legend><div className="tag-filter-radios">{(['all', 'any'] as const).map(mode => <label key={mode}><input type="radio" name={matchId} value={mode} checked={value.tagMatch === mode} onChange={() => update({ ...value, tagMatch: mode })} />{m[mode]}</label>)}</div>
+        </fieldset>
+        {matchDisabled && <p className="tag-filter-reason" id={`${matchId}-reason`}>{value.untagged ? m.untaggedRule : m.oneRule}</p>}
+        {!child && onManage !== undefined && <div className="tag-filter-manage"><button className="tag-filter-text" type="button" onClick={onManage}>{m.manage}</button></div>}
       </div>
     </details>
-    <TagColorFeedback projectId={controller.projectId} ids={colorIds} onRetry={catalog.refresh} />
     {controller.invalid && <p className="tag-filter-error" role="alert">{m.invalid}</p>}
     {controller.error !== null && <p className="tag-filter-error" role="alert">{m.resolveError} <button type="button" onClick={controller.retry}>{m.retry}</button></p>}
-    {(value.tagIds.length > 0 || value.untagged) && <div className="tag-filter-selected">{value.tagIds.map(id => <TagColorChip className="tag-filter-chip" key={id} name={`${names[id] ?? id}${invalidIds.includes(id) && colors.items.get(id)?.state !== 'missing' ? ` · ${m.removed}` : ''}`} item={colors.items.get(id)}><button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></TagColorChip>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>}
+    <div ref={popover.selectedRef} className="tag-filter-selected">{value.tagIds.map(id => <TagColorChip className="tag-filter-chip" key={id} name={`${names[id] ?? id}${invalidIds.includes(id) && colors.items.get(id)?.state !== 'missing' ? ` · ${m.removed}` : ''}`} item={colors.items.get(id)}><button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></TagColorChip>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>
+    <TagColorFeedback projectId={controller.projectId} ids={colorIds} onRetry={catalog.refresh} />
   </div>;
 };

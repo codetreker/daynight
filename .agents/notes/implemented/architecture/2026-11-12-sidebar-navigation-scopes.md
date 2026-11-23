@@ -11,14 +11,22 @@ scope other than the selected sidebar Team.
 
 ## Decision
 
-The sidebar groups the current Team or Personal space, My, and Tools in one
-scrolling navigation. A type label distinguishes the selected scope, and project
+The sidebar uses one scrolling navigation for the Team or Personal space, My,
+and Tools. The [in-progress tasks placement](2026-11-17-in-progress-tasks-sidebar-position.md)
+places one account-scoped entry before Projects within the first group. Project
 lists use the neutral Projects title with the confirmed scope separately. Direct
 Project breadcrumbs do not infer ownership from the sidebar. Account and tool
 entries retain their own resource scopes; Webhooks keeps its independent owner
 selection and catalog gate.
 
-`WorkspaceSidebar` owns layout and drawer lifecycle, `WorkspaceNavigation`
+The original design used a visible type label to distinguish the selected scope.
+The [single-line selector decision](../simplification/2026-11-17-single-line-team-selector.md)
+replaces that label while retaining the known type in the accessible name and
+title.
+
+`WorkspaceSidebar` owns layout and drawer lifecycle, sharing temporary state and
+the topbar opener with Workspace under the
+[mobile navigation button decision](../feature/2026-11-19-mobile-navigation-button.md). `WorkspaceNavigation`
 composes the fixed routes and derives their active state, and
 `SidebarProjectList` consumes the current Team project directory, shared with the
 Team project cards. The [directory isolation decision](../bug-fix/2026-11-14-shared-project-directory-isolation.md)
@@ -38,9 +46,10 @@ schema, permission callback framework or a second source of navigation state.
 
 ## Consequences
 
-The groups communicate resource scope without adding a workspace entity. The
-shared page has an independent directory so its account scope cannot populate the
-Team tree. The explicit context prevents a retained display identity from
+The original grouping communicated resource scope without adding a workspace
+entity. The account-scoped in-progress tasks entry is now an explicit exception
+to that grouping. The shared page has an independent directory so its account
+scope cannot populate the Team tree. The explicit context prevents a retained display identity from
 authorizing Team links; an unknown selection retains disabled placeholders.
 The shared scrolling region keeps every group reachable for long directories.
 Native links, the existing provider lifetimes and responsive drawer behavior

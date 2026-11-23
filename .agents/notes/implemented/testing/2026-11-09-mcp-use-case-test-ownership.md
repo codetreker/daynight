@@ -19,11 +19,10 @@ the direct-operation boundary used by these tests.
 ## Decision
 
 MCP tests execute the actual authenticated Entry, HTTP parser, SDK, discovery
-metadata, response envelopes and resource permits. Result fixtures are checked
-against the original internal output definitions; discovery checks verify the
-absence of `outputSchema` and the remaining tool metadata separately. The
-[private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
-records that discovery choice. Inputs and writes retain
+metadata, response envelopes and resource permits. Result fixtures directly
+assert structured results; discovery checks verify the absence of `outputSchema`
+and the remaining tool metadata separately. The [output schema removal decision](../simplification/2026-11-16-remove-mcp-output-schemas.md)
+records that validation choice. Inputs and writes retain
 their encoded boundaries; successful reads use ordinary canonical output without
 read-schema or byte admission. Consumer-owned operation contracts
 accept the existing production services directly. Tests configure operation
@@ -31,9 +30,11 @@ results, errors and completion facts and verify principals, authority, context,
 addresses, inputs and call counts. They do not model Task persistence or execute
 lower business rules to manufacture HTTP responses.
 
-Task and Step reads use canonical stored-value projection under the
+Task reads use canonical stored-value projection under the
 [canonical read decision](../simplification/2026-11-09-task-canonical-batch-reads.md).
-The protocol fixtures use its current Get and count-page operations. Task
+The original Step protocol fixtures used the same division before
+[MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md).
+Task protocol fixtures use current Get and count-page operations. Task
 dependency partitioning, version-first write admission and response admission
 remain in the Task service. Its typed response context exposes request ID, RPC
 ID, protocol, batch and projection facts to both the adapter and the admission
@@ -93,9 +94,9 @@ application lifecycle, PAT isolation and revocation. These controlled facts do
 not establish persistence.
 
 The ordinary MCP test binary clears database and UniAuth fixture variables before
-test execution. The separate stress build retains the database variable for its
-real PostgreSQL Step capacity witness. Full module validation can provide
-infrastructure to its physical owners without lending it to these protocol units.
+test execution. The former PostgreSQL Step capacity witness retired with its
+MCP tools. Full module validation can provide infrastructure to its physical
+owners without lending it to these protocol units.
 Native body-timeout tests assert the 15-second production default and use a
 200-millisecond instance value
 through the same logical body deadline and actual socket deadline. The timeout

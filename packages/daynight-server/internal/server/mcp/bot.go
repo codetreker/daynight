@@ -78,6 +78,19 @@ func RegisterBotTools(e *Entry, bots botOperations, relay botDeletion) error {
 	return RegisterTypedTool(e, byName["bot_delete"], BudgetLarge, h.delete, "botId", "ifVersion", "requestId")
 }
 
+func RegisterScopedBotTools(e *Entry, bots *botservice.Bots, relay *botservice.Deletions) error {
+	if e == nil || e.scopedAuth == nil || !bots.ScopeProtected() || !relay.ScopeProtected() {
+		return errors.New("scoped Bot services are required")
+	}
+	if err := RegisterBotTools(e, bots, relay); err != nil {
+		return err
+	}
+	for _, name := range []string{"bot_list", "bot_show", "bot_create", "bot_delete"} {
+		e.scopedTools[name] = true
+	}
+	return nil
+}
+
 type botPage struct {
 	Items      []api.Bot `json:"items"`
 	NextCursor *string   `json:"nextCursor"`
@@ -127,6 +140,9 @@ func (h *botTools) create(ctx context.Context, actor RequestActor, in botCreateI
 	}
 	bot, err := h.bots.CreateResolved(ctx, actor.Principal, botcore.CreateBot{ID: id, Name: in.Name, Overrides: overrides})
 	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+			return ToolResult{Refs: refs, WriteOutcome: "not_committed"}, err
+		}
 		return ToolResult{Refs: refs}, err
 	}
 	return ToolResult{Data: bothttp.Response(bot), WriteOutcome: "confirmed", Refs: refs}, nil
@@ -189,6 +205,9 @@ func (h *botTools) delete(ctx context.Context, actor RequestActor, in botDeleteI
 	refs := map[string]any{"botId": botID, "deletionId": id}
 	bot, err := h.relay.DeleteBot(ctx, actor.Principal, botID, store.DeleteBot{Version: version, DeletionID: id})
 	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+			return ToolResult{Refs: refs, WriteOutcome: "not_committed"}, err
+		}
 		var cleanup *botservice.DeletionCleanupError
 		if errors.As(err, &cleanup) {
 			return ToolResult{Refs: refs, WriteOutcome: "confirmed", Phase: "cleanup"}, err

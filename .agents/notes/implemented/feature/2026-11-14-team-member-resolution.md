@@ -35,5 +35,6 @@ The separate read preserves direct-add behavior and does not initialize users.
 The caller can obtain the actual membership version without changing the target.
 The result is a point-in-time fact, not authorization for a later write; the
 existing role update must recheck authority and compare the observed version.
-The endpoint does not provide general identity search or prove the caller's
-external identity evidence.
+The endpoint does not prove the caller's external identity evidence. The separate
+[candidate search](2026-11-17-team-member-candidates.md) exposes profile-based
+discovery to ordinary Team administrators without changing this resolution contract.

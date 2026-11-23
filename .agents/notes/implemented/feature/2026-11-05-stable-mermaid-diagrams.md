@@ -14,22 +14,24 @@ compact diagram inputs can cause disproportionate parser or calendar work.
 ## Decision
 
 The shared Markdown diagram renderer accepts the 15 stable built-in types and
-standard entries specified in the [requirements](../../../../docs/spec/daynight-task-inspection.md#markdown-图表).
+standard entries specified in the [requirements](../../../../docs/spec/shared-markdown.md#markdown-图表).
 An explicit policy checks both entry and SDK type and inspects each type's parsed
 semantic data. Source and per-type structure limits bound ordinary diagrams;
 Block's own lexer checks expansion before the parser constructs nodes. Before
 rendering, the actual Block tree is limited to 50,000 estimated SDK sizing
 calls; a version-scoped pnpm patch limits actual Gantt calendar steps across a
-complete `getTasks()` compilation. The [design](../../../../docs/design/daynight-task-inspection.md#mermaid-图表)
+complete `getTasks()` compilation. The [design](../../../../docs/design/shared-markdown.md#mermaid-图表)
 owns the counts, reset boundaries and fixed-SDK integration.
 
 The [original flowchart decision](../../archived/feature/2026-10-24-markdown-flowcharts.md) retains its
 static image, shared queue, image-node refusal and lifecycle rationale. This
-decision extends its type and budget policy. Output uses a positive finite root
+decision extends its type and budget policy. The [shared Markdown architecture](../architecture/2026-11-17-shared-markdown-document.md) now owns the common renderer and its Mermaid module. Output uses a positive finite root
 viewBox to set intrinsic SVG image dimensions. Event Modeling's XHTML labels
 remain in the static image; the application does not insert output SVG into the
 reading DOM or install its callbacks. Flowchart defaults retain Dagre, while the
 explicit stable `flowchart-elk` entry uses Mermaid's built-in ELK.
+The [shared Markdown design](../../../../docs/design/shared-markdown.md#mermaid-图表)
+also owns measured typography and resize behavior for the independent SVG image.
 
 ## Alternatives
 
@@ -70,8 +72,8 @@ types, third-party plugins and diagram interactions remain outside the scope;
 static images do not provide selectable SVG text. The renderer is not a network
 isolation mechanism.
 
-Parser DB structures, the Block lexer, sizing-work estimate and Gantt patch are
+Parser DB structures, the Block lexer, sizing-work estimate and Gantt and XY patches are
 tied to Mermaid 12.2.0. Upgrades must revalidate real parser data, Block layout
-and its work estimate, the patch's actual npm root
+and its work estimate, the patches' actual npm root
 entry and the bounded work and reset behavior. The type-specific policy and
 browser-visible samples make that maintenance cost explicit.

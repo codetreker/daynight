@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
-import { parseTerminalFrame } from '../../../../daynight/src/session/v2/protocol';
+import type { SessionV2Archive } from '../../../../daynight/src/session/v2/recording-types';
+import { parseTerminalFrame } from '../../../../daynight/src/session/v2/recording';
 import { TerminalText } from './TerminalText';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { advanceTerminalPlayback, buildTerminalPlayback, formatTerminalTime, nextTerminalFrame, seekTerminalPlayback } from './terminal-playback';

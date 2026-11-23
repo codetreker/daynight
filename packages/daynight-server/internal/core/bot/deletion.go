@@ -72,7 +72,11 @@ func ReceiptDigest(encoded []byte) string {
 // PrepareWorkerCleanup checks receipt identity and replay before Session proof is consulted.
 // A changed completed result requires the service to verify the Session stop proof.
 func PrepareWorkerCleanup(bot model.Bot, workerID, deletionID string, result model.BotCleanupResult, digest string) (change, needsStopProof bool, err error) {
-	if bot.WorkerID != workerID {
+	host := bot.WorkerID
+	if bot.Recovery != nil {
+		host = bot.Recovery.WorkerID
+	}
+	if host != workerID {
 		return false, false, &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 	}
 	if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID {

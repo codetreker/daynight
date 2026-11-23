@@ -1,74 +1,90 @@
 package local
 
 import (
-	"bufio"
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
+	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"golang.org/x/sys/unix"
+	"github.com/google/uuid"
 )
 
-func TestGateRejectsUnsafeControlObjects(t *testing.T) {
-	for _, kind := range []string{"directory-file", "directory-symlink", "lock-symlink", "lock-fifo"} {
-		t.Run(kind, func(t *testing.T) {
-			root := t.TempDir()
-			storage, err := New(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer storage.Close()
-			control := filepath.Join(root, gateDirectory)
-			stripe := sha256.Sum256([]byte("key"))[0]
-			lock := filepath.Join(control, fmt.Sprintf("target-%03d", stripe))
-			switch kind {
-			case "directory-file":
-				err = os.WriteFile(control, []byte("not a directory"), 0o600)
-			case "directory-symlink":
-				err = os.Symlink(t.TempDir(), control)
-			case "lock-symlink":
-				if err = os.Mkdir(control, 0o700); err == nil {
-					err = os.Symlink(filepath.Join(root, "elsewhere"), lock)
-				}
-			case "lock-fifo":
-				if err = os.Mkdir(control, 0o700); err == nil {
-					err = unix.Mkfifo(lock, 0o600)
-				}
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			permit, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "key")
-			if err == nil {
-				permit.Close()
-				t.Fatalf("accepted unsafe %s", kind)
-			}
-			if kind != "lock-symlink" && !errors.Is(err, filestorage.ErrNotRegular) {
-				t.Fatalf("unexpected failure: %v", err)
-			}
-			if kind == "directory-file" || kind == "directory-symlink" {
-				if err := os.Remove(control); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := os.Remove(lock); err != nil {
-				t.Fatal(err)
-			}
-			permit, err = storage.AcquireGate(t.Context(), filestorage.TargetGate, "key")
-			if err != nil {
-				t.Fatalf("failed acquisition retained permit: %v", err)
-			}
-			if err := permit.Close(); err != nil {
-				t.Fatal(err)
-			}
-		})
+func TestStandaloneGatesShareIdentityAndIsolateNamespaces(t *testing.T) {
+	identity := uuid.NewString()
+	first, err := NewStandaloneGates(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewStandaloneGates(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewStandaloneGates(uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStandaloneGates(""); err == nil {
+		t.Fatal("empty identity accepted")
+	}
+
+	permit, err := first.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = permit.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if p, err := second.AcquireGate(ctx, filestorage.TargetGate, "attachment"); !errors.Is(err, context.DeadlineExceeded) {
+		if p != nil {
+			_ = p.Close()
+		}
+		t.Fatalf("shared target gate: %v", err)
+	}
+	isolated, err := other.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := isolated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := permit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := second.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	owner, session := uuid.NewString(), uuid.NewString()
+	archive, err := first.TryAcquireArchive(t.Context(), owner, session, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = archive.Close() })
+	if p, err := second.TryAcquireArchive(t.Context(), owner, "", 1, true); !errors.Is(err, filestorage.ErrGateBusy) {
+		if p != nil {
+			_ = p.Close()
+		}
+		t.Fatalf("archive cleanup must exclude a shared session: %v", err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := second.TryAcquireArchive(t.Context(), owner, "", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -80,143 +96,142 @@ func TestGateClosedStorageFails(t *testing.T) {
 	if err := storage.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "key"); err == nil {
-		t.Fatal("closed storage accepted gate acquisition")
+	if _, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "key"); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("acquire after close: %v", err)
 	}
 }
 
-func TestGateAcrossInstancesAndDomains(t *testing.T) {
-	root := t.TempDir()
-	a, err := New(root)
+func TestGateAcrossHandlesAndDomains(t *testing.T) {
+	first, root := newStorage(t)
+	second, err := New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
-	b, err := New(root)
+	t.Cleanup(func() { _ = second.Close() })
+	permit, err := first.AcquireGate(t.Context(), filestorage.TargetGate, "same")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
-	permit, err := a.AcquireGate(t.Context(), filestorage.TargetGate, "same")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	t.Cleanup(func() { _ = permit.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := b.AcquireGate(ctx, filestorage.TargetGate, "same"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("another instance did not wait: %v", err)
+	if _, err := second.AcquireGate(ctx, filestorage.TargetGate, "same"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second handle should wait: %v", err)
 	}
-	if _, err := a.AcquireGate(ctx, filestorage.TargetGate, "same"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("same instance did not honor cancellation: %v", err)
-	}
-	private, err := b.AcquireGate(t.Context(), filestorage.PrivateGate, "same")
+	private, err := second.AcquireGate(t.Context(), filestorage.PrivateGate, "same")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := private.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := permit.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := permit.Close(); err != nil {
-		t.Fatal(err)
-	}
-	next, err := b.AcquireGate(t.Context(), filestorage.TargetGate, "same")
+	other, _ := newStorage(t)
+	isolated, err := other.AcquireGate(t.Context(), filestorage.TargetGate, "same")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := isolated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := permit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := second.AcquireGate(t.Context(), filestorage.TargetGate, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := permit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.AcquireGate(ctx, filestorage.TargetGate, "same"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled waiter: %v", err)
 	}
 	if err := next.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Put(t.Context(), gateDirectory, "target-001", strings.NewReader("x")); !errors.Is(err, filestorage.ErrInvalidAddress) {
-		t.Fatalf("ordinary objects can overwrite control locks: %v", err)
-	}
-	entries, err := os.ReadDir(filepath.Join(root, gateDirectory))
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("persistent gate files: %v %v", entries, err)
-	}
-	if _, err := a.AcquireGate(t.Context(), "wrong", "key"); err == nil {
+	if _, err := first.AcquireGate(t.Context(), "wrong", "key"); err == nil {
 		t.Fatal("invalid domain accepted")
 	}
-	if _, err := a.AcquireGate(t.Context(), filestorage.TargetGate, ""); err == nil {
+	if _, err := first.AcquireGate(t.Context(), filestorage.TargetGate, ""); err == nil {
 		t.Fatal("empty key accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, gateDirectory)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("gate created a control directory: %v", err)
 	}
 }
 
-func TestGateAcrossProcesses(t *testing.T) {
-	if root := os.Getenv("DAYNIGHT_GATE_TEST_ROOT"); root != "" {
-		storage, err := New(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer storage.Close()
-		fmt.Println("waiting")
-		permit, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "shared")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer permit.Close()
-		fmt.Println("acquired")
-		return
+func TestLegacyGateDirectoryRemainsReserved(t *testing.T) {
+	storage, root := newStorage(t)
+	control := filepath.Join(root, gateDirectory)
+	if err := os.Mkdir(control, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	root := t.TempDir()
-	storage, err := New(root)
+	if err := os.WriteFile(filepath.Join(control, "target-001"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range []string{gateDirectory, strings.ToUpper(gateDirectory)} {
+		if _, err := storage.Put(t.Context(), bucket, "target-001", strings.NewReader("x")); !errors.Is(err, filestorage.ErrInvalidAddress) {
+			t.Fatalf("write control object: %v", err)
+		}
+		if _, err := storage.Open(t.Context(), bucket, "target-001"); !errors.Is(err, filestorage.ErrInvalidAddress) {
+			t.Fatalf("read control object: %v", err)
+		}
+		if err := storage.Delete(t.Context(), bucket, "target-001"); !errors.Is(err, filestorage.ErrInvalidAddress) {
+			t.Fatalf("delete control object: %v", err)
+		}
+	}
+	permit, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "ignored-control-file")
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer storage.Close()
-	permit, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGateAcrossProcesses$")
-	cmd.Env = append(os.Environ(), "DAYNIGHT_GATE_TEST_ROOT="+root)
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	lines := make(chan string, 2)
-	go func() {
-		scanner := bufio.NewScanner(output)
-		for scanner.Scan() {
-			lines <- scanner.Text()
-		}
-	}()
-	select {
-	case line := <-lines:
-		if line != "waiting" {
-			t.Fatalf("child: %q", line)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	select {
-	case line := <-lines:
-		t.Fatalf("child acquired while held: %q", line)
-	case <-time.After(100 * time.Millisecond):
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
 	}
 	if err := permit.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case line := <-lines:
-		if line != "acquired" {
-			t.Fatalf("child: %q", line)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	entries, err := os.ReadDir(control)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "target-001" {
+		t.Fatalf("legacy control directory changed: %v %v", entries, err)
 	}
-	if err := cmd.Wait(); err != nil {
+}
+
+func TestStorageDelegatesToConfiguredGates(t *testing.T) {
+	root := t.TempDir()
+	backendErr := errors.New("gate backend unavailable")
+	gates := gateProbe{backendErr: backendErr}
+	storage, err := NewWithGates(root, &gates)
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if _, err := storage.AcquireGate(t.Context(), filestorage.PrivateGate, "private"); !errors.Is(err, backendErr) {
+		t.Fatalf("blocking backend failure: %v", err)
+	}
+	if _, err := storage.TryAcquireResidency(t.Context(), "residency"); !errors.Is(err, backendErr) {
+		t.Fatalf("nonblocking backend failure: %v", err)
+	}
+	if gates.domain != filestorage.PrivateGate || gates.blockingKey != "private" || gates.residencyKey != "residency" {
+		t.Fatalf("forwarded gate arguments: %+v", gates)
+	}
+	if _, err := NewWithGates(root, nil); err == nil {
+		t.Fatal("nil configured backend was accepted")
+	}
+}
+
+type gateProbe struct {
+	backendErr                error
+	domain                    filestorage.GateDomain
+	blockingKey, residencyKey string
+}
+
+func (p *gateProbe) TryAcquireArchive(_ context.Context, _, _ string, _ int, _ bool) (io.Closer, error) {
+	return nil, p.backendErr
+}
+
+func (p *gateProbe) AcquireGate(_ context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
+	p.domain, p.blockingKey = domain, key
+	return nil, p.backendErr
+}
+
+func (p *gateProbe) TryAcquireResidency(_ context.Context, key string) (io.Closer, error) {
+	p.residencyKey = key
+	return nil, p.backendErr
 }

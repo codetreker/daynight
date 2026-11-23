@@ -1,7 +1,8 @@
 import path from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { ArchiveRepairRequiredError } from "../../../../src/commands/controller/archive-error.js";
-import { describe, expect, it, vi } from "vitest";
+import { ArchiveFileFailedError } from "../../../../src/commands/controller/archive-error.js";
+import { describe, expect, it } from "vitest";
 import { ApiError } from "../../../../src/api/client.js";
 import { createOperation, OperationError } from "../../../../src/api/operation.js";
 import { ProtocolError } from "../../../../src/api/parse.js";
@@ -10,8 +11,8 @@ import { ToolSelectionError, type ToolSelectionCode } from "../../../../src/plat
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
 import { ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../../src/commands/worker/configuration-failure.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
-import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
-import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
+import { NativeVersionOutputError } from "../../../../src/commands/worker/native-version.js";
+import { OwnedCommandCleanupError, OwnedCommandDeadlineError, OwnedCommandError } from "../../../../src/commands/worker/owned-command.js";
 import { classifyFailure, diagnostic, MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
 import { createMonitoringObserver, goJsonBytes } from "../../../../src/commands/worker/monitoring/observer.js";
 import type { DiagnosticCode } from "../../../../src/commands/worker/monitoring/types.js";
@@ -30,165 +31,188 @@ it("reports confirmed archive contention without exposing the original failure",
 });
 
 describe("worker monitoring observer", () => {
+  it("captures a direct observation without legacy coordination fields", () => {
+    const snapshot = createMonitoringObserver({ now: () => 1_000 }).capture();
+    expect(snapshot).not.toHaveProperty("runId");
+    expect(snapshot).not.toHaveProperty("sequence");
+    expect(snapshot).toMatchObject({ capturedAt: new Date(1_000).toISOString(), capacity: null, admission: { coverage: "unknown" } });
+  });
+
+  it("partitions occupied identities before reservation detail truncation and deduplicates roles", () => {
+    const observer = createMonitoringObserver();
+    observer.setCapacity({ limit: 6, occupied: 130, reservations: [
+      { identity: identity(0), roles: ["active-task"], occupied: true },
+      { identity: identity(0), roles: ["resource-owner"], occupied: true },
+      ...Array.from({ length: 129 }, (_, i) => ({ identity: identity(i + 1), roles: ["resource-owner"] as const, occupied: true })),
+      { identity: identity(200), roles: ["cleanup"], occupied: false },
+    ] });
+    const frame = observer.capture();
+    expect(frame.capacity).toMatchObject({ occupied: 130, breakdown: { active: 1, retained: 129 }, detailCoverage: "partial" });
+    expect(frame.reservations).toHaveLength(128);
+    frame.capacity!.breakdown!.retained = 0;
+    expect(observer.capture().capacity?.breakdown).toEqual({ active: 1, retained: 129 });
+  });
+
+  it("does not invent a capacity breakdown from incomplete identities", () => {
+    const observer = createMonitoringObserver();
+    observer.setCapacity({ limit: 6, occupied: 6, reservations: [{ identity: identity(0), roles: ["active-task"] }] });
+    expect(observer.capture().capacity).not.toHaveProperty("breakdown");
+  });
+
   it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {
-    const observer = createMonitoringObserver({ runId, now: () => 1_000 }), observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
+    const observer = createMonitoringObserver({ now: () => 1_000 }), observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
     const worker = { kind: "worker" } as const, project = { kind: "project", projectId: identity(1).projectId } as const;
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: worker, observedAt, nextAttemptAt: null }]);
     observer.setNativeConfigurationReason(worker, { observedAt, nextAttemptAt });
     observer.setNativeConfigurationReason(project, { observedAt, nextAttemptAt });
     observer.setAdmission("complete", [{ code: "configuration-incomplete", scope: worker, observedAt, nextAttemptAt: null }]);
-    const snapshot = observer.capture("1");
+    const snapshot = observer.capture();
     expect(snapshot.admission.coverage).toBe("partial");
     expect(snapshot.admission.reasons).toHaveLength(2);
     expect(snapshot.admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "configuration-incomplete", scope: worker, nextAttemptAt }), expect.objectContaining({ code: "configuration-incomplete", scope: project, nextAttemptAt })]));
     observer.setNativeConfigurationReason(worker, null);
-    expect(observer.capture("2").admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: project }));
+    expect(observer.capture().admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: project }));
     observer.setNativeConfigurationReason(project, null);
-    expect(observer.capture("3").admission.coverage).toBe("partial");
+    expect(observer.capture().admission.coverage).toBe("partial");
   });
 
   it("retains independent project preparation reasons across scheduler admission updates", () => {
-    const observer = createMonitoringObserver({ runId, now: () => 1_000 });
+    const observer = createMonitoringObserver({ now: () => 1_000 });
     const projectId = identity(1).projectId, observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
     observer.setProjectPreparationReason(projectId, { observedAt, nextAttemptAt });
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
-    expect(observer.capture("1").admission).toMatchObject({ coverage: "partial", reasons: [{ code: "project-preparation-failed", scope: { kind: "project", projectId }, observedAt, nextAttemptAt }] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "partial", reasons: [{ code: "project-preparation-failed", scope: { kind: "project", projectId }, observedAt, nextAttemptAt }] });
     observer.setAdmission("complete", [{ code: "capacity-full", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
-    expect(observer.capture("2").admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "capacity-full" }), expect.objectContaining({ code: "project-preparation-failed" })]));
+    expect(observer.capture().admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "capacity-full" }), expect.objectContaining({ code: "project-preparation-failed" })]));
     observer.setProjectPreparationReason(projectId, null);
-    expect(observer.capture("3").admission).toMatchObject({ coverage: "partial", reasons: [{ code: "capacity-full" }] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "partial", reasons: [{ code: "capacity-full" }] });
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
     observer.setProjectPreparationUnknown(true);
-    expect(observer.capture("4").admission).toMatchObject({ coverage: "partial", reasons: [] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "partial", reasons: [] });
     observer.setProjectPreparationUnknown(false);
-    expect(observer.capture("5").admission).toMatchObject({ coverage: "unknown", reasons: [] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "unknown", reasons: [] });
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
-    expect(observer.capture("6").admission).toMatchObject({ coverage: "complete", reasons: [{ code: "no-ready-tasks" }] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "complete", reasons: [{ code: "no-ready-tasks" }] });
   });
 
   it("keeps scheduler success and idle evidence from advancing during preparation", () => {
     let now = 1_000;
-    const observer = createMonitoringObserver({ runId, now: () => now });
+    const observer = createMonitoringObserver({ now: () => now });
     observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
-    const previousSuccess = observer.capture("1").scheduler.lastSuccessfulAt;
+    const previousSuccess = observer.capture().scheduler.lastSuccessfulAt;
     now = 2_000; observer.setProjectPreparationIncomplete(true);
     observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
-    expect(observer.capture("2")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
+    expect(observer.capture()).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
     observer.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
-    expect(observer.capture("2").admission).toMatchObject({ coverage: "partial", reasons: [] });
+    expect(observer.capture().admission).toMatchObject({ coverage: "partial", reasons: [] });
     observer.setProjectPreparationIncomplete(false);
-    expect(observer.capture("3")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
+    expect(observer.capture()).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
     now = 3_000; observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
     observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
-    expect(observer.capture("4")).toMatchObject({ scheduler: { coverage: "complete", lastSuccessfulAt: new Date(now).toISOString() }, admission: { coverage: "complete", reasons: [{ code: "no-ready-tasks" }] } });
+    expect(observer.capture()).toMatchObject({ scheduler: { coverage: "complete", lastSuccessfulAt: new Date(now).toISOString() }, admission: { coverage: "complete", reasons: [{ code: "no-ready-tasks" }] } });
   });
 
   it("retains unknown capacity, true counts, deduplicated roles and stable run-local reservations", () => {
     let now = 0;
-    const observer = createMonitoringObserver({ runId, now: () => now, reservationKey: new Uint8Array(32).fill(1) });
-    expect(observer.capture("1").capacity).toBeNull();
+    const observer = createMonitoringObserver({ now: () => now, reservationKey: new Uint8Array(32).fill(1) });
+    expect(observer.capture().capacity).toBeNull();
     observer.setCapacity({ limit: 1, occupied: 2, reservations: [{ identity: identity(1), roles: ["cleanup"] }, { identity: identity(1), roles: ["active-task", "cleanup"] }, { identity: identity(2), roles: ["resource-owner"] }] });
-    const first = observer.capture("2");
+    const first = observer.capture();
     expect(first.capacity).toMatchObject({ occupied: 2, available: 0, quality: "current", detailCoverage: "complete" });
     expect(first.reservations).toHaveLength(2);
     expect(first.reservations.find(item => item.roles.includes("cleanup"))?.roles).toEqual(["active-task", "cleanup"]);
     expect(first.reservations[0]!.reservationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     now = 1_000;
     observer.setCapacity({ limit: 2, occupied: 2, reservations: [{ identity: identity(2), roles: ["resource-owner"] }, { identity: identity(1), roles: ["cleanup"] }] });
-    expect(observer.capture("3").reservations.map(item => item.reservationId).sort()).toEqual(first.reservations.map(item => item.reservationId).sort());
+    expect(observer.capture().reservations.map(item => item.reservationId).sort()).toEqual(first.reservations.map(item => item.reservationId).sort());
     observer.staleCapacity();
-    expect(observer.capture("4").capacity).toMatchObject({ quality: "stale", occupied: 2 });
+    expect(observer.capture().capacity).toMatchObject({ quality: "stale", occupied: 2 });
     observer.setCapacity({ limit: 1, occupied: 3, reservations: [{ identity: identity(1), roles: ["cleanup"] }], partial: true });
-    expect(observer.capture("5").capacity).toMatchObject({ occupied: 3, available: 0, detailCoverage: "partial" });
+    expect(observer.capture().capacity).toMatchObject({ occupied: 3, available: 0, detailCoverage: "partial" });
   });
 
   it("omits all colliding identities before truncation without changing capacity", () => {
-    const observer = createMonitoringObserver({ runId, reservationKey: new Uint8Array(32), reservationDigest: () => new Uint8Array(32) });
+    const observer = createMonitoringObserver({ reservationKey: new Uint8Array(32), reservationDigest: () => new Uint8Array(32) });
     observer.setCapacity({ limit: 1, occupied: 2, reservations: [{ identity: identity(1), roles: ["cleanup"] }, { identity: identity(2), roles: ["active-task"] }] });
-    expect(observer.capture("1")).toMatchObject({ capacity: { occupied: 2, available: 0, detailCoverage: "partial" }, reservations: [], detailCoverage: "partial" });
+    expect(observer.capture()).toMatchObject({ capacity: { occupied: 2, available: 0, detailCoverage: "partial" }, reservations: [], detailCoverage: "partial" });
   });
 
   it("caps detail without hiding exact occupancy and preserves the global cleanup reason", () => {
-    const observer = createMonitoringObserver({ runId, now: () => 1_000, reservationKey: new Uint8Array(32) });
+    const observer = createMonitoringObserver({ now: () => 1_000, reservationKey: new Uint8Array(32) });
     observer.setCapacity({ limit: 64, occupied: 140, reservations: Array.from({ length: 140 }, (_, i) => ({ identity: identity(i), roles: ["resource-owner"] })) });
     const scope = { kind: "worker" } as const;
     for (let i = 0; i < 130; i++) observer.startActivity({ kind: "execution", phase: "executing", scope });
     for (let i = 0; i < 34; i++) { const id = observer.startActivity({ kind: "execution", phase: "waiting", scope }); observer.fail({ operationId: id, component: "execution", phase: "waiting", scope, error: new Error(secret) }); }
     observer.setAdmission("complete", [...Array.from({ length: 17 }, () => ({ code: "capacity-full" as const, scope, observedAt: new Date(0).toISOString(), nextAttemptAt: null })), { code: "cleanup-capacity-blocked", scope, observedAt: new Date(0).toISOString(), nextAttemptAt: null }]);
-    const captured = observer.capture("1");
+    const captured = observer.capture();
     expect(captured.capacity).toMatchObject({ occupied: 140, available: 0, detailCoverage: "partial" });
     expect(captured.reservations).toHaveLength(128); expect(captured.activities).toHaveLength(128); expect(captured.currentFailures).toHaveLength(32);
     expect(captured.detailCoverage).toBe("partial"); expect(captured.admission.coverage).toBe("partial");
     expect(captured.admission.reasons).toHaveLength(16); expect(captured.admission.reasons[0]).toMatchObject({ code: "cleanup-capacity-blocked", observedAt: captured.admission.observedAt, nextAttemptAt: null });
     expect(JSON.stringify(captured)).not.toContain(secret);
-    expect(goJsonBytes({ expectedRevision: runId, observation: captured })).toBeLessThanOrEqual(256 * 1024);
-    expect(goJsonBytes({ s: "<>&\u2028\u2029" })).toBe(Buffer.byteLength('{"s":"\\u003c\\u003e\\u0026\\u2028\\u2029"}\n'));
+    expect(goJsonBytes(captured)).toBeLessThanOrEqual(256 * 1024);
+    expect(goJsonBytes({ s: "<>&\u2028\u2029" })).toBe(Buffer.byteLength('{"s":"\\u003c\\u003e\\u0026\\u2028\\u2029"}'));
   });
 
   it("clears completed activities without fabricating progress or recovery", () => {
-    const dirty = vi.fn();
-    const observer = createMonitoringObserver({ runId, onDirty: dirty });
+    const observer = createMonitoringObserver();
     const scope = { kind: "worker" } as const;
     observer.startActivity({ kind: "execution", phase: "executing", scope });
     observer.startActivity({ kind: "cleanup", phase: "agent-stop", scope });
     observer.clearActivities();
-    const snapshot = observer.capture("1");
+    const snapshot = observer.capture();
     expect(snapshot.activities).toEqual([]);
     expect(snapshot.lastRecovery).toBeNull();
-    const before = dirty.mock.calls.length;
     observer.clearActivities();
-    expect(dirty).toHaveBeenCalledTimes(before);
+    expect(observer.capture().activities).toEqual([]);
   });
 
   it("discards a failure without inventing a recovery", () => {
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     const scope = { kind: "claim", ...identity(1) } as const;
     const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
     observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret) });
     observer.discardFailure(id);
-    expect(observer.capture("1")).toMatchObject({ currentFailures: [], lastRecovery: null });
+    expect(observer.capture()).toMatchObject({ currentFailures: [], lastRecovery: null });
   });
 
   it("updates retry state without inventing a new failure or changing its observed times", () => {
     let time = 1_000;
-    const observer = createMonitoringObserver({ runId, now: () => time });
+    const observer = createMonitoringObserver({ now: () => time });
     const scope = { kind: "claim", ...identity(1) } as const;
     const id = observer.startActivity({ kind: "cleanup", phase: "archive", scope });
     observer.fail({ operationId: id, component: "cleanup", phase: "archive", scope, error: new Error(secret), retryState: "scheduled", nextAttemptAt: new Date(6_000).toISOString() });
-    const before = observer.capture("1").currentFailures[0]!;
+    const before = observer.capture().currentFailures[0]!;
     time = 6_000; observer.updateFailureRetry(id, "running");
-    const running = observer.capture("2").currentFailures[0]!;
+    const running = observer.capture().currentFailures[0]!;
     expect(running).toEqual({ ...before, retryState: "running", nextAttemptAt: null });
-    expect(observer.capture("2").lastRecovery).toBeNull();
+    expect(observer.capture().lastRecovery).toBeNull();
     expect(() => observer.updateFailureRetry(id, "scheduled")).toThrow();
-    expect(observer.capture("3").currentFailures[0]).toEqual(running);
+    expect(observer.capture().currentFailures[0]).toEqual(running);
   });
 
-  it("only records actual progress and matching recovery, and delivery does not signal dirty", () => {
+  it("only records actual progress, matching recovery and delivery state", () => {
     let time = 0, mono = 0;
-    const dirty = vi.fn();
-    const observer = createMonitoringObserver({ runId, now: () => time, monotonic: () => mono, onDirty: dirty });
+    const observer = createMonitoringObserver({ now: () => time, monotonic: () => mono });
     const scope = { kind: "claim", ...identity(1) } as const;
     observer.startCycle("inventory"); observer.endCycle("completed", "partial");
-    expect(observer.capture("1").scheduler.lastSuccessfulAt).toBeNull();
+    expect(observer.capture().scheduler.lastSuccessfulAt).toBeNull();
     const id = observer.startActivity({ kind: "execution", phase: "agent-start", scope });
     mono = 2_500; time = 5_000;
     observer.updateActivity(id, { status: "waiting", waitReason: "native-input" });
-    expect(observer.capture("2").activities[0]).toMatchObject({ elapsedMs: 2500, lastProgressAt: null });
+    expect(observer.capture().activities[0]).toMatchObject({ elapsedMs: 2500, lastProgressAt: null });
     observer.updateActivity(id, { phase: "agent-observation", progress: true });
     observer.fail({ operationId: id, component: "execution", phase: "agent-observation", scope, error: new Error(secret) });
     time = 6_000;
     observer.fail({ operationId: id, component: "execution", phase: "agent-observation", scope, error: new Error(secret) });
-    expect(observer.capture("3").currentFailures[0]).toMatchObject({ occurrencesInRun: 2, firstObservedAt: new Date(5_000).toISOString(), lastObservedAt: new Date(6_000).toISOString() });
-    observer.recover(runId); expect(observer.capture("4").currentFailures).toHaveLength(1);
+    expect(observer.capture().currentFailures[0]).toMatchObject({ occurrencesInRun: 2, firstObservedAt: new Date(5_000).toISOString(), lastObservedAt: new Date(6_000).toISOString() });
+    observer.recover(runId); expect(observer.capture().currentFailures).toHaveLength(1);
     observer.recover(id); observer.markCycleSuccessful();
-    expect(observer.capture("5")).toMatchObject({ currentFailures: [], lastRecovery: { operationId: id, explanation: "The operation recovered.", explanationTruncated: false }, scheduler: { lastSuccessfulAt: new Date(6_000).toISOString() } });
-    const before = dirty.mock.calls.length;
+    expect(observer.capture()).toMatchObject({ currentFailures: [], lastRecovery: { operationId: id, explanation: "The operation recovered.", explanationTruncated: false }, scheduler: { lastSuccessfulAt: new Date(6_000).toISOString() } });
     observer.deliveryFailure("write", new Error(secret), secret); observer.deliverySuccess();
-    expect(dirty).toHaveBeenCalledTimes(before);
-    expect(observer.capture("6").delivery.lastFailure).toMatchObject({ requestId: null, error: { code: "unknown" } });
+    expect(observer.capture().delivery.lastFailure).toMatchObject({ requestId: null, error: { code: "unknown" } });
   });
 });
 
@@ -267,7 +291,7 @@ describe("safe monitoring diagnostics", () => {
       ["unrecognized_output", "invalid-output"], ["io_error", "io-error"], ["cleanup_unknown", "unavailable"],
       ["tool_identity_changed", "unavailable"], ["legacy_tool_identity_missing", "unavailable"], ["cancelled", "cancelled"],
     ];
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     for (const [reason, code] of cases) {
       const error = new ToolSelectionError("copilot", "web", "probe", reason, { cause: new Error(secret) }); error.message = secret;
       for (const failure of [error, new WorkerCleanupError("observation", error)]) expect(classifyFailure(failure)).toEqual(diagnostic(code));
@@ -282,7 +306,7 @@ describe("safe monitoring diagnostics", () => {
     ]) expect(classifyFailure(error)).toEqual(diagnostic("unknown"));
     expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: actual, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
     expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: actual }))).toEqual(diagnostic("permission-denied"));
-    expect(JSON.stringify(observer.capture("1"))).not.toContain(secret);
+    expect(JSON.stringify(observer.capture())).not.toContain(secret);
   });
 
   it("requires controlled file evidence before classifying system error properties", () => {
@@ -304,29 +328,29 @@ describe("safe monitoring diagnostics", () => {
 
   it("classifies trusted native probe failures without exposing command data or guessing aggregate causes", () => {
     const output = new NativeVersionOutputError("codex"); output.message = secret;
-    const deadline = new HerdrCommandDeadlineError(); deadline.message = secret;
-    const command = new HerdrCommandError(secret, 17, null, secret, { cause: new Error(secret) });
-    const spawn = new HerdrCommandError(secret, null, null, secret, { cause: new Error(secret) });
-    const signalOnly = new HerdrCommandError(secret, null, "SIGTERM", secret);
+    const deadline = new OwnedCommandDeadlineError(); deadline.message = secret;
+    const command = new OwnedCommandError(secret, 17, null, secret, { cause: new Error(secret) });
+    const spawn = new OwnedCommandError(secret, null, null, secret, { cause: new Error(secret) });
+    const signalOnly = new OwnedCommandError(secret, null, "SIGTERM", secret);
     const cases: [unknown, DiagnosticCode][] = [
       [output, "invalid-output"], [deadline, "timeout"], [command, "command-failed"],
-      [spawn, "unknown"], [signalOnly, "unknown"], [new HerdrCommandError(secret, 0, null, secret), "unknown"],
+      [spawn, "unknown"], [signalOnly, "unknown"], [new OwnedCommandError(secret, 0, null, secret), "unknown"],
       [new WorkerCleanupError("observation", command), "command-failed"],
       [new AggregateError([output, command], secret), "unknown"],
-      [new HerdrCommandCleanupError([deadline], command), "unknown"],
-      [{ name: "HerdrCommandError", exitCode: 17, stderr: secret }, "unknown"],
+      [new OwnedCommandCleanupError([deadline], command), "unknown"],
+      [{ name: "OwnedCommandError", exitCode: 17, stderr: secret }, "unknown"],
     ];
     for (const [error, code] of cases) expect(classifyFailure(error)).toEqual(diagnostic(code));
     expect(classifyFailure(command, true)).toEqual(diagnostic("outcome-unknown"));
     expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: command, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
     expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: command }))).toEqual(diagnostic("permission-denied"));
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     const scope = { kind: "project", projectId: identity(1).projectId } as const;
     for (const [error] of cases) {
       const operationId = observer.startActivity({ kind: "maintenance", phase: "configuration", scope });
       observer.fail({ operationId, component: "configuration", phase: "configuration", scope, error });
     }
-    expect(JSON.stringify(observer.capture("1"))).not.toContain(secret);
+    expect(JSON.stringify(observer.capture())).not.toContain(secret);
   });
 
   it("classifies trusted Git exits through cleanup wrappers without exposing repository diagnostics", () => {
@@ -336,7 +360,7 @@ describe("safe monitoring diagnostics", () => {
       [1.5, null, "unknown"], [NaN, null, "unknown"],
       [Infinity, null, "unknown"], [Number.MAX_SAFE_INTEGER + 1, null, "unknown"],
     ];
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     const scope = { kind: "claim", ...identity(1) } as const;
     for (const [exitCode, signal, code] of statuses) {
       const command = new RepositoryGitError(secret, exitCode, signal, secret, { cause: new Error(secret) });
@@ -354,7 +378,7 @@ describe("safe monitoring diagnostics", () => {
     expect(classifyFailure(command, true)).toEqual(diagnostic("outcome-unknown"));
     expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: command, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
     expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: command }))).toEqual(diagnostic("permission-denied"));
-    const snapshot = observer.capture("1");
+    const snapshot = observer.capture();
     expect(snapshot.currentFailures).toContainEqual(expect.objectContaining({ error: diagnostic("command-failed") }));
     expect(JSON.stringify(snapshot)).not.toContain(secret);
   });
@@ -382,52 +406,81 @@ describe("safe monitoring diagnostics", () => {
   it("never copies secrets, paths, prompts or command output from error chains into snapshots", () => {
     const parts = ["fixture-token-482", "/home/private/worktree", "prompt-content-729", "command-output-819"];
     const error = new ApiError({ operation: parts[0]! }, "response", { status: 503, cause: new Error(parts[1], { cause: new Error(parts[2], { cause: new Error(parts[3]) }) }), serverError: { code: parts[0]!, message: parts.join(" "), requestId: parts[2]! } });
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     const scope = { kind: "claim", ...identity(1) } as const;
     const operationId = observer.startActivity({ kind: "execution", phase: "executing", scope });
     observer.fail({ operationId, component: "execution", phase: "executing", scope, error });
     observer.deliveryFailure("write", error, parts[0]!);
-    const snapshot = JSON.stringify(observer.capture("1"));
+    const snapshot = JSON.stringify(observer.capture());
     for (const part of parts) expect(snapshot).not.toContain(part);
-    expect(observer.capture("2").currentFailures[0]!.error).toEqual(diagnostic("unavailable"));
-    expect(observer.capture("2").delivery.lastFailure?.requestId).toBeNull();
+    expect(observer.capture().currentFailures[0]!.error).toEqual(diagnostic("unavailable"));
+    expect(observer.capture().delivery.lastFailure?.requestId).toBeNull();
   });
 });
 
 
-it.each(["archive_incomplete", "projection_gap"] as const)("reports typed archive repair %s without exposing its diagnostic text", code => {
+it.each(["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const)("reports typed archive repair %s without exposing its diagnostic text", code => {
   const error = new ArchiveRepairRequiredError(code); error.message = secret;
-  expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic("recovery-blocked"));
+  expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic(code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked"));
   expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
 });
 
+it("reports a confirmed archive quota failure without exposing server text", () => {
+  const error = new ArchiveFileFailedError("quota_exceeded", secret);
+  expect(classifyFailure(error)).toEqual(diagnostic("archive-quota-exceeded"));
+  expect(JSON.stringify(classifyFailure(error))).not.toContain(secret);
+  expect(classifyFailure(new ArchiveFileFailedError("invalid_archive", secret))).toEqual(diagnostic("unknown"));
+});
+
 describe("failure worktree snapshots", () => {
+  it("uses the full direct-body budget without reserving space for a legacy envelope", () => {
+    const observer = createMonitoringObserver({ now: () => 1_000, monotonic: () => 0 });
+    let lastId = "";
+    for (let i = 0; i < 11; i++) {
+      const scope = { kind: "claim", ...identity(i) } as const;
+      const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
+      observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree: { kind: "project-relative", path: i === 10 ? "" : "<".repeat(4096) } });
+      lastId = id;
+    }
+    const base = observer.capture();
+    const remaining = Math.floor((256 * 1024 - goJsonBytes(base)) / 6);
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThanOrEqual(4096);
+    const scope = { kind: "claim", ...identity(10) } as const;
+    observer.fail({ operationId: lastId, component: "execution", phase: "executing", scope, error: new Error(secret), worktree: { kind: "project-relative", path: "<".repeat(remaining) } });
+    const captured = observer.capture();
+    expect(captured.currentFailures.find(f => f.operationId === lastId)?.worktree).toEqual({ kind: "project-relative", path: "<".repeat(remaining) });
+    expect(Buffer.byteLength(JSON.stringify(captured))).toBeLessThanOrEqual(256 * 1024);
+    expect(goJsonBytes(captured)).toBeLessThanOrEqual(256 * 1024);
+    expect(goJsonBytes({ expectedRevision: runId, observation: captured })).toBeGreaterThan(256 * 1024);
+  });
+
   it("copies locations and preserves them through retry-only updates", () => {
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     const scope = { kind: "claim", ...identity(1) } as const;
     const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
     const worktree = { kind: "project-relative" as const, path: ".worktrees/a" };
     observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree });
     worktree.path = "changed";
-    const first = observer.capture("1");
+    const first = observer.capture();
     expect(first.currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
     if (first.currentFailures[0]?.worktree?.kind === "project-relative") first.currentFailures[0].worktree.path = "mutated";
     observer.updateFailureRetry(id, "running");
-    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
+    expect(observer.capture().currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
   });
   it("reduces largest Go-encoded paths before discarding failures and restores later snapshots", () => {
-    const observer = createMonitoringObserver({ runId });
+    const observer = createMonitoringObserver();
     for (let i = 0; i < 32; i++) {
       const scope = { kind: "claim", ...identity(i) } as const;
       const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
       observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree: { kind: "project-relative", path: "<".repeat(4096) } });
     }
-    const captured = observer.capture("1");
+    const captured = observer.capture();
     expect(captured.currentFailures).toHaveLength(32);
     expect(captured.detailCoverage).toBe("partial");
     expect(captured.currentFailures.some(f => f.worktree?.kind === "unavailable")).toBe(true);
-    expect(goJsonBytes({ expectedRevision: runId, observation: captured })).toBeLessThanOrEqual(256 * 1024);
+    expect(goJsonBytes(captured)).toBeLessThanOrEqual(256 * 1024);
     for (const f of captured.currentFailures.slice(1)) observer.discardFailure(f.operationId);
-    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: "<".repeat(4096) });
+    expect(observer.capture().currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: "<".repeat(4096) });
   });
 });

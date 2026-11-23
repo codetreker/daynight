@@ -10,7 +10,6 @@ requires [write safety](write-safety.md).
 | Project | Work associated with a Git repository. |
 | Task | One Project's ordinary work item (`type=task`) with status, metadata, dependencies, properties and materials. |
 | Goal | A typed objective resource (`type=goal`, `parentId=null`) owning shared outcomes and overall progress; its ordinary direct child Tasks track contributing work. |
-| Step | Ordered Task-owned record. |
 | Thread | Persistent Task discussion. |
 | Session | Execution and its observed activity. |
 | Attachment | Separate file. |
@@ -20,8 +19,7 @@ requires [write safety](write-safety.md).
 specifications, architecture, breakdowns, conclusions and progress, regardless of
 which Session or child Task produces them.
 
-Project/Task IDs are complete UUIDs. Step IDs are exactly eight hex characters:
-case-insensitive input, lowercase output, significant leading zeros. Replace
+Project/Task IDs are complete UUIDs. Replace
 command placeholders with actual IDs/values.
 
 ## Setup
@@ -53,16 +51,52 @@ and works outside Git. Verify with `project show`. For no/ambiguous matches,
 establish repository, service and intended Project; never guess IDs or register
 merely to make a query succeed.
 
-Authorized `project create` searches all accessible Projects using current origin
-or explicit `--repo` (also outside Git):
+Authorized `project create` selects explicit `--team <uuid|personal>`, then the
+service/account default, or Personal when no default exists. It searches all
+accessible Project pages for equivalent repositories owned by that Team, using
+current origin or explicit `--repo` (also outside Git):
 
 | Result | Behavior |
 | --- | --- |
-| Unique equivalent repository | Return existing Project without Team resolution or confirmation. |
-| Multiple matches | Select the intended Project ID. |
-| New Project | Use explicit `--team <uuid\|personal>`, else service/account default, else Personal. Invalid/inaccessible defaults fail. Confirm interactively or with `--confirm`; noninteractive creation requires it. |
+| Unique equivalent repository | Return the existing Project without confirmation or Team membership; a direct Project grant suffices. |
+| Multiple matches | Fail and report the matching IDs. |
+| New Project | Require target Team membership and confirm interactively or with `--confirm`; noninteractive creation requires it. |
+
+Unparseable historical addresses do not match. Page or response failures prevent
+creation. A known `project_repository_conflict` reports Team occupancy; an
+unknown write outcome is not automatically replayed. An invalid default fails
+without falling back, while explicit selection bypasses it.
 
 Retain the returned ID; read back the Project to verify repository and name.
+
+## Project repository changes
+
+```bash
+daynight project set-repository --project <project-id> --repo <url>
+daynight project set-repository --project <project-id> --repo <url> --confirm --allow-unverified-switch --json
+```
+
+An effective Project admin can select the explicit Project, including outside
+Git, or resolve it from the current repository. The stderr preview identifies
+the Project, old and new addresses, classification and effects. Unchanged or
+confirmed same-repository addresses preserve the GitHub App connection and Worker
+selections. A switch disconnects the Project's GitHub App repository connection
+and removes the Project from Worker cloud configurations selected in the
+transaction's snapshot. Worker application is asynchronous and may stop existing
+executions. Local clones, origins and worktrees remain; reconnect GitHub and
+manage local Worker configuration as needed after a switch.
+
+Interactive use prompts for confirmation; `--confirm` supplies it. An unverified
+identity also needs an explicit choice to treat it as a switch, by prompt or
+`--allow-unverified-switch`. Noninteractive use requires `--confirm`, and an
+unverified identity also requires `--allow-unverified-switch`. Cancellation sends
+no change. The request retains the preview's exact versions and classification
+evidence. For a stale preview, rerun the command to preview and confirm again.
+A same-Team repository occupancy conflict refuses the change.
+Only a validated receipt confirms the write; an unknown outcome requires
+[read-only observation](write-safety.md#uncertain-results), not automatic replay.
+`--json` prints only the receipt on stdout. Repository changes require a supporting
+service; older services retain the existing Project and Task commands.
 
 ## Project tag catalog
 
@@ -162,8 +196,10 @@ acceptance receipt.
 
 Authorized `project transfer --to-team <uuid|same-service-link>` moves the explicit
 `--project` or repository-resolved Project. Source Team admins need no destination
-membership. Review Project, source/destination and expected actor access in the
-preview; confirm interactively or with `--confirm`. The CLI submits observed
+membership. `--confirm` is required. The preview on stderr identifies the Project,
+source/destination and expected actor access, and warns that an actual transfer
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. The CLI submits observed
 ownership/destination versions with current identity; conflicts require a new
 preview/decision. Defaults and repository binding stay unchanged; grants and
 invitations remain independent. A receipt can confirm success without remaining
@@ -176,9 +212,10 @@ Explicitly authorized owner Team admins may `project delete` the explicit
 Deletion retains server history/files but makes the Project unavailable without
 a product recovery option.
 
-Review the complete preview. Interactive deletion requires the displayed JSON
-string literal of the name even with `--confirm`; noninteractive deletion requires
-`--confirm`. The preview supplies no version/identity condition on DELETE;
+`--confirm` is required. The complete preview on stderr warns that deletion
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. Interactive deletion also requires
+the displayed JSON string literal of the name. The preview supplies no version/identity condition on DELETE;
 the service checks current permissions/claims. The CLI sends at most one DELETE.
 Only a validated receipt confirms deletion; a later 404 cannot prove an unknown
 original outcome.

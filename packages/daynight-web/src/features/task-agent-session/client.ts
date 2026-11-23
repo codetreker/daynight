@@ -58,6 +58,7 @@ export type SessionViewState = {
   readonly environmentConnected: boolean;
   readonly errorCode: string | null;
   readonly archiveState: SessionArchiveStatus['state'] | 'loading' | null;
+  readonly archiveContentPolicy?: 'task_body' | null;
   readonly operationProgress: ReadonlyMap<string, 'sending' | 'waiting'>;
   readonly settingIntents: ReadonlyMap<string, SessionSettingIntent>;
   readonly draft: SessionDraft;
@@ -126,6 +127,9 @@ export class TaskSessionClient {
   private olderRequest: AbortController | null = null;
   private hydrating = false;
   private historyRequest: AbortController | null = null;
+  private descriptorRequest: AbortController | null = null;
+  private descriptorAgain = false;
+  private readonly descriptorAttempts = new Set<string>();
   private buffer: Extract<BrowserMessage, { type: 'event' }>[] = [];
   private hydrated = false;
   private replaceHistory = false;
@@ -734,6 +738,45 @@ export class TaskSessionClient {
     if (state.recoveryRequired) { this.cancelOlder(); this.beforeCursors.clear(); this.hydrated = false; this.cursor = null; this.publish({ connected: false, loadingOlder: false }); this.schedule(0); }
     else { this.cursor = value.cursor; if (!this.hydrating && BigInt(state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: this.historyAllowed(state.snapshot!) }); }
     if (value.event.kind === 'operation') this.persist();
+    if (value.event.kind === 'timeline_upsert' && !state.recoveryRequired) this.readMissingDescriptors(value.event.payload);
+  }
+  /**
+   * Live timeline events carry image parts but not their resource descriptors;
+   * history pages do. One tail read per entry revision supplies descriptors for a
+   * newly published image without reconnecting or replacing accepted rows. A
+   * failed read leaves the image unavailable until the next history load.
+   */
+  private readMissingDescriptors(entry: SessionState['entries'][number]): void {
+    const resources = this.view.state.resources;
+    if (![...sessionArchiveReferences([entry], false).resources].some(id => !resources.has(id))) return;
+    const key = JSON.stringify([entry.entryId, entry.revision]);
+    if (this.descriptorAttempts.has(key)) return;
+    if (this.descriptorAttempts.size >= 1000) this.descriptorAttempts.clear();
+    this.descriptorAttempts.add(key);
+    if (this.descriptorRequest) { this.descriptorAgain = true; return; }
+    void this.readDescriptors();
+  }
+  private async readDescriptors(): Promise<void> {
+    const snapshot = this.view.state.snapshot, generation = this.connectionGeneration;
+    if (!snapshot || !this.live()) return;
+    const request = new AbortController(); this.descriptorRequest = request; this.descriptorAgain = false;
+    const current = () => this.owned() && this.descriptorRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
+    try {
+      const page = await this.options.api.timeline(snapshot.sessionId, 'tail', null, AbortSignal.any([request.signal, this.network.signal]));
+      if (!current() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !current()) return;
+      this.validatePage(page, snapshot);
+      const missing = page.resources.filter(resource => !this.view.state.resources.has(resource.resourceId));
+      if (missing.length) {
+        const resources = new Map(this.view.state.resources); for (const resource of missing) resources.set(resource.resourceId, resource);
+        this.publish({ state: { ...this.view.state, resources } });
+      }
+    } catch (error) {
+      if (!current() || isAbortError(error)) return;
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
+    } finally {
+      // Entries published during this read need a page that started after them.
+      if (this.descriptorRequest === request) { this.descriptorRequest = null; if (this.descriptorAgain && generation === this.connectionGeneration) void this.readDescriptors(); }
+    }
   }
   private beginArchive(snapshot: SessionSnapshot) {
     this.disconnect(); this.availabilityRunning = true;
@@ -782,7 +825,7 @@ export class TaskSessionClient {
       const resources = archive.schemaVersion === 3 ? archive.resources.map(({ resource }) => resource) : archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
       const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
       this.replaceHistory = false;
-      this.publish({ archiveState: 'ready', state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
+      this.publish({ archiveState: 'ready', archiveContentPolicy: archive.schemaVersion === 3 ? archive.contentPolicy ?? null : null, state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
     } catch (error) {
       if (!this.currentReadCurrent(flight) || !this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -794,7 +837,7 @@ export class TaskSessionClient {
     if (page.sessionId !== snapshot.sessionId || page.historyEpoch !== snapshot.historyEpoch) throw new ApiError('protocol');
     if (page.hasMoreBefore && !page.beforeCursor) throw new HistoryCursorError('Session history returned an empty pagination cursor.');
   }
-  private cancelHydration(): void { this.historyRequest?.abort(); this.historyRequest = null; this.hydrating = false; this.buffer = []; }
+  private cancelHydration(): void { this.historyRequest?.abort(); this.historyRequest = null; this.descriptorRequest?.abort(); this.descriptorRequest = null; this.descriptorAgain = false; this.hydrating = false; this.buffer = []; }
   private pageCoverage(entries: SessionState['entries'], throughEntrySeq: string, lastEventSeq: string, completeBefore: boolean, previous: SessionHistoryCoverage | null): SessionHistoryCoverage {
     let first = previous?.firstEntrySeq ?? null, through = previous && BigInt(previous.throughEntrySeq) > BigInt(throughEntrySeq) ? previous.throughEntrySeq : throughEntrySeq;
     for (const entry of entries) {
@@ -992,8 +1035,8 @@ export class TaskSessionClient {
     while ((this.paused() ? await this.admit() : this.admitted()) && this.sameSession(s)) {
       const operation = this.view.state.operations.get(command.operationId)!;
       if (accepted(operation)) return;
-      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'));
-      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.')); }
+      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'), 'terminal');
+      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.'), 'unknown'); }
       await this.delay(750);
       if (!(this.paused() ? await this.admit() : this.admitted())) break;
       try { await this.checkOperation(command.operationId); } catch { /* Only queries are retried; native inputs are never replayed. */ }
@@ -1018,8 +1061,9 @@ export class TaskSessionClient {
         throw error;
       }
       if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
-      if (!imageSubmission && this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
-      throw new OperationRequestError(command.operationId, error);
+      const rejected = !imageSubmission && this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500;
+      if (rejected) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
+      throw new OperationRequestError(command.operationId, error, rejected ? 'terminal' : null);
     }
   }
   /** Consumes the exact immutable command whose dispatch claim is already committed. */
@@ -1067,7 +1111,23 @@ export class TaskSessionClient {
     });
   }
   checkOperation = async (id: string): Promise<void> => {
-    if (this.imageOperationIds.has(id)) { await this.imageDrafts.checkStatus(); return; }
+    if (this.imageOperationIds.has(id)) {
+      if (this.view.checking.has(id)) return;
+      const draft = this.imageDrafts.getSnapshot();
+      const ref = draft.recoveries.find(entry => entry.ref.operationId === id)?.ref;
+      if (!ref && draft.loading) throw new Error('The original image draft is still loading.');
+      this.publish({ checking: new Set(this.view.checking).add(id) });
+      try {
+        if (ref) await this.imageDrafts.checkStatus(ref);
+        else {
+          const snapshot = this.view.state.snapshot;
+          if (!snapshot) throw new Error('The original image operation is unavailable.');
+          await this.observeImageOperation(snapshot, id);
+        }
+      }
+      finally { if (!this.accountStopped) this.publish({ checking: new Set([...this.view.checking].filter(value => value !== id)) }); }
+      return;
+    }
     const snapshot = this.view.state.snapshot;
     if (!snapshot || !this.live() || this.view.checking.has(id)) return;
     const checking = new Set(this.view.checking).add(id); this.publish({ checking });

@@ -73,6 +73,15 @@ func TestPrepareParentStart(t *testing.T) {
 			}
 		})
 	}
+	for _, state := range []model.TaskStatus{model.TaskProposed, model.TaskTodo, model.TaskInProgress, model.TaskDone, model.TaskCancelled} {
+		t.Run("ordinary parent "+string(state), func(t *testing.T) {
+			dao := &parentStartDAO{parent: model.Task{ID: goalID, Type: model.TaskTypeTask, Status: state, ParentID: ptr(childID)}}
+			got, err := PrepareParentStart(t.Context(), dao, starting)
+			if err != nil || got.Changed || dao.clockReads != 0 {
+				t.Fatalf("ordinary parent changed: mutation=%+v clockReads=%d err=%v", got, dao.clockReads, err)
+			}
+		})
+	}
 
 	tests := []struct {
 		name string

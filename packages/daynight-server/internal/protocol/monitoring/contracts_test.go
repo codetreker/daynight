@@ -52,6 +52,7 @@ func TestFixedDiagnosticContract(t *testing.T) {
 	// This table is an independent wire oracle shared by failure and delivery fields.
 	cases := []struct{ code, cause string }{
 		{"cancelled", "The operation was cancelled."}, {"timeout", "The operation timed out."},
+		{"archive-quota-exceeded", "Session archive capacity was exceeded (quota_exceeded)."},
 		{"authentication-required", "Authentication is required."}, {"limit-exceeded", "An operation limit was exceeded."},
 		{"rate-limited", "The operation was rate limited."}, {"permission-denied", "Permission was denied."},
 		{"not-found-or-inaccessible", "A required resource was not found or is inaccessible."}, {"not-found", "A required resource was not found."},
@@ -62,6 +63,7 @@ func TestFixedDiagnosticContract(t *testing.T) {
 		{"invalid-output", "A required operation produced invalid output."}, {"recovery-limit", "The recovery limit was reached."},
 		{"native-identity-missing", "The original native execution identity is missing."}, {"worktree-validation-failed", "The worktree failed ownership validation."},
 		{"branch-mismatch", "The worktree branch does not match the recorded owner."}, {"recovery-blocked", "Recovery is blocked and needs attention."},
+		{"markdown-projection-repair", "Markdown image projection requires repair. Run daynight worker repair-markdown --help."},
 		{"outcome-unknown", "The operation outcome is unknown."}, {"unknown", "The operation failed; inspect local Worker diagnostics for details."},
 	}
 	for _, tc := range cases {

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -57,6 +58,16 @@ func AuthorizeAddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Pri
 		return &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
 	}
 	if err != nil {
+		return err
+	}
+	if err := authorizeOrdinaryAdmin(ctx, p, t, scopepolicy.TeamMembers, scopepolicy.TeamRead); err != nil {
+		return err
+	}
+	return nil
+}
+
+func authorizeOrdinaryAdmin(ctx context.Context, p model.Principal, t model.Team, operations ...scopepolicy.Operation) error {
+	if err := checkScope(ctx, p, operations...); err != nil {
 		return err
 	}
 	if t.Membership.Role != model.ProjectAdmin {

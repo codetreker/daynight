@@ -90,7 +90,7 @@ export const createWorkerReadOnlyConfiguration = (options: {
   modelConfiguration: () => {
     const snapshot = options.current(), native = snapshot.effective.native;
     if (native === null) throw new WorkerModelDiscoveryError("capability_error");
-    return { ...normalizeWorkerNative(native, "web", options.local, false), toolTargets: snapshot.toolTargets,
+    return { ...normalizeWorkerNative(native, options.local, false), toolTargets: snapshot.toolTargets,
       toolSelections: [options.selection("codex") ?? null, options.selection("copilot") ?? null] };
   },
 });
@@ -100,6 +100,8 @@ type Verifier = { discover(options: { native: WorkerCloudNative; cwd: string; en
 export const createWorkerModelDiscovery = (options: { configuration(): Configuration; defaultCwd: string; environment: NodeJS.ProcessEnv; verifier: Verifier; prepare?: (provider: WorkerAgent, operation: Operation) => Promise<void> }) => {
   const snapshots = new Map<string, Snapshot>(), secret = randomBytes(32), environment = { ...options.environment };
   let closed = false, occupied = 0, epoch = 0;
+  const pendingDirectories = new Set<Promise<string>>();
+  const cancellation = new AbortController();
   const signature = (): string => JSON.stringify(options.configuration());
   const cursor = (id: string, offset: number): string => {
     const body = `${id}:${offset}`;
@@ -129,10 +131,12 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
       if (occupied >= 4) throw new WorkerModelDiscoveryError("busy");
       occupied++;
       const admittedEpoch = epoch;
-      const operation = createOperation({ signal, limits: { totalMs: 25_000, requestMs: 25_000, responseBytes: 65_536, totalBytes: 65_536 } });
+      const executionSignal = AbortSignal.any([signal, cancellation.signal]);
+      const operation = createOperation({ signal: executionSignal, limits: { totalMs: 25_000, requestMs: 25_000, responseBytes: 65_536, totalBytes: 65_536 } });
       let directory: Promise<string> | undefined;
       try {
         if (input.cursor === undefined) await options.prepare?.(input.provider, operation);
+        operation.check();
         const configurationSignature = signature(), configuration = JSON.parse(configurationSignature) as Configuration;
         const requestedPath = input.cwd ?? options.defaultCwd;
         if (!absolute(requestedPath)) throw new WorkerModelDiscoveryError("invalid_path");
@@ -142,6 +146,9 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
           await access(cwd, constants.R_OK | constants.X_OK);
           return cwd;
         })();
+        pendingDirectories.add(directory);
+        const directoryWork = directory;
+        void directoryWork.then(() => pendingDirectories.delete(directoryWork), () => pendingDirectories.delete(directoryWork));
         const cwd = await new Promise<string>((resolve, reject) => {
           const abort = (): void => { operation.signal.removeEventListener("abort", abort); reject(operation.signal.reason); };
           operation.signal.addEventListener("abort", abort, { once: true });
@@ -182,7 +189,7 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
           snapshots.set(catalogGeneration, snapshot);
         }
         return result;
-      } catch (error) { throw failure(error, operation, signal); }
+      } catch (error) { throw failure(error, operation, executionSignal); }
       finally {
         operation.dispose();
         // Timed-out filesystem calls keep their slot until they really settle.
@@ -191,6 +198,7 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
       }
     },
     invalidate: (): void => { epoch++; snapshots.clear(); },
-    close: (): void => { closed = true; epoch++; snapshots.clear(); },
+    close: (): void => { closed = true; cancellation.abort(new Error("Worker model discovery is closing.")); epoch++; snapshots.clear(); },
+    join: async (): Promise<void> => { await Promise.allSettled([...pendingDirectories]); },
   };
 };

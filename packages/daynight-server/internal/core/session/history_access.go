@@ -49,6 +49,7 @@ func (s *Execution) taskReader() (*Execution, error) {
 	}
 	copy := *s
 	copy.browserRun, copy.taskRun, copy.archiveRun = s.taskContentReadRun, s.taskReadRun, s.taskArchiveReadRun
+	copy.terminalDirectoryRun = s.taskTerminalDirectoryRun
 	return &copy, nil
 }
 

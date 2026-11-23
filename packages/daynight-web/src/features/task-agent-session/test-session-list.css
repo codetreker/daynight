@@ -5,15 +5,15 @@
 .test-session-list-link:hover { background: #f0f1f8; }
 .test-session-list-link:focus-visible { outline: 2px solid #6262ba; outline-offset: -3px; }
 .test-session-list-identity, .test-session-list-dates { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.test-session-list-identity code, .test-session-list-dates small, .test-session-list-end { color: #68758a; font-size: 12px; }
-.test-session-list-status { display: flex; gap: 6px 12px; flex-wrap: wrap; font-size: 12px; }
+.test-session-list-identity code, .test-session-list-dates small, .test-session-list-end { color: #68758a; font-size: var(--text-xs); }
+.test-session-list-status { display: flex; gap: 6px 12px; flex-wrap: wrap; font-size: var(--text-sm); }
 .test-session-connection.connected { color: #37694e; }
 .test-session-connection.disconnected { color: #68758a; }
-.test-session-list-dates { font-size: 12px; overflow-wrap: anywhere; }
-.test-session-list-arrow { font-size: 22px; color: #68758a; }
+.test-session-list-dates { font-size: var(--text-xs); overflow-wrap: anywhere; }
+.test-session-list-arrow { font-size: var(--text-sm); color: #68758a; }
 .test-session-list-more { margin-top: 18px; }
 .test-session-list-end { margin-top: 18px; }
-.test-session-back { margin-bottom: 10px; display: inline-flex; align-self: flex-start; color: #5b5baa; font-size: 12px; text-decoration: none; }
+.test-session-back { margin-bottom: 10px; display: inline-flex; align-self: flex-start; color: #5b5baa; font-size: var(--text-sm); text-decoration: none; }
 .test-session-back:hover { text-decoration: underline; }
 @media (max-width: 900px) {
   .test-session-list-link { grid-template-columns: minmax(70px, 1fr) minmax(120px, 1fr) 12px; gap: 12px; padding: 14px; }

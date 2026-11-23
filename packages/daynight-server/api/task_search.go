@@ -29,18 +29,20 @@ type TaskSearchMatch struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type TaskSearchItem struct {
-	ID          string                          `json:"id"`
-	Type        string                          `json:"type"`
-	ParentID    *string                         `json:"parentId"`
-	ProjectID   string                          `json:"projectId"`
-	Title       string                          `json:"title"`
-	Status      string                          `json:"status"`
-	AssignedTo  *string                         `json:"assignedTo"`
-	UpdatedAt   time.Time                       `json:"updatedAt"`
-	CancelledAt *time.Time                      `json:"cancelledAt"`
-	Context     *TaskSearchContext              `json:"context"`
-	Match       TaskSearchMatch                 `json:"match"`
-	Tags        []taskprotocol.RESTTagReference `json:"tags"`
+	ID                string                          `json:"id"`
+	Type              string                          `json:"type"`
+	ParentID          *string                         `json:"parentId"`
+	ParentTaskID      **string                        `json:"parentTaskId,omitempty"`
+	ParentTaskContext *TaskSearchContext              `json:"parentTaskContext,omitempty"`
+	ProjectID         string                          `json:"projectId"`
+	Title             string                          `json:"title"`
+	Status            string                          `json:"status"`
+	AssignedTo        *string                         `json:"assignedTo"`
+	UpdatedAt         time.Time                       `json:"updatedAt"`
+	CancelledAt       *time.Time                      `json:"cancelledAt"`
+	Context           *TaskSearchContext              `json:"context"`
+	Match             TaskSearchMatch                 `json:"match"`
+	Tags              []taskprotocol.RESTTagReference `json:"tags"`
 }
 type TaskSearchPage struct {
 	ProjectID  string           `json:"projectId"`

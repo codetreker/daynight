@@ -9,6 +9,7 @@ import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
 import type { WorkerConfigurationDiagnosticMetadata } from "./configuration-diagnostics.js";
+import { WindowsProcessProofError } from "../controller/windows-process-proof.js";
 
 export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent; sink?: WorkerDiagnosticSinkMetadata; configuration?: WorkerConfigurationDiagnosticMetadata };
 
@@ -128,6 +129,7 @@ export const createWorkerDiagnostics = async (options: {
     if (value instanceof SqliteAccessError) return serializeSqliteError(value);
     if (value instanceof Error) return {
       name: value.name, message: redact(value.message),
+      ...(value instanceof WindowsProcessProofError ? { stage: value.stage, domain: value.domain, code: value.code } : {}),
       ...(value.cause === undefined || depth >= 6 ? {} : { cause: describeError(value.cause, depth + 1) }),
       ...(value instanceof AggregateError && depth < 6 ? { errors: value.errors.map((error: unknown) => describeError(error, depth + 1)) } : {}),
     };
@@ -267,7 +269,7 @@ export const createWorkerDiagnostics = async (options: {
       const output = serialize(event);
       if (blocked !== undefined || fatal !== undefined || queue.length >= maximumQueuedRecords) omittedRecords++;
       else { queue.push(output.line); start(); }
-      foreground(output.foreground);
+      if (event.kind !== "worker-configuration-stage" || (event.configuration?.status !== "started" && event.configuration?.status !== "succeeded")) foreground(output.foreground);
     } catch (error) { fail(error); }
   };
   const flush = async (): Promise<void> => {
@@ -283,6 +285,7 @@ export const createWorkerDiagnostics = async (options: {
   schedule();
   return {
     emit, flush,
+    isClosed: (): boolean => closed,
     get filename(): string { return filename; },
     close: (): Promise<void> => stopping ??= (async () => {
       closing = true; cancelTimer();
@@ -290,9 +293,9 @@ export const createWorkerDiagnostics = async (options: {
         await flush();
         if (blocked !== undefined) await report({ kind: "diagnostic-sink-unavailable-at-close", component: "diagnostics", phase: blocked.phase, message: "Worker diagnostic file sink closed with omitted or unconfirmed records.", error: blocked.error, sink: metadata() });
       } finally {
-        closed = true;
         for (const listener of stderrListeners) process.stderr.removeListener("error", listener);
         stderrListeners.clear();
+        closed = true;
       }
       if (fatal !== undefined) throw fatal.error;
     })(),

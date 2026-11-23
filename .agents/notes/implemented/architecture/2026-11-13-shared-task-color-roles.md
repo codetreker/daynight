@@ -15,8 +15,9 @@ could misrepresent waiting for input as active execution.
 `task-state-colors.css` is the shared CSS value owner loaded by the application
 style entry. Existing row and graph variables, status chips, menu dots, progress,
 metadata and task-scoped outlines consume its roles. The
-[UI standard](../../../../docs/ui-design.md#semantic-color-roles) owns the required
-palette and semantic hierarchy; the
+[Web visual tokens](../../../../docs/design/web-visual-tokens.md#任务状态与交互色)
+own the required palette, and the [UI principles](../../../../docs/ui-design.md#semantic-color-roles)
+own semantic hierarchy; the
 [standard ownership decision](../process/2026-11-13-semantic-ui-color-standard.md)
 records that documentation boundary.
 
@@ -33,7 +34,11 @@ The composer exposes its actual activity as a presentation attribute only while
 the snapshot is connected and synchronized. Working and waiting for input map to
 different roles. Timer eligibility, interruption, state inference and protocol
 fields keep their existing responsibilities. Online health remains a separate
-green dot, and automatic execution permission remains a neutral labeled policy.
+green dot. The original decision used a neutral on/off label for automatic
+execution permission to distinguish policy from activity and completion. The
+[permission badge decision](2026-11-16-enabled-automation-permission-badge.md)
+partially supersedes that presentation: only enabled permission is labeled, in
+green, while its meaning remains independent of activity and completion.
 
 ## Alternatives
 

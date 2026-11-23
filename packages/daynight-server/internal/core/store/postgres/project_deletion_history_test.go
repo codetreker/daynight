@@ -11,6 +11,7 @@ import (
 )
 
 func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, owner, _, project := membershipFixture(t)
 	ctx := t.Context()
 	otherID := uuid.NewString()
@@ -25,8 +26,7 @@ func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T
 	exec := func(sql string, args ...any) { t.Helper(); mustQueryExec(t, db, sql, args...) }
 	exec(`INSERT INTO tasks(id,project_id,title,status,version,started_at) VALUES($1,$3,'main','in_progress',7,now()),($2,$3,'dependency','done',3,now())`, task, dependency, project.ID)
 	exec(`INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, task, dependency)
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','false')`, task)
-	exec(`INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'abcd1234',0,'step','details','done',now(),now())`, task)
+	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','false')`, task)
 	exec(`INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,body) VALUES($1,now(),$2,false,'thread history')`, task, owner.UserID)
 	exec(`INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,grant_hash,grant_expires_at,connection_expires_at) VALUES($1,$2,$3,$4,$5,$6,'{"name":"history"}','{"lifecycle":"active","controls":{"x":1}}','abc',now()+interval '1 hour',now()+interval '1 hour')`, sid, project.ID, task, uuid.NewString(), owner.UserID, uuid.NewString())
 	exec(`INSERT INTO session_events(session_id,event_seq,event) VALUES($1,1,'{"kind":"history"}')`, sid)
@@ -47,7 +47,6 @@ func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T
         'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.task_id,p.name) FROM task_properties p JOIN tasks t ON t.id=p.task_id WHERE t.project_id=$1),
         'deps',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.task_id,d.depends_on_task_id) FROM task_dependencies d WHERE d.project_id=$1),
         'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.task_id,a.path) FROM task_attachments a WHERE a.project_id=$1),
-        'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.task_id,s.id) FROM task_steps s JOIN tasks t ON t.id=s.task_id WHERE t.project_id=$1),
         'thread',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.task_id,m.message_id) FROM task_thread_messages m JOIN tasks t ON t.id=m.task_id WHERE t.project_id=$1),
         'session',(SELECT to_jsonb(s)-'snapshot'-'grant_hash'-'grant_expires_at'-'connection_expires_at'-'draining_until' FROM task_sessions s WHERE s.id=$2),
         'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.event_seq) FROM session_events e WHERE e.session_id=$2),

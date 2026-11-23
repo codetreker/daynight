@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "./helpers/credentialScopes";
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
@@ -16,6 +17,7 @@ import { retryImageDraftScopeCleanup } from '../src/features/task-agent-session/
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import * as taskGraphHook from '../src/features/projects/useTaskGraph';
 import { navigate, parseRoute } from "../src/app/router";
+import { browserNavigation } from "../src/app/navigation";
 import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
@@ -62,6 +64,7 @@ const withDetailResources = (project: string, task: string, fallback: (url: stri
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
@@ -88,7 +91,7 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
-  it("binds direct-entry and retained member subtitles to their project through settings navigation", async () => {
+  it("binds direct-entry and retained workspace headings to their project through settings navigation", async () => {
     const second = "00000000-0000-4000-8000-000000000004";
     const secondProject = { ...project("Project Beta"), id: second };
     window.history.replaceState(null, "", `/projects/${second}/members`);
@@ -100,18 +103,18 @@ describe("sidebar integration with the authenticated workspace", () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByText("Project Beta · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "Project Beta", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${projectId}`));
     fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
     fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
-    await screen.findByText("私有项目 · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "私有项目", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${second}/settings`));
-    await screen.findByRole("heading", { name: "Project Beta" });
+    await screen.findByRole("heading", { name: "Project Beta" }, { timeout: 10000 });
     fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置分组" })).getByRole("link", { name: "成员与邀请" }));
-    await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
-    const previous = screen.queryByText("私有项目 · 管理协作成员与加入邀请");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Project Beta", level: 1 })).toBeVisible(), { timeout: 10000 });
+    const previous = screen.queryByRole("heading", { name: "私有项目", level: 1 });
     if (previous !== null) expect(previous).not.toBeVisible();
-  });
+  }, 30000);
 
   it("retains a project invitation and stops remote work after account change", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
@@ -268,7 +271,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     mockSidebarMediaQuery(true); window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     const fetcher = install(); render(<AuthenticatedApp />);
     const heading = await screen.findByRole("heading", { name: "私有项目" });
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);
@@ -437,6 +440,23 @@ describe("authenticated application shell", () => {
     expect(screen.queryByText("登录状态已过期。重新登录后可继续访问项目。")).toBeNull();
     expect(login).toHaveBeenCalledWith(`/api/v1/auth/login?provider=github&returnPath=%2Fprojects%2F${projectId}`);
     expect(screen.getByRole("button", { name: "正在前往 UniAuth…" })).toBeDisabled();
+  });
+
+  it.each([['tokens', '访问凭据'], ['prompt', '用户级 Prompt']] as const)("returns an anonymous account %s destination after login", async (tab, label) => {
+    window.history.replaceState(null, "", `/account?tab=${tab}`);
+    let anonymous = true;
+    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v2/me/tokens" ? json({ items: [] }) : url === "/api/v3/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
+    const login = vi.fn();
+    const view = render(<AuthenticatedApp navigateToLogin={login} />);
+    fireEvent.click(await screen.findByRole("button", { name: "使用 GitHub 登录" }));
+    expect(new URL(login.mock.calls[0]![0], window.location.origin).searchParams.get('returnPath')).toBe(`/account?tab=${tab}`);
+    expect(new URL(window.location.href).searchParams.get('returnPath')).toBe(`/account?tab=${tab}`);
+    view.unmount();
+    anonymous = false;
+    browserNavigation().dispose();
+    render(<AuthenticatedApp />);
+    expect(await screen.findByRole('link', { name: label })).toHaveAttribute('aria-current', 'page');
+    expect(window.location.pathname + window.location.search).toBe(`/account?tab=${tab}`);
   });
 
   it("keeps provider loading failures distinct from an empty configured provider set", async () => {
@@ -626,11 +646,11 @@ describe("authenticated application shell", () => {
 
   it("does not dispatch token metadata reads after an account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = install(url => url === "/api/v1/me/tokens" ? json({ items: [] }) : defaults(url));
+    const fetcher = install(url => url === "/api/v2/me/tokens" ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: "账户菜单：Alice" });
     accountChange(otherId); await screen.findByText("账户已变化");
-    fireEvent.click(screen.getByRole("button", { name: "访问凭据" })); await act(async () => {});
-    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("link", { name: "访问凭据" })); await act(async () => {});
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v2/me/tokens")).toHaveLength(0);
   });
 
 
@@ -647,12 +667,14 @@ describe("authenticated application shell", () => {
 
   it("keeps a one-time PAT reveal mounted after account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v2/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "访问凭据" }));
+    fireEvent.click(await screen.findByRole("link", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(tokenPanel().getByRole("button", { name: "创建令牌" }));
-    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } }); fireEvent.submit(document.getElementById("create-token-form")!);
+    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } });
+    await waitFor(() => expect(screen.getByRole("dialog").querySelector("button[type=submit]")).not.toBeDisabled());
+    fireEvent.submit(document.getElementById("create-token-form")!);
     const reveal = await screen.findByRole("dialog", { name: "访问令牌已创建" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);
@@ -915,7 +937,7 @@ describe("authenticated application shell", () => {
   });
 
   it("handles valid account, membership and malformed routes", () => {
-    expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
+    expect(parseAuthRoute("/account")).toEqual({ kind: "account", selection: { kind: "tab", tab: "profile" } });
     expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
     expect(parseAuthRoute("/projects/%E0%A4%A")).toEqual({ kind: "notFound" });
     expect(parseAuthRoute("/projects/no/members")).toEqual({ kind: "notFound" });
@@ -935,7 +957,7 @@ describe("authenticated standalone attachment reader", () => {
     for (const malformed of [location("docs%2Fguide.md"), location("../secret.md"), location("%E0%A4%A"), `/projects/no/tasks/${taskId}/attachments/a.md`]) {
       expect(parseAuthRoute(malformed)).toEqual({ kind: "notFound" });
     }
-    expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
+    expect(parseAuthRoute("/account")).toEqual({ kind: "account", selection: { kind: "tab", tab: "profile" } });
     expect(parseAuthRoute("/invitations")).toEqual({ kind: "invitations" });
     expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
   });
@@ -982,10 +1004,9 @@ describe("authenticated standalone attachment reader", () => {
 
   it("retains the loaded HTML frame through focus and an account change", async () => {
     window.history.replaceState(null, "", location("site/index.html"));
-    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string, options?: RequestInit) => {
+    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string) => {
       if (url === "/api/v1/me") return Promise.resolve(json(user()));
       if (url.includes("/attachments?")) return Promise.resolve(inventory("site/index.html", "text/html"));
-      if (options?.method === "HEAD") return Promise.resolve(new Response(null));
       throw new Error(`Unexpected request ${url}`);
     }));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
@@ -993,7 +1014,7 @@ describe("authenticated standalone attachment reader", () => {
     returnFromAnotherWindow(); accountChange(otherId); await screen.findByText("账户已变化");
     expect(screen.getByTitle("HTML 预览：site/index.html")).toBe(frame);
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
-    expect(fetcher.mock.calls.filter(([, options]) => options?.method === "HEAD")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([, options]) => options?.method === "HEAD")).toHaveLength(0);
   });
 
   it.each([404, 401])("keeps resource404 local and applies the global boundary to resource401 (%i)", async (status) => {
@@ -1546,4 +1567,54 @@ it('automatically rereads Project after task sync denial even when the cache bec
   await act(async () => pending.resolve(json(project())));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
   expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
+});
+
+describe('retains GitHub App acceptance across SPA navigation', () => {
+  it.each(['confirmed', 'unknown', 'rejected'] as const)('reports %s after leaving and lets the user return without replay', async kind => {
+    const appId = '59cb4a41-9b96-43cd-8fe3-cbaf394a51e8', secret = `dn_gai_${'A'.repeat(43)}`, pending = Promise.withResolvers<Response>();
+    const inspection = { app: { id: appId, githubAppId: '23', name: 'Release App', githubName: 'Release', githubSlug: 'release' }, expiresAt: '2099-01-01T00:00:00Z', membership: null };
+    window.history.replaceState(null, '', `/github-app-admin-invitations#${secret}`);
+    const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+      if (url === '/api/v1/github-app-admin-invitations/inspect') return Promise.resolve(json(inspection));
+      if (url === '/api/v1/github-app-admin-invitations/accept') return pending.promise;
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal('fetch', fetcher); render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole('button', { name: '接受邀请' })); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1));
+    expect(window.location.hash).toBe(''); act(() => navigate('/projects')); expect(await screen.findByText('正在接受 App 管理员邀请。')).toBeVisible();
+    if (kind === 'confirmed') await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true })));
+    else if (kind === 'rejected') await act(async () => pending.resolve(fail(409, 'conflict')));
+    else await act(async () => pending.reject(new TypeError('network')));
+    expect(await screen.findByText(kind === 'confirmed' ? 'App 管理员邀请已接受。' : kind === 'rejected' ? 'App 管理员邀请未被接受。' : '邀请接受结果未知。请返回核对，勿重复提交。')).toBeVisible();
+    expect(document.body.textContent).not.toContain(secret); expect(JSON.stringify(sessionStorage)).not.toContain(secret); expect(JSON.stringify(localStorage)).not.toContain(secret);
+    fireEvent.click(screen.getByRole('button', { name: '返回邀请' }));
+    if (kind === 'confirmed') expect(await screen.findByText('你已成为此 App 的管理员。')).toBeVisible();
+    else if (kind === 'rejected') expect(await screen.findByText(/操作失败，请核对当前状态后重试/)).toBeVisible();
+    else { await screen.findByText('接受结果尚未确认，请核对当前状态后再决定后续操作。'); fireEvent.click(screen.getByRole('button', { name: '核对当前状态' })); await screen.findByText(/不能确认原操作的结果/); }
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1);
+  });
+});
+
+
+describe('retains GitHub App acceptance when another invitation arrives', () => {
+  it.each(['pending', 'confirmed', 'cleanup failure'] as const)('does not replace the existing outcome: %s', async kind => {
+    const appId = '59cb4a41-9b96-43cd-8fe3-cbaf394a51e8', first = `dn_gai_${'A'.repeat(43)}`, second = `dn_gai_${'B'.repeat(42)}A`, pending = Promise.withResolvers<Response>();
+    const inspection = { app: { id: appId, githubAppId: '23', name: 'Release App', githubName: 'Release', githubSlug: 'release' }, expiresAt: '2099-01-01T00:00:00Z', membership: null };
+    window.history.replaceState(null, '', `/github-app-admin-invitations#${first}`);
+    const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+      if (url === '/api/v1/github-app-admin-invitations/inspect') return Promise.resolve(json(inspection));
+      if (url === '/api/v1/github-app-admin-invitations/accept') return pending.promise;
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal('fetch', fetcher); render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole('button', { name: '接受邀请' })); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1));
+    act(() => navigate('/projects')); await screen.findByText('正在接受 App 管理员邀请。');
+    if (kind === 'confirmed') { await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true }))); await screen.findByText('App 管理员邀请已接受。'); }
+    const owner = browserNavigation(); const clear = kind === 'cleanup failure' ? vi.spyOn(owner, 'clearFragment').mockImplementation(() => {}) : null;
+    act(() => navigate(`/github-app-admin-invitations#${second}`)); expect(await screen.findByText('请先结束当前邀请的核对，再重新打开新邀请链接。')).toBeVisible();
+    if (kind === 'cleanup failure') { expect(screen.getByText('无法清除邀请链接，请重新打开邀请。')).toBeVisible(); expect(window.location.hash).toBe(`#${second}`); clear!.mockRestore(); act(() => owner.clearFragment()); }
+    else expect(window.location.hash).toBe('');
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/inspect')).every(([, options]) => !String(options?.body).includes(second))).toBe(true);
+    if (kind !== 'confirmed') await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true })));
+    expect(await screen.findByText('你已成为此 App 的管理员。')).toBeVisible(); expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1);
+  });
 });

@@ -1,3 +1,6 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -8,9 +11,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { validateControllerLocalRequest } from "../../../src/commands/controller/local-client.js";
-import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCurrentControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+import type { TimelineEntry } from "../../../src/session/protocol.js";
 const roots: string[] = [];
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -26,7 +30,7 @@ const stageStoppedFixture = (store: ReturnType<typeof openControllerLifecycleSto
 const commitStoppedFixture = async (file: string, ticket: ControllerLaunchTicket): Promise<void> => {
   if (process.platform !== "win32") return;
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  try { await recordStoppedControllerGeneration(file, ticket, { stateDirectory: path.dirname(file), jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
+  try { await recordStoppedControllerGeneration(file, ticket, { jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
 };
 afterEach(async () => { Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
@@ -35,6 +39,49 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "worker-managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   return { home, ticket };
 };
+it.each(["Thu Nov 19 19:43:08 2026", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:9007199254740993"])("retains process birth evidence unchanged when the Controller journal reopens (%s)", async startedAt => {
+  const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt, commandHash: "a".repeat(64) };
+  const store = openControllerLifecycleStore(file, ticket);
+  let original: ReturnType<typeof store.getSnapshot>;
+  try {
+    store.patchSnapshot({ controllerProcess, nativeProcesses: [{ ...controllerProcess, pid: 124, parentPid: 123 }] });
+    original = store.getSnapshot();
+  } finally { store.close(); }
+  const observed = readCurrentControllerSnapshot(file, ticket);
+  expect(observed).toEqual(original);
+  expect(observed.controllerProcess).toEqual(controllerProcess);
+  expect(observed.nativeProcesses[0]?.startedAt).toBe(startedAt);
+});
+
+it("keeps explicit body-history writes independent of pending operations and source acknowledgements", async () => {
+  const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
+  let store = openControllerLifecycleStore(file, ticket);
+  const operationId = randomUUID();
+  const body: TimelineEntry = { entryId: randomUUID(), entrySeq: "2", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Run `echo hello`\nstdout: hello" }] };
+  const tool: TimelineEntry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "tool_call", callId: "tool-1", name: "shell", status: "completed", truncated: false, input: "echo hello", output: [{ type: "text", text: "hello" }] };
+  try {
+    store.prepareOperation({ operationId, kind: "send_message", payload: { text: "request" } });
+    store.markDispatching(operationId);
+    store.appendEvent({ kind: "state", payload: { marker: "pending" } });
+    const source = store.getHistorySource();
+    expect(store.saveTimelineHistory(tool, "task_body")).toMatchObject({ status: "excluded", contentPolicy: "task_body" });
+    expect(store.saveTimelineHistory(body, "task_body")).toMatchObject({ status: "saved", contentPolicy: "task_body" });
+    expect(store.getTimelineEntry(tool.entryId)).toBeUndefined();
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.pendingEvents()).toHaveLength(1);
+    store.close();
+    store = openControllerLifecycleStore(file, ticket);
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getTimelineEntry(tool.entryId)).toBeUndefined();
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+    store.acknowledgeEvents("1");
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+  } finally { store.close(); }
+});
 it("retains unknown dispatch and committed events across restart without replaying the operation", async () => {
   const { home, ticket } = await fixture();
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
@@ -244,6 +291,11 @@ it.each(["user", "daynight"] as const)("retains %s message origins through recei
     store.markDispatching(conflictingOperation);
     expect(() => store.associateInputMessage(conflictingOperation, nativeSessionId, entry.entryId)).toThrow(/conflicts/);
     expect(() => store.associateInputMessage(operationId, "another-native-session", entry.entryId)).toThrow(/identity/);
+    const saved = store.getTimelineEntry(entry.entryId)!;
+    expect(() => store.saveTimelineHistory({ ...entry, entrySeq: saved.entrySeq, revision: "3", origin: origin === "user" ? "daynight" : "user" }, "task_body")).toThrow(/original input origin/);
+    expect(store.getTimelineEntry(entry.entryId)).toEqual(saved);
+    expect(store.saveTimelineHistory({ ...entry, entrySeq: saved.entrySeq, revision: "3" }, "task_body").status).toBe("saved");
+    expect(store.getTimelineEntry(entry.entryId)).toMatchObject({ origin, revision: "3" });
     expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items).toEqual(expect.arrayContaining([expect.objectContaining({ entryId: entry.entryId, origin })]));
   } finally { store.close(); }
 });
@@ -255,16 +307,17 @@ it("publishes the first generation and its Controller proof in one visible commi
   const execute = Database.prototype.exec;
   let observedInitialCommit = false;
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
+    if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
-      try { expect(observer.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get()).toBeUndefined(); }
+      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
       finally { observer.close(); }
       observedInitialCommit = true;
     }
     return execute.call(this, sql);
   });
-  const store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
+  let store: ReturnType<typeof openControllerLifecycleStore> | undefined;
   try {
+    store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
     expect(observedInitialCommit).toBe(true);
     const observer = new Database(file, { readonly: true });
     try {
@@ -273,7 +326,7 @@ it("publishes the first generation and its Controller proof in one visible commi
       expect(row.owner_pid).toBe(process.pid);
       expect(row.ticket_hash).toBe(controllerPayloadHash(ticket));
     } finally { observer.close(); }
-  } finally { spy.mockRestore(); store.close(); }
+  } finally { spy.mockRestore(); store?.close(); }
 });
 
 it("holds writer ownership until close and keeps a supplied permit with its caller", async () => {
@@ -285,6 +338,36 @@ it("holds writer ownership until close and keeps a supplied permit with its call
   expect(() => acquireControllerStoragePermit(file)).toThrow("Cannot acquire instance lock");
   permit.release();
   const successor = acquireControllerStoragePermit(file); successor.release();
+});
+
+it("retains the storage permit when a rejected business transaction cannot close its connection", async () => {
+  const { home, ticket } = await fixture(), file = path.join(home, "journal.sqlite"), lock = path.join(home, "storage.lock");
+  const store = openControllerLifecycleStore(file, ticket, { onMigration: () => {} });
+  store.close();
+  const exec = Database.prototype.exec, close = Database.prototype.close;
+  let immediate = 0, businessDb: Database.Database | undefined, unclosed: Database.Database | undefined;
+  const execSpy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE" && ++immediate === 2) businessDb = this;
+    return exec.call(this, sql);
+  });
+  const closeSpy = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+    if (this === businessDb) { unclosed = this; throw new Error("injected journal close failure"); }
+    return close.call(this);
+  });
+  try {
+    let failure: unknown;
+    try { openControllerLifecycleStore(file, { ...ticket, executionId: randomUUID() }, { onMigration: () => {} }); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "rolled-back", connectionClosed: false, context: { phase: "initialize-close" } });
+    const causes = ((failure as Error).cause as AggregateError).errors;
+    expect(causes[0]).toMatchObject({ message: expect.stringMatching(/another execution/) });
+    expect(causes[1]).toMatchObject({ kind: "cleanup-failed" });
+    expect(filesystem.existsSync(lock)).toBe(true);
+    expect(() => acquireControllerStoragePermit(file)).toThrow();
+  } finally {
+    closeSpy.mockRestore(); execSpy.mockRestore();
+    if (unclosed?.open) unclosed.close();
+    if (filesystem.existsSync(lock)) filesystem.unlinkSync(lock);
+  }
 });
 
 it("closes a journal and releases owned storage when a postcommit constructor fails", async () => {

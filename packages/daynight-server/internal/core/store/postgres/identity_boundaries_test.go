@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -40,6 +41,7 @@ func insertIdentityBundle(ctx context.Context, sc IdentityScope, subject string,
 }
 
 func TestIdentityScopeConcurrentCanonicalOwnerAndSessions(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -99,12 +101,14 @@ func TestIdentityScopeConcurrentCanonicalOwnerAndSessions(t *testing.T) {
 }
 
 func TestIdentityScopePersonalAndSessionFailuresRollbackAllWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, table := range []string{"teams", "team_members", "sessions"} {
-		t.Run(table, func(t *testing.T) {
-			s := isolatedStore(t)
+		if !t.Run(table, func(t *testing.T) {
 			ctx := t.Context()
 			now := time.Now().UTC()
-			login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("state"), BrowserBindingHash: deviceStoreHash("binding"), ScopeHash: deviceStoreHash("scope"), Provider: "github", ReturnPath: "/tasks", ExpiresAt: now.Add(time.Hour)}
+			loginID := uuid.NewString()
+			login := model.LoginTransaction{ID: loginID, StateHash: deviceStoreHash(loginID), BrowserBindingHash: deviceStoreHash("binding"), ScopeHash: deviceStoreHash("scope"), Provider: "github", ReturnPath: "/tasks", ExpiresAt: now.Add(time.Hour)}
 			identityScopeTest(t, s, func(sc IdentityScope) error { return sc.IdentityDAO().InsertLogin(ctx, login) })
 			identityScopeTest(t, s, func(sc IdentityScope) error {
 				_, err := sc.IdentityDAO().ConsumeLogin(ctx, login.StateHash, login.BrowserBindingHash, now)
@@ -113,26 +117,39 @@ func TestIdentityScopePersonalAndSessionFailuresRollbackAllWrites(t *testing.T) 
 			if _, err := s.Pool.Exec(ctx, `CREATE FUNCTION reject_identity_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test Personal initialization failure'; END $$; CREATE TRIGGER reject_identity_insert BEFORE INSERT ON `+table+` FOR EACH ROW EXECUTE FUNCTION reject_identity_insert()`); err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, err := s.Pool.Exec(cleanup, `DROP TRIGGER reject_identity_insert ON `+table+`; DROP FUNCTION reject_identity_insert()`); err != nil {
+					t.Fatal(err)
+				}
+				if err := checkFaultTriggerRemoved(cleanup, s, "reject_identity_insert", table); err != nil {
+					t.Fatal(err)
+				}
+			})
 			completion, err := s.WriteIdentity(ctx, func(sc IdentityScope) error {
 				_, err := insertIdentityBundle(ctx, sc, "rollback-owner", now, uuid.NewString())
 				return err
 			})
 			var pg *pgconn.PgError
-			if !errors.As(err, &pg) || pg.Code != "P0001" || completion.Outcome != TransactionNotCommitted {
+			if !errors.As(err, &pg) || pg.Code != "P0001" || pg.Message != "test Personal initialization failure" || completion.Outcome != TransactionNotCommitted {
 				t.Fatalf("failure completion=%#v error=%v", completion, err)
 			}
 			var empty bool
 			if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions)=0 AND (SELECT count(*) FROM users)=0 AND (SELECT count(*) FROM teams)=0 AND (SELECT count(*) FROM team_members)=0 AND (SELECT count(*) FROM sessions)=0`).Scan(&empty); err != nil || !empty {
 				t.Fatalf("partial identity or replayable login: %t %v", empty, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, damage := range []string{"missing-owner", "wrong-role", "additional-member"} {
-		t.Run(damage, func(t *testing.T) {
-			s := isolatedStore(t)
+		if !t.Run(damage, func(t *testing.T) {
 			ctx := t.Context()
 			user, _, _ := testAuthRecords(t, s)
 			originalName := "Display name"
@@ -195,11 +212,15 @@ func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
 				}
 				return err
 			})
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 }
 
 func TestIdentityScopeConcurrentLoginConsumption(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -261,6 +282,7 @@ func waitIdentityLock(t *testing.T, ctx context.Context, s *Store, fragment stri
 }
 
 func TestIdentityScopeDeviceLocksExposeCurrentDecisionAndConsumption(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"decision", "redemption"} {
 		t.Run(operation, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -382,6 +404,7 @@ func TestIdentityScopeDeviceLocksExposeCurrentDecisionAndConsumption(t *testing.
 }
 
 func TestIdentityScopeDeviceMintFailurePreservesGrant(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	_, p, _ := testAuthRecords(t, s)
@@ -432,6 +455,7 @@ func TestIdentityScopeDeviceMintFailurePreservesGrant(t *testing.T) {
 }
 
 func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -480,6 +504,7 @@ func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) 
 			if err == nil {
 				want := credential
 				want.TokenHash = nil
+				want.ScopePolicy = nil
 				want.ExpiresAt = &expiry
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("stale expiry/metadata after lock: %#v want=%#v", got, want)
@@ -516,6 +541,7 @@ func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) 
 }
 
 func TestIdentityScopeDuplicateSessionRollsBackNewOwner(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	_, _, existing := testAuthRecords(t, s)

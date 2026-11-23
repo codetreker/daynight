@@ -30,7 +30,7 @@ func WorkerClaim(number int, userID, workerID string, state model.WorkerState) *
 }
 
 func WorkerConfiguration() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, ArchiveSessions: new(true), MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 
 func WriteWorker(database store.WorkerWriter, ctx context.Context, operation func(store.WorkerScope) error) error {

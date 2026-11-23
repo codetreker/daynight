@@ -12,18 +12,17 @@ checks must not turn a lack of evidence into an installation or availability cla
 
 ## Decision
 
-Ongoing background Copilot capability preparation follows current effective global and Project
+Ongoing background Copilot preparation follows current effective global and Project
 native selections and non-deleted Copilot Bot definitions on the Worker. Project
 selections include resolved inheritance; pending, failed and recoverable Bot
 definitions remain demand because they may need recovery. Deletion retains its
 original cleanup responsibility without creating new demand. A demand transition
 invalidates the preparation interval so a newly needed tool can be prepared on
 the next cycle. Configuration application, explicit model discovery and new
-execution continue to prepare the requested tool independently.
-
-The later [settings check decision](2026-11-16-worker-tool-checks-and-mode-summary.md)
-adds bounded launch/version checks for adopted choices independently of Provider
-demand. It does not restore unconditional model or host capability discovery.
+execution continue to prepare the requested tool independently. The
+[adopted tool checks decision](2026-11-24-worker-adopted-tool-checks.md) adds bounded
+configuration checks independently of workload demand; these reuse the selection
+manager and do not enable ongoing Provider capability discovery.
 
 Without demand, a collector may read an existing Web selection and its inspection
 proof, but does not resolve, materialize or probe Copilot to report it. Without
@@ -63,9 +62,9 @@ selection instead retains identity checks without invalidating that connection.
 
 ## Consequences
 
-Unused Copilot does not create new ongoing capability probe failures; settings
-checks can still report a concrete tool error. Its required host report entry
-remains conservative. Enabling demand takes effect on the next
+Unused Copilot does not create ongoing capability-probe failures, while its
+required report entry remains conservative. Adopted settings checks can expose
+real launch errors even without demand. Enabling demand takes effect on the next
 preparation cycle rather than waiting for the old cache interval. An explicit
 request can still incur preparation latency and expose actual tool errors. Existing
 proof remains historical evidence and does not create demand; neither it nor the

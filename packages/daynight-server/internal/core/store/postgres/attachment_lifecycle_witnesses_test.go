@@ -91,7 +91,7 @@ func attachmentWitnessWait(t *testing.T, ctx context.Context, reached <-chan str
 func attachmentWitnessPID(t *testing.T, ctx context.Context, database *Store) int32 {
 	t.Helper()
 	var pid int32
-	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT parent_id::text,type,parent_type,effective_deleted_at FROM task_resource_rows%' LIMIT 1),0)`).Scan(&pid)
+	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks%' LIMIT 1),0)`).Scan(&pid)
 	if err != nil || pid == 0 {
 		t.Fatalf("attachment lifecycle transaction not found: %d %v", pid, err)
 	}
@@ -150,6 +150,7 @@ func attachmentWitnessDelete(ctx context.Context, f attachmentWitness, project b
 }
 
 func TestAttachmentLifecycleBlocksTaskAndProjectDeletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, project := range []bool{false, true} {
 		t.Run(fmt.Sprintf("project=%t", project), func(t *testing.T) {
 			f := attachmentWitnessFixture(t)
@@ -226,6 +227,7 @@ func TestAttachmentLifecycleBlocksTaskAndProjectDeletion(t *testing.T) {
 }
 
 func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, test := range []struct {
 		name                          string
 		project, commits, taskDeleted bool
@@ -263,7 +265,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 			})
 			attachmentWitnessWait(t, ctx, reached)
 			var deletingPID int32
-			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'UPDATE tasks%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
+			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'WITH RECURSIVE descendants%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
 				t.Fatal(err)
 			}
 			mutation := attachmentWitnessAsync(t, ctx, func() error {
@@ -314,6 +316,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 }
 
 func TestAttachmentAdmissionDoesNotLockGrantAcrossMutation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -365,6 +368,7 @@ func TestAttachmentAdmissionDoesNotLockGrantAcrossMutation(t *testing.T) {
 }
 
 func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	before, _, err := f.database.PutAttachment(t.Context(), f.metadata("before"))
 	if err != nil {
@@ -471,6 +475,7 @@ func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
 }
 
 func TestAttachmentGateSurvivesBackendLoss(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -581,6 +586,7 @@ func TestAttachmentGateSurvivesBackendLoss(t *testing.T) {
 }
 
 func TestAttachmentCompletionRetainsCommittedRowsWhenReceiptIsLost(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx := t.Context()
 	tx, err := f.database.Pool.Begin(ctx)

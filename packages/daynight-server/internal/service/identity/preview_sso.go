@@ -11,12 +11,28 @@ import (
 )
 
 type previewOperations interface {
+	Renew(context.Context, store.PreviewSSODAO, string, model.Principal) error
 	Create(context.Context, store.PreviewSSODAO, string, time.Time) (model.PreviewSSOLogin, error)
 	Start(context.Context, store.PreviewSSODAO, string, time.Time) (core.PreviewSSOStart, error)
 	Authorize(context.Context, store.PreviewSSODAO, string, string, model.Principal, time.Time) (core.PreviewSSOAuthorization, error)
 	Redeem(context.Context, store.PreviewSSODAO, string, string, string, time.Time) (core.PreviewSSORedemption, error)
 	Complete(context.Context, store.PreviewSSODAO, string, string, time.Time) (string, error)
 	Authenticate(context.Context, store.PreviewSSODAO, string, time.Time) (model.Principal, time.Time, error)
+	Retry(context.Context, store.PreviewSSODAO, string, string, model.Principal, time.Time) (string, error)
+}
+
+// Retry returns a new login ID only after the replacement transaction commits.
+func (s *PreviewSSO) Retry(ctx context.Context, id, state string, principal model.Principal) (string, error) {
+	var result string
+	err := s.run(ctx, func(dao store.PreviewSSODAO) error {
+		var err error
+		result, err = s.ops.Retry(ctx, dao, id, state, principal, s.now().UTC())
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return result, nil
 }
 
 // PreviewSSO coordinates preview identity operations without an HTTP adapter.

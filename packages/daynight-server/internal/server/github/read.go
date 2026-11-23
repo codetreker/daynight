@@ -21,9 +21,12 @@ import (
 )
 
 type ReadOperations interface {
-	Get(context.Context, model.Principal, string) (coregithub.Status, error)
 	List(context.Context, model.Principal, string, coregithub.ListRequest) (coregithub.Page, error)
-	Detail(context.Context, model.Principal, string, int64) (coregithub.Detail, error)
+	Detail(context.Context, model.Principal, string, int64, *int64) (coregithub.Detail, error)
+	ReviewAssignment(context.Context, model.Principal, string, int64, *int64) (coregithub.ReviewAssignmentResult, error)
+	Repositories(context.Context, model.Principal, string, coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error)
+	Authors(context.Context, model.Principal, string, coregithub.AuthorsRequest) (coregithub.AuthorsPage, error)
+	Statistics(context.Context, model.Principal, string, coregithub.StatisticsRequest) (coregithub.Statistics, error)
 }
 type RouteAuthentication interface {
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
@@ -33,15 +36,30 @@ type handler struct {
 	logger *slog.Logger
 }
 
-// RegisterReadRoutes mounts authenticated read-only project GitHub resources.
-func RegisterReadRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+// RegisterPullRequestRoutes mounts the shared PR reads independently of the connection protocol.
+func RegisterPullRequestRoutes(mux httpx.RouteRegistrar, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerPullRequestRoutes(NewRouteRegistry(mux, nil), reader, auth, logger)
+}
+
+// RegisterPullRequestRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterPullRequestRoutesWithRegistry(routes *RouteRegistry, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerPullRequestRoutes(routes, reader, auth, logger)
+}
+
+func registerPullRequestRoutes(routes *RouteRegistry, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &handler{reader: reader, logger: logger}
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/github", auth.Require(h.status))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail))
-	mux.HandleFunc("/api/v1/projects/{projectId}/github", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-repositories", auth.Require(h.repositories), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(h.reviewAssignment), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-authors", auth.Require(h.authors), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-statistics", auth.Require(h.statistics), routeProjectRead)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-repositories", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-authors", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-statistics", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
 }
 func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, fn func(string) (any, error)) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -58,25 +76,24 @@ func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal,
 	}
 	httpx.WriteJSON(w, r, logger, http.StatusOK, value)
 }
-func (h *handler) status(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "status", func(id string) (any, error) {
-		if _, err := query(r); err != nil {
-			return nil, err
-		}
-		result, err := h.reader.Get(r.Context(), p, id)
-		if err != nil {
-			return nil, err
-		}
-		return statusResponse(result)
-	})
-}
 func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "list", func(id string) (any, error) {
-		v, err := query(r, "state", "q", "limit", "cursor")
+		v, err := query(r, "state", "q", "limit", "cursor", "authorId", "repositoryId")
 		if err != nil {
 			return nil, err
 		}
 		input := coregithub.ListRequest{State: "active", Limit: 20}
+		input.RepositoryID, err = repositoryParameter(v)
+		if err != nil {
+			return nil, err
+		}
+		if x, ok := v["authorId"]; ok {
+			n, e := strconv.ParseInt(x[0], 10, 64)
+			if e != nil || n <= 0 || strconv.FormatInt(n, 10) != x[0] {
+				return nil, httpx.InvalidInput("authorId must be a positive decimal integer")
+			}
+			input.AuthorID = &n
+		}
 		if x, ok := v["state"]; ok {
 			input.State = x[0]
 		}
@@ -108,7 +125,12 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal
 }
 func (h *handler) detail(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "detail", func(id string) (any, error) {
-		if _, err := query(r); err != nil {
+		v, err := query(r, "repositoryId")
+		if err != nil {
+			return nil, err
+		}
+		repositoryID, err := repositoryParameter(v)
+		if err != nil {
 			return nil, err
 		}
 		s := r.PathValue("number")
@@ -116,11 +138,11 @@ func (h *handler) detail(w http.ResponseWriter, r *http.Request, p model.Princip
 		if err != nil || n <= 0 || strconv.FormatInt(n, 10) != s {
 			return nil, httpx.InvalidInput("number must be a positive decimal integer")
 		}
-		result, err := h.reader.Detail(r.Context(), p, id, n)
+		result, err := h.reader.Detail(r.Context(), p, id, n, repositoryID)
 		if err != nil {
 			return nil, err
 		}
-		summary, err := summaryResponse(result.Connection, result.PullRequest.PullRequestSummary)
+		summary, err := summaryResponse(result.PullRequest.PullRequestSummary)
 		if err != nil {
 			return nil, err
 		}
@@ -227,9 +249,9 @@ func nextAttempt(c githubpr.Connection) *time.Time {
 	}
 	return utc(planned)
 }
-func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.PullRequestSummary, error) {
+func summaryResponse(p githubpr.PullRequestSummary) (api.PullRequestSummary, error) {
 	var out api.PullRequestSummary
-	if c.RepositoryID == nil || c.RepositoryFullName == nil {
+	if p.RepositoryID <= 0 || p.RepositoryFullName == "" {
 		return out, fmt.Errorf("missing persisted GitHub base repository")
 	}
 	if (p.AuthorID == nil) != (p.AuthorLogin == nil) {
@@ -244,7 +266,7 @@ func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.
 	out.Title = p.Title
 	out.State = p.State
 	out.Draft = p.Draft
-	out.Base = api.PullRequestBase{RepositoryID: decimal(*c.RepositoryID), RepositoryFullName: *c.RepositoryFullName, Ref: p.BaseRef}
+	out.Base = api.PullRequestBase{RepositoryID: decimal(p.RepositoryID), RepositoryFullName: p.RepositoryFullName, Ref: p.BaseRef}
 	out.Head = api.PullRequestHead{RepositoryID: optionalDecimal(p.HeadRepositoryID), RepositoryFullName: p.HeadRepositoryFullName, Ref: p.HeadRef, SHA: p.HeadSHA}
 	out.CreatedAt = p.GitHubCreatedAt.UTC()
 	out.UpdatedAt = p.GitHubUpdatedAt.UTC()
@@ -256,8 +278,13 @@ func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.
 }
 func pageResponse(p coregithub.Page) (api.PullRequestPage, error) {
 	out := api.PullRequestPage{ProjectID: p.Connection.ProjectID, Revision: decimal(p.Connection.Revision), Items: make([]api.PullRequestSummary, 0, len(p.Items)), Total: decimal(p.Total), Counts: api.PullRequestCounts{Active: decimal(p.Counts.Active), Closed: decimal(p.Counts.Closed), Merged: decimal(p.Counts.Merged), All: decimal(p.Counts.All)}, NextCursor: p.NextCursor, PreviousCursor: p.PreviousCursor}
+	out.Repository = repositoryResponse(p.Repository)
+	if p.AuthorID != nil {
+		out.AuthorID = optionalDecimal(p.AuthorID)
+		out.ProjectTotal = optionalDecimal(&p.Counts.ProjectTotal)
+	}
 	for _, item := range p.Items {
-		v, err := summaryResponse(p.Connection, item)
+		v, err := summaryResponse(item)
 		if err != nil {
 			return out, err
 		}

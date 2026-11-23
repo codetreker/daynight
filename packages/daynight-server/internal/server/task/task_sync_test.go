@@ -505,6 +505,7 @@ func workerHTTPSummary(task model.Task) model.TaskViewRecord {
 
 func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	current := componentWorkerHTTPTask(t)
 	path := taskCollection(current.ProjectID) + "/" + current.ID
 	f.expectSync([]model.TaskViewRecord{workerHTTPSummary(current)}, map[string]model.TaskDependencyState{}, []model.TaskAssigneeFact{}, nil)
@@ -558,7 +559,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	claimedAt := current.UpdatedAt.Add(time.Second)
 	worker := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
 		Machine:  model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"},
-		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr,
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb,
 		WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 	claimed := current
 	claimed.Status, claimed.Version, claimed.Ready = model.TaskInProgress, current.Version+1, false
@@ -571,11 +572,11 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	assertSummary(full, claimed)
 	current = claimed
 	native := "private-native-session"
-	worker.Phase, worker.Herdr, worker.NativeSessionID = model.WorkerExecuting, &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "private-pane"}, &native
+	worker.Phase, worker.NativeSessionID = model.WorkerExecuting, &native
 	executing := current
 	executing.Version, executing.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	executing.Properties = workerHTTPProperties(t, current.Properties, &worker)
-	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": native}
+	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": native}
 	values = workerHTTPWriteValues(executing)
 	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, executing, nil, store.TransactionCommitted)
 	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPatch, path+"/worker-claim", jsonBody(t, update)), http.StatusOK)

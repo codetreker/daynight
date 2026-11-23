@@ -64,6 +64,7 @@ type workerHTTPWritePlan struct {
 	access, reads, observed int
 	writes, updates, drains int
 	receipts, captures      int
+	children, wantChildren  int
 	wantUpdate, wantCapture bool
 	active                  bool
 	ctx                     context.Context
@@ -92,6 +93,17 @@ func expectWorkerHTTPWrite(t *testing.T, database *httpTestStore, current model.
 			t.Fatal("Worker DAO escaped its request transaction")
 		}
 	}
+	if observedAt != nil {
+		scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+			return taskHTTPClaimAdmission{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+				checkContext(ctx)
+				if user != actor.UserID || worker == "" {
+					t.Fatal("claim admission identity changed")
+				}
+				return nil, nil
+			}}
+		}
+	}
 	project.ProjectAccessFn = func(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
 		checkContext(ctx)
 		plan.access++
@@ -117,6 +129,17 @@ func expectWorkerHTTPWrite(t *testing.T, database *httpTestStore, current model.
 				t.Fatal("Worker claim sampled the clock more than once")
 			}
 			return *observedAt, nil
+		}
+	}
+	if expected != nil && current.Status != returned.Status && returned.Status.IsTerminal() {
+		plan.wantChildren = 1
+		tasks.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			checkContext(ctx)
+			plan.children++
+			if id != current.ID || plan.children != 1 {
+				t.Fatal("Worker completion changed child lookup")
+			}
+			return []string{}, nil
 		}
 	}
 	if expected != nil {
@@ -189,6 +212,9 @@ func (plan *workerHTTPWritePlan) check() {
 	if plan.wantCapture {
 		wantCapture = 1
 	}
+	if plan.children != plan.wantChildren {
+		plan.t.Fatalf("Worker child lookups = %d, want %d", plan.children, plan.wantChildren)
+	}
 	if plan.writes != 1 || plan.access != plan.AccessCalls || plan.reads != plan.TaskReads || plan.observed != plan.ObservedCalls || plan.updates != wantWrites || plan.drains != wantWrites || plan.receipts != wantWrites || plan.captures != wantCapture {
 		plan.t.Fatalf("Worker calls: scope/access/read/clock/update/drain/receipt/capture=%d/%d/%d/%d/%d/%d/%d/%d; want 1/%d/%d/%d/%d/%d/%d/%d", plan.writes, plan.access, plan.reads, plan.observed, plan.updates, plan.drains, plan.receipts, plan.captures, plan.AccessCalls, plan.TaskReads, plan.ObservedCalls, wantWrites, wantWrites, wantWrites, wantCapture)
 	}
@@ -206,6 +232,7 @@ func claimHTTPWorker(t *testing.T, handler http.Handler, task api.Task, body map
 
 func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	other := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	for _, assigned := range []*string{nil, &other, &f.principal.UserID} {
 		current := componentWorkerHTTPTask(t)
@@ -231,7 +258,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		claimedAt := current.UpdatedAt.Add(time.Second)
 		worker := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
 			Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux,
-			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string),
+			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string),
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 		returned = current
 		returned.Status, returned.Version, returned.Ready = model.TaskInProgress, current.Version+1, false
@@ -241,6 +268,13 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		plan := expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, returned, &claimedAt, store.TransactionCommitted)
 		claimed := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim", jsonBody(t, body)), http.StatusOK)
 		plan.check()
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(claimed.Properties["worker"], &wire); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := wire["herdr"]; exists {
+			t.Fatal("new claim returned herdr field")
+		}
 		if claimed.Status != "in_progress" || !reflect.DeepEqual(claimed.AssignedTo, assigned) || apiWorker(t, claimed.Properties).UserID != f.principal.UserID {
 			t.Fatalf("claim did not use authenticated assignee: %#v", claimed)
 		}
@@ -249,6 +283,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 
 func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	workerID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	var wanted []model.Task
 	paused := map[string]string{}
@@ -258,11 +293,11 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		current.Title, current.Status, current.Ready = "Inventory task", model.TaskInProgress, false
 		worker := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: f.principal.UserID, WorkerID: workerID,
 			Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Worker machine"}, Platform: model.PlatformLinux,
-			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: uuid.NewString(),
+			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(),
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
 		current.Properties = workerHTTPProperties(t, current.Properties, &worker)
 		if value != "" {
-			current.Properties["paused"] = json.RawMessage(value)
+			current.Properties["blocked"] = json.RawMessage(value)
 			paused[current.ID] = value
 		}
 		wanted = append(wanted, current)
@@ -289,8 +324,9 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		item := page.Items[0]
 		value, exists := item.Properties["paused"]
 		wantValue, wantExists := paused[item.ID]
-		if exists != wantExists || string(value) != wantValue {
-			t.Fatalf("inventory changed paused presence/value: %#v", item.Properties)
+		blocked, blockedExists := item.Properties["blocked"]
+		if exists != wantExists || blockedExists != wantExists || string(value) != wantValue || string(blocked) != wantValue {
+			t.Fatalf("inventory changed blocked aliases presence/value: %#v", item.Properties)
 		}
 		ids = append(ids, item.ID)
 		if index == len(wanted)-1 {
@@ -324,6 +360,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 	for _, workerExecution := range []bool{false, true} {
 		t.Run(map[bool]string{false: "manual", true: "worker"}[workerExecution], func(t *testing.T) {
 			f := newTaskHTTPFixture(t)
+			extendedWorkerTestHandler(f.handler)
 			other := "c6666666-6666-4666-8666-666666666666"
 			declared := f.target
 			declared.Title = "Executing assignment"
@@ -335,7 +372,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				body := workerCredentialClaimBody(task.Version)
 				claimedAt := task.UpdatedAt.Add(time.Second)
 				claim := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
-					Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+					Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 				after = task
 				after.Status, after.Version, after.Ready = model.TaskInProgress, task.Version+1, false
 				after.StartedAt, after.UpdatedAt = copyTaskHTTPPointer(&claimedAt), claimedAt
@@ -354,6 +391,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			}
 			assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": f.principal.UserID}, nil, false)
 			assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil, store.TransactionCommitted)
+			f.expectLifecyclePreflight(task)
 			same := setHTTPTask(t, f.handler, assignmentHTTPAPI(t, task), "in_progress")
 			platformHTTPCheck(t, same, assignmentHTTPAPI(t, task))
 			for _, target := range []*string{nil, &other} {
@@ -376,9 +414,13 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				after.Properties = model.TaskProperties{"worker": raw}
+				after.Properties, err = taskproperty.NormalizeStored(model.TaskProperties{"worker": raw})
+				if err != nil {
+					t.Fatal(err)
+				}
 				values := workerHTTPWriteValues(after)
 				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, nil, store.TransactionCommitted)
+				f.expectLifecyclePreflight(task)
 				got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(assignmentHTTPAPI(t, task))+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claim.ClaimID})), http.StatusOK)
 				plan.check()
 				platformHTTPCheck(t, got, assignmentHTTPAPI(t, after))
@@ -405,7 +447,7 @@ type workerHTTPCredential struct {
 
 func workerCredentialClaimBody(version int64) map[string]any {
 	return map[string]any{"version": version, "claimId": uuid.NewString(), "workerId": uuid.NewString(),
-		"machine": map[string]any{"id": uuid.NewString(), "name": "Worker machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}
+		"machine": map[string]any{"id": uuid.NewString(), "name": "Worker machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}
 }
 
 func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
@@ -413,6 +455,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	var logs bytes.Buffer
 	origin := "https://daynight.example"
 	handler := taskComponentHandler(t, database, &logs, defaultHTTPPrincipal())
+	extendedWorkerTestHandler(handler)
 	var authActor *workerHTTPCredential
 	writes, authenticates := 0, 0
 	authentication := &taskHTTPIdentityWriter{t: t}
@@ -507,7 +550,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	claimResult := func(before model.Task, body map[string]any, owner string) (model.Task, model.WorkerClaim) {
 		t.Helper()
 		machine := body["machine"].(map[string]any)
-		claim := model.WorkerClaim{ClaimID: body["claimId"].(string), State: model.WorkerActive, UserID: owner, WorkerID: body["workerId"].(string), Machine: model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)}, Platform: "linux", Agent: "codex", AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string), Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+		claim := model.WorkerClaim{ClaimID: body["claimId"].(string), State: model.WorkerActive, UserID: owner, WorkerID: body["workerId"].(string), Machine: model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)}, Platform: "linux", Agent: "codex", AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string), Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 		after := before
 		after.Status, after.Ready, after.Version = model.TaskInProgress, false, before.Version+1
 		startedAt := claimedAt

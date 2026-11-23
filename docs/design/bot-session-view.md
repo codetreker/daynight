@@ -2,6 +2,14 @@
 
 [需求](../spec/bot-session-view.md)定义助手阅读、输入、稳定切换及清理结果；[共享 Session 设计](task-session-protocol.md)拥有 renderer、reducer、操作回执与阅读 hook。[管理页设计](bot-management-web.md)拥有列表、创建、统一标题的页面组合及详情布局。助手呈现通过可选插槽消费共享控件，不建立第二套聊天状态或 Provider 操作。
 
+## 版本化近期窗口
+
+[近期历史窗口合同](../spec/bot-session-view.md#近期历史窗口合同)定义 `botHistoryWindowVersion=1`。以下共享呈现、绑定和持久快照机制描述既有实现；窗口协议须由服务端、Controller 和客户端协商后接入，不将现有完整历史悄然改为可淘汰缓存。Controller 的 500 条／16 MiB、首屏 50 条是未测量初值，浏览器继续使用自身更小的驻留、快照和序列化预算。
+
+窗口接入由真实历史客户端核验 Session fence、`historyEpoch`、`windowRevision` 和保留边界，再将同 ID 修订合并进当前行。已接纳的 `retainedFromSeq` 同时约束真实行、只读预览和资源引用；低水位之前的行不能由迟到修订或持久快照重新补回。过旧游标的 `reset_required` 触发近期页重建，不能伪造完整空历史或无限查找已淘汰书签。当前窗口之外的原文与裁剪预览必须区分，不向已淘汰字节提供下载或完整正文引用。
+
+浏览器 codec 在既有 UTF-16 序列化上限之外计量窗口预览的 UTF-8 字节，保留正文、工具预览及摘要的省略事实。客户端的窗口淘汰不得清理操作、审批、同步证据或 Provider 恢复资料。服务端资源回收等待最后引用和在途读者释放；浏览器预览仍只保存描述符。新设备遇到离线 Worker 时只显示获准的机器定位和缓存不可用，不从服务端同步检查点推断离线正文可读。
+
 ## 呈现接口与责任
 
 [`session-presentation-slots.ts`](../../packages/daynight-web/src/features/task-agent-session/session-presentation-slots.ts)定义 `SessionPresentationSlots`，由 `SessionView.presentation` 接收。全部 render 回调返回 `ReactNode`，字段为 readonly。
@@ -33,9 +41,9 @@
 
 ## 阅读样式与空对话
 
-[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文 16px、行高 1.8，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，正文为 15px、阅读区左右留白 18px。代码、表格沿用共享局部滚动，普通工具输出保持原文，长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
+[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文遵循[公共字号标准](../spec/web-typography.md)，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，阅读区左右留白 18px，正文保持相同字号。代码、表格沿用共享局部滚动，既有完整工具条目保持原文，版本化窗口条目按其省略事实显示预览；长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
 
-输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
+输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 观察阅读区域和 Composer 的尺寸并在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
 
 空态由共享 View 同时检查：可用且 ready、active/current、运行可用、非只读、历史已确认、没有更早历史、分页加载或历史错误、没有会话错误或恢复缺口、原始 entries 为空且 Agent idle。Conversation 过滤后为空不满足初次空对话条件。无助手、未绑定、加载、历史失败与归档保留各自状态，不显示可填写的欢迎建议。
 
@@ -45,7 +53,7 @@
 
 ## 输入、回执与附件扩展
 
-Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩空间。textarea 随文本增长至局部上限后内部滚动；≤600px 容器的关键输入按钮至少 44px，≤500px 窗口高度缩减输入留白与 textarea 高度。聚焦表面采用紫色边框，reduced-motion 关闭颜色过渡。
+Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩空间。输入、控件与错误采用共享 14px 档，时间和附属计数采用共享 12px 档；粗指针输入保留 16 CSS px 下限。textarea 随文本增长至局部上限后内部滚动；≤600px 容器的关键输入按钮至少 44px，≤500px 窗口高度缩减输入留白与 textarea 高度。聚焦表面采用紫色边框，reduced-motion 关闭颜色过渡。
 
 `SessionControlsPanel` 的动态 Provider 设置采用[公共原生选择组件](native-select.md)的 `form/fill`；`SessionComposerPresentation.nativeSelectTouchMode` 经 Composer 和 ControlsPanel 传到 `NativeSelect.touchMode`。普通 Task/Test 未指定时为 `none`，Bot 为 `container`。精细指针下，Bot 阅读容器宽 700px 时控件高 38px，宽 560px 时至少 44px；粗指针下高度至少 44px、字号为 16px；内层 `session-composer` 与 `session-composer-surface` 容器不截获 `native-select-region` 查询。页面只拥有布局，选择控件的皮肤、箭头、焦点和待定边框由公共组件拥有。`pending={Boolean(pending)}` 只呈现原 operation 状态；控件的 value 继续使用已确认设置值，原有 mutable、busy、操作准入及错误归属不变。
 
@@ -63,7 +71,7 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 
 `compactMenus` 缺省为关闭。Bot 显式启用后，仅 active pane 且 `visualViewport.height`（缺省用 innerHeight）≤500px 时使用短屏路径：共享菜单在 textarea 上方限高，命令标题、刷新、关闭与候选在同一容器滚动，设置面板整体滚动，菜单不占普通流高度预算。它保留原 DOM、输入及底部动作。键盘或辅助技术打开 Model/Permissions 时聚焦首个可用控件；指针打开沿原焦点路径。非原生 popup 的 Escape 或显式关闭返回 textarea，焦点移向被覆盖的其他内容时关闭菜单并保留新目标；命令菜单允许 textarea 保持焦点以输入与选择。宽高切换和隐藏 pane 清理布局监听、滚动锚点与样式，不重建客户端。
 
-`SessionComposer` 的设置面板 Escape 与 `useSessionFullscreen` 的共享 React/document 处理器均尊重 `defaultPrevented`、IME/isComposing 和键码 229，并通过 `isNativeSelectPopupOpen` 判断真实控件的 `:open`。原生 popup 打开时只停止传播，保留原生 Escape 取消，不关闭设置面板或全屏，也不清除文本草稿。非 popup Escape 继续按原层级关闭和恢复焦点。全屏处理器同时保护不经过 Composer 的 Timeline 交互表单和录制缩放控件；交互多选仍以原生列表呈现并返回数组。
+`SessionComposer` 的设置面板 Escape 与 `useSessionFullscreen` 的共享 React/document 处理器均尊重 `defaultPrevented`、IME/isComposing 和键码 229，并通过 `isNativeSelectPopupOpen` 判断真实控件的 `:open`。原生 popup 打开时只停止传播，保留原生 Escape 取消，不关闭设置面板或全屏，也不清除文本草稿。非 popup Escape 继续按原层级关闭和恢复焦点。全屏处理器同时保护不经过 Composer 的 Timeline 交互表单和录制缩放控件；交互表单多选使用 fieldset 和 legend 关联字段名，复选框行支持文字换行并按原选项顺序返回 ID 数组；单值选择仍保留原生 popup 的 Escape 行为。
 
 `renderAttachments` 是正常流、可收缩的布局槽，`setText` 使用原草稿和命令意图失效逻辑。共享高度预算优先保留 textarea、footer 与错误所需空间，不把完整附件高度设为硬性下限；大预览应有局部上限，极端视口中附件区可能缩至零，不能承诺所有附件操作同时可见。宿主不得包裹或替换 textarea，也不得强制附件容器不可收缩。
 

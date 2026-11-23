@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 const roots: string[] = [];
 const databases: Database.Database[] = [];
 afterEach(async () => { for (const database of databases.splice(0)) if (database.open) database.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -33,6 +34,7 @@ it("rejects new native input at outbox capacity without consuming a sequence or 
   store.appendEvent({ text: "a".repeat(400) });
   expect(() => store.appendEvent({ text: "b".repeat(400) })).toThrow(/capacity/);
   expect(() => store.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload: { text: "test" } })).toThrow(/capacity/);
+  expect(() => store.prepareOperation({ operationId: randomUUID(), kind: "worker_input", payload: { text: "test" } })).toThrow(/capacity/);
   expect(store.pendingEvents()).toHaveLength(1);
   store.acknowledgeEvents("1");
   expect(store.appendEvent({ text: "next" }).sequence).toBe("2"); store.close();
@@ -142,7 +144,9 @@ it("deduplicates equivalent operation JSON regardless of object key insertion or
 it("test tickets and journals omit task identity and preserve no-input initialization", async () => {
   const { home, ticket: task, database } = await fixture();
   const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
-  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
+  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", usageScope: "standalone_test" };
+  for (const usageScope of [null, "bot", undefined]) expect(() => parseLaunchTicket({ ...ticket, usageScope })).toThrow(/usage scope/);
+  expect(() => parseLaunchTicket({ ...task, usageScope: "standalone_test" })).toThrow(/usage scope/);
   await writeLaunchTicket(home, ticket);
   expect(await readLaunchTicket(home, ticket.launchId)).toEqual(ticket);
   const store = openControllerLifecycleStore(path.join(home, "test.sqlite"), ticket, { database });
@@ -156,6 +160,24 @@ it("test tickets and journals omit task identity and preserve no-input initializ
   expect(await readLaunchTicket(home, resumed.launchId)).toEqual(resumed);
   await expect(writeLaunchTicket(home, { ...resumed, launchId: randomUUID(), initialInput: "prompt", initialPrompt: "replay" })).rejects.toThrow("resume binding");
   await expect(writeLaunchTicket(home, { ...ticket, claimId: randomUUID() } as never)).rejects.toThrow();
+});
+
+it.each(["codex", "claude", "copilot"] as const)("%s Bot recovery bindings are preserved only on matching independent tickets", async provider => {
+  const { home, ticket: task } = await fixture();
+  const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
+  const binding = { botId: randomUUID(), directory: path.join(home, "bot-recovery") };
+  const field = `${provider}BotRecovery`;
+  const ticket = { ...common, provider, configuration: { ...common.configuration, agent: provider }, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", [field]: binding };
+  expect(parseLaunchTicket(ticket)).toEqual(ticket);
+  expect(() => parseLaunchTicket({ ...ticket, usageScope: "standalone_test" })).toThrow(/usage scope/);
+  expect(() => parseLaunchTicket({ ...task, [field]: binding })).toThrow(/recovery binding/);
+  for (const other of ["codex", "claude", "copilot"].filter(value => value !== provider)) {
+    expect(() => parseLaunchTicket({ ...ticket, provider: other, configuration: { ...ticket.configuration, agent: other } })).toThrow(/recovery binding/);
+  }
+  for (const recovery of [null, { ...binding, directory: "relative/recovery" }, { ...binding, directory: `${home}${path.sep}..${path.sep}recovery` },
+    { ...binding, directory: `${home}\nother` }, { ...binding, extra: true }, { directory: binding.directory }, { ...binding, botId: "not-a-uuid" }]) {
+    expect(() => parseLaunchTicket({ ...ticket, [field]: recovery })).toThrow();
+  }
 });
 
 it("compacts offline transport without losing local history or blocking native input", async () => {
@@ -288,5 +310,28 @@ it("binds provenance to dispatched operations without converting unknown deliver
     store.prepareOperation({ operationId: conflictingOperation, kind: "send_message", payload: { ...payload, origin: "daynight" } });
     store.markDispatching(conflictingOperation);
     expect(() => store.associateInputMessage(conflictingOperation, nativeSessionId, entryId)).toThrow(/conflicts/);
+  } finally { store.close(); }
+});
+
+it("persists Worker input provenance and settles a late native receipt", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "worker-origin.sqlite"), ticket, { database, contentOwnedLocally: true });
+  const operationId = randomUUID(), entryId = randomUUID(), nativeSessionId = "native-source";
+  const payload = { content: [{ type: "text" as const, text: "continue" }], expectedTurnId: null, origin: "daynight" };
+  try {
+    store.patchSnapshot({ nativeSessionId });
+    const operation = store.prepareOperation({ operationId, kind: "worker_input", payload });
+    expect(store.prepareOperation({ operationId, kind: "worker_input", payload })).toEqual(operation);
+    expect(() => store.prepareOperation({ operationId, kind: "worker_input", payload: { ...payload, content: [{ type: "text", text: "different" }] } })).toThrow(/different content/);
+    expect(() => store.prepareOperation({ operationId, kind: "send_message", payload })).toThrow(/different content/);
+    expect(() => store.associateInputMessage(operationId, nativeSessionId, entryId)).toThrow(/dispatched/);
+    store.markDispatching(operationId);
+    store.recordOperation(operationId, "unknown");
+    expect(store.associateInputMessage(operationId, nativeSessionId, entryId)).toBe(entryId);
+    store.projectTimeline({ entryId, kind: "user_message", revision: "1", content: payload.content });
+    expect(store.getTimelineEntry(entryId)).toMatchObject({ origin: "daynight" });
+    expect(observeNativeInput(store, operationId)).toBe(true);
+    expect(store.getOperation(operationId)?.state).toBe("provider_accepted");
+    expect(store.associateInputMessage(operationId, nativeSessionId, randomUUID())).toBe(entryId);
   } finally { store.close(); }
 });

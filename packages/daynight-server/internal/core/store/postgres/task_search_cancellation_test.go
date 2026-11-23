@@ -11,6 +11,7 @@ import (
 )
 
 func TestTaskSearchDeadlineReleasesObservedSQLQuery(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	bounded, stop := context.WithTimeout(t.Context(), 10*time.Second)
 	defer stop()

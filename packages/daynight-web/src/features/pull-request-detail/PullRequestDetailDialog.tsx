@@ -4,7 +4,7 @@ import type { ApiError } from '../../api/client';
 import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../../app/overlay';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { ChatMarkdown } from '../../ui/ChatMarkdown';
+import { ChatMarkdown } from '../../ui/markdown/ChatMarkdown';
 import { captureReadingText, readingTextTop, type ReadingTextAnchor } from '../../ui/reading-text-anchor';
 import { dialogFocusables } from '../task-detail/focus';
 import { usePullRequestDetail } from './usePullRequestDetail';
@@ -29,6 +29,7 @@ export type PullRequestDetailDialogProps = {
   readonly userId: string;
   readonly projectId: string;
   readonly number: string;
+  readonly repositoryId?: string | null;
   /** False only after access is revoked; a pending identity check keeps the reader mounted. */
   readonly canRead: boolean;
   /** Controls new reads without clearing a still-authorized view. */
@@ -50,7 +51,7 @@ const safeExternalUrl = (value: string): string | undefined => {
 export function PullRequestDetailDialog(props: PullRequestDetailDialogProps) {
   const { locale, format } = useI18n(), m = locale === 'zh-CN' ? zh : en;
   const { detail, loading, error, refresh } = usePullRequestDetail({
-    userId: props.userId, projectId: props.projectId, number: props.number, canRead: props.canRead, active: props.active,
+    userId: props.userId, projectId: props.projectId, number: props.number, repositoryId: props.repositoryId ?? null, canRead: props.canRead, active: props.active,
     onPrincipalMismatch: props.onPrincipalMismatch, ...(props.onAccessError === undefined ? {} : { onAccessError: props.onAccessError }),
   });
   const [raw, setRaw] = useState(false);
@@ -59,7 +60,7 @@ export function PullRequestDetailDialog(props: PullRequestDetailDialogProps) {
   const callbacks = useRef({ onClose: props.onClose, onRestoreFocus: props.onRestoreFocus });
   callbacks.current = { onClose: props.onClose, onRestoreFocus: props.onRestoreFocus };
   const anchor = useRef<ReadingTextAnchor | undefined>(undefined);
-  const identity = `${props.userId}/${props.projectId}/${props.number}`;
+  const identity = `${props.userId}/${props.projectId}/${props.repositoryId ?? ''}/${props.number}`;
   const lastIdentity = useRef(identity);
   const lastRefresh = useRef(props.refreshKey);
   const visible = props.visible !== false;

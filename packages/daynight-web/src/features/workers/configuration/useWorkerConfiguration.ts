@@ -1,33 +1,81 @@
+import { subscribeRepositoryChanges } from '../../projects/repository-changes';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../../api/client';
-import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
+import { getWorkerConfiguration, saveWorkerConfiguration, workerConfigurationBaseline, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
+import { configurationBaselinesCompatible, configurationValueSourcesEqual, enrichConfigurationBaseline, mergeConfigurationDraft, unsupportedConfigurationFields, type ConfigurationBaseline, type ConfigurationSubmission } from '../../../api/configuration-source';
 import type { ExecutionPlatform } from '../../../api/types';
 import type { WorkerCloudToolPaths } from '../../../api/worker-tool-paths';
+import { parseWorkerTaskTagFilter, taskTagFilterSemantics } from '../../../api/worker-task-tag-filter';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
-import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
+import { configurationDraftsEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
-export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
+export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | 'abandonedUnknown' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
+type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly toolPathsChanged: boolean; readonly archiveSessionsSupported: boolean; readonly archiveSessionsChanged: boolean; readonly platformTaskModeSupported: boolean; readonly enablingOnly: boolean; readonly sudoCleanupChanged: boolean; readonly windowsProcessCleanupChanged: boolean; readonly tagFilterOmitted: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
-  readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null;
+  readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null; readonly baseline: ConfigurationBaseline | null;
   readonly refreshing: boolean; readonly pending: boolean; readonly error: unknown; readonly errorSource: 'read' | 'write' | null; readonly notice: ConfigurationNotice;
-  readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean;
+  readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean; readonly baselineInvalid: boolean; readonly invalidRevision: string | null;
 };
-const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false });
+const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, baseline: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false, baselineInvalid: false, invalidRevision: null });
+const filterRequiresSupport = (draft: ConfigurationDraft['taskTagFilter'], baseline: WorkerConfigurationValue['taskTagFilter']): boolean => {
+  if (draft === undefined) return false;
+  const pending = draft.input.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+  try {
+    const filter = parseWorkerTaskTagFilter({ names: pending === '' ? draft.names : [...draft.names, draft.input], match: draft.match });
+    return filter.names.length > 0 && (baseline === undefined || taskTagFilterSemantics(filter) !== taskTagFilterSemantics(baseline));
+  } catch { return true; }
+};
+const withBaselineFilter = (draft: ConfigurationDraft, baseline: ConfigurationDraft['taskTagFilter']): ConfigurationDraft => {
+  const { taskTagFilter: _filter, ...rest } = draft;
+  return baseline === undefined ? rest : { ...rest, taskTagFilter: baseline };
+};
+const matchesComplete = (baseline: ConfigurationBaseline | null, draft: ConfigurationDraft, resource: WorkerConfigurationResource): boolean => {
+  const latest = workerConfigurationBaseline(resource);
+  if (baseline === null || latest === null || (baseline.known.agentControlMode === undefined) !== (latest.known.agentControlMode === undefined) || (baseline.known.toolPaths === undefined) !== (latest.known.toolPaths === undefined) || (baseline.known.archiveSessions === undefined) !== (latest.known.archiveSessions === undefined)) return false;
+  const parsed = parseConfigurationDraft(draft, baseline.known.agentControlMode !== undefined, { toolPathsSupported: baseline.known.toolPaths !== undefined, archiveSessionsSupported: baseline.known.archiveSessions !== undefined });
+  return parsed.value !== null && configurationValueSourcesEqual(mergeConfigurationDraft(baseline, parsed.value).valueSource, latest.valueSource, { semanticTagFilter: true });
+};
 const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => {
-  const { toolPaths: _tools, ...draft } = submission.draft;
-  const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
-  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
+  const { toolPaths: _tools, archiveSessions: _archive, ...draft } = submission.draft;
+  const toolPaths = submission.toolPathsSupported ? submission.value.toolPaths : state.baselineDraft?.toolPaths;
+  const archive = submission.archiveSessionsSupported ? submission.value.archiveSessions : state.baselineDraft?.archiveSessions;
+  return { ...draft, preferPlatformSpecificTasks: submission.value.preferPlatformSpecificTasks, platformTaskMode: submission.value.platformTaskMode ?? (state.baselineDraft?.platformTaskMode === undefined ? undefined : state.baselineDraft.platformTaskMode === 'only' && submission.value.preferPlatformSpecificTasks ? 'only' : submission.value.preferPlatformSpecificTasks ? 'prefer' : 'all'), enableSudoCleanup: submission.value.enableSudoCleanup, enableWindowsProcessCleanup: submission.value.enableWindowsProcessCleanup, ...(submission.value.taskTagFilter === undefined ? {} : { taskTagFilter: { ...submission.value.taskTagFilter, input: '' } }), ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }), ...(archive === undefined ? {} : { archiveSessions: archive }) };
+};
+const confirmedDrafts = (state: State, submission: Submission, receipt: ConfigurationBaseline | null, observed: ConfigurationBaseline | null, draftUnchanged: boolean) => {
+  const baseline = receipt === null ? null : enrichConfigurationBaseline(receipt, observed);
+  let baselineDraft = submittedBaseline(state, submission), draft = state.draft;
+  // Consume the submitted pending input only if it was not edited during the PUT.
+  if (!submission.tagFilterOmitted && draftUnchanged && draft !== null && baselineDraft.taskTagFilter !== undefined) {
+    draft = { ...draft, taskTagFilter: baselineDraft.taskTagFilter };
+  }
+  // A read of the confirmed revision may reveal fields omitted by the PUT.
+  // Initialize only missing draft fields; edits made during the write survive.
+  const tools = baseline?.known.toolPaths;
+  if (baselineDraft.toolPaths === undefined && tools !== undefined) {
+    baselineDraft = { ...baselineDraft, toolPaths: structuredClone(tools) };
+    if (draft !== null && draft.toolPaths === undefined) draft = { ...draft, toolPaths: structuredClone(tools) };
+  }
+  const mode = baseline?.known.agentControlMode;
+  if (baselineDraft.agentControlMode === undefined && mode !== undefined) {
+    baselineDraft = { ...baselineDraft, agentControlMode: mode };
+    if (draft !== null && draft.agentControlMode === undefined) draft = { ...draft, agentControlMode: mode };
+  }
+  const archive = baseline?.known.archiveSessions;
+  if (baselineDraft.archiveSessions === undefined && archive !== undefined) {
+    baselineDraft = { ...baselineDraft, archiveSessions: archive };
+    if (draft !== null && draft.archiveSessions === undefined) draft = { ...draft, archiveSessions: archive };
+  }
+  return { baseline, baselineDraft, draft };
 };
 const reconcileOmittedToolPaths = (state: State, submission: Submission, latest: WorkerCloudToolPaths | undefined) => {
   const baselineDraft = submittedBaseline(state, submission);
   if (submission.toolPathsSupported || latest === undefined || state.draft === null) return { draft: state.draft, baselineDraft, conflict: false };
   const toolPaths = { ...latest };
   let conflict = false;
-  for (const tool of ['codex', 'copilot', 'herdr'] as const) {
+  for (const tool of ['codex', 'copilot'] as const) {
     const baseline = state.baselineDraft?.toolPaths?.[tool], local = state.draft.toolPaths?.[tool];
     if (JSON.stringify(local) === JSON.stringify(baseline)) continue;
     // Omitted fields were not saved. Preserve their local edits and compare
@@ -40,10 +88,10 @@ const reconcileOmittedToolPaths = (state: State, submission: Submission, latest:
 const mergeConfigurationReceipt = (current: WorkerConfigurationResource | null, receipt: WorkerConfigurationResource): WorkerConfigurationResource => {
   const merged = mergeConfigurationResources(current, receipt);
   if (current === null) return merged;
-  // Reads discover tool capability. A delayed or legacy PUT receipt cannot
+  // Reads discover capabilities. A delayed or legacy PUT receipt cannot
   // replace a newer read's capability decision when its result is published.
-  const { toolPathsSupported: _tools, ...resource } = merged;
-  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+  const { toolPathsSupported: _tools, controlModeSupported: _mode, archiveSessionsSupported: _archive, platformTaskModeSupported: _platformMode, ...resource } = merged;
+  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(current.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(current.archiveSessionsSupported === true ? { archiveSessionsSupported: true } : {}), ...(current.platformTaskModeSupported === true ? { platformTaskModeSupported: true } : {}) };
 };
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
@@ -92,25 +140,42 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       signal.throwIfAborted();
     };
     const acceptRead = (incoming: WorkerConfigurationResource) => update(old => {
+      if (old.baselineInvalid && (incoming.desired === null || old.invalidRevision === null || BigInt(incoming.desired.revision) < BigInt(old.invalidRevision))) return { ...old, refreshing: false };
+      const observedBaseline = workerConfigurationBaseline(incoming), currentBaseline = old.resource === null ? null : workerConfigurationBaseline(old.resource);
+      if (old.baseline !== null && !configurationBaselinesCompatible(old.baseline, observedBaseline) || currentBaseline !== null && !configurationBaselinesCompatible(currentBaseline, observedBaseline)) return { ...old, refreshing: false, error: new ApiError('protocol'), errorSource: 'read', baselineInvalid: true, invalidRevision: incoming.desired!.revision };
+      if (old.baselineInvalid) old = { ...old, baselineInvalid: false, invalidRevision: null };
       const resource = mergeConfigurationResources(old.resource, incoming);
+      if (old.baseline !== null) old = { ...old, baseline: enrichConfigurationBaseline(old.baseline, workerConfigurationBaseline(incoming)) };
+      const platformMode = incoming.desired?.value.platformTaskMode;
+      if (incoming.platformTaskModeSupported === true && incoming.desired?.revision === old.baselineRevision && platformMode !== undefined && old.draft !== null && old.baselineDraft !== null && old.baselineDraft.platformTaskMode === undefined) {
+        const localMode = old.draft.preferPlatformSpecificTasks === old.baselineDraft.preferPlatformSpecificTasks ? platformMode : old.draft.preferPlatformSpecificTasks ? 'prefer' : 'all';
+        old = { ...old, draft: { ...old.draft, platformTaskMode: localMode }, baselineDraft: { ...old.baselineDraft, platformTaskMode: platformMode } };
+      }
       const mode = resource.desired?.value.agentControlMode;
-      if (resource.controlModeSupported === true && mode !== undefined && old.draft !== null && old.draft.agentControlMode === undefined) {
+      if (resource.controlModeSupported === true && resource.desired?.revision === old.baselineRevision && mode !== undefined && old.draft !== null && old.draft.agentControlMode === undefined) {
         // A newly negotiated field had no editable draft in the legacy form.
         // Establish its baseline without replacing any existing field edits.
         old = { ...old, draft: { ...old.draft, agentControlMode: mode }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, agentControlMode: mode } };
       }
       const tools = resource.desired?.value.toolPaths;
-      if (resource.toolPathsSupported === true && tools !== undefined && old.draft !== null && old.draft.toolPaths === undefined) {
+      if (resource.toolPathsSupported === true && resource.desired?.revision === old.baselineRevision && tools !== undefined && old.draft !== null && old.draft.toolPaths === undefined) {
         old = { ...old, draft: { ...old.draft, toolPaths: structuredClone(tools) }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, toolPaths: structuredClone(tools) } };
+      }
+      const archive = resource.desired?.value.archiveSessions;
+      if (resource.archiveSessionsSupported === true && resource.desired?.revision === old.baselineRevision && archive !== undefined && old.draft !== null && old.draft.archiveSessions === undefined) {
+        old = { ...old, draft: { ...old.draft, archiveSessions: archive }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, archiveSessions: archive } };
       }
       if (!old.pending && old.submission?.receipt !== null && old.submission?.receipt !== undefined) {
         const submitted = old.submission;
         const merged = mergeConfigurationReceipt(resource, submitted.receipt!);
+        const receiptBaseline = workerConfigurationBaseline(submitted.receipt!);
+        const inconsistent = receiptBaseline !== null && !configurationBaselinesCompatible(receiptBaseline, workerConfigurationBaseline(resource));
+        if (inconsistent) return { ...old, resource, refreshing: false, error: new ApiError('protocol'), errorSource: 'read', baselineInvalid: true, invalidRevision: receiptBaseline!.revision, notice: 'saved', uncertain: false, unavailable: false, submission: null };
         if (old.abandoned && merged.desired !== null) {
           const draft = draftFromValue(merged.desired.value);
-          return { ...old, resource: merged, draft, baselineDraft: draft, baselineRevision: merged.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+          return { ...old, resource: merged, draft, baselineDraft: draft, baselineRevision: merged.desired.revision, baseline: workerConfigurationBaseline(merged), refreshing: false, error: null, errorSource: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        return { ...old, resource: merged, refreshing: false, error: null, errorSource: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: submitted.receipt!.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
+        return { ...old, resource: merged, ...confirmedDrafts(old, submitted, receiptBaseline, workerConfigurationBaseline(resource), draftRevision === submitted.draftRevision), refreshing: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, baselineRevision: submitted.receipt!.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
       }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
@@ -120,16 +185,40 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         if ((submitted.toolPathsSupported || old.baselineDraft?.toolPaths !== undefined || old.draft?.toolPaths !== undefined) && observedTools === undefined) {
           return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         }
+        const observedArchive = incoming.archiveSessionsSupported === true && incoming.desired?.revision === resource.desired?.revision ? incoming.desired?.value.archiveSessions : undefined;
+        if ((submitted.archiveSessionsSupported || old.baselineDraft?.archiveSessions !== undefined || old.draft?.archiveSessions !== undefined) && observedArchive === undefined) {
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        }
+        // A legacy boolean view cannot prove which enum target a submitted write stored.
+        if (submitted.platformTaskModeSupported && incoming.platformTaskModeSupported !== true) return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        const observedBaseline = workerConfigurationBaseline(resource);
+        // A legacy true projection loses the distinction between prefer and
+        // only. When the baseline cannot establish which it held, neither
+        // success nor a different target is provable from the new strict view.
+        const strictMismatch = !submitted.platformTaskModeSupported && observedBaseline?.known.platformTaskMode === 'only' && submitted.source.baseline.known.platformTaskMode !== 'only';
+        const projectedMatches = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { archiveSessions: submitted.archiveSessionsSupported, platformTaskMode: submitted.platformTaskModeSupported, semanticTagFilter: true });
+        if (strictMismatch && projectedMatches && submitted.source.baseline.known.platformTaskMode === undefined && submitted.source.baseline.known.preferPlatformSpecificTasks && submitted.value.preferPlatformSpecificTasks) {
+          if (old.abandoned && incoming.desired?.revision === resource.desired?.revision && resource.desired !== null) {
+            const draft = draftFromValue(resource.desired.value);
+            return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: observedBaseline, refreshing: false, error: null, errorSource: null, notice: 'abandonedUnknown', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+          }
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        }
+        const matchesSubmitted = !strictMismatch && projectedMatches;
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
-          return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+          return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: observedBaseline, refreshing: false, error: null, errorSource: null, notice: matchesSubmitted ? 'reconciled' : 'notSaved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported, submitted.toolPathsSupported)) {
+        if (resource.desired !== null && matchesSubmitted) {
           const reconciled = reconcileOmittedToolPaths(old, submitted, observedTools);
-          if (reconciled.conflict) {
+          const archiveConflict = !submitted.archiveSessionsSupported && observedArchive !== undefined && old.draft?.archiveSessions !== old.baselineDraft?.archiveSessions && observedArchive !== old.baselineDraft?.archiveSessions && observedArchive !== old.draft?.archiveSessions;
+          if (reconciled.conflict || archiveConflict) {
             return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'conflict', uncertain: false, unavailable: false, submission: null, protectedDraft: true };
           }
-          return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: reconciled.baselineDraft, baselineRevision: resource.desired.revision, protectedDraft: false };
+          const archiveBaseline = !submitted.archiveSessionsSupported && observedArchive !== undefined ? { ...reconciled.baselineDraft, archiveSessions: observedArchive } : reconciled.baselineDraft;
+          let archiveDraft = !submitted.archiveSessionsSupported && observedArchive !== undefined && reconciled.draft !== null && old.draft?.archiveSessions === old.baselineDraft?.archiveSessions ? { ...reconciled.draft, archiveSessions: observedArchive } : reconciled.draft;
+          if (!submitted.tagFilterOmitted && draftRevision === submitted.draftRevision && archiveDraft !== null) archiveDraft = withBaselineFilter(archiveDraft, archiveBaseline.taskTagFilter);
+          return { ...old, resource, draft: archiveDraft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: archiveBaseline, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), protectedDraft: draftRevision !== submitted.draftRevision };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
@@ -138,11 +227,11 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       }
       if (old.draft === null && resource.desired !== null) {
         const draft = draftFromValue(resource.desired.value);
-        return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false };
+        return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false };
       }
       const observedNewer = incoming.desired !== null && old.baselineRevision !== null && BigInt(incoming.desired.revision) > BigInt(old.baselineRevision);
-      if (old.protectedDraft && observedNewer && old.draft !== null && resource.desired !== null && configurationDraftsEqual(old.draft, draftFromValue(resource.desired.value))) {
-        return { ...old, resource, baselineDraft: old.draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, notice: old.notice === 'conflict' ? null : old.notice, unavailable: false, protectedDraft: false };
+      if (old.protectedDraft && observedNewer && old.draft !== null && resource.desired !== null && configurationDraftsEqual(old.draft, draftFromValue(resource.desired.value)) && matchesComplete(old.baseline, old.draft, resource)) {
+        return { ...old, resource, baselineDraft: old.draft, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, notice: old.notice === 'conflict' ? null : old.notice, unavailable: false, protectedDraft: false };
       }
       const protectedDraft = old.protectedDraft;
       return { ...old, resource, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false, protectedDraft };
@@ -170,10 +259,10 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       } finally { if (attempt === generation) { read = null; if (scope.hasIdentityMismatch) update(old => ({ ...old, refreshing: false })); } }
     };
     const replaceDraft = () => update(old => {
-      if (old.pending || old.uncertain || old.submission !== null || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;
+      if (old.pending || old.uncertain || old.baselineInvalid || old.submission !== null || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;
       const draft = draftFromValue(old.resource.desired.value);
       draftRevision++;
-      return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: null, protectedDraft: false };
+      return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, baseline: workerConfigurationBaseline(old.resource), error: null, errorSource: null, notice: null, protectedDraft: false };
     });
     const abandonDraft = () => update(old => {
       draftRevision++;
@@ -181,17 +270,17 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         write?.abort();
         const desired = old.resource?.desired;
         const draft = desired ? draftFromValue(desired.value) : old.baselineDraft;
-        return { ...old, draft, baselineDraft: draft, baselineRevision: desired?.revision ?? old.baselineRevision, pending: false, submission: null, abandoned: false, protectedDraft: false, error: null, errorSource: null, notice: null };
+        return { ...old, draft, baselineDraft: draft, baselineRevision: desired?.revision ?? old.baselineRevision, baseline: old.resource === null ? old.baseline : workerConfigurationBaseline(old.resource), pending: false, submission: null, abandoned: false, protectedDraft: false, error: null, errorSource: null, notice: null };
       }
       if (!old.pending && old.submission?.receipt != null) return { ...old, abandoned: true, protectedDraft: false };
       if (!old.pending && !old.uncertain && old.submission === null) {
         if (!old.resource?.desired) return old;
         const draft = draftFromValue(old.resource.desired.value);
-        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision ? 'conflict' : null, abandoned: false, protectedDraft: false };
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, baseline: workerConfigurationBaseline(old.resource), error: null, errorSource: null, notice: old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision ? 'conflict' : null, abandoned: false, protectedDraft: false };
       }
       if (old.resource?.desired) {
         const draft = draftFromValue(old.resource.desired.value);
-        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, abandoned: true, protectedDraft: false };
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, baseline: workerConfigurationBaseline(old.resource), abandoned: true, protectedDraft: false };
       }
       return { ...old, draft: old.baselineDraft, abandoned: true, protectedDraft: false };
     });
@@ -217,14 +306,34 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
     const saveDraft = async (): Promise<void> => {
       if (!live() || !visible || authRequestsPaused()) return;
       const old = currentState();
-      if (old.pending || old.uncertain || old.notice === 'conflict' || old.submission !== null || old.draft === null || old.baselineRevision === null || old.resource?.desired === null || old.resource === null) return;
+      if (old.pending || old.uncertain || old.baselineInvalid || old.notice === 'conflict' || old.submission !== null || old.draft === null || old.baselineRevision === null || old.baseline === null || old.resource?.desired === null || old.resource === null) return;
       if (old.resource.desired.revision !== old.baselineRevision) { update(value => ({ ...value, notice: 'conflict' })); return; }
-      const controlModeSupported = old.resource.controlModeSupported === true;
-      const toolPathsSupported = old.resource.toolPathsSupported === true && toolAccess.current.editable;
-      const parsed = parseConfigurationDraft(old.draft, controlModeSupported, { toolPathsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported)) return;
-      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, draftRevision, dispatched: false, receipt: null, rejection: null };
-      const toolsAdmitted = () => !submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true;
+      const controlModeSupported = false;
+      const toolPathsSupported = old.resource.toolPathsSupported === true && old.baseline.known.toolPaths !== undefined;
+      const archiveSessionsSupported = old.resource.archiveSessionsSupported === true && old.baseline.known.archiveSessions !== undefined;
+      const archiveSessionsEditable = archiveSessionsSupported && old.resource.observation?.items.some(item => item.key.kind === 'archiveSessions') === true;
+      const archiveDraft = archiveSessionsEditable || old.baseline.known.archiveSessions === undefined ? old.draft : { ...old.draft, archiveSessions: old.baseline.known.archiveSessions };
+      const sudoEditable = old.baseline.known.enableSudoCleanup !== undefined && (toolAccess.current.platform === 'linux' || toolAccess.current.platform === 'macos');
+      const sudoOnlyDraft = sudoEditable ? archiveDraft : { ...archiveDraft, enableSudoCleanup: old.baseline.known.enableSudoCleanup };
+      // The mirror of the sudo gate: this member only acts on Windows, so an
+      // edit made on another platform is discarded rather than submitted.
+      const processEditable = old.baseline.known.enableWindowsProcessCleanup !== undefined && toolAccess.current.platform === 'windows';
+      const sudoDraft = processEditable ? sudoOnlyDraft : { ...sudoOnlyDraft, enableWindowsProcessCleanup: old.baseline.known.enableWindowsProcessCleanup };
+      const toolsDraft = toolAccess.current.editable || old.baseline.known.toolPaths === undefined ? sudoDraft : { ...sudoDraft, toolPaths: old.baseline.known.toolPaths };
+      const tagFilterOmitted = old.resource.observation?.items.some(item => item.key.kind === 'taskTagFilter') !== true && filterRequiresSupport(toolsDraft.taskTagFilter, old.baseline.known.taskTagFilter);
+      const filterDraft = tagFilterOmitted ? withBaselineFilter(toolsDraft, old.baselineDraft?.taskTagFilter) : toolsDraft;
+      const platformTaskModeSupported = old.resource.platformTaskModeSupported === true && old.baseline.known.platformTaskMode !== undefined;
+      const supportsOnly = platformTaskModeSupported && old.resource.observation?.items.some(item => item.key.kind === 'platformTaskMode') === true;
+      const modeOmitted = filterDraft.platformTaskMode === 'only' && old.baseline.known.platformTaskMode !== 'only' && !supportsOnly;
+      const modeDraft = modeOmitted ? { ...filterDraft, platformTaskMode: old.baseline.known.platformTaskMode, preferPlatformSpecificTasks: old.baseline.known.preferPlatformSpecificTasks } : filterDraft;
+      const saveDraft = platformTaskModeSupported ? modeDraft : { ...modeDraft, platformTaskMode: undefined };
+      const parsed = parseConfigurationDraft(saveDraft, controlModeSupported, { toolPathsSupported, archiveSessionsSupported, ...(!toolAccess.current.editable || toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(saveDraft, old.baselineDraft, controlModeSupported, toolPathsSupported && toolAccess.current.editable, archiveSessionsEditable, sudoEditable) && unsupportedConfigurationFields(old.baseline.valueSource).length === 0) return;
+      const filter = parsed.value.taskTagFilter, baselineFilter = old.baseline.known.taskTagFilter;
+      const filterNeedsSupport = filter !== undefined && filter.names.length > 0 && (baselineFilter === undefined || taskTagFilterSemantics(filter) !== taskTagFilterSemantics(baselineFilter));
+      if (filterNeedsSupport && old.resource.observation?.items.some(item => item.key.kind === 'taskTagFilter') !== true) return;
+      const submitted: Submission = { value: parsed.value, source: mergeConfigurationDraft(old.baseline, parsed.value), revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, toolPathsChanged: toolAccess.current.editable && JSON.stringify(saveDraft.toolPaths) !== JSON.stringify(old.baseline.known.toolPaths), archiveSessionsSupported, platformTaskModeSupported, enablingOnly: parsed.value.platformTaskMode === 'only' && old.baseline.known.platformTaskMode !== 'only', archiveSessionsChanged: archiveSessionsEditable && old.draft.archiveSessions !== old.baselineDraft?.archiveSessions, sudoCleanupChanged: sudoEditable && old.draft.enableSudoCleanup !== old.baselineDraft?.enableSudoCleanup, windowsProcessCleanupChanged: processEditable && old.draft.enableWindowsProcessCleanup !== old.baselineDraft?.enableWindowsProcessCleanup, tagFilterOmitted, draftRevision, dispatched: false, receipt: null, rejection: null };
+      const toolsAdmitted = () => (!submitted.platformTaskModeSupported || currentState().resource?.platformTaskModeSupported === true) && (!submitted.enablingOnly || currentState().resource?.observation?.items.some(item => item.key.kind === 'platformTaskMode') === true) && (!submitted.toolPathsSupported || currentState().resource?.toolPathsSupported === true) && (!submitted.toolPathsChanged || toolAccess.current.editable) && (!submitted.archiveSessionsSupported || currentState().resource?.archiveSessionsSupported === true) && (!submitted.archiveSessionsChanged || currentState().resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true) && (!submitted.sudoCleanupChanged || toolAccess.current.platform === 'linux' || toolAccess.current.platform === 'macos') && (!submitted.windowsProcessCleanupChanged || toolAccess.current.platform === 'windows') && (!filterNeedsSupport || currentState().resource?.observation?.items.some(item => item.key.kind === 'taskTagFilter') === true);
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
@@ -237,11 +346,15 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
           if (!owns()) return;
           update(value => {
             const resource = mergeConfigurationReceipt(value.resource, incoming);
+            const receiptBaseline = workerConfigurationBaseline(incoming);
+            const observedBaseline = value.resource === null ? null : workerConfigurationBaseline(value.resource);
+            const inconsistent = receiptBaseline !== null && !configurationBaselinesCompatible(receiptBaseline, observedBaseline);
+            if (inconsistent) return { ...value, pending: false, uncertain: false, error: new ApiError('protocol'), errorSource: 'read', baselineInvalid: true, invalidRevision: receiptBaseline!.revision, notice: 'saved', unavailable: false, submission: null };
             if (value.abandoned && resource.desired !== null) {
               const draft = draftFromValue(resource.desired.value);
-              return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+              return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
             }
-            return { ...value, resource, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submittedBaseline(value, submitted), baselineRevision: incoming.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
+            return { ...value, resource, ...confirmedDrafts(value, submitted, receiptBaseline, observedBaseline, draftRevision === submitted.draftRevision), pending: false, uncertain: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', unavailable: false, submission: null, baselineRevision: incoming.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
           });
         }, error => { if (owns()) update(value => ({ ...value, error, errorSource: 'write', notice: 'saved' })); });
       };
@@ -252,9 +365,9 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
           update(value => ({ ...value, pending: false, submission: null }));
           return;
         }
-        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, onDispatch: () => {
+        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.source, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, archiveSessionsSupported: submitted.archiveSessionsSupported, platformTaskModeSupported: submitted.platformTaskModeSupported, onDispatch: () => {
           // The API can wait for identity again after the scope admission above.
-          if (!toolsAdmitted()) throw new Error('Worker tool path editing is unavailable.');
+          if (!toolsAdmitted()) throw new Error('Worker configuration editing is unavailable.');
           submitted.dispatched = true;
         }, onConfirmed: receipt => { submitted.receipt = receipt; }, onRejected: error => { submitted.rejection = error; } }), signal);
         settleConfirmed(incoming);
@@ -268,7 +381,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         update(value => {
           if (!uncertain && value.abandoned && value.resource?.desired) {
             const draft = draftFromValue(value.resource.desired.value);
-            return { ...value, draft, baselineDraft: draft, baselineRevision: value.resource.desired.revision, pending: false, error: cancelled ? null : error, errorSource: cancelled ? null : 'write', notice: conflict ? 'conflict' : null, uncertain: false, submission: null, abandoned: false, protectedDraft: false };
+            return { ...value, draft, baselineDraft: draft, baselineRevision: value.resource.desired.revision, baseline: workerConfigurationBaseline(value.resource), pending: false, error: cancelled ? null : error, errorSource: cancelled ? null : 'write', notice: conflict ? 'conflict' : null, uncertain: false, submission: null, abandoned: false, protectedDraft: false };
           }
           const edited = draftRevision !== submitted.draftRevision;
           const newer = value.resource?.desired != null && value.baselineRevision !== null && BigInt(value.resource.desired.revision) > BigInt(value.baselineRevision);
@@ -307,18 +420,19 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       const draft = typeof change === 'function' ? change(old.draft) : change;
       draftRevision++;
       const newer = old.resource?.desired != null && old.baselineRevision !== null && BigInt(old.resource.desired.revision) > BigInt(old.baselineRevision);
-      if (old.protectedDraft && newer && configurationDraftsEqual(draft, draftFromValue(old.resource!.desired!.value))) {
-        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource!.desired!.revision, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null, abandoned: false, protectedDraft: false };
+      if (old.protectedDraft && newer && configurationDraftsEqual(draft, draftFromValue(old.resource!.desired!.value)) && matchesComplete(old.baseline, draft, old.resource!)) {
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource!.desired!.revision, baseline: workerConfigurationBaseline(old.resource!), error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null, abandoned: false, protectedDraft: false };
       }
       const protectedDraft = old.protectedDraft;
-      return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: old.notice === 'conflict' ? 'conflict' : null, abandoned: false, protectedDraft };
+      return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: old.notice === 'conflict' || old.notice === 'abandonedUnknown' ? old.notice : null, abandoned: false, protectedDraft };
     }), refresh: () => { void requestRead(true, true); }, loadLatest: replaceDraft, abandon: abandonDraft, save: saveDraft };
+    const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === scope.userId) void requestRead(); });
     const unsubscribePause = subscribeAuthPause(() => { write?.abort(); read?.abort(); });
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     startReads();
     return () => {
-      active = false; ++generation; read?.abort(); write?.abort(); publication?.abort(); unsubscribePause();
+      active = false; ++generation; read?.abort(); write?.abort(); publication?.abort(); unsubscribePause(); unsubscribeRepository();
       if (polling !== null) clearInterval(polling);
       document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate);
       const last = currentState();
@@ -333,15 +447,30 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
   // A poll can observe our PUT before its response. Settle or reconcile that write
   // before classifying a newer target as an external edit.
   const conflict = !current.pending && !current.uncertain && current.baselineRevision !== null && current.resource?.desired !== null && current.resource !== null && current.resource.desired.revision !== current.baselineRevision;
-  const matchesLatest = conflict && current.draft !== null && current.resource?.desired != null && configurationDraftsEqual(current.draft, draftFromValue(current.resource.desired.value));
+  const matchesLatest = conflict && current.draft !== null && current.resource?.desired != null && configurationDraftsEqual(current.draft, draftFromValue(current.resource.desired.value)) && matchesComplete(current.baseline, current.draft, current.resource);
+  const unsupportedFields = current.baseline === null ? [] : unsupportedConfigurationFields(current.baseline.valueSource);
   const dirty = !current.abandoned && (!matchesLatest || current.protectedDraft) && current.draft !== null && current.baselineDraft !== null &&
-    (!configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft);
+    (unsupportedFields.length > 0 || !configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft);
+  const controlAdmitted = !current.baselineInvalid && current.resource?.controlModeSupported === true && current.baseline?.known.agentControlMode !== undefined;
+  const toolsAdmitted = !current.baselineInvalid && current.resource?.toolPathsSupported === true && current.baseline?.known.toolPaths !== undefined;
+  const archiveAdmitted = !current.baselineInvalid && current.resource?.archiveSessionsSupported === true && current.baseline?.known.archiveSessions !== undefined;
+  const archiveEditable = archiveAdmitted && current.resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true;
+  const tagFilterOmitted = current.draft !== null && current.baseline !== null && current.resource?.observation?.items.some(item => item.key.kind === 'taskTagFilter') !== true && filterRequiresSupport(current.draft.taskTagFilter, current.baseline.known.taskTagFilter);
+  const filterSaveableDraft = tagFilterOmitted && current.draft !== null ? withBaselineFilter(current.draft, current.baselineDraft?.taskTagFilter) : current.draft;
+  const modeOmitted = filterSaveableDraft?.platformTaskMode === 'only' && current.baseline?.known.platformTaskMode !== 'only' && (current.resource?.platformTaskModeSupported !== true || current.resource.observation?.items.some(item => item.key.kind === 'platformTaskMode') !== true);
+  const saveableDraft = modeOmitted && filterSaveableDraft !== null ? { ...filterSaveableDraft, platformTaskMode: current.baselineDraft?.platformTaskMode, preferPlatformSpecificTasks: current.baselineDraft?.preferPlatformSpecificTasks ?? false } : filterSaveableDraft;
+  const resource = current.resource === null ? null : { ...current.resource, controlModeSupported: controlAdmitted, toolPathsSupported: toolsAdmitted, archiveSessionsSupported: archiveAdmitted };
+  const desiredValue = current.resource?.desired?.value;
+  const comparisonValue = desiredValue === undefined ? null : current.baseline !== null && !current.baselineInvalid && current.baseline.revision === current.resource?.desired?.revision
+    ? { ...desiredValue, ...(desiredValue.agentControlMode === undefined && current.baseline.known.agentControlMode !== undefined ? { agentControlMode: current.baseline.known.agentControlMode } : {}), ...(desiredValue.toolPaths === undefined && current.baseline.known.toolPaths !== undefined ? { toolPaths: current.baseline.known.toolPaths } : {}), ...(desiredValue.archiveSessions === undefined && current.baseline.known.archiveSessions !== undefined ? { archiveSessions: current.baseline.known.archiveSessions } : {}) }
+    : desiredValue;
   return {
-    resource: current.resource, draft: current.draft, baselineRevision: current.baselineRevision,
+    resource, unsupportedFields, draft: current.draft, comparisonValue, baselineRevision: current.baselineRevision,
+    strictTargetUnconfirmed: current.baselineDraft?.platformTaskMode === 'only' && current.resource?.desired != null && current.resource.desired.value.platformTaskMode === undefined,
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty, publicationPending: !current.pending && !current.uncertain && current.submission !== null,
-    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true, current.resource?.toolPathsSupported === true && toolPathsEditable),
+    saveableDirty: !current.baselineInvalid && dirty && saveableDraft !== null && current.baselineDraft !== null && (unsupportedFields.length > 0 || !configurationDraftsEqual(saveableDraft, current.baselineDraft, controlAdmitted, toolsAdmitted && toolPathsEditable, archiveEditable, current.baseline?.known.enableSudoCleanup !== undefined && (platform === 'linux' || platform === 'macos'), current.baseline?.known.enableWindowsProcessCleanup !== undefined && platform === 'windows')),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

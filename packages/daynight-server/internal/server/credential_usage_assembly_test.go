@@ -70,6 +70,7 @@ type usageAssemblyFamilyScope struct{ dao store.CredentialFamilyDAO }
 func (s usageAssemblyFamilyScope) CredentialFamilyDAO() store.CredentialFamilyDAO { return s.dao }
 
 type usageAssemblyFamilyDAO struct {
+	store.OAuthScopeDAO
 	store.CredentialFamilyDAO
 	t         *testing.T
 	principal model.Principal

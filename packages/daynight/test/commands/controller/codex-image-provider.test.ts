@@ -49,7 +49,7 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
     onSpawn: value => { child = value; }, onState: value => states.push(value), onTimeline: entry => entries.push(structuredClone(entry)), onInputObserved: observation => { observations.push(observation); return true; },
     onImageOccurrence: () => true, imageOccurrenceAcknowledged: () => true,
     imageRuntime: { readState: key => state.get(key) ?? null, writeState: (key, value) => { state.set(key, structuredClone(value)); }, getIntent: id => intents.get(id) ?? null,
-      createSpool: maximum => openNativeMediaSpool(join(root, `spool-${sequence++}`), maximum, () => {}, () => {}), indexDirectory: () => root, reserveIndex: () => {}, acquireIndexReservation: () => ({ release() {} }) },
+      createSpool: maximum => openNativeMediaSpool(join(root, `spool-${sequence++}`), maximum, () => {}, () => {}), indexDirectory: () => root, acquireIndexLease: () => ({ release() {} }) },
     prepareImageCapture: async () => {},
     submitImageCapture: async ({ request, attemptId, outcome }) => { captures.push(request); return { captureId: request.captureId, attemptId, occurrence: request.occurrence, revision: "1", state: outcome.kind === "failed" ? "failed" : "committed", resourceId: outcome.kind === "failed" ? null : request.locator.kind === "resource" ? request.locator.resourceId : randomUUID(), resource: null, error: outcome.kind === "failed" ? outcome.error : null }; },
     queryImageCapture: vi.fn(), stageImageCapture: vi.fn(async input => ({ mediaType: "image/png" as const, byteLength: input.byteLength, sha256: input.sha256, width: 1, height: 1, frameCount: 1 })),
@@ -217,6 +217,23 @@ test("paginated native image history uses one item per page and preserves each o
   } finally { await provider.close(); await f.cleanup(); }
 });
 
+test("resumed native image history retains its media while read authority is enabled", async () => {
+  const f = await fixture("normal", [{ id: "generated", type: "mcpToolCall", tool: "draw", status: "completed", result: { content: [{ type: "image", mimeType: "image/png", data: png.toString("base64") }] } }]);
+  f.options.onNativeReadPolicy = () => {};
+  const stage = vi.mocked(f.options.stageImageCapture!);
+  stage.mockImplementation(async input => {
+    expect(await readFile(input.inputPath)).toEqual(png);
+    return { mediaType: "image/png", byteLength: input.byteLength, sha256: input.sha256, width: 1, height: 1, frameCount: 1 };
+  });
+  let provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;
+  try {
+    provider = await openCodexProvider(f.options);
+    await vi.waitFor(() => expect(f.captures).toHaveLength(1));
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(f.captures[0]?.nativeSource?.nativeMessageId).toBe("generated");
+  } finally { await provider?.close(); await f.cleanup(); }
+});
+
 test("a repeated native history cursor fails the same connection without starting input", async () => {
   const f = await fixture("cursor-loop");
   try {
@@ -229,6 +246,7 @@ test("a repeated native history cursor fails the same connection without startin
 test("the original late response can resolve an unknown input without dispatching it twice", async () => {
   const f = await fixture("late"), provider = await openCodexProvider(f.options);
   try {
+    await vi.waitFor(() => expect(f.states.at(-1)?.images?.send).toBe("supported"));
     const input = f.input([await f.image()]); rpcPolicy.timeoutMs = 20;
     await expect(provider.send(input.value, input.operationId, null)).rejects.toBeInstanceOf(NativeRpcTimeoutError);
     expect(f.observations).toEqual([]);

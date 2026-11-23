@@ -230,7 +230,7 @@ func TestProjectToolHTTPDiscoveryAndInputs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	listing, err := client.ListTools(ctx, nil)
-	if err != nil || len(listing.Tools) != 6 {
+	if err != nil || len(listing.Tools) != 9 {
 		t.Fatalf("tools: %+v %v", listing, err)
 	}
 	call := func(name string, args any) *sdk.CallToolResult {
@@ -283,7 +283,7 @@ func TestProjectRegistrationRejectsMissingOrCorruptToolDefinitions(t *testing.T)
 	if err := json.Unmarshal(original, &tools); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"project_create", "project_transfer", "project_list", "project_resolve", "project_show"} {
+	for _, name := range []string{"project_create", "project_transfer_preview", "project_transfer", "project_preview_repository", "project_set_repository", "project_list", "project_resolve", "project_show"} {
 		t.Run(name, func(t *testing.T) {
 			var filtered []map[string]any
 			for _, tool := range tools {
@@ -385,16 +385,19 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	prepareRepository := func(p model.Principal, name, repo string, v model.Project, matching bool) {
 		t.Helper()
 		read := projectHTTPCount(t, 1)
-		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{FindVisibleRepositoryForCreationCall: func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
 			read()
 			projectHTTPCheck(t, actor, p)
-			projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeAll})
-			projectHTTPCheck(t, page, store.Page{Limit: 100})
-			items := []model.Project{}
-			if matching {
-				items = []model.Project{v}
+			projectHTTPCheck(t, teamID, personal[0])
+			wantIdentity, err := coreproject.RepositoryIdentity(repo)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return store.ProjectPage{Items: items}, nil
+			projectHTTPCheck(t, identity, wantIdentity)
+			if matching {
+				return []model.Project{v}, nil
+			}
+			return nil, nil
 		}}, nil)
 		if matching {
 			return
@@ -498,12 +501,12 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	project := projectHTTPRecord("f0000000-0000-4000-8000-000000000000", "Project", "https://github.com/acme/test.git", personal[0])
 	args := map[string]any{"name": project.Name, "repoUrl": project.RepoURL, "team": "personal"}
 	read := projectHTTPCount(t, 1)
-	mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+	mcpOrgRead(t, tx, 1, mcpOrgProjectReader{FindVisibleRepositoryForCreationCall: func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
 		read()
 		projectHTTPCheck(t, actor, actors[0])
-		projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeAll})
-		projectHTTPCheck(t, page, store.Page{Limit: 100})
-		return store.ProjectPage{Items: []model.Project{}}, nil
+		projectHTTPCheck(t, teamID, personal[0])
+		projectHTTPCheck(t, identity, "github.com/acme/test")
+		return nil, nil
 	}}, nil)
 	response, failed = call(0, "project_create", args)
 	if !failed || obj(response["error"])["code"] != "invalid_input" {
@@ -521,13 +524,17 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		t.Fatalf("create receipt: %+v", data)
 	}
 	prepareRepository(actors[0], "Different", "git@github.com:acme/test.git", project, true)
-	response, failed = call(0, "project_create", map[string]any{"name": "Different", "repoUrl": "git@github.com:acme/test.git", "team": target.ID})
+	response, failed = call(0, "project_create", map[string]any{"name": "Different", "repoUrl": "git@github.com:acme/test.git", "team": personal[0]})
 	if failed || obj(response["data"])["created"] != false || obj(obj(response["data"])["project"])["id"] != id {
 		t.Fatalf("reuse: %+v", response)
 	}
 	preparePreview := func(actor model.Principal, accessErr error) {
 		t.Helper()
-		access := projectHTTPCount(t, 1)
+		reads := 1
+		if accessErr == nil {
+			reads = 2
+		}
+		access := projectHTTPCount(t, reads)
 		dao := mcpOrgProjectReader{ProjectAccessCall: func(ctx context.Context, got model.Principal, projectID string) (model.ProjectAccess, error) {
 			access()
 			projectHTTPCheck(t, got, actor)
@@ -547,7 +554,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 				return nil, nil
 			}
 		}
-		mcpOrgRead(t, tx, 1, dao, nil)
+		mcpOrgRead(t, tx, reads, dao, nil)
 	}
 	preparePreview(actors[1], model.ErrNotFound)
 	response, failed = call(1, "project_transfer", map[string]any{"projectId": id, "toTeam": target.ID, "confirm": true})
@@ -564,7 +571,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		access()
 		projectHTTPCheck(t, actor, actors[0])
 		return projectHTTPAccess(actor, project), nil
-	}}, nil)
+	}}, nil, mcpOrgEmptyGoalDependencies(t, false))
 	response, failed = call(0, "project_transfer", map[string]any{"projectId": id, "toTeam": target.ID, "ifVersion": "999", "confirm": true})
 	if !failed || obj(response["error"])["code"] != "version_conflict" {
 		t.Fatalf("stale transfer: %+v", response)
@@ -591,7 +598,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 			return prior, nil
 		}
 		return model.ProjectAccess{}, model.ErrNotFound
-	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: id}))
+	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: id}), mcpOrgEmptyGoalDependencies(t, true))
 	response, failed = call(0, "project_transfer", map[string]any{"projectId": id, "toTeam": origin + "/teams/" + target.ID, "confirm": true})
 	if failed {
 		t.Fatalf("transfer: %+v", response)
@@ -663,7 +670,7 @@ func TestMCPOrganizationAdapterHostCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"project_create": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_preview_repository": true, "project_set_repository": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true, "team_list": true, "team_show": true, "team_projects": true, "team_member_list": true, "team_member_set_role": true, "team_member_remove": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true, "invitation_inspect": true, "invitation_accept": true,
 	}

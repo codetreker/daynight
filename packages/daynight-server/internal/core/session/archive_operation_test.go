@@ -6,8 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
-	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -51,15 +49,15 @@ func TestArchiveOwnerAndInstanceAdmission(t *testing.T) {
 	first, second := archiveAdmissionFixture(t, root), archiveAdmissionFixture(t, root)
 	owner, other := model.Principal{UserID: uuid.NewString()}, model.Principal{UserID: uuid.NewString()}
 	ctx := context.Background()
-	held, err := first.BeginArchive(ctx, owner, "", "", "", ArchiveV1Upload)
+	held, err := first.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = first.BeginArchive(ctx, other, "", "", "", ArchiveV2Read)
+	_, err = first.BeginArchive(ctx, other, "", "", uuid.NewString(), ArchiveV2Read)
 	requireArchiveBusy(t, err)
-	_, err = second.BeginArchive(ctx, owner, "", "", "", ArchiveV2Read)
+	_, err = second.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV2Read)
 	requireArchiveBusy(t, err)
-	separate, err := second.BeginArchive(ctx, other, "", "", "", ArchiveV2Read)
+	separate, err := second.BeginArchive(ctx, other, "", "", uuid.NewString(), ArchiveV2Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,13 +70,100 @@ func TestArchiveOwnerAndInstanceAdmission(t *testing.T) {
 	if err = held.Close(); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := second.BeginArchive(ctx, owner, "", "", "", ArchiveV1Read)
+	fresh, err := second.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = fresh.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type lostArchivePermit struct{}
+
+func (lostArchivePermit) Close() error { return nil }
+
+func (lostArchivePermit) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	cancel(filestorage.ErrGateLost)
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+func TestArchiveGateContextWithoutPermit(t *testing.T) {
+	for _, op := range []*ArchiveOperation{nil, {}} {
+		parent := t.Context()
+		ctx, stop := op.GateContext(parent)
+		stop()
+		if ctx != parent || ctx.Err() != nil {
+			t.Fatalf("archive without a permit changed the caller context: %v", ctx.Err())
+		}
+	}
+}
+
+type retainedTimelinePermit struct{ lifetime context.Context }
+
+func (retainedTimelinePermit) Close() error { return nil }
+
+func (p retainedTimelinePermit) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(p.lifetime, func() { cancel(context.Cause(p.lifetime)) })
+	if cause := context.Cause(p.lifetime); cause != nil {
+		cancel(cause)
+	}
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
+}
+
+func TestRetainedArchiveGateContext(t *testing.T) {
+	t.Run("original archive gate", func(t *testing.T) {
+		archive := &RetainedArchive{operation: &ArchiveOperation{permit: lostArchivePermit{}}}
+		parent := t.Context()
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) || parent.Err() != nil {
+			t.Fatalf("expected archive gate loss with a live caller: output=%v caller=%v", context.Cause(ctx), parent.Err())
+		}
+	})
+	t.Run("timeline lease survives producer completion and cancels delivery on loss", func(t *testing.T) {
+		parent := t.Context()
+		producer, finishProducer := context.WithCancel(parent)
+		defer finishProducer()
+		lifetime, lose := context.WithCancelCause(t.Context())
+		defer lose(context.Canceled)
+		timeline, unbind := filestorage.GateContext(producer, retainedTimelinePermit{lifetime: lifetime})
+		defer unbind()
+		archive := &RetainedArchive{timelineCtx: timeline}
+		finishProducer()
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("completed producer cancelled output while its lease was still held: %v", err)
+		}
+		lose(filestorage.ErrGateLost)
+		select {
+		case <-ctx.Done():
+			if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) || parent.Err() != nil {
+				t.Fatalf("expected timeline gate loss with a live caller: output=%v caller=%v", context.Cause(ctx), parent.Err())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeline gate loss did not cancel output")
+		}
+	})
+	t.Run("timeline gate already lost", func(t *testing.T) {
+		parent := t.Context()
+		lifetime, lose := context.WithCancelCause(t.Context())
+		timeline, unbind := filestorage.GateContext(parent, retainedTimelinePermit{lifetime: lifetime})
+		defer unbind()
+		lose(filestorage.ErrGateLost)
+		archive := &RetainedArchive{timelineCtx: timeline}
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) {
+			t.Fatalf("output could start after timeline gate loss: %v", context.Cause(ctx))
+		}
+	})
 }
 
 func TestArchivePreflightAdmissionIsBounded(t *testing.T) {
@@ -92,11 +177,11 @@ func TestArchivePreflightAdmissionIsBounded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		_, err := s.BeginArchive(ctx, model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+		_, err := s.BeginArchive(ctx, model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 		result <- err
 	}()
 	<-entered
-	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	cancel()
 	select {
@@ -121,7 +206,7 @@ type failedArchiveGate struct {
 	permit *failedArchivePermit
 }
 
-func (g failedArchiveGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g failedArchiveGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return g.permit, nil
 }
 func TestArchiveClosePreservesErrorAndReleasesInstanceOnce(t *testing.T) {
@@ -130,14 +215,14 @@ func TestArchiveClosePreservesErrorAndReleasesInstanceOnce(t *testing.T) {
 	permit := &failedArchivePermit{err: failure}
 	s.files = failedArchiveGate{Storage: s.files, permit: permit}
 	p := model.Principal{UserID: uuid.NewString()}
-	op, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Upload)
+	op, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !errors.Is(op.Close(), failure) || !errors.Is(op.Close(), failure) || permit.calls.Load() != 1 {
 		t.Fatal("close did not retain failure or ran more than once")
 	}
-	next, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	next, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +239,8 @@ type archivePermitFailure struct {
 }
 
 func (c archivePermitFailure) Close() error { return errors.Join(c.Closer.Close(), c.failure) }
-func (s archivePermitFailureStorage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
-	permit, err := s.Storage.TryAcquireResidency(ctx, key)
+func (s archivePermitFailureStorage) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	permit, err := s.Storage.TryAcquireArchive(ctx, owner, session, limit, cleanup)
 	if err != nil {
 		return nil, err
 	}
@@ -206,15 +291,8 @@ func (s failedArchiveObjectStorage) Open(ctx context.Context, bucket, path strin
 }
 
 func TestTerminalArchiveReadPreservesValidationAndCloseFailure(t *testing.T) {
-	f, m, doc := terminalArchiveFixture(t)
-	finalizeFixture(t, f, m, doc)
+	f, m, _ := historicalArchiveFixture(t)
 	ctx := context.Background()
-	data := encode(doc)
-	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
 	failure := errors.New("object close failed")
 	f.s.files = failedArchiveObjectStorage{Storage: f.s.files, failure: failure}
 	scopes := 0
@@ -237,7 +315,7 @@ func TestTerminalArchiveReadPreservesValidationAndCloseFailure(t *testing.T) {
 			return store.Completion{}, nil
 		}
 	}
-	_, err = fixtureTerminalArchiveRead(f, ctx, m.SessionID)
+	_, err := f.readContent(ctx, m.SessionID)
 	var fault *model.Fault
 	var original *model.Fault
 	var tx *store.TransactionError
@@ -254,14 +332,14 @@ type failedBusyGate struct {
 	failure error
 }
 
-func (g failedBusyGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g failedBusyGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return nil, errors.Join(filestorage.ErrGateBusy, g.failure)
 }
 func TestArchiveGateBusyCleanupFailureRemainsObservable(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
 	failure := errors.New("gate close failed")
 	s.files = failedBusyGate{Storage: s.files, failure: failure}
-	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	var fault *model.Fault
 	if !errors.Is(err, failure) || !errors.Is(err, filestorage.ErrGateBusy) || errors.As(err, &fault) {
 		t.Fatalf("gate cleanup failure disguised as ordinary busy: %v", err)
@@ -285,32 +363,23 @@ func (s *scopedArchiveObjectStorage) Open(ctx context.Context, bucket, path stri
 }
 
 func TestTerminalArchiveReadbackStaysInsideItsAdmittedScope(t *testing.T) {
-	f, m, doc := terminalArchiveFixture(t)
-	finalizeFixture(t, f, m, doc)
+	f, m, doc := historicalArchiveFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var active atomic.Int32
-	run := f.s.terminalRun
-	f.s.terminalRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalAccess) error) error {
+	historyRun := f.s.terminalHistoryRun
+	f.s.terminalHistoryRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalHistoryAccess) error) error {
 		if !active.CompareAndSwap(0, 1) {
-			t.Error("archive readback attempted a nested terminal scope")
-			return errors.New("nested terminal scope")
+			t.Error("archive readback attempted a nested history scope")
+			return errors.New("nested history scope")
 		}
 		defer active.Store(0)
-		return run(ctx, p, project, task, id, archive, work)
+		return historyRun(ctx, p, project, task, id, archive, work)
 	}
 	files := &scopedArchiveObjectStorage{Storage: f.s.files, t: t, active: &active}
 	f.s.files = files
 	data := encode(doc)
-	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
-	if err != nil {
-		t.Fatalf("scoped upload and readback: %v", err)
-	}
-	if files.reads.Load() != 1 {
-		t.Fatal("upload did not validate the stored object in its terminal scope")
-	}
-	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
-	retained, err := fixtureTerminalArchiveRead(f, ctx, m.SessionID)
+	retained, err := f.readContent(ctx, m.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +389,7 @@ func TestTerminalArchiveReadbackStaysInsideItsAdmittedScope(t *testing.T) {
 	if err = retained.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if files.reads.Load() != 2 || active.Load() != 0 {
+	if files.reads.Load() != 1 || active.Load() != 0 {
 		t.Fatal("archive readback omitted object validation or retained its terminal scope")
 	}
 }
@@ -332,26 +401,26 @@ func TestArchivePreflightReservationSharedAndReleased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	_, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = s.BeginArchive(canceled, p, "", "", "", ArchiveV1Read); !errors.Is(err, context.Canceled) {
+	if _, err = s.BeginArchive(canceled, p, "", "", uuid.NewString(), ArchiveV1Read); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
-	op, err := s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved)
+	op, err := s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = reserved.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	_, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	if err = op.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved); err == nil {
+	if _, err = s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved); err == nil {
 		t.Fatal("reused preflight reservation")
 	}
 	reserved, err = s.TryReserveArchivePreflight()
@@ -364,7 +433,7 @@ func TestArchivePreflightReservationSharedAndReleased(t *testing.T) {
 	if err = reserved.Close(); err != nil {
 		t.Fatal(err)
 	}
-	op, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	op, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +455,7 @@ func TestArchivePreflightReservationConcurrentClaimAndClose(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			<-start
-			op, _ := s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved)
+			op, _ := s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved)
 			results <- op
 		}()
 		go func() { <-start; _ = reserved.Close(); close(done) }()
@@ -409,7 +478,7 @@ func TestArchivePreflightReservationConcurrentClaimAndClose(t *testing.T) {
 func TestArchiveContentRejectsBusyBeforeReading(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
 	p := model.Principal{UserID: uuid.NewString()}
-	op, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Upload)
+	op, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,15 +493,12 @@ func TestArchiveContentRejectsBusyBeforeReading(t *testing.T) {
 
 func TestArchiveOperationRejectsWrongModeAndClosed(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
-	op, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	op, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = op.PutArchive(context.Background(), nil); err == nil {
 		t.Fatal("read operation used for upload")
-	}
-	if _, err = op.PutTerminalArchive(context.Background(), nil); err == nil {
-		t.Fatal("read operation used for terminal upload")
 	}
 	if err = op.Close(); err != nil {
 		t.Fatal(err)
@@ -447,7 +513,7 @@ type archiveErrorGate struct {
 	err error
 }
 
-func (g archiveErrorGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g archiveErrorGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return nil, g.err
 }
 
@@ -465,7 +531,7 @@ func TestArchiveGateBusyClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := archiveAdmissionFixture(t, t.TempDir())
 			s.files = archiveErrorGate{Storage: s.files, err: tc.err}
-			_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+			_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("lost cause: %v", err)
 			}
@@ -610,107 +676,6 @@ func TestArchivePreflightRejectsUntrustedOrRevokedAuthority(t *testing.T) {
 	}
 }
 
-type changedArchiveCompletenessDAO struct {
-	store.SessionDAO
-	t         *testing.T
-	id, value string
-	calls     int
-}
-
-func selectTerminalArchiveReadback(t *testing.T, f fixture, id string, data []byte, receipt v2.Receipt) {
-	t.Helper()
-	doc, err := v2.DecodeArchive(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest, size := v2.HashBytes(data), strconv.Itoa(len(data))
-	path, err := archiveObjectPath(f.project, f.p.UserID, id, digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt.Disposition != "ready" || receipt.FinalizationID != doc.FinalizationID || receipt.SHA256 == nil || *receipt.SHA256 != digest || receipt.ByteLength == nil || *receipt.ByteLength != size || receipt.Completeness == nil || *receipt.Completeness != doc.Completeness {
-		t.Fatalf("archive receipt does not identify the supplied document: %+v", receipt)
-	}
-	if f.terminal.ProposedReceipt == nil || !reflect.DeepEqual(*f.terminal.ProposedReceipt, receipt) || f.terminal.ProposedPath == nil || *f.terminal.ProposedPath != path {
-		t.Fatal("archive write did not propose the returned receipt and expected object path")
-	}
-	f.terminal.Receipt = new(fixtureCopy(receipt))
-	f.terminal.Path = path
-	f.terminal.Status = v2.ArchiveStatus{State: "ready", FinalizationID: &doc.FinalizationID, SHA256: &digest, ByteLength: &size, Completeness: &doc.Completeness}
-}
-
-func fixtureTerminalArchiveUpload(f fixture, ctx context.Context, id string, data []byte) (v2.Message, error) {
-	phase := f.dao.ContextPhase(ctx, map[string]int{
-		"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2,
-		"LockArchiveTask": 1, "LockCredential": 1, "LockTerminal": 1,
-		"TerminalArchive": 1, "SaveTerminalReceipt": 1,
-	})
-	defer f.dao.FinishContext(phase)
-	return f.s.PutTerminalArchive(phase, f.p, f.project, f.task, id, data)
-}
-
-func fixtureTerminalArchiveRead(f fixture, ctx context.Context, id string) (*RetainedArchive, error) {
-	phase := f.dao.ContextPhase(ctx, map[string]int{
-		"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2,
-		"LockTask": 1, "LockCredential": 1, "LockTerminal": 1,
-		"TerminalArchive": 1,
-	})
-	defer f.dao.FinishContext(phase)
-	return f.s.TerminalArchiveContent(phase, f.p, f.project, f.task, id)
-}
-
-func (d *changedArchiveCompletenessDAO) TerminalArchive(ctx context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
-	if id != d.id {
-		d.t.Fatalf("unexpected archive identifier %s", id)
-	}
-	d.calls++
-	status, receipt, path, err := d.SessionDAO.TerminalArchive(ctx, id)
-	status.Completeness = &d.value
-	return status, receipt, path, err
-}
-
-func TestTerminalArchiveRejectsChangedOwnerAndCompleteness(t *testing.T) {
-	f, m, doc := terminalArchiveFixture(t)
-	finalizeFixture(t, f, m, doc)
-	ctx := context.Background()
-	data := encode(doc)
-	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
-	preflight := f.s.archivePreflightRun
-	f.s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
-		return uuid.NewString(), nil
-	})
-	phase := f.dao.ContextPhase(ctx, map[string]int{"LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1})
-	_, ownerError := f.s.TerminalArchiveContent(phase, f.p, f.project, f.task, m.SessionID)
-	f.dao.FinishContext(phase)
-	if ownerError == nil {
-		t.Fatal("archive read under changed owner")
-	}
-	f.s.SetArchivePreflight(preflight)
-	other := "partial"
-	if doc.Completeness == other {
-		other = "complete"
-	}
-	run := f.s.terminalRun
-	var altered *changedArchiveCompletenessDAO
-	f.s.terminalRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalAccess) error) error {
-		return run(ctx, p, project, task, id, archive, func(access *TerminalAccess) error {
-			altered = &changedArchiveCompletenessDAO{SessionDAO: access.tx.dao, t: t, id: m.SessionID, value: other}
-			access.tx.dao = altered
-			return work(access)
-		})
-	}
-	if _, err := fixtureTerminalArchiveRead(f, ctx, m.SessionID); err == nil {
-		t.Fatal("archive completeness mismatch accepted")
-	}
-	if altered == nil || altered.calls != 1 {
-		t.Fatal("archive completeness rule did not consume the configured DAO result")
-	}
-}
-
 func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
 	ctx := context.Background()
 	p := model.Principal{UserID: uuid.NewString()}
@@ -740,7 +705,7 @@ func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup()
-			_, err := s.BeginArchive(ctx, p, "", "", "", ArchiveV1Read)
+			_, err := s.BeginArchive(ctx, p, "", "", uuid.NewString(), ArchiveV1Read)
 			if err == nil || tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("unexpected result: %v", err)
 			}
@@ -750,5 +715,151 @@ func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
 			}
 			_ = r.Close()
 		})
+	}
+}
+
+func TestArchiveOwnerMultipleSessionsAndCleanupAdmission(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	s.archiveSlots = make(chan struct{}, 4)
+	s.archivePreflightSlots = make(chan struct{}, 4)
+	s.archiveOwnerLimit = 2
+	owner := model.Principal{UserID: uuid.NewString()}
+	firstID, secondID := uuid.NewString(), uuid.NewString()
+	first, err := s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	_, err = s.BeginArchive(t.Context(), owner, "", "", strings.ToUpper(firstID), ArchiveV1Upload)
+	requireArchiveBusy(t, err)
+	second, err := s.BeginArchive(t.Context(), owner, "", "", secondID, ArchiveV1Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	_, err = s.BeginArchive(t.Context(), owner, "", "", uuid.NewString(), ArchiveV1Read)
+	requireArchiveBusy(t, err)
+	if len(s.archiveSlots) != 2 {
+		t.Fatalf("failed owner admission retained an instance slot: %d", len(s.archiveSlots))
+	}
+	_, err = s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if !errors.Is(err, filestorage.ErrGateBusy) {
+		t.Fatalf("cleanup entered while archive permits held: %v", err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if !errors.Is(err, filestorage.ErrGateBusy) {
+		t.Fatalf("cleanup entered while second archive held: %v", err)
+	}
+	if err = second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	requireArchiveBusy(t, err)
+	if len(s.archiveSlots) != 0 {
+		t.Fatalf("cleanup refusal retained instance slot: %d", len(s.archiveSlots))
+	}
+	if err = cleanup.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfiguredArchiveCapacity(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	s.Engine = NewEngine(s.files, ArchiveLimits{MaxConcurrent: 20, MaxConcurrentPerOwner: 5})
+	assertStage := func(err error, stage string) {
+		t.Helper()
+		requireArchiveBusy(t, err)
+		var capacity *ArchiveCapacityError
+		if !errors.As(err, &capacity) || capacity.Stage != stage {
+			t.Fatalf("capacity stage = %v, want %s", err, stage)
+		}
+		if got := capacity.Error(); got != "Session archive capacity is unavailable." {
+			t.Fatalf("capacity error = %q", got)
+		}
+	}
+	begin := func(owner string) (*ArchiveOperation, error) {
+		return s.BeginArchive(t.Context(), model.Principal{UserID: owner}, "", "", uuid.NewString(), ArchiveV1Read)
+	}
+	owner := uuid.NewString()
+	held := make([]*ArchiveOperation, 0, 20)
+	for i := 0; i < 5; i++ {
+		op, err := begin(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err := begin(owner)
+	assertStage(err, "owner_busy")
+	for i := 5; i < 20; i++ {
+		op, err := begin(uuid.NewString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err = begin(uuid.NewString())
+	assertStage(err, "instance_full")
+	if err := held[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := begin(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range held[1:] {
+		if err := op.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reservations := make([]*ArchivePreflightReservation, 0, 20)
+	for i := 0; i < 20; i++ {
+		r, err := s.TryReserveArchivePreflight()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservations = append(reservations, r)
+	}
+	_, err = s.TryReserveArchivePreflight()
+	assertStage(err, "preflight_full")
+	for _, r := range reservations {
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNewEngineRejectsInvalidArchiveLimits(t *testing.T) {
+	for _, limits := range [][]ArchiveLimits{
+		{{MaxConcurrent: 0, MaxConcurrentPerOwner: 5}},
+		{{MaxConcurrent: 20, MaxConcurrentPerOwner: 0}},
+		{{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}, {MaxConcurrent: 2, MaxConcurrentPerOwner: 2}},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("invalid limits did not panic: %+v", limits)
+				}
+			}()
+			NewEngine(nil, limits...)
+		}()
 	}
 }

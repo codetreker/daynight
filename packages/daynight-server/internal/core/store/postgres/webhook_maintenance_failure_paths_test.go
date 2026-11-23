@@ -11,6 +11,7 @@ import (
 )
 
 func TestWebhookMaintenanceObserveAndScanFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	owner, endpoint, key, receipt := webhookStoredFixture(t)
@@ -130,6 +131,7 @@ func TestWebhookMaintenanceObserveAndScanFailures(t *testing.T) {
 }
 
 func TestWebhookReceiptGCRowFailureAndRecheck(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	owner, _, _, receipt := webhookStoredFixture(t)

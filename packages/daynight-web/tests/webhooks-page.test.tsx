@@ -32,7 +32,7 @@ const response = (data: unknown, status = 200) => new Response(JSON.stringify(da
 const failure = (status: number, code: string) => response({ error: { code, message: "Request failed.", requestId: "test-request" } }, status);
 const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
-const mount = async ({ strict = false, initial = [endpoint()], expand = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
+const mount = async ({ strict = false, initial = [endpoint()], expand = true, includeSteps = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly includeSteps?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
   const initialFailure = firstReadFailure !== undefined;
   const first = initial.find(value => value.owner.kind === "personal");
   const initialDetail = barrier<Response>();
@@ -96,7 +96,7 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
   });
   vi.stubGlobal("fetch", fetch);
   act(() => navigate("/webhooks?owner=personal"));
-  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
+  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, items: catalog.items.filter(item => includeSteps || item.key !== "task.step_updated"), service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
   const content = () => strict ? <StrictMode><View/></StrictMode> : <View/>;
   const rendered = renderWithLocale(content(), { locale: "en" });
   if (initialFailure) await screen.findByRole("alert");
@@ -111,8 +111,11 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
   }
   return { ...rendered, media, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setExpansion: (value: boolean) => { expansionAvailable = value; rendered.rerender(content()); }, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
 };
-const openEdit = () => fireEvent.click(screen.getByRole("button", { name: "Edit Endpoint 5" }));
-const setName = (name: string) => { const input = screen.getByRole("textbox", { name: /^Name$/ }); fireEvent.change(input, { target: { value: name } }); return input as HTMLInputElement; };
+const ownerControls = () => within(screen.getByRole("group", { name: "Owner" }));
+const endpointDetail = () => within(screen.getByRole("complementary"));
+const editorControls = () => within(screen.getByRole("dialog"));
+const openEdit = () => fireEvent.click(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" }));
+const setName = (name: string) => { const input = editorControls().getByRole("textbox", { name: /^Name$/ }); fireEvent.change(input, { target: { value: name } }); return input as HTMLInputElement; };
 const submitForm = () => fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
 const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value: WebhookActiveEndpoint): Promise<void> => {
   const current = barrier<Response>(); let requested = false;
@@ -120,7 +123,7 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
     if (url !== `/api/v1/teams/${teamId}/webhooks/${value.id}` || init.method !== undefined && init.method !== "GET") return null;
     requested = true; return current.promise.then(response => response.clone());
   });
-  fireEvent.click(screen.getByRole("button", { name: "Team shared" }));
+  fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" }));
   await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
   fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } });
   await waitForState(() => expect(requested).toBe(true));
@@ -129,6 +132,51 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
 };
 
 describe("Webhook configuration page", () => {
+  it.each([false, true])("uses catalog choices when creating and editing subscriptions (Steps=%s)", async includeSteps => {
+    const original = endpoint();
+    const events = includeSteps ? ["task.created", "task.step_updated"] as const : ["task.created"] as const;
+    const view = await mount({ includeSteps, initial: [{ ...original, subscriptions: [{ ...original.subscriptions[0]!, eventTypes: [...events] }] }] });
+    fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    expect(screen.queryByRole("checkbox", { name: /task.step_updated/ }) !== null).toBe(includeSteps);
+    expect(within(screen.getByRole("group", { name: "Select events" })).getAllByRole("checkbox").map(input => input.closest("label")?.querySelector("strong")?.textContent)).toEqual([
+      "task.status_changed", "task.created", "task.deleted", ...(includeSteps ? ["task.step_updated"] : []), "task.thread_posted", "task.paused",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Subscriptions/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit subscription Project one" }));
+    expect(screen.queryByRole("checkbox", { name: /task.step_updated/ }) !== null).toBe(includeSteps);
+    if (includeSteps) expect(screen.getByRole("checkbox", { name: /task.step_updated/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: /task.paused/ })); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1));
+    expect(view.writes[0]!.body.subscriptions).toEqual([{ id: id(7), projectId, eventTypes: [...events, "task.paused"] }]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("reveals before copying the secret, selects it on denial, and permits retry", async () => {
+    const oldClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      const view = await mount();
+      const button = endpointDetail().getByRole("button", { name: "Copy" });
+      expect(button).toHaveClass("copy-button"); expect(button).not.toHaveClass("button");
+      expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+      fireEvent.click(button);
+      const secret = await screen.findByText(/^whsec_[A-Za-z]/);
+      expect(view.secretReads()).toBe(1); expect(writeText).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByRole("status")).toHaveTextContent("Select the secret and copy it manually.");
+      expect(window.getSelection()?.toString()).toBe(secret.textContent);
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByRole("status")).toHaveTextContent("Copied");
+      expect(writeText).toHaveBeenLastCalledWith(secret.textContent);
+      expect(view.writes).toHaveLength(0);
+    } finally {
+      if (oldClipboard === undefined) Reflect.deleteProperty(navigator, "clipboard");
+      else Object.defineProperty(navigator, "clipboard", oldClipboard);
+    }
+  });
+
   it.each(["en", "zh-CN"] as const)("distinguishes an empty subscription scope from available projects in %s", async locale => {
     const empty = { ...endpoint(), subscriptions: [] };
     const view = await mount({ initial: [empty] }); view.setLocale(locale);
@@ -179,7 +227,7 @@ describe("Webhook configuration page", () => {
       await act(async () => { view.releaseWrite(); }); await screen.findByText("Original operation confirmed");
       setName("Newer local edit"); const before = view.fetch.mock.calls.length;
       await act(async () => { resume(); });
-      expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit");
+      expect(screen.getByRole("dialog")).toBeVisible(); expect((editorControls().getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit");
       expect(view.fetch.mock.calls.length).toBe(before);
     } finally { resume(); }
   });
@@ -250,7 +298,7 @@ describe("Webhook configuration page", () => {
     await act(async () => { controller.stopPending(); }); await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
     await act(async () => { view.releaseWrite(); }); setName("Newer local edit");
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" })); await screen.findByText("Original operation confirmed");
-    expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit"); expect(view.writes).toHaveLength(1);
+    expect(screen.getByRole("dialog")).toBeVisible(); expect((editorControls().getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit"); expect(view.writes).toHaveLength(1);
   });
   it("retains a trusted receipt without publishing after its operation stops", async () => {
     const view = await mount(); openEdit(); setName("Stopped after receipt");
@@ -258,8 +306,8 @@ describe("Webhook configuration page", () => {
     const unsubscribe = controller.subscribe(listener), before = view.fetch.mock.calls.length;
     try {
       submitForm(); await screen.findByText("Original operation confirmed");
-      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
-      expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Stopped after receipt");
+      await waitFor(() => expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled());
+      expect(screen.getByRole("dialog")).toBeVisible(); expect((editorControls().getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Stopped after receipt");
       expect(view.fetch.mock.calls.length).toBe(before + 1); expect(view.writes).toHaveLength(1);
     } finally { unsubscribe(); }
   });
@@ -298,7 +346,7 @@ describe("Webhook configuration page", () => {
   it("does not publish a held old-owner read failure into a newly selected owner", async () => {
     const initial = [endpoint(), { ...endpoint(8), owner: { kind: "team" as const, id: teamId } }]; const view = await mount({ initial });
     const held = barrier<Response>(); view.intercept((url, init) => url.startsWith("/api/v1/me/webhooks?") && (init.method === undefined || init.method === "GET") ? held.promise : null); await act(async () => { fireEvent.focus(window); });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
+    await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
     await act(async () => { held.resolve(failure(503, "database_unavailable")); }); expect(screen.getByRole("heading", { name: "Endpoint 8", level: 2 })).toBeVisible(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(1); expect(view.writes).toHaveLength(0);
   });
 
@@ -306,7 +354,7 @@ describe("Webhook configuration page", () => {
     const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [teamEndpoint] });
     await selectTeamEndpoint(view, teamEndpoint);
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" }));
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" }));
     await screen.findByText(/^whsec_[A-Za-z]/);
     openEdit();
     const input = setName("Retained draft"), dialog = screen.getByRole("dialog");
@@ -318,7 +366,7 @@ describe("Webhook configuration page", () => {
     expect(input).toHaveValue("Retained draft");
     expect(document.body.textContent).toContain("private=hidden");
     expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled();
 
     view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response('{"error":{"code":"forbidden"}}', { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } })) : null);
     await act(async () => { fireEvent.focus(window); });
@@ -336,14 +384,14 @@ describe("Webhook configuration page", () => {
   it.each(["secret", "patch"] as const)("withdraws administrator URL, secret and editor after validated %s management denial before directory recovery", async request => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
     const denied = barrier<Response>(), directory = barrier<Response>(); let admitted = false, directoryReads = 0;
     view.intercept((url, init) => {
       if (url.startsWith("/api/v1/teams?")) { directoryReads++; return directory.promise; }
       if (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") { admitted = true; return denied.promise; }
       return null;
     });
-    if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
+    if (request === "secret") { fireEvent.click(endpointDetail().getByRole("button", { name: "Hide secret" })); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); }
     openEdit(); setName("Administrator draft");
     if (request === "patch") submitForm();
     await waitForState(() => expect(admitted).toBe(true));
@@ -351,26 +399,26 @@ describe("Webhook configuration page", () => {
     await act(async () => { denied.resolve(failure(403, "forbidden")); });
     await screen.findByText("Member · Read only"); await waitForState(() => expect(directoryReads).toBeGreaterThan(0));
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled();
-    await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeDisabled();
+    await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled(); expect(endpointDetail().getByRole("button", { name: "Show secret" })).toBeDisabled();
     await act(async () => { directory.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: "member", version: 2, createdAt: now, updatedAt: now } }], nextCursor: null })); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(document.body.textContent).toContain("https://receiver.example/…");
-    view.intercept(null); view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window); await screen.findByRole("button", { name: "Edit Endpoint 5" }); await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled());
+    view.intercept(null); view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window); await screen.findByRole("button", { name: "Edit Endpoint 5" }); await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled());
     expect(document.body.textContent).toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
   });
 
   it.each([["secret", "media"], ["secret", "body"], ["patch", "media"], ["patch", "body"]] as const)("keeps valid administrator data and drafts when a %s 403 has malformed error %s", async (request, damage) => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
     const held = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
-    if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
+    if (request === "secret") { fireEvent.click(endpointDetail().getByRole("button", { name: "Hide secret" })); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); }
     openEdit(); const draft = setName("Retained administrator draft"), dialog = screen.getByRole("dialog"); if (request === "patch") submitForm();
     await waitForState(() => expect(admitted).toBe(true));
     await act(async () => { held.resolve(new Response(JSON.stringify({ error: damage === "media" ? { code: "forbidden", message: "Denied", requestId: "malformed-media" } : { code: "forbidden" } }), { status: 403, headers: { "Content-Type": damage === "media" ? "text/html" : "application/json", "Daynight-User-ID": userId } })); });
     await screen.findAllByRole("alert");
     if (request === "patch") await waitFor(() => expect(screen.getAllByRole("button", { name: "Check operation" }).every(button => !button.hasAttribute("disabled"))).toBe(true));
-    else await waitFor(() => expect(screen.getByRole("button", { name: "Show secret" })).toBeEnabled());
+    else await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Show secret" })).toBeEnabled());
     expect(screen.getByRole("dialog")).toBe(dialog); expect(draft).toHaveValue("Retained administrator draft"); expect(document.body.textContent).toContain("private=hidden"); expect(screen.queryByText("Member · Read only")).toBeNull();
     if (request === "patch") {
       expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible();
@@ -387,12 +435,12 @@ describe("Webhook configuration page", () => {
       if (holdConfiguration && url === `/api/v1/teams/${teamId}/webhooks/${endpointId}` && (init.method === undefined || init.method === "GET")) return refreshedConfiguration.promise.then(value => value.clone());
       return null;
     });
-    if (request === "secret") fireEvent.click(screen.getByRole("button", { name: "Show secret" })); else { openEdit(); setName("Original administrator draft"); submitForm(); }
+    if (request === "secret") fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); else { openEdit(); setName("Original administrator draft"); submitForm(); }
     await waitForState(() => expect(admitted).toBe(true)); holdConfiguration = true; view.setTeamAuthorization("admin", 2); fireEvent.focus(window);
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Endpoint 5", level: 2 })).toBeNull());
     holdConfiguration = false; await act(async () => { refreshedConfiguration.resolve(response(admin)); }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     await act(async () => { held.resolve(failure(403, "forbidden")); }); await waitFor(() => expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled());
-    expect(document.body.textContent).toContain("private=hidden"); expect(screen.queryByText("Member · Read only")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled();
+    expect(document.body.textContent).toContain("private=hidden"); expect(screen.queryByText("Member · Read only")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled();
   });
 
   it.each(["secret", "patch"] as const)("ignores a late %s denial after selecting a different owner", async request => {
@@ -400,8 +448,8 @@ describe("Webhook configuration page", () => {
     const view = await mount({ initial: [endpoint(), admin] }); await selectTeamEndpoint(view, admin);
     const held = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
-    if (request === "secret") fireEvent.click(screen.getByRole("button", { name: "Show secret" })); else fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" }));
-    await waitForState(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    if (request === "secret") fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); else fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" }));
+    await waitForState(() => expect(admitted).toBe(true)); fireEvent.click(ownerControls().getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     await act(async () => { held.resolve(failure(403, "forbidden")); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.body.textContent).toContain("private=hidden");
   });
@@ -409,9 +457,9 @@ describe("Webhook configuration page", () => {
   it("withdraws owner data after a receipt denial while a newer editor is open", async () => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
-    fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" }));
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Rotate secret" })); fireEvent.click(editorControls().getByRole("button", { name: "Generate new secret" }));
     await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("New private draft");
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("New private draft");
     const check = screen.getByRole("button", { name: "Check operation" }); await waitFor(() => expect(check).toBeEnabled());
     view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(403, "forbidden")) : null); fireEvent.click(check);
     await screen.findByText("Team access is unavailable.");
@@ -423,12 +471,12 @@ describe("Webhook configuration page", () => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
     if (phase === "confirmed") {
-      fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
-      fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Administrator draft");
+      fireEvent.click(endpointDetail().getByRole("button", { name: "Rotate secret" })); fireEvent.click(editorControls().getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
+      fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Administrator draft");
     }
     const denied = barrier<Response>(); let admitted = false;
     view.intercept(url => url.includes("/operations/") ? (admitted = true, denied.promise) : null);
-    if (phase === "confirmed") { fireEvent.click(screen.getByRole("button", { name: "Cancel" })); fireEvent.click(screen.getByRole("button", { name: "Check operation" })); }
+    if (phase === "confirmed") { fireEvent.click(editorControls().getByRole("button", { name: "Cancel" })); fireEvent.click(screen.getByRole("button", { name: "Check operation" })); }
     else { view.loseNextWrite(); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); }
     await waitForState(() => expect(admitted).toBe(true));
     await act(async () => { denied.resolve(failure(403, "forbidden")); });
@@ -449,7 +497,7 @@ describe("Webhook configuration page", () => {
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
     act(() => view.media.webhook.setNarrow(narrow));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: admin.name })); });
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
     openEdit(); setName("Private draft");
     const oldDetail = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => url === `/api/v1/teams/${teamId}/webhooks/${admin.id}` && (init.method === undefined || init.method === "GET") ? (admitted = true, oldDetail.promise) : null);
@@ -485,20 +533,20 @@ describe("Webhook configuration page", () => {
   });
 
   it("clears revealed secrets on narrow Back and requires a new read for the same endpoint", async () => {
-    const view = await mount(); act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(2);
+    const view = await mount(); act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Back to endpoints" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(2);
   });
 
   it("clears the secret when responsive layout exits the detail area and refuses a pending reply after Back", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(true)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(false)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); const held = barrier<Response>(); let admitted = false; view.intercept(url => url.endsWith("/signing-secret") ? (admitted = true, held.promise) : null); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await waitForState(() => expect(admitted).toBe(true)); act(() => view.media.webhook.setNarrow(true)); fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" }));
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(true)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(false)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); const held = barrier<Response>(); let admitted = false; view.intercept(url => url.endsWith("/signing-secret") ? (admitted = true, held.promise) : null); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await waitForState(() => expect(admitted).toBe(true)); act(() => view.media.webhook.setNarrow(true)); fireEvent.click(endpointDetail().getByRole("button", { name: "Back to endpoints" }));
     await act(async () => { held.resolve(response({ endpointId, configVersion: "1", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` })); }); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.getByRole("button", { name: "Show secret", hidden: true })).toBeEnabled();
   });
 
   it("loads the real nullable summary shape and requires an explicit team selection", async () => {
     const view = await mount(); expect(screen.getByText("No deliveries yet")).toBeVisible(); expect(view.secretReads()).toBe(0);
     const personalReads = view.fetch.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/me/webhooks")).length;
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
+    await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
     expect(screen.getByRole("combobox", { name: "Choose a team" })).toHaveValue("");
     expect(view.fetch.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/me/webhooks"))).toHaveLength(personalReads);
     expect(view.fetch.mock.calls.some(([path]) => String(path).startsWith(`/api/v1/teams/${teamId}/webhooks`))).toBe(false);
@@ -516,22 +564,22 @@ describe("Webhook configuration page", () => {
     await act(async () => { fireEvent.focus(window); }); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveFocus(); expect(input.selectionStart).toBe(2); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(3);
     view.intercept(null); await act(async () => { held.resolve(response({ items: [endpoint(), endpoint(8)].map(value => ({ id: value.id, owner: value.owner, name: value.name, enabled: true, configVersion: value.configVersion, destination: value.destination, projectCount: 1, eventTypeCount: 2, lastAttemptAt: null, lastResult: null })), nextCursor: "2" })); });
     expect(document.querySelectorAll(".endpoint-row")).toHaveLength(3); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Draft name"); expect(input.selectionEnd).toBe(5);
-    view.pause(); expect(input.isConnected).toBe(true); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); await act(async () => { view.resume(); }); expect(input).toHaveValue("Draft name");
+    view.pause(); expect(input.isConnected).toBe(true); expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled(); await act(async () => { view.resume(); }); expect(input).toHaveValue("Draft name");
   });
 
   it("captures the exact large version and preserves the draft after a conflict until a new decision", async () => {
     const original = { ...endpoint(), configVersion: "9007199254740993" }; const view = await mount({ initial: [original] });
     openEdit(); setName("Changed"); view.resources.set(endpointId, { ...original, configVersion: "9007199254740994", name: "Other change" }); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("alert");
-    expect(view.writes).toHaveLength(1); expect(view.writes[0]!.body.ifVersion).toBe("9007199254740993"); expect(screen.getByRole("textbox", { name: /^Name$/ })).toHaveValue("Changed"); expect(screen.getByRole("alert")).toHaveTextContent("configuration changed");
-    fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" }); fireEvent.click(screen.getByRole("button", { name: "Keep my edit" })); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(2)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(view.writes).toHaveLength(1); expect(view.writes[0]!.body.ifVersion).toBe("9007199254740993"); expect(editorControls().getByRole("textbox", { name: /^Name$/ })).toHaveValue("Changed"); expect(screen.getByRole("alert")).toHaveTextContent("configuration changed");
+    fireEvent.click(editorControls().getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" }); fireEvent.click(editorControls().getByRole("button", { name: "Keep my edit" })); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(2)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(view.writes).toHaveLength(2); expect(view.writes[1]!.body.ifVersion).toBe("9007199254740994"); expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it.each(["name", "url"] as const)("refreshes untouched fields after a CAS conflict without adding them to a %s edit", async edited => {
     const view = await mount(); openEdit();
-    if (edited === "name") setName("My name"); else fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/my-url" } });
+    if (edited === "name") setName("My name"); else fireEvent.change(editorControls().getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/my-url" } });
     const current = endpoint(); view.resources.set(endpointId, edited === "name" ? { ...current, configVersion: "2", destinationRevision: "2", destination: { ...current.destination, url: "https://receiver.example/other-url", displayUrl: "https://receiver.example/other-url" } } : { ...current, configVersion: "2", name: "Other name" });
-    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(screen.getByRole("button", { name: "Review current version" }));
+    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(editorControls().getByRole("button", { name: "Review current version" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: edited === "name" ? "Endpoint URL" : "Name" })).toHaveValue(edited === "name" ? "https://receiver.example/other-url" : "Other name"));
     expect(screen.queryByRole("button", { name: "Keep my edit" })).toBeNull(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(2));
     const body = view.writes[1]!.body; expect(body.ifVersion).toBe("2");
@@ -540,15 +588,15 @@ describe("Webhook configuration page", () => {
   });
 
   it.each(["current", "keep", "reedit"] as const)("requires an explicit %s decision before submitting a concurrently changed edited URL", async decision => {
-    const view = await mount(); openEdit(); setName("My name"); const urlInput = screen.getByRole("textbox", { name: "Endpoint URL" }); fireEvent.change(urlInput, { target: { value: "https://receiver.example/my-url" } });
+    const view = await mount(); openEdit(); setName("My name"); const urlInput = editorControls().getByRole("textbox", { name: "Endpoint URL" }); fireEvent.change(urlInput, { target: { value: "https://receiver.example/my-url" } });
     const current = endpoint(); view.resources.set(endpointId, { ...current, configVersion: "2", destinationRevision: "2", destination: { ...current.destination, url: "https://receiver.example/other-url", displayUrl: "https://receiver.example/other-url" } });
-    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" });
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(1);
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Review current version" })); }); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(editorControls().getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" });
+    expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(1);
+    await act(async () => { fireEvent.click(editorControls().getByRole("button", { name: "Review current version" })); }); expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled();
     if (decision === "current") fireEvent.click(screen.getByRole("button", { name: "Use current value" }));
-    else if (decision === "keep") fireEvent.click(screen.getByRole("button", { name: "Keep my edit" }));
+    else if (decision === "keep") fireEvent.click(editorControls().getByRole("button", { name: "Keep my edit" }));
     else fireEvent.change(urlInput, { target: { value: "https://receiver.example/reedited" } });
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(2));
+    expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(2));
     const body = view.writes[1]!.body; expect(body.ifVersion).toBe("2"); expect(body.name).toBe("My name");
     if (decision === "current") { expect(body).not.toHaveProperty("destination"); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destinationRevision).toBe("2"); }
     else { expect(body.destination).toEqual({ kind: "http", adapterVersion: "1", configuration: { url: decision === "keep" ? "https://receiver.example/my-url" : "https://receiver.example/reedited" } }); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destinationRevision).toBe("3"); }
@@ -570,7 +618,7 @@ describe("Webhook configuration page", () => {
     if (ownerKind === "team") {
       if (populated) await selectTeamEndpoint(view, original);
       else {
-        fireEvent.click(screen.getByRole("button", { name: "Team shared" }));
+        fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" }));
         await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
         fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } });
         await waitForState(() => expect(screen.getAllByRole("button", { name: "New webhook" })[0]).toBeEnabled());
@@ -587,7 +635,7 @@ describe("Webhook configuration page", () => {
     if (populated) { fireEvent.focus(window); await waitForState(() => expect(oldRequested).toBe(true)); }
     fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
     const name = `Created ${ownerKind} ${confirmation}`; setName(name);
-    fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } });
+    fireEvent.change(editorControls().getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } });
     if (confirmation === "receipt") view.loseNextWrite(); else view.holdNextWrite();
     submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1));
     if (confirmation === "receipt") {
@@ -616,9 +664,9 @@ describe("Webhook configuration page", () => {
   });
 
   it("scrubs same-version revoked URL and secret plus a retained editor after current permission confirmation", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible(); openEdit(); setName("Sensitive draft");
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible(); openEdit(); setName("Sensitive draft");
     const original = endpoint(); view.resources.set(endpointId, { ...original, destination: { ...original.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
-    await act(async () => { fireEvent.focus(window); }); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.getByRole("button", { name: "Show secret" })).toBeDisabled();
+    await act(async () => { fireEvent.focus(window); }); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(endpointDetail().getByRole("button", { name: "Show secret" })).toBeDisabled();
   });
 
   it("keeps failed search data without claiming that it is the new complete search", async () => {
@@ -628,30 +676,30 @@ describe("Webhook configuration page", () => {
   });
 
   it("blocks a URL draft when expansion becomes unavailable and still saves a name-only cleanup", async () => {
-    const view = await mount(); openEdit(); setName("Name cleanup"); fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } }); view.setExpansion(false);
-    expect(screen.getByRole("textbox", { name: "Endpoint URL" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Use current value" })); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.name).toBe("Name cleanup"); expect(view.writes[0]!.body).not.toHaveProperty("destination");
+    const view = await mount(); openEdit(); setName("Name cleanup"); fireEvent.change(editorControls().getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } }); view.setExpansion(false);
+    expect(editorControls().getByRole("textbox", { name: "Endpoint URL" })).toBeDisabled(); expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Use current value" })); expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.name).toBe("Name cleanup"); expect(view.writes[0]!.body).not.toHaveProperty("destination");
   });
 
   it.each(["event", "project"] as const)("blocks an existing subscription %s expansion but keeps event shrink available", async expansion => {
     const view = await mount(); await act(async () => { fireEvent.click(screen.getByRole("tab", { name: /Subscriptions/ })); }); fireEvent.click(screen.getByRole("button", { name: "Edit subscription Project one" }));
     if (expansion === "event") fireEvent.click(screen.getByRole("checkbox", { name: /task.status_changed/ })); else fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: secondProjectId } });
-    view.setExpansion(false); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); expect(screen.getByRole("checkbox", { name: /task.deleted/ })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
+    view.setExpansion(false); expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled(); expect(screen.getByRole("checkbox", { name: /task.deleted/ })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
     if (expansion === "event") fireEvent.click(screen.getByRole("checkbox", { name: /task.status_changed/ })); else fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: projectId } });
-    fireEvent.click(screen.getByRole("checkbox", { name: /task.created/ })); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.subscriptions).toEqual([{ id: id(7), projectId, eventTypes: ["task.paused"] }]);
+    fireEvent.click(screen.getByRole("checkbox", { name: /task.created/ })); expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.subscriptions).toEqual([{ id: id(7), projectId, eventTypes: ["task.paused"] }]);
   });
 
   it("keeps an actually dispatched lost write unknown when expansion is later unavailable", async () => {
-    const view = await mount(); openEdit(); fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/dispatched" } }); view.loseNextWrite(); view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(503, "database_unavailable")) : null); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); view.setExpansion(false);
-    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown")); expect(view.writes).toHaveLength(1); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    const view = await mount(); openEdit(); fireEvent.change(editorControls().getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/dispatched" } }); view.loseNextWrite(); view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(503, "database_unavailable")) : null); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); view.setExpansion(false);
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown")); expect(view.writes).toHaveLength(1); expect(editorControls().getByRole("button", { name: "Save" })).toBeDisabled();
     view.intercept(null); fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" })); await screen.findByText("Original operation confirmed"); expect(view.writes).toHaveLength(1);
   });
 
   it("blocks management while an original receipt lookup is held without clearing local editing", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); openEdit(); const draft = setName("Local draft"); fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Rotate secret" })); fireEvent.click(editorControls().getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); openEdit(); const draft = setName("Local draft"); fireEvent.click(editorControls().getByRole("button", { name: "Cancel" }));
     const held = barrier<Response>(); view.intercept(url => url.includes("/operations/") ? held.promise : null); fireEvent.click(screen.getByRole("button", { name: "Check operation" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled()); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(view.writes).toHaveLength(1);
-    held.resolve(response([...view.receipts.values()][0]!)); await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled()); expect(view.writes).toHaveLength(1); expect(draft).toHaveValue("Local draft");
+    await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled()); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(view.writes).toHaveLength(1);
+    held.resolve(response([...view.receipts.values()][0]!)); await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled()); expect(view.writes).toHaveLength(1); expect(draft).toHaveValue("Local draft");
   });
 
   it("performs restrictive cleanup while expansion is unavailable", async () => {
@@ -668,18 +716,18 @@ describe("Webhook configuration page", () => {
       expect(view.writes).toHaveLength(0);
       expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
       expect(screen.getByRole("switch")).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+      expect(endpointDetail().getByRole("button", { name: "Delete" })).toBeDisabled();
       disableDigest.resolve();
       await waitForState(() => expect(view.writes).toHaveLength(1));
       expect(view.writes[0]!.method).toBe("PATCH");
       expect(view.writes[0]!.body).toMatchObject({ enabled: false, ifVersion: "1", expectedUserId: userId });
       const disableOperation = view.writes[0]!.body.operationId;
       await waitFor(() => expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false"));
-      await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled());
+      await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Delete" })).toBeEnabled());
       expect(screen.getByRole("switch")).toBeDisabled();
       expect(screen.getByText(String(disableOperation))).toBeVisible();
 
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      fireEvent.click(endpointDetail().getByRole("button", { name: "Delete" }));
       fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete webhook" }));
       await waitForState(() => expect(digest).toHaveBeenCalledTimes(2));
       expect(view.writes).toHaveLength(1);
@@ -702,8 +750,8 @@ describe("Webhook configuration page", () => {
   });
 
   it("reads secrets only on request and preserves original rotation identity without reading the new secret", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await waitFor(() => expect(screen.getByText("Original rotation key")).toBeVisible()); expect(view.writes[0]!.body.mode).toBe("overlap"); expect(view.secretReads()).toBe(1); expect(screen.getByText("Original rotation key")).toBeVisible();
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Rotate secret" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(editorControls().getByRole("button", { name: "Generate new secret" })); await waitFor(() => expect(screen.getByText("Original rotation key")).toBeVisible()); expect(view.writes[0]!.body.mode).toBe("overlap"); expect(view.secretReads()).toBe(1); expect(screen.getByText("Original rotation key")).toBeVisible();
   });
 
   it("keeps unknown writes fixed and exposes GET-only recovery inside the native editor", async () => {
@@ -731,7 +779,7 @@ describe("Webhook configuration page", () => {
 
   it("does not let a held admin row read restore same-version data after a newer member projection", async () => {
     const original = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [original] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
+    const view = await mount({ initial: [original] }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
     fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); });
     const held = barrier<Response>(); let first = true;
     view.intercept((url, init) => { if (first && url === `/api/v1/teams/${teamId}/webhooks/${endpointId}` && (init.method === undefined || init.method === "GET")) { first = false; return held.promise; } return null; });
@@ -739,15 +787,15 @@ describe("Webhook configuration page", () => {
     await waitForState(() => expect(first).toBe(false));
     view.resources.set(endpointId, { ...original, destination: { ...original.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
     fireEvent.focus(window); await waitFor(() => expect(document.body.textContent).not.toContain("private=hidden"));
-    await act(async () => { held.resolve(response(original)); }); expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled();
+    await act(async () => { held.resolve(response(original)); }); expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.queryByRole("dialog")).toBeNull(); expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled();
   });
 
   it.each(["member", "absent"] as const)("withdraws privileged cached data on a confirmed Team directory %s result before held endpoint reads complete", async status => {
     const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [teamEndpoint] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
+    const view = await mount({ initial: [teamEndpoint] }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
     fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); });
     fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed");
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Retained admin draft");
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Retained admin draft");
     const admin = view.resources.get(endpointId) as WebhookActiveEndpoint, heldList = barrier<Response>(), heldEndpoint = barrier<Response>();
     view.intercept((url, init) => {
       if ((init.method === undefined || init.method === "GET") && url.startsWith(`/api/v1/teams/${teamId}/webhooks`)) return url.includes(`/${endpointId}`) ? heldEndpoint.promise : heldList.promise;
@@ -759,7 +807,7 @@ describe("Webhook configuration page", () => {
     await act(async () => { heldList.resolve(response({ items: [{ id: admin.id, owner: admin.owner, name: admin.name, enabled: admin.enabled, configVersion: admin.configVersion, destination: admin.destination, projectCount: 1, eventTypeCount: 2, lastAttemptAt: null, lastResult: null }], nextCursor: null })); heldEndpoint.resolve(response(admin)); });
     expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
     view.intercept(null); view.resources.set(endpointId, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Personal" })); });
+    await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Personal" })); });
     const beforeReturn = view.fetch.mock.calls.filter(([url]) => String(url).startsWith(`/api/v1/teams/${teamId}/webhooks`)).length;
     act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}`));
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await screen.findByText(status === "member" ? "Member · Read only" : "Team access is unavailable.");
@@ -778,10 +826,10 @@ describe("Webhook configuration page", () => {
 
   it("treats a limited Endpoint as owner-wide restriction even while the directory and prior list still contain admin data", async () => {
     const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } }));
-    const view = await mount({ initial }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); });
+    const view = await mount({ initial }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); });
     fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed"); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
     const admins = [...view.resources.values()] as WebhookActiveEndpoint[];
-    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
+    fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
     for (const admin of admins) view.resources.set(admin.id, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
     let firstList = true;
     view.intercept((url, init) => {
@@ -793,15 +841,15 @@ describe("Webhook configuration page", () => {
     await act(async () => { fireEvent.focus(window); }); await screen.findByText("Member · Read only");
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(screen.queryByRole("alert")).toBeNull();
     await act(async () => { fireEvent.focus(window); }); expect(screen.getByText("Member · Read only")).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Personal" })); }); act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}`));
+    await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Personal" })); }); act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}`));
     expect(document.body.textContent).not.toContain("private=hidden"); await screen.findByText("Member · Read only"); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(screen.getByText("Original operation confirmed")).toBeVisible();
     view.intercept(null); for (const admin of admins) view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window);
-    await waitFor(() => expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled()); await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeEnabled(); expect(view.secretReads()).toBe(1); expect(view.writes).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled()); await waitFor(() => expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled());
+    expect(endpointDetail().getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled(); expect(endpointDetail().getByRole("button", { name: "Show secret" })).toBeEnabled(); expect(view.secretReads()).toBe(1); expect(view.writes).toHaveLength(1);
   });
 
   it("withdraws private detail and drafts immediately when a fresh list is limited but detail and directory reads wait", async () => {
-    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
+    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
     const held = barrier<Response>(); view.intercept((url, init) => {
       if (url.startsWith("/api/v1/teams?") || url === `/api/v1/teams/${teamId}/webhooks/${endpointId}`) return held.promise;
       return null;
@@ -812,7 +860,7 @@ describe("Webhook configuration page", () => {
   });
 
   it.each([403, 404] as const)("treats a sibling configuration GET %s as owner denial or resource absence according to its semantics", async status => {
-    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed"); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled()); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed"); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled()); fireEvent.click(endpointDetail().getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
     view.intercept((url, init) => url === `/api/v1/teams/${teamId}/webhooks/${id(8)}` ? Promise.resolve(failure(status, status === 403 ? "forbidden" : "not_found")) : null);
     fireEvent.click(screen.getByRole("button", { name: "More actions Endpoint 8" })); fireEvent.click(within(document.querySelector(".row-menu")! as HTMLElement).getByRole("button", { name: "Edit" })); await screen.findAllByRole("alert");
     if (status === 403) { expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(document.body.textContent).not.toContain("Engineering"); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); await act(async () => { fireEvent.focus(window); }); expect(document.body.textContent).not.toContain("private=hidden"); }
@@ -821,9 +869,9 @@ describe("Webhook configuration page", () => {
   });
 
   it("preserves the current Team editor and focus when a directory background observation is unchanged", async () => {
-    const view = await mount({ initial: [{ ...endpoint(), owner: { kind: "team", id: teamId } }] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    const view = await mount({ initial: [{ ...endpoint(), owner: { kind: "team", id: teamId } }] }); await act(async () => { fireEvent.click(ownerControls().getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     openEdit(); const input = setName("Team draft"), dialog = screen.getByRole("dialog"); input.focus(); input.setSelectionRange(1, 4);
-    await act(async () => { fireEvent.focus(window); }); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Team draft"); expect(input).toHaveFocus(); expect(input.selectionStart).toBe(1); expect(input.selectionEnd).toBe(4); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    await act(async () => { fireEvent.focus(window); }); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Team draft"); expect(input).toHaveFocus(); expect(input.selectionStart).toBe(1); expect(input.selectionEnd).toBe(4); expect(editorControls().getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("confirms a delayed write receipt while refusing its stale privileged current projection", async () => {
@@ -836,7 +884,7 @@ describe("Webhook configuration page", () => {
   });
 
   it("withdraws deleted private data as soon as the receipt is confirmed and consumes the final tombstone while background reads wait", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Delete" }));
     const held = barrier<Response>(); view.intercept((url, init) => url.includes("/webhooks") && (init.method === undefined || init.method === "GET") ? held.promise : null);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete webhook" }));
     await waitForState(() => expect(view.writes).toHaveLength(1)); await waitFor(() => expect(screen.getByText("Original operation confirmed")).toBeVisible());
@@ -864,13 +912,13 @@ describe("Webhook configuration page", () => {
   });
 
   it("retains the original rotation key and deadline while exposing a contradictory later receipt", async () => {
-    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const view = await mount(); fireEvent.click(endpointDetail().getByRole("button", { name: "Rotate secret" })); fireEvent.click(editorControls().getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const original = [...view.receipts.values()][0]!; view.receipts.set(original.operationId, { ...original, keyId: id(999), overlapUntil: "2026-11-10T00:00:00Z" });
     fireEvent.click(screen.getByRole("button", { name: "Check operation" })); await screen.findByRole("alert");
     expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(screen.getByText(original.keyId!)).toBeVisible(); expect(screen.getByText(original.overlapUntil!)).toBeVisible(); expect(document.body.textContent).not.toContain(id(999)); expect(view.writes).toHaveLength(1);
   });
 
   it("translates retained drafts and restores the opener after native cancel", async () => {
-    const view = await mount(); const opener = screen.getByRole("button", { name: "Edit Endpoint 5" }); opener.focus(); fireEvent.click(opener); const input = setName("Draft"); view.setLocale("zh-CN"); expect(input).toHaveValue("Draft"); expect(screen.getByRole("dialog")).toHaveAccessibleName("编辑 Webhook"); fireEvent(screen.getByRole("dialog"), new Event("cancel", { bubbles: false, cancelable: true })); expect(screen.queryByRole("dialog")).toBeNull(); await waitFor(() => expect(opener).toHaveFocus());
+    const view = await mount(); const opener = endpointDetail().getByRole("button", { name: "Edit Endpoint 5" }); opener.focus(); fireEvent.click(opener); const input = setName("Draft"); view.setLocale("zh-CN"); expect(input).toHaveValue("Draft"); expect(screen.getByRole("dialog")).toHaveAccessibleName("编辑 Webhook"); fireEvent(screen.getByRole("dialog"), new Event("cancel", { bubbles: false, cancelable: true })); expect(screen.queryByRole("dialog")).toBeNull(); await waitFor(() => expect(opener).toHaveFocus());
   });
 });

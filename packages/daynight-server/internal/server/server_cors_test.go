@@ -18,8 +18,8 @@ import (
 )
 
 const browserAPIOrigin = "https://application.example"
-const corsRequestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256"
-const corsExposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version"
+const corsRequestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Task-Relations, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal"
+const corsExposedHeaders = "Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
 
 func rootCORSFixture(t *testing.T, origin string, principal model.Principal) (http.Handler, *httpTestStore, *rootIdentityWitness) {
 	t.Helper()
@@ -141,17 +141,18 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	for _, op := range []string{"members", "invitations"} {
 		add("GET HEAD POST", team+"/"+op)
 	}
-	add("PATCH DELETE", team+"/members/"+id)
+	add("POST PATCH DELETE", team+"/members/"+id)
 	add("DELETE", team+"/invitations/"+id)
 	add("GET HEAD", "/api/v1/me/workers")
 	add("GET HEAD", worker)
 	add("POST", "/api/v1/me/workers/monitoring/query")
 	add("GET PUT", worker+"/monitoring")
 	add("GET HEAD PUT", worker+"/configuration")
+	add("GET HEAD PUT", worker+"/alias")
 	add("POST", worker+"/report")
 	add("POST", worker+"/readonly/requests")
 	add("GET", worker+"/readonly/channel")
-	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/" + id + "/worker-prompt", worker + "/prompt"} {
+	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/" + id + "/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/" + id + "/reviewer-prompt", worker + "/reviewer-prompt"} {
 		add("GET HEAD PUT", path)
 	}
 	add("GET HEAD POST", p+"/tasks")
@@ -164,11 +165,6 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("POST PATCH", task+"/worker-claim")
 	for _, op := range []string{"release", "withdraw"} {
 		add("POST", task+"/worker-claim/"+op)
-	}
-	add("GET HEAD POST", task+"/steps")
-	add("GET HEAD PATCH DELETE", task+"/steps/abcdef01")
-	for _, op := range []string{"status", "position"} {
-		add("PUT", task+"/steps/abcdef01/"+op)
 	}
 	add("GET HEAD POST", task+"/thread/messages")
 	add("GET HEAD", task+"/attachments")
@@ -186,11 +182,8 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("GET", "/api/v1/test-session-capabilities")
 	add("GET POST", task+"/sessions")
 	add("GET", task+"/sessions/current")
-	for _, op := range []string{"timeline", "channel", "state", "inspection", "messages", "message-content", "archive/receipt", "archive/state"} {
+	for _, op := range []string{"timeline", "channel", "inspection", "messages", "message-content"} {
 		add("GET", session+"/"+op)
-	}
-	for _, op := range []string{"recording-evidence", "automation-recovery"} {
-		add("GET", session+"/"+op+"/"+id)
 	}
 	add("GET POST", "/api/v1/test-sessions")
 	add("GET", testSession)
@@ -271,7 +264,7 @@ func TestRootCORSRefusesUnregisteredMethodsAndProducerHeaders(t *testing.T) {
 			assertBrowserCORS(t, w, true)
 		})
 	}
-	for _, name := range []string{"Daynight-Controller-Fence", "Daynight-Controller-Token", "Daynight-File-Byte-Length", "Daynight-File-SHA256", "Content-Encoding", "X-Unknown"} {
+	for _, name := range []string{"Daynight-Controller-Fence", "Daynight-Controller-Token", "Daynight-File-Byte-Length", "Daynight-File-SHA256", "Daynight-Archive-Upload-Version", "Daynight-Resource-Descriptor", "Content-Encoding", "X-Unknown"} {
 		t.Run(name, func(t *testing.T) {
 			w := corsHTTP(t, handler, "OPTIONS", "/api/v1/me", http.Header{"Origin": {browserAPIOrigin}, "Access-Control-Request-Method": {"GET"}, "Access-Control-Request-Headers": {"Authorization, " + name}})
 			if w.Code != 403 {
@@ -436,8 +429,6 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 	testSession := "/api/v1/test-sessions/" + id
 	var routes []struct{ methods, path string }
 	add := func(methods, path string) { routes = append(routes, struct{ methods, path string }{methods, path}) }
-	add("GET HEAD", session+"/worker-channel")
-	add("POST", session+"/worker-messages")
 	for _, base := range []string{session, testSession} {
 		add("PUT", base+"/image-history-ledger/"+id)
 		add("GET HEAD", base+"/image-history-ledger/"+id+"/status")
@@ -448,8 +439,12 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 		add("PUT", base+"/archive/content")
 		add("PUT", base+"/archive/prepare/history/"+id)
 		add("GET HEAD", base+"/archive/prepare/history/"+id+"/status")
+		add("POST", base+"/archive/prepare/history/"+id+"/complete")
+		add("POST", base+"/archive/prepare/history/"+id+"/restart")
 		add("PUT", base+"/archive/files/"+id)
 		add("GET HEAD", base+"/archive/files/"+id+"/status")
+		add("POST", base+"/archive/files/"+id+"/complete")
+		add("POST", base+"/archive/files/"+id+"/restart")
 	}
 	for _, route := range routes {
 		for _, method := range strings.Fields(route.methods) {

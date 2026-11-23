@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldNative, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { startCopilotRuntime } from "../../../../dist/commands/controller/providers/copilot-runtime.js";
 import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages, observeCopilotBridgeRoute } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
@@ -12,7 +12,16 @@ import { validateImageFile } from "../../../../dist/commands/controller/media/im
 
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
+const gracefulNativeShutdown = ["route-undeclared-transport", "read-authority", "graceful-shutdown"].includes(mode);
+const nativeStopSignals = [];
 const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
+const routeClockArmed = path.join(root, "route-clock-armed-5000"), routeClockRelease = path.join(root, "route-clock-release");
+if (mode === "route-timeout") {
+  const preload = new URL("copilot-bridge-route-clock.mjs", import.meta.url);
+  for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key];
+  environment.NODE_OPTIONS = `--import=${preload.href} ${process.env.NODE_OPTIONS ?? ""}`.trim();
+  environment.DAYNIGHT_TEST_ROUTE_CLOCK_ROOT = root;
+}
 let permissionRequest;
 const correlation = new CopilotReadCorrelation("b".repeat(64), "fixture-session"), hidden = [];
 const records = () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -20,12 +29,24 @@ const eventually = async predicate => {
   for (let attempt = 0; attempt < 400; attempt++) { if (predicate()) return; await delay(10); }
   throw new Error("Fixture observation timed out.");
 };
+const within = async (result, stage) => {
+  let timer;
+  try {
+    return await Promise.race([result, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${stage} did not complete.`)), 4000); })]);
+  } finally { clearTimeout(timer); }
+};
 let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0, bridgeSecretLeak = false, secretTail = "";
 const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNativeSessionId: null,
   executable: fileURLToPath(new URL("copilot-bridge-native.mjs", import.meta.url)),
-  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType }, onTimeline() {}, onState() {},
+  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType,
+    DAYNIGHT_TEST_BRIDGE_SHUTDOWN: gracefulNativeShutdown ? "exit" : "linger" }, onTimeline() {}, onState() {},
   onSpawn(child) {
     children.push(child);
+    if (children.length === 1 && mode === "normal") {
+      // Observe the signal without changing what the live native process receives.
+      const kill = child.kill.bind(child);
+      child.kill = signal => { nativeStopSignals.push(signal); return kill(signal); };
+    }
     if (children.length === 2) {
       let bytes = 0;
       child.stdout.on("data", chunk => { const scan = secretTail + String(chunk); bridgeSecretLeak ||= scan.includes("endpoint-secret-canary"); secretTail = scan.slice(-64); peakControllerRss = Math.max(peakControllerRss, process.memoryUsage().rss); for (const byte of chunk) { bytes++; if (byte === 10) { maxFrameBytes = Math.max(maxFrameBytes, bytes); bytes = 0; } } });
@@ -35,6 +56,36 @@ const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNa
   if (mode === "capture-failure") throw new Error("Fixture shared media owner capacity exhausted.");
   return openNativeMediaSpool(path.join(root, randomUUID()), maxBytes, () => {}, () => {});
 } });
+const closeAfterNativeGrace = async () => {
+  const [native, helper] = children;
+  const schedule = globalThis.setTimeout;
+  const armed = Promise.withResolvers();
+  let expire;
+  // The shutdown RPC and bridge deadlines run before the helper exits. Only
+  // the acknowledged native exit grace is armed after that successful exit.
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    if (milliseconds !== 1500 || helper.exitCode !== 0) return schedule(callback, milliseconds, ...args);
+    const handle = schedule(() => {}, 20_000).unref();
+    expire = () => { clearTimeout(handle); callback(...args); };
+    globalThis.setTimeout = schedule;
+    armed.resolve(true);
+    return handle;
+  };
+  let closing;
+  try {
+    closing = runtime.close();
+    assert.equal(await Promise.race([armed.promise, closing.then(() => false)]), true, "Acknowledged shutdown must arm the 1500 ms native exit grace.");
+    await yieldNative();
+    assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+    assert.equal(native.exitCode, null, "The native process must remain live during the grace period.");
+    assert.equal(native.signalCode, null);
+    assert.deepEqual(nativeStopSignals, [], "The native process must receive no signal before the grace expires.");
+  } finally {
+    globalThis.setTimeout = schedule;
+    expire?.();
+    await closing;
+  }
+};
 let releaseReader;
 process.once("SIGTERM", () => { void runtime.close(true).finally(() => process.exit(1)); });
 try {
@@ -70,10 +121,15 @@ try {
     const session = await client.createSession(config);
     assert.equal(session.sessionId, "fixture-session");
     if (mode === "route-timeout") {
+      let settled = false;
       const pending = observeCopilotBridgeRoute(session);
-      await eventually(() => records().some(record => record.method === "session.provider.getEndpoint"));
-      assert.equal(await session.send({ prompt: "text while observation is pending" }), "sent-1");
-      assert.equal(await pending, null);
+      const markSettled = () => { settled = true; };
+      void pending.then(markSettled, markSettled);
+      await eventually(() => existsSync(routeClockArmed) && records().some(record => record.method === "session.provider.getEndpoint"));
+      assert.equal(await within(session.send({ prompt: "text while observation is pending" }), "Concurrent text acknowledgement"), "sent-1");
+      assert.equal(settled, false, "Route observation must still be pending after the text acknowledgement.");
+      writeFileSync(routeClockRelease, "", { flag: "wx" });
+      assert.equal(await within(pending, "Released route timeout"), null);
       assert.equal(await observeCopilotBridgeRoute(session), null);
       assert.equal(await session.send({ prompt: "text after observation timeout" }), "sent-2");
       assert.equal(records().filter(record => record.method === "session.provider.getEndpoint").length, 1);
@@ -184,7 +240,9 @@ try {
         await client.ping("emit"); await eventually(() => events.some(event => event.id === "tool-event"));
         const liveMarker = events.find(event => event.id === "tool-event").data.result.contents[1].data;
         releaseReader = retainCopilotBridgeImage(liveMarker);
-        await runtime.close(); assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
+        if (mode === "normal") await closeAfterNativeGrace();
+        else await runtime.close();
+        assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
         releaseReader(); releaseReader = undefined; assert(!existsSync(liveMarker.path)); assert(!isCopilotBridgeImage(liveMarker));
         assert.equal(runtime.bridgeMetrics().mediaCount, 0);
       }
@@ -200,7 +258,9 @@ try {
     for (const child of children) assert(child.exitCode !== null || child.signalCode !== null, "Owned process must exit before returning.");
   }
 }
-if (mode === "graceful-shutdown") assert(children.every(child => child.exitCode === 0 && child.signalCode === null), "Graceful shutdown must join both children without signals.");
+if (gracefulNativeShutdown || mode === "normal") assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+if (gracefulNativeShutdown) assert(children.every(child => child.exitCode === 0 && child.signalCode === null && !child.killed), "Graceful shutdown must join both children without signals.");
+if (mode === "normal") assert.deepEqual(nativeStopSignals, ["SIGTERM"], "A native process that acknowledges shutdown and lingers must be stopped once.");
 assert.equal(bridgeSecretLeak, false, "Endpoint credentials crossed the bridge.");
 if (["kill-helper", "kill-native", "malformed"].includes(mode)) assert(traces.every(line => line === "Copilot SDK cleanup failed; the owned runtime was terminated."), traces.join(""));
 else assert.equal(traces.join(""), "", traces.join(""));

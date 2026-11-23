@@ -26,7 +26,7 @@ const (
 	MaxNativeArgBytes         = 4 << 10
 	MaxProjects               = 128
 	MaxInventoryClaims        = 256
-	MaxObservationItems       = 1026
+	MaxObservationItems       = 1030
 	MaxTelemetryJSONBytes     = 4 << 20
 	MaxConfigurationJSONBytes = 4 << 20
 	MaxWorkerJSONBytes        = 4 << 20
@@ -131,7 +131,7 @@ func AdmitTelemetry(value model.WorkerTelemetry) error {
 		field string
 		value *string
 	}{
-		{"versions.herdr", value.Versions.Herdr.Value}, {"versions.codex", value.Versions.Codex.Value}, {"versions.copilot", value.Versions.Copilot.Value},
+		{"versions.codex", value.Versions.Codex.Value}, {"versions.copilot", value.Versions.Copilot.Value},
 	} {
 		if item.value != nil {
 			if err := bytesLimit(item.field, *item.value, MaxVersionBytes); err != nil {
@@ -208,10 +208,20 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			continue
 		}
 		switch item.Key.Kind {
-		case "preferPlatformSpecificTasks":
+		case "platformTaskMode":
+			var mode model.WorkerPlatformTaskMode
+			if err := configurationDecode(item.AppliedValue, &mode); err != nil || !mode.Valid() {
+				return invalidInput("Worker platform task mode must be all, prefer or only.")
+			}
+		case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 			var enabled bool
 			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {
 				return err
+			}
+		case "taskTagFilter":
+			var digest string
+			if err := configurationDecode(item.AppliedValue, &digest); err != nil || !validTaskTagFilterKey(digest) {
+				return invalidInput("Task tag filter applied value must be a lowercase SHA-256 digest.")
 			}
 		case "native", "projectNative":
 			var native model.WorkerNativeConfiguration

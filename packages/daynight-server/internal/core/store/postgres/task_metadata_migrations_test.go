@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -68,7 +67,7 @@ func snapshotTaskBeforePermission(t *testing.T, database *Store, projectID, id s
 	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT
   t.id::text,t.project_id::text,t.title,t.description,t.status,t.version,
   t.created_at,t.updated_at,t.started_at,t.completed_at,true,NULL::text,t.properties,`+
-		pg.TaskDependsOn+`,ARRAY[]::text[],`+pg.TaskBlockedBy+`,`+historicalTaskReady+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
+		historicalTaskDependsOn+`,ARRAY[]::text[],`+historicalTaskBlockedBy+`,`+historicalTaskReady+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ The existing per-execution rotation, retry and
 source protection remain in the attempt. Completion does not wake the scheduler.
 Shutdown cancels and joins the maintenance task before publishing the stopped
 state and closing stores. Scan failures have a Worker-scoped archive owner;
-per-execution failures retain their original claim scope.
+per-execution failures retain their original claim scope. [Web archive independence](../bug-fix/2026-11-16-web-archive-independent-cleanup.md) also assigns terminal archive failures to this owner.
 
 ## Alternatives
 

@@ -5,25 +5,33 @@ Session 和 Test Session 的专用 cursor 在 base64 解码前检查原有较小
 
 ## 组件与实现边界
 
-[需求](../spec/task-sessions.md)定义两种互斥执行方式。认领服务保存实际模式，CLI 冻结执行配置，Web 读取同一字段。共享纯 TypeScript 协议位于 `packages/daynight/src/session/`；CLI 发布时随包编译，Web 从同一源码消费类型与解析，避免产生独立发布包或重复协议副本。模块不得依赖 Node 进程、文件系统或认证配置。
+[需求](../spec/task-sessions.md)定义 Session 的执行与历史读取。认领服务保存实际模式，CLI 冻结执行配置，Web 读取同一字段。共享纯 TypeScript 协议位于 `packages/daynight/src/session/`；CLI 发布时随包编译，Web 从同一源码消费类型与解析，避免产生独立发布包或重复协议副本。模块不得依赖 Node 进程、文件系统或认证配置。
 
-Herdr 终端内容的[显式 v2 契约](session-v2-contract.md)使用独立严格解析器、运行代次账本和完整帧归档；其页面与控制由 [Herdr Session Web 设计](herdr-session-web.md)说明。Web producer、relay 路由与 v1 文件行为保持本页所述；v2 类型可用本身不代表运行端具备对应能力。
+Herdr 终端内容的[显式 v2 契约](session-v2-contract.md)使用独立严格解析器、运行代次账本和完整帧归档；历史读取由 [终端 Session 服务端设计](terminal-session-server.md)说明，网页只呈现已上传录像。Web producer、relay 路由与 v1 文件行为保持本页所述；v2 类型可用本身不代表运行端具备对应能力。
 
-worker 根据冻结模式选择 backend。Herdr backend 负责 Codex、Claude、Copilot 的原生终端执行；Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制，纯 Web 执行不初始化、启动或探测 Herdr。独立[运行快照上报](daynight-worker-reporting.md)只读私有端点版本，不初始化 Herdr 执行 backend。非法组合在认领前拒绝；已有执行的恢复与清理仍由其原 backend 负责。
+Worker 通过 Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制；Web 执行不初始化、启动或探测 Herdr。旧 Herdr claim 及资源由用户处理。独立[运行快照上报](daynight-worker-reporting.md)采集 Web 所需的原生工具事实。
 
 公开的 `daynight controller <provider> [options] [prompt]` 在当前目录创建独立 Test Session，前台 launcher 承担注册、凭据续签与停止证明；它不运行 worker 调度或创建 Task。其[用户需求](../spec/controller-test-sessions.md)与 Task 生命周期分开，底层 Provider、在线 relay 与 Session View 共用。
 
 ## 配置与持久身份
 
-Worker 的云端 `agentControlMode` 只接受 `herdr|web`，旧未采纳目标保持未知。新配置从本地 `worker.agentControlMode` 首次采纳，省略时为 `herdr`；旧服务继续使用本地模式。新 claim 只使用经过成组验证并持久发布的 mode/native，既有 claim 继续使用冻结身份。repository 继承全局模式但不可覆盖；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持两种模式。
+云端原始 `agentControlMode` 保留既有目标；含该旧字段的目标须由用户明确修正，不自动转换。本地省略模式时使用 web，显式 herdr 不受支持。新 claim 只使用经过验证并持久发布的 Web/native，既有 claim 保留冻结身份；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持 Web。
 
-有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。请求显式 null、未知值或 Web 非空 Herdr binding 均拒绝。
+有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。新 claim 请求缺失模式、显式 null、herdr 或未知值均拒绝；认领与执行摘要请求拒绝 `herdr` 成员，包括 null。
 
-worker 主索引保存 project/task/claim、status、agent、session_id 和 agent_control_mode。Herdr 延续当前资源对账及进程内计时；Web 的配置、恢复预算、初始输入回执、清理期限及进程证据保存在独立 web-executions.sqlite 中，由 Web backend 负责解释，不成为 Herdr 的恢复来源。Controller 自身 journal 仍是原生调用与 outbox 的所有者。强制撤回清除 claim 的同时使对应 Session 失去普通写能力；不宣称已停止远端进程，也不提供 transfer。
+worker 主索引保存 project/task/claim、status、agent、session_id 和 agent_control_mode。历史 Herdr 索引不进入当前协调；Web 的配置、恢复预算、初始输入回执、清理期限及进程证据保存在独立 web-executions.sqlite 中，由 Web backend 负责解释，不成为 Herdr 的恢复来源。Controller 自身 journal 仍是原生调用与 outbox 的所有者。强制撤回清除 claim 的同时使对应 Session 失去普通写能力；不宣称已停止远端进程，也不提供 transfer。
 
 Web 清理首次落盘时，以 backend 读取的时间为 startedAt；如果调用方的 deadline 已经过期，将其规范为 startedAt，表示剩余预算为零。该规则覆盖立即停止时两次取时之间的毫秒差，不授予额外执行时间。已有清理记录始终保留原 startedAt、deadline 和操作身份；worker 直接退出跳过清理 prompt，仍须独立证明原生进程停止。
 
 Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task 的 worker.phase。Task summary 保留 preparing/executing/paused 等执行阶段，避免审批期间的高频版本更新使 Agent 刚读到的 task version 立即失效。模式不可通过 worker summary 或普通 properties 更新。存在 Worker claim 时，服务端当前 claim 是主页面模式的唯一依据，nativeSessionId、是否在线或用户 YAML 均不能替代它；无 claim 的只读入口使用原历史记录的内容类型，按[共同入口设计](herdr-session-web.md#页面与身份)自动选择。[认领设计](daynight-worker-claims.md)拥有实际 HTTP 路径和事务约束。
+
+## Worker 持久派发围栏
+
+Worker 管理的 Controller ticket 与 journal 保存原 `lifecycleBinding`，包含服务、账号、Worker、管理实例、意图版本、本机 epoch 与作用域代次。Controller 从原私有 `lifecycle.sqlite` 验证该绑定；已存在 Worker 权威但旧受管 ticket 缺少绑定时拒绝业务启动，先停止原边界再处理格式转换。独立 `standalone_test` 不属于 Worker 准入，不能因同机存在 Worker 数据库而被吸收进其身份。
+
+Controller 在启动和输入进入前登记原资源责任，在每个最终 Provider 调用及异步准备之后重新读取持久准入；辅助进程携带冻结的同一围栏。取消、原结果保存与停止通道保留管理权限，清理 prompt、图片解码、Markdown 采集和设置刷新不能借用该权限开展新的业务工作。旧 intent、实例或作用域不能用内存缓存绕过本机关门。围栏拒绝不会删除已登记的原责任。
+
+输入结算与进程停止分别保存：原 operation 的 `confirmed/provider_accepted` 证明受理，`rejected/expired` 证明未派发，其他状态保留未知；受理回执不证明原生已停止。Controller/Provider 资源仍由原执行 owner 核对原出生证明、完整 PGID 或 Windows Job、journal 与 writer 保存结果。父连接消失、直接 PID 不存在和受理回执都不能替代整边界停止证明。Worker 恢复只消费原执行和操作证据，不重放结果未知的输入；[Worker 生命周期设计](daynight-worker.md#持久停用与恢复)拥有恢复资格与管理根职责。
 
 ## Wire 身份与操作
 
@@ -58,9 +66,9 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 ## 独立 Controller 手动恢复
 
-`controller <provider> resume [test-session-id]` 从私有 launch ticket 与 journal 建立来源绑定，核对 provider、native ID、native home、真实 cwd、server origin、owner 与停止证据。候选选择后再次核验服务端归档身份，并取得以 provider、规范 native home 和 native ID 为键的本机跨执行锁；加锁后重新检查同原生会话的全部已登记执行，防止选择期间状态变化。
+`controller <provider> resume [test-session-id]` 从私有 launch ticket 与 journal 建立来源绑定，核对 provider、native ID、native home、真实 cwd、server origin、owner 与停止证据。候选筛选前及加锁后的库存读取对实际 schema 验证通过的 v16/v17/v18 使用精确 ticket 的只读快照，无关存活 Controller 不因格式升级阻塞恢复；更早受支持的来源保留原迁移准入。候选选择后再次核验服务端归档身份，并取得以 provider、规范 native home 和 native ID 为键的本机跨执行锁；加锁后重新检查同原生会话的全部已登记执行，防止选择期间状态变化。
 
-本机 native resume lease 库独立使用版本 1。申请在同一同步事务中检查格式、必要时重置或升级、查重并写入 lease；已有 `leases` 表的任何保留行都阻止重置或迁移，版本 0 没有该表时可重置。版本 0 重置丢弃原 schema 和数据，并执行基线与编号升级。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
+本机 native resume lease 库独立使用版本 1。申请先提交格式检查、必要的重置或升级，再在独立同步事务中重新检查当前格式、查重并写入 lease；已有 `leases` 表的任何保留行都阻止重置或迁移，版本 0 没有该表时可重置。版本 0 重置丢弃原 schema 和数据，并执行基线与编号升级。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。业务 COMMIT 正常返回后才确认取得租约；结果未知保留可能持久化的 nonce，成功后 inventory 失败按 exact nonce 释放。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
 
 恢复注册新的 Test Session 和 execution，使用新的凭据、journal 和操作身份，ticket 的 resumeNativeSessionId 指向原生历史且 initialInput 固定为 none。新 URL 从原生历史投影 timeline，旧 Session 的归档和回执保持不变。已有 Provider 原生恢复负责准确身份与历史加载，不重发旧操作。锁贯穿 launcher 的执行和清理；未启动或完整停止证明允许释放，未知结果保留租约。该流程不放宽服务端 archived grant 拒绝，也不承担外部原生 TUI 的抢占。
 
@@ -88,7 +96,11 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、当前 timeline、投影状态及有界 outbox，资源 descriptor/blob/pin 继续由相邻文件拥有者保存。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
-Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取当前 journal 的单次只读快照，核对完整执行身份、generation 和 ticket 绑定；观察不迁移旧格式。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
+受管 Task 换代后恢复未派发的首次输入时，Controller 在原生输入队列内重新核验当前 claim、就绪状态、冻结 ticket 与 journal 的当前快照和相邻前代停证。原 operation 缺失时创建原 ID，或在单写者事务中将正文、hash 和 kind 精确匹配且仍为 `accepted` 的记录绑定当前 generation；随后沿既有路径先持久化 `dispatching`，再调用 Provider。已进入派发、未知或终态的记录不能重新变为 `accepted`。重复 IPC 共享原操作，不能产生第二次可能的 native dispatch；journal 证据不完整或冲突时保留责任并拒绝发送。Worker 的工作树和恢复入口规则见 [Worker 设计](daynight-worker.md#web-backend-与执行证据)。
+
+Worker lifecycle 库的输入预留可能先于 journal 的派发记录落盘。换代时如原预留仍为 `reserved`，须核验其原 ticket、完整停证及输入归属，并在当前 lifecycle 准入围栏下条件接管；已有派发或终态证据的预留不能接管。两个库之间中断保留原 operation 和预留责任，后续代按持久归属重新核验，不推断跨库原子提交。停用对账先确认当前及历史 Controller 的完整停止，再核验同一 journal 的 prepared 操作并条件结算原预留为 `not_dispatched`。重新启用时保留该终态，以新资源身份承载原 operation 的后续责任；存在其他未结算或已受理责任时拒绝创建。迟到回执按原 operation 和 generation 定位责任。
+
+Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取 journal 的单次只读快照：空来源继续按 writer 未提交处理，已交付 v16/v17 或当前 v18 必须通过实际 schema 验证，再核对完整执行身份、generation、ticket 绑定和原进程证明。观察不迁移或改写 journal；不支持的非空格式和身份冲突明确失败。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
 
 同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。
 
@@ -106,19 +118,41 @@ POSIX 原 Controller 被重新收养后，匹配出生时间和进程组的 zomb
 
 Windows 复核直接进入原生路径，不以 `process.kill(pid, 0)` 或 ESRCH 判断完成。查询与同步权限的同一句柄先核对出生时间；不同出生时间返回 replaced，原 PID 权威确认不存在或同出生实例句柄 signaled 才可确认该原实例退出。句柄未 signaled 时，即使退出码已变化或 native 查询明确报告 `STATUS_PROCESS_IS_TERMINATING`，仍是退出过渡；仅允许等待，不能报告 stopped。运行中的原实例须继续核对命令行哈希、父 PID 和 process group；同出生完整身份冲突、未知 native 状态、未确认的权限与查询错误继续抛出，保留执行资料与资源责任。每个已取得句柄在成功、失败及到期路径释放一次，关闭失败与主要失败并存时保留两者。POSIX 的比较行为保持不变。退出完成的依据及句柄责任见[原进程退出决策](../../.agents/notes/implemented/bug-fix/2026-11-13-windows-controller-exit-completion.md)。
 
-Journal 的编号迁移由本库唯一 canonical 001–011 SQL 序列持有，当前格式为 v11；已发布009及 `input_message_origins` 保持原文和原关系。[SQL 正文所有者](session-sqlite-content.md)统一提供当前行、历史导入和停止维护，普通运行不读取旧候选正文。版本 0 在准入后重建 schema，非零迁移保留原数据。迁移工厂以局部 provider 绑定 `JournalMigrationContext` 的原 permit 与预留写入能力；未建立上下文的迁移拒绝执行。当前格式读取不调用 provider、不取存储锁，旧格式文件读取才取得 maintenance permit；明确锁忙时沿通用 SQLite 层只重查一次当前只读快照。借用旧格式连接须显式传递原 permit，不能在 SQL 事务内重入取锁。版本 0 没有 `execution` 表时可重置，已有该表时必须能读取 `id` 和 `owner_pid`，缺列或活跃、未知 owner 均在 DDL 前失败。独立待归档源不随 reset 删除；缺少 execution 身份而有非空 timeline 或资源时拒绝采用，空 manifest 可用于尚未发布内容的初始化重试。
+Journal 的编号迁移由本库唯一 canonical 001–018 SQL 序列持有，当前格式为 v18；已发布009及 `input_message_origins` 保持原文和原关系。[SQL 正文所有者](session-sqlite-content.md)统一提供当前行、历史导入和停止维护，普通运行不读取旧候选正文。版本 0 在准入后重建 schema，非零迁移按必要格式映射保留可表示的数据。迁移工厂以局部 provider 绑定 `JournalMigrationContext` 的原 permit；未建立上下文的迁移拒绝执行。当前格式读取不调用 provider、不取存储锁，旧格式文件读取才取得 maintenance permit；库存、普通退出启动对账、已有 Windows 停证查询、Web 独立原生取消及恢复资格观察与 Bot 迁移读取使用明确的只读兼容入口，仅接受实际 schema 验证通过的 v16/v17/v18，再按各入口的精确票据、快照身份和原进程证明校验；普通当前格式 snapshot reader 和可写入口保持严格。普通 Bot 推进和关停因此可先完成原启动与已有 Windows 停证核验，再进入原 permit 拥有的停止结算和 v16/v17→v18 升级。Web 的独立原生取消同样先用原 ticket 只读核验快照、Controller proof 和已知 native proof 前缀，再复核原执行身份与 deadline 后停止原边界；不因存活的 v16/v17 writer 无法迁移而跳过停止，也不在该入口写清理状态或释放 lease。Web 的编排恢复、普通 shutdown 重启资格及健康预算耗尽、显式 retry 的原快照观察同样使用精确原票据的只读兼容入口，保留各自进程证明与资格检查；健康执行在预算为 0 或已耗尽时正常关停，清除 shutdown 后仍可普通重启，不额外暂停或消耗预算。完整关停沿用该观察并保留优雅停止窗口；关停与初始输入的固定 operation 回执在同一只读事务中验证格式、原票据和快照，再保留 kind、generation 与 payload 检查。Web Worker 对继承首次输入的只读核对允许正数前代 operation，但必须由当前 ticket 验证同一 journal 和当前执行快照，并匹配原 initialOperationId、initial kind、冻结正文及 hash；首代输入和新 Worker 输入仍要求当前 generation。回执受理后仍须同代新鲜快照确认，具体门禁由 [Worker 设计](daynight-worker.md#web-backend-与执行证据)拥有。独立 Test Session 恢复库存按精确票据只读观察 v16/v17/v18，无关存活执行不触发迁移；更早受支持的来源保留原迁移准入，选中目标仍须完整停证、服务端授权和 native lease 核验。读取成功不授权新执行或替代后续写入准入。观察不为读取迁移仍存活的旧 writer，v16 没有历史停证表时返回无历史回执；已有当前快照的 Windows 停证仍须核验原 ticket 和完整 windowsJobStopProof。实际原生停止后才持原 permit 升级并保存停证。摘要保护的 Bot 迁移副本保持原字节，历史与恢复读取连同 timeline 都执行该格式校验，不能原地升级副本破坏 manifest 摘要。明确锁忙时沿通用 SQLite 层只重查一次当前只读快照。借用旧格式连接须显式传递原 permit，不能在 SQL 事务内重入取锁。版本 0 没有 `execution` 表时可重置，已有该表时必须能读取 `id` 和 `owner_pid`，缺列或活跃、未知 owner 均在 DDL 前失败。独立待归档源不随 reset 删除；缺少 execution 身份而有非空 timeline 或资源时拒绝采用，空 manifest 可用于尚未发布内容的初始化重试。
 
 `storage-lock.ts` 为原 execution 的 `storage.lock` 提供有品牌的 `ControllerStoragePermit`，复用同步实例锁、owner UUID、PID/启动时间与 SQLite ownership gate。仅明确 ESRCH 允许接管；活 PID、权限、损坏格式和未知存活保留原锁与错误。每次使用核对 journal 路径、原 owner 和未释放状态，拒绝伪造、跨 execution 或释放后复用。业务入口显式传递原 permit，所有本机可写 journal opener 使用同一所有权。Controller 在整个 writer 生命周期持锁；其他入口在本机阶段结束、关闭 SQL 与资源句柄后释放，网络期间不持锁。关闭无法确认时保留锁证据。
 
-`storage-preparation.ts` 同步关闭自身连接，按角色执行实际身份、迁移、资源与容量准入，不返回依赖连接的 store 或 iterator。`upgrade-only` 保留原 snapshot 和停止证据，只要求旧 writer 已停止，不生成 stopped；`stopped-maintenance` 要求原 ticket 与已停止当前代精确匹配；`writer` 接受原空库中的第一代或原执行精确已停止前驱的新代 ticket，但不提交新 generation。独立 Test 从外部原生会话恢复可在新 execution 的第一代携带 resume identity，其 native lease 仍由原入口验证。128 MiB 控制元数据及 8 MiB settlement 余量之外，已提交 timeline 正文和匹配 `active_history_sync` 身份、路径、长度的完整 history 文件按实际字节提供额外空间；未登记或不匹配的孤儿不豁免。正文增长和冻结副本前按 8 MiB 档位登记峰值；2200 MiB/execution、8 GiB/stateDirectory 和 512 MiB 卷空闲准入及持久预留沿原所有者执行。仅明确 checkpoint busy 或容量所有者的类型化拒绝可转成等待；格式、身份、I/O、未知提交及未知进程状态继续抛错。
+`storage-preparation.ts` 同步关闭自身连接，按角色执行实际身份、迁移与资源准备，不返回依赖连接的 store 或 iterator。`upgrade-only` 保留原 snapshot 和停止证据，只要求旧 writer 已停止，不生成 stopped；`stopped-maintenance` 要求原 ticket 与已停止当前代精确匹配；`writer` 接受原空库中的第一代或原执行精确已停止前驱的新代 ticket，但不提交新 generation。独立 Test 从外部原生会话恢复可在新 execution 的第一代携带 resume identity，其 native lease 仍由原入口验证。Controller 不设本地累计媒体或元数据额度，也不按卷剩余空间或未来写入峰值准入。仅明确 checkpoint busy 可转成等待；格式、身份、I/O、未知提交及未知进程状态继续抛错。
 
-Task、Bot 和独立 Test 的恢复顺序为确认原进程停止、以原 permit 写停止记录、完成停止维护，再分配下一代。首次 spawn 前以冻结 ticket 完成 writer preflight 并关闭句柄、释放锁；子进程争用或等待容量时继续同一 launch ticket，有界退避不重发初始输入、不消耗恢复次数，超过原观察窗口仍监督同一子进程。停止记录在事务外核验完整原进程边界，最终短 immediate 事务比较原 snapshot、ticket_hash 和 owner_pid 未变后提交 stopped；重复确认保留 stoppedAt。Windows 沿用原 Job lease 和已提交 stop proof，清理 deadline 贯穿锁、准备、进程查询和停止写入，提交后的 close/release 失败保留实际 SqliteOutcome。
+Task、Bot 和独立 Test 的恢复顺序为确认原进程停止、以原 permit 写停止记录、完成停止维护，再分配下一代。首次 spawn 前以冻结 ticket 完成 writer preflight 并关闭句柄、释放锁；子进程争用或等待容量时继续同一 launch ticket，有界退避不重发初始输入、不消耗恢复次数，超过原观察窗口仍监督同一子进程。停止记录在事务外核验完整原进程边界，最终短 immediate 事务比较原 snapshot、ticket_hash 和 owner_pid 未变后提交 stopped；`recordStoppedWithPermit` 在同一事务更新 `execution.snapshot` 并按精确 ticket_hash 保存完整 stopped 快照，已存回执保持不可变，重复确认保留 stoppedAt。Windows 沿用原 Job lease 和已提交 stop proof，清理 deadline 贯穿锁、准备、进程查询和停止写入，提交后的 close/release 失败保留实际 SqliteOutcome。
 
-Controller 在所有副作用构造之前取得 permit 并准备 writer；自身进程证明与新 generation 在同一 journal 事务提交，之后才启动认证 IPC、relay 和 native Provider。Markdown/capture 回调依赖在 relay 连接前完成构造，全部构造与运行使用同一收尾作用域；任一阶段失败都停止已经创建的 timer、relay、Provider、server、媒体与 journal，保留原错及清理错误，最后释放 permit。close 清除 owner_pid 也受格式检查和原 permit 保护。归档和 stopped source-tail 的本机快照、batch、ACK 与 checkpoint 分别取得 permit，传输前释放；返回后重新核对原 stopped 身份、冻结正文和 source cutoff。停止后的结算继续使用控制元数据 128 MiB、8 MiB settlement 余量及实际已登记的正文和 history 副本空间，不在每次 batch 或 ACK 前套用下一 writer 的普通 128 MiB 准入；真正的编号迁移仍执行预留写入检查，恢复下一代前必须完成普通 stopped-maintenance。既有 unknown/receipt 对账保持原语义。
+下一 writer 覆盖 `execution` 单例前，在同一启动事务中验证原已停止前驱的恢复与 native 身份、Windows 停止标记，并把完整快照保存到 `stopped_generations`。读取历史 Windows 停止代际必须使用原 ticket 的精确 hash，核对快照格式、execution、Session、claim、generation、Controller instance 和原停止标记；不能只按 generation 选择任意 ticket。adapter 同时精确比较保留的 launch proof，合并全部已知 Provider proof，并复核原进程出生实例。有效持久回执允许核验历史边界时不重新打开 Job，仍不能跳过已知原进程的核验；无回执且单例已被覆盖时明确失败，不重建丢失证明。同一 generation 的多次启动尝试按 launchId 分别保留，只允许 schemaVersion、lifecycleBinding、launchId、ipcEndpoint、ipcSecret 这些生产者字段不同，其余原启动意图必须一致；实际 journal owner 由已保存的 ticket_hash 选择。
+
+Controller 在所有副作用构造之前取得 permit 并准备 writer；自身进程证明与新 generation 在同一 journal 事务提交，之后才启动认证 IPC、relay 和 native Provider。Markdown/capture 回调依赖在 relay 连接前完成构造，全部构造与运行使用同一收尾作用域；任一阶段失败都停止已经创建的 timer、relay、Provider、server、媒体与 journal，保留原错及清理错误，最后释放 permit。close 清除 owner_pid 也受格式检查和原 permit 保护。归档和 stopped source-tail 的本机快照、batch、ACK 与 checkpoint 分别取得 permit，传输前释放；返回后重新核对原 stopped 身份、冻结正文和 source cutoff。编号迁移与停止结算不执行累计容量准入，恢复下一代前必须完成普通 stopped-maintenance。既有 unknown/receipt 对账保持原语义。
 
 本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
+
+### Linux 稳定出生身份确定方案
+
+Linux 的 `process-proof.ts` 路径使用稳定的内核出生身份。`LC_ALL=C` 继续稳定 `ps` 输出的语言与格式；`lstart` 展示不参与 Linux 身份比较。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
+
+Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
+
+一次采集共用原调用预算：先读取 boot identity 与 stat，再两次采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后 boot identity 与 starttime ticks 必须一致，两次 stat 和两次 `ps` 的进程组必须相同。最终 stat 既非 zombie 也无 `PF_EXITING` 时，父 PID 与命令还须一致，全部状态观测均须为非 zombie，前次 stat 也不能含退出标记；任何替换、不可读、格式错误、预算耗尽或运行身份不一致均拒绝采集，不保存部分运行证明。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+
+最终 stat 为 `Z` 时，采集器只返回该出生实例的 zombie 退出观察，允许退出期间父进程、命令显示及 zombie 状态发生变化。该分支仍要求全部出生和进程组观测一致，不能接受 PID 替换或组变化。`captureProcessProof` 与工具提取子进程拒绝将其作为运行 proof；`inspectProcessProof` 只有在该观察与已保存的原出生 token、进程组匹配时才确认单 PID stopped。完整停止仍独立检查原生子进程及进程组的存活成员。退出会改变运行字段；在已证明该实例成为 zombie 后继续要求这些字段不变，会把真实停止误判为未知。该终态分支不重采样、不延长原预算，也不将退出观察用于发信号。
+
+最终 stat 非 `Z`，但字段 9 的 flags 含 `PF_EXITING`（`0x00000004`）时，采集器返回 exiting 观察。该分支保留同一 boot、ticks 及四次进程组核验，允许退出中的父 PID 与命令显示变化；`captureProcessProof` 和工具提取子进程拒绝将其作为运行 proof。`inspectProcessProof` 仅在观察的出生 token 和进程组与原保存 proof 匹配时被动等待，每次最多 25 毫秒，随后完整重采。等待及所有重采共用进入 Linux 核验时由 `performance.now()` 固定的截止时间，不重置预算。匹配的 zombie 或明确 ESRCH 才确认该原 PID 停止；仍在退出时到期、读取失败或身份不一致继续保留未确认结果。退出标记本身不能证明 stopped，也不授权信号；普通命令冲突不进入该等待路径。
+
+Linux 的 [`PF_EXITING` 定义](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h#L1805)表示退出已经开始。[退出流程](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/kernel/exit.c#L922)先设置该标记，再执行 `exit_mm()`；[`/proc` stat 输出](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/fs/proc/array.c#L598)保留 flags。因此命令地址空间的退出变化可以早于 zombie 展示，已标记退出的原实例需要等待完成，而非继续要求完整运行命令或提前认定停止。
+
+Controller 启动证明、原生子进程证明、Worker/Bot 持久记录、独立 Test 恢复以及工具提取子进程使用相同出生 token 约束。所有持久解析器须保留完整 token，不截断、规范化成日期或丢弃版本。旧 proof 的读取与其能否授权运行操作分开：缺乏稳定 Linux 身份的旧记录继续可读，针对仍可能运行实例的核验须给出明确错误并保留记录；不能仅凭当前 PID 重新采样后覆盖原证明。原 PID 已不存在的权威观察以及原执行已有的有效停证，继续遵循各自停止确认规则，不能凭格式差异宣称原进程已退出。
+
+出生 token 相等不替代运行实例的命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生运行实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
+
+Linux 停止流程在被动等待后可能已不再拥有最初进程组清单中的存活实例。若核验后没有可用于发信号的原实例，须在原截止时间内重新读取组成员；当前组为空即可结束且不发信号。仅当本轮检查的原组实例全部明确为 stopped 时，才允许继续被动等待后代自然退出，每次最多 25 毫秒后重读组成员，不新建宽限期。任何原实例被替换或存在身份冲突都不进入等待；读取失败、到期仍有存活成员则保留未确认结果。该路径不向残留进程发信号、不补采其证明来建立授权；调用者仍须复核全部原实例及整个组为空。此前的非空清单不能代替退出后的观察。
 
 ### Codex 输出消费与 I/O
 
@@ -254,22 +288,23 @@ Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[R
 
 ## Relay 与恢复
 
-Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。读取准入与执行交互分别判断：当前项目成员可读，执行交互只允许认证用户等于持久 `owner_user_id` 的原 Session owner，项目或 Team 的 admin 角色不授予交互权。Web 与 Herdr 共用这项限制；Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。读取准入与执行交互分别判断：当前项目成员可读，执行交互只允许认证用户等于持久 `owner_user_id` 的原 Session owner，项目或 Team 的 admin 角色不授予交互权。旧 Herdr 记录只读；Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
 
-派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查；Herdr 的控制派发、租约重检及 ACK 授租也核对原 actor，已存在的非 owner 操作或 lease 不能继续执行。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查完整凭据、项目准入与执行身份，观察到失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查。在线内容在网络等待前后重验；v1 浏览器 channel 每 250ms 重新检查完整凭据、项目准入与执行身份，观察到失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
 
 应用用户 channel 的唯一授权 marker、精确应用 Origin、固定 API family、连接 effective-expiry deadline
-及 best-effort 关闭由[鉴权设计](daynight-auth.md#应用用户-websocket)所有。Task 用户 channel 接受实际
-v1/v2，独立 Test 用户 channel 接受 v1；原 Controller 和 Worker 生产者握手保持。刷新 access 不延长
-旧连接或替换持久 Actor，新连接沿用原 fence、lease 与 resume。
+及 best-effort 关闭由[鉴权设计](daynight-auth.md#应用用户-websocket)所有。Task 与独立 Test 用户 channel 接受 v1；原 Controller 和 Worker 生产者握手保持。刷新 access 不延长
+旧连接或替换持久 Actor，新连接沿用原 fence 与 resume。
 
-Web 的 current 与 browser channel 按当前读者投影权限：非 owner 的 `operations` 全部关闭，setting 的 `mutable` 与命令的 `available` 为 false；投影复制控制目录，不能改写 Controller 的持久能力。Herdr 对非 owner 清空 `control.availableActions`，保留画面与控制归属供阅读。
+Web 的 current 与 browser channel 按当前读者投影权限：非 owner 的 `operations` 全部关闭，setting 的 `mutable` 与命令的 `available` 为 false；投影复制控制目录，不能改写 Controller 的持久能力。
 
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
 Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web 执行，在凭据剩余不超过 120 秒时续签，不受 claim 发现的 pollIntervalMs 影响。维护过程验证 launch ticket 与原 claim、Controller、execution generation 一致；prepare、launch 和续签按执行串行，读取最新执行记录后才写入凭据。退出先取消并等待维护结束，再关闭执行存储，避免后台续签访问已关闭的数据库。续签失败保留原执行和凭据事实，并通过 worker diagnostic 暴露。
 
 原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库仅保存 operation 身份、类型、正文哈希、操作者、执行约束和无正文的回执摘要；完整命令、原生结果和错误详情由 Controller 本地保存。服务端只在当前在线连接的有界内存中暂存命令。accepted 表示 relay 暂收，不保证持久排队；网页保留草稿，直到原生明确受理或确认。尚未送达 Controller 的正文在服务重启后不可从哈希重建，原操作按实际证据拒绝、过期或保持 unknown。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Poll 在 accepted 阶段或 operation_begin 在 offered 阶段明确拒绝派发时，回执摘要保留服务端生成的固定 `permission_or_state_changed` code 与固定 message，作为未跨越原生派发边界的证明；重建服务后的查询仍返回该证明。Controller 上报及重连对账的任意错误详情继续不落库，即使上报码相同也不能生成这项证明。终态重复回执返回既有持久结果，不能覆盖证明或为历史 `rejected/error:null` 补造证明；缺少证明的历史拒绝不能据此自动重发。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；整个对账完成后还需同步当前本机状态，才能启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
+
+Controller 的 relay 定时发送绑定到本次观察的 socket 和 fence，发送前后均确认仍为当前 OPEN 连接；关闭中、已关闭或已替换时停止本次发送并由关闭与重连流程恢复。当前连接上的发送、凭据和 journal 故障仍报告；WebSocket error 和无效帧仍按原路径报告。相关取舍见[断线分类决策](../../.agents/notes/implemented/bug-fix/2026-11-18-controller-relay-disconnect.md)。
 
 ### 启动观察的独立上报
 
@@ -289,7 +324,7 @@ observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90
 
 ### 本机内容与在线读取
 
-活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal v11 保存原生身份、完整操作记录、当前标准化 timeline、投影状态和有界 outbox。`content/session-content.ts` 组合 SQL timeline 与 `content/resource-files.ts` 的 descriptor、blob、pin 和 lease；资源保持 `journal.sqlite.pending-content/` 原路径，正文不在普通候选文件中。一次发布在原写事务中提交当前正文、totals、Markdown/原生图片状态、输入来源及 outbox。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不删除当前正文。所有在线分页、inspection、历史同步和归档均读取同一 SQL 正文所有者；资源删除先在同步读快照中核对当前正文和原生输入图片引用，再核对 pin/lease。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。[SQL 正文设计](session-sqlite-content.md)拥有当前行、分页、迁移与停止维护。
+活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal v18 保存原生身份、完整操作记录、持久历史策略和在线模式、当前标准化内容、投影状态和有界 outbox。新建 claim 绑定的 Task execution 使用 task_body：用户及助手消息保存在 timeline_entries，其他条目保存在独立 online_entries；旧 execution 迁移后保持 legacy 和原全量条目，恢复不切换策略。`content/session-content.ts` 组合 SQL timeline 与 `content/resource-files.ts` 的 descriptor、blob、pin 和 lease；资源保持 `journal.sqlite.pending-content/` 原路径，正文不在普通候选文件中。一次发布在原写事务中提交当前正文、totals、Markdown/原生图片状态、输入来源及 outbox。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不删除当前正文。在线分页、inspection、待审批读取和重连快照合并正文与在线详情；旧模式历史同步及最终归档只消费持久策略对应的正文表和资源闭包。ACK 与 source 水位仍覆盖所有事件，不能从筛选后的正文序号推导。资源删除先在同步读快照中核对合并在线内容和原生输入图片引用，再核对 pin/lease。正文与在线详情执行独立逻辑预算，容量、跨表身份、分页、迁移与停止维护由[SQL 正文设计](session-sqlite-content.md)统一定义。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
 
 sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；当前正文、统计与投递事件同事务提交，超限时仅压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。计量不变量失败会同步禁止后续 outbox 写入；原生副作用在异步准备后、实际派发前重新检查该状态。已派发输入保持原有结果及未知责任，不得重放。操作日志不参与 outbox 压缩。
 
@@ -309,9 +344,11 @@ Poll 使用相同的 MarshalWire 编码计算 operation_offer 的完整封装字
 
 ### 完成后的文件归档
 
-Controller journal 的 canonical 001–011 由同一格式拥有者执行并验证。历史 v6 先耐久导出旧 SQL 正文/资源，v8 严格核对旧索引和文件后建立不可变候选；v10 仅从已提交指针导入当前正文，原索引删除、totals、cleanup pending 和版本在同一 immediate 事务提交。v1 没有完整 projection，既有执行保留 `archive_incomplete=1`；中间步骤建立的空表不能证明原历史为空。缺失、损坏、超前或身份不一致的来源明确失败，保留唯一原源；目录中的更新候选不被收养。旧 6/8 导出使用本次已预留峰值，仍保持逻辑和共享媒体容量。原输入 operation、user/daynight 来源、generation、process proof、图片和 outbox 不因转换重建。
+Controller journal 的 canonical 001–018 由同一格式拥有者执行并验证。历史 v6 先耐久导出可映射的旧 SQL 正文和资源，v8 只按旧索引复制文件并建立不可变候选；v10 从已提交指针导入可映射正文，原索引删除、实际输出的 totals、cleanup pending 和版本在同一 immediate 事务提交。v1 没有完整 projection，既有执行保留 `archive_incomplete=1`。缺失必要来源只影响对应最小项；未引用文件不参与转换，实际 SQL 和文件错误仍传播。旧 6/8 导出与 v10 导入不执行普通容量或峰值预留政策；普通写入不执行覆盖整个 journal 和媒体文件的累计元数据准入，但仍执行正文、在线详情和 Markdown source 各自的逻辑限额；停止维护不按这些新增输入限额拒绝存量内容。v12 仅转换必要 capture state；v13 从有效的 native index lease JSON 中移除 maximumBytes，保留身份和 owner，畸形或非映射值原样保留。v14 增加独立用量来源、队列及元数据表。v15 新增在线详情及统计，并给原 execution 默认 legacy 策略，不移动或筛除已有正文。v16 新增 `worker_lifecycle_bindings(execution_generation,ticket_hash,binding_json)`；v17 新增 `stopped_generations(ticket_hash,snapshot)`，迁移只建立空表，不生成任何历史停止证明；v18 为已有 execution 绑定 legacy 在线模式，保留原修订证明边界。原输入 operation、user/daynight 来源、generation、process proof、图片关联和 outbox 不因转换重建。详细映射与重试边界见 [SQL 正文设计](session-sqlite-content.md)。
 
-确认原生进程停止后，上传器先以原 permit 和 stopped ticket 完成 pending 维护及物理准入：成功 TRUNCATE 证明旧 WAL reader 已结束，资源拥有者耐久清空旧正文索引引用后才退休识别出的正文文件，再执行 VACUUM 前 checkpoint、原地 VACUUM、后置 TRUNCATE 和真实占用核对，最后清 pending 并结算预留。busy、未知提交及返额失败保留实际阶段和足够预留；新 writer 不能越过维护。上传在短 SQL 快照中物化有序最终 entries、资源描述、原 epoch/source 截止点，再关闭 SQL 并释放本机许可后等待网络；冻结对象只保留物化条目与文件资源读/lease 子集。后续本机写入重新核对原 stopped 身份和冻结 SQL 来源。基础 schemaVersion=1 SessionArchive 仍包含 Session fence、Controller 身份、Provider/nativeSessionId、最终阅读内容和原资源编码；图片 schema3 沿[图片归档设计](session-image-archives.md)，均不记录逐 token 录像。Task 结束由 Worker 收尾上传；Test launcher 先确认服务端 /stop，再上传。独立上传失败可运行 controller <provider> archive <test-session-id>，以原私有 ticket 和停止证明对账后重试；该路径不启动或 resume 原生会话，不要求已删除的工作目录存在。Worker 每轮在[清理与容量门禁](daynight-worker.md)允许时请求历史补归档，后台尝试开始前再次核对门禁；runtime 最多持有一个在途维护任务，主对账不等待上传；每次维护最多尝试一个旧 completed 执行，进程内按上次尝试的执行 ID 轮转库存，成功或失败后都从下一项继续。各执行独立退避，单个损坏源不能阻塞其他历史；维护完成或无候选时不主动唤醒对账。关闭时取消并等待维护实际退出，再发布最终停止状态并关闭存储。正常收尾只有 ready 才能删除 worktree；退出停止路径以本次 shutdown 调用意图为准，确认停止后不执行归档或删除，即使持久状态已是 terminal。原 terminal 状态仍保留，重启后的正常对账继续履行归档与删除责任。
+确认原生进程停止后，上传器先以原 permit 和 stopped ticket 完成 pending 维护：成功 TRUNCATE 证明旧 WAL reader 已结束，资源拥有者耐久清空旧正文索引引用后才退休识别出的正文文件，再执行 VACUUM 前 checkpoint、原地 VACUUM、后置 TRUNCATE 和真实占用核对，最后清 pending 。busy、未知提交及维护失败保留实际阶段；新 writer 不能越过维护。上传在短 SQL 快照中按持久策略物化有序最终 entries、资源描述、原 epoch/source 截止点：task_body 只保留用户及助手消息与其图片，legacy 保留原全量内容；再关闭 SQL 并释放本机许可后等待网络；冻结对象只保留物化条目与文件资源读/lease 子集。后续本机写入重新核对原 stopped 身份和冻结 SQL 来源。基础 schemaVersion=1 SessionArchive 仍包含 Session fence、Controller 身份、Provider/nativeSessionId、最终阅读内容和原资源编码；图片 schema3 沿[图片归档设计](session-image-archives.md)，均不记录逐 token 录像。Task 结束由 Worker 收尾上传；Test launcher 先确认服务端 /stop，再上传。独立上传失败可运行 controller <provider> archive <test-session-id>，以原私有 ticket 和停止证明对账后重试；该路径不启动或 resume 原生会话，不要求已删除的工作目录存在。Worker 每轮在[清理与容量门禁](daynight-worker.md)允许时请求历史补归档，后台尝试开始前再次核对门禁；runtime 最多持有一个在途维护任务，主对账不等待上传；每次维护最多尝试一个旧 completed 执行，进程内按上次尝试的执行 ID 轮转库存，成功或失败后都从下一项继续。各执行独立退避，单个损坏源不能阻塞其他历史；维护完成或无候选时不主动唤醒对账。关闭时取消并等待维护实际退出，再发布最终停止状态并关闭存储。正常收尾在确认停止和关闭后尝试归档，不论结果均继续安全删除 worktree；独立 execution 目录中的源保留给后台补传。退出停止路径以本次 shutdown 调用意图为准，确认停止后不执行归档或删除，即使持久状态已是 terminal。原 terminal 状态仍保留，重启后的正常对账继续履行剩余责任。
+
+正文 Controller 在 relay upgrade、旧模式活动历史同步及归档 HTTP 响应中核对 `Daynight-Task-Body-History-Version: 1`；不支持时明确报告 upgrade_required，不降级重解释本地策略。旧模式活动历史携带累积在线图片位置以支持捕获，relay 模式不发送活动账本；最终历史清空这些位置且不携带工具正文。在线详情的本地退休必须在原 execution 完整停止、source 全部确认且 ready receipt 已与服务端对账后执行；原生输入及正文共享资源继续保留，失败清理按真实已提交阶段重入。wire 兼容由[历史读取设计](task-session-history.md)拥有，精确退休条件由[SQL 正文设计](session-sqlite-content.md#归档确认后的在线内容退休)拥有。
 
 Task 路径为 /api/v1/projects/P/tasks/T/sessions/S/archive，Test 路径为 /api/v1/test-sessions/S/archive。GET 返回 pending/ready/failed/unavailable；POST 记录 pending 或 failed；PUT 上传完整 JSON；GET /archive/content 读取正文。ready 回执含 SHA-256 和十进制 byteLength。上传按原始请求字节计算哈希，相同正文重试幂等，ready 后拒绝不同正文覆盖。写入要求原 owner 的有效 PAT、原执行 fence 与 Controller 身份，以及终态执行；若断网导致服务端尚未记录 nativeSessionId，可在提交 ready 的同一事务中从归档建立该身份，已有非空 ID 必须相同。加载 Session 时，持久化 Identity 与生命周期、initialInputState 一样优先于实例内 live cache；其他实例的旧缓存不能覆盖归档建立的原生身份，draining 到期保存也不能将其回退。读取要求对应项目成员或 Test owner 的有效访问权，不能用旧 claim 归档获得新执行的控制权。
 
@@ -338,7 +375,9 @@ Task 软删除保留原 Session 的归档收尾能力：仅原 owner 的有效 P
 
 ### 归档操作占用
 
-归档上传和正文读取先以非阻塞方式取得实例内单项预检名额，在短暂的权限作用域中取得可信原 owner；结束数据库作用域后，以非阻塞方式取得实例单项额度和共享存储根内的 owner 精确键额度。预检名额有界，数据库繁忙时不会累积无限等待的归档预检。实际业务操作重新执行原有权限、fence 与 Task-before-Session 锁定规则；删除后收尾使用原 owner 的专用资格，不恢复正文读取权限。精确键 gate 使用稳定锁文件，不在释放时删除可能已被其他实例打开的 inode。额度不占用额外 PostgreSQL 连接，嵌套的存储读回复用同一操作。
+归档上传和正文读取先以非阻塞方式取得实例内预检名额，在短暂的权限作用域中取得可信原 owner；结束数据库作用域后，以非阻塞方式依次取得实例和原 owner 额度。实例与 owner 限额独立配置，默认分别为 20 和 5；预检容量与实例限额相同。同一 owner 的不同 Session 可以并发，同一 Session 同时只能持有一个普通许可。owner 额度不足时立即归还实例额度。预检名额有界，数据库繁忙时不会累积无限等待的归档预检。实际业务操作重新执行原有权限、fence 与 Task-before-Session 锁定规则；删除后收尾使用原 owner 的专用资格，不恢复正文读取权限。额度不占用额外 PostgreSQL 连接，嵌套的存储读回复用同一操作。
+
+物理清理在持久过期屏障提交后取得同一 owner 的独占许可，与该 owner 的所有普通归档许可互斥；忙时保留清理意图供后台重试。进程内在同一临界区检查并占位。Redis 使用原 owner 精确键及字符串类型，以版本化记录保存各 Session、令牌和到期时间；获取、续约、核验和释放原子地按 Redis 时间清除过期项，并以最晚有效到期时间设置键 TTL。旧版标量令牌视为独占，新记录也阻止旧版获取；续约和释放仅影响原令牌。失去租约时取消归档 I/O，写入前继续核验许可。细节和部署限制见[owner 多许可决策](../../.agents/notes/implemented/architecture/2026-11-21-session-archive-owner-permits.md)及[存储租约](daynight-task-attachments.md#storage-接口与本地实现)。
 
 占用从读取上传正文或存储对象之前开始，贯穿解析、校验、写入以及响应编码和发送。返回的大正文由调用方持有并在最后使用后关闭，释放幂等；失败保留原始及清理错误。HTTP 上传使用 120 秒实际读取期限，归档响应使用独立 120 秒实际写入期限；已发送响应头后的传输失败中断连接，不伪造完整错误响应。归档正文 GET 不消费请求正文；若正文未读，入口关闭连接并设置读取期限，防止发送前的自动 drain 阻塞。上传超时后，仅固定 Go 版本的原生 HTTP/1 请求 body 在同一 socket 上的期限触发 drain 错误可以归入读取超时；未知 body 的关闭错误保留为清理失败。正文和不可变回执的字节及校验语义不变。选择理由见[归档占用决策](../../.agents/notes/implemented/architecture/2026-11-07-session-archive-residency.md)。
 
@@ -383,6 +422,8 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 完整 current 的三个调用点共用 Task-only flight：`start` 在 disconnect 前和发 HTTP 前检查；`observeCurrent` 在 timer 和 HTTP 前检查；归档 ready 后的最终绑定由 `bindReadyArchive` 检查。每个 flight 持有读取用途、连接代次和专属 AbortController；所有等待结束后复验请求所有者、取消、可见性及既有账号和执行身份。隐藏取消 current 及 auth-queued current，停止或延后对应 timer，flight 保留到 Promise settle。快速重开只登记恢复意图，不越过取消中请求的名额。
 
 尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。账户变化暂停立即停止远端传输，Task 读取可见性门禁不扩展到独立 Test/Bot authority observation。
+
+Web 的归档正文与 schema3 timeline GET，以及 Herdr 正文 GET 对精确 429 `resource_busy` 使用逐请求指数退避，基准为 1、2、4、8、10 秒并施加 ±20% 抖动；有效 `Retry-After` 是等待下界，超过 12 秒或剩余预算时终止。同一加载共享首次拒绝起 30 秒和四次重试预算，截止时间贯穿后续请求及正文读取，耗尽时取消在途 I/O 并返回最近一次容量错误。成功请求后的下一文件从第一阶开始，已校验的 manifest 不重新读取。错误正文有界解析；仅精确容量拒绝允许缺少主体头，其他响应及存在的主体仍按原规则校验。等待和重发保持初始认证代次、网络及页面取消；诊断仅包含 Session、阶段、次数、延时、请求 ID 和错误类别。设计取舍见[Web 归档退避决策](../../.agents/notes/implemented/bug-fix/2026-11-20-web-archive-backoff.md)。
 
 归档状态读取沿用原流程；ready 但 tab 已隐藏时，最终 current 绑定保留原 snapshot 与代次，延后到可见。恢复仍验证当前 fence 和归档正文身份，不以 ready receipt 替代已校验的内容。completed automatic hook 同时订阅文档可见性，等待 `scope.ready` 后在发 current 前复验，并在响应和后续准入等待后再次检查。取消中 flight 未 settle 时重开不启动第二次读取；旧 owner 的完成不能发布到新 claim，settle 后可恢复新 owner 的发现。详细取舍见[Task Current 可见性决策](../../.agents/notes/implemented/architecture/2026-11-08-task-current-read-visibility.md)。
 
@@ -433,9 +474,9 @@ composer 通过实际 scrollHeight 与宽度变化调整输入的期望高度并
 
 composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。设置面板继续由 composer 持有展开状态，命令菜单与输入共用同一表单。共同边界的选择理由见[统一 Chatbox 分组决策](../../.agents/notes/archived/bug-fix/2026-11-04-unified-session-chatbox.md)。
 
-`useSessionColumnLayout` 以 `.session-timeline-content` 的实际边界作为 composer 的宽度来源，计算正文相对表单内边框的左右距离，写入表单的 `--session-column-left/right` 横向 padding。正文 CSS 继续拥有默认 960px、助手 760px 上限与各入口侧边距；测量同时包含居中留白、边框和滚动条占位，避免重复常量与覆盖式滚动条假设。首次挂载同步测量，ResizeObserver 观察 Session、滚动视口和正文，后续测量合并到下一 animation frame；隐藏期间跳过零宽度，恢复后重新测量。身份变化、转为只读或卸载时取消观察和待执行帧并移除变量。表单及子节点结构、溢出策略、菜单高度预算和 container query 保持独立，宽度更新不操作焦点、选区或 scrollTop。取舍见[输入列对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-reading-column.md)。
+`useSessionColumnLayout` 以 `.session-timeline-content` 的实际边界作为 composer 的宽度来源，计算正文相对表单内边框的左右距离，写入表单的 `--session-column-left/right` 横向 padding。正文 CSS 继续拥有默认 960px、助手 760px 上限与各入口侧边距；测量同时包含居中留白、边框和滚动条占位，避免重复常量与覆盖式滚动条假设。首次挂载同步测量，ResizeObserver 观察 Session、滚动视口、正文和 composer，后续测量合并到下一 animation frame；隐藏期间跳过零宽度，恢复后重新测量。身份变化、转为只读或卸载时取消观察和待执行帧并移除变量。表单及子节点结构、溢出策略、菜单高度预算和 container query 保持独立，宽度更新不操作焦点、选区或 scrollTop。取舍见[输入列对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-reading-column.md)。
 
-默认 footer 使用 Grid 排列设置、状态、主操作三组；主操作中的 Interrupt 与 submit 使用不换行的 flex 容器，长发送标签在按钮内部换行。`.session-composer-surface` 是独立的 inline-size 查询容器，使阈值使用实际 footer 内容宽度。阈值按该内框中设置入口、按钮和间距的实际预算选取，不能把包含外部 padding 的原型容器宽度直接套入。状态和 Interrupt 均不可见且主操作仅为普通 Send 时，234px 以下两行、达到 234px 后一行；无可见状态时，若 Interrupt 仍可见或主操作为 Awaiting provider confirmation、Executing command 或 Add to current turn 等长标签，不足 516px 保持第二行，达到 516px 后才与设置同排。有可见状态时，346px 以下三行，346px 至不足 516px 两行，达到 516px 后三组同一行。状态与主操作同排时，Grid 为两者分别分配受限宽度，避免长操作标签挤没状态；三组同排时还保留设置组的最小宽度。组内文字换行只增加本组高度，不能重新拆开操作组、覆盖相邻控件或横向溢出。DOM 按设置、状态、Interrupt、submit 排列，不通过 CSS order 或重复控件改变键盘顺序。模型按钮中的文字 span 可收缩并省略，caret 独立且不收缩；按钮最小宽度 52px。粗指针下底部按钮最小高度和命令入口最小宽度均为 36px。
+默认 footer 使用 Grid 排列设置、状态、主操作三组；主操作中的 Interrupt 与 submit 使用不换行的 flex 容器，长发送标签在按钮内部换行。`.session-composer-surface` 是独立的 inline-size 查询容器，使阈值使用实际 footer 内容宽度。阈值按该内框中设置入口、按钮和间距的实际预算选取，不能把包含外部 padding 的原型容器宽度直接套入。有图片入口的断点结合像素下限与随根字号增长的 rem 值，兼顾固定大小的图片按钮与放大的文字。状态和 Interrupt 均不可见且主操作仅为普通 Send 时，无图片入口以 234px、有图片入口以 276px 为同排阈值；图片入口占用 44px，276px 至不足 325px 通过缩小间距、内边距及模型最小宽度保留同排，不足 236px 时设置组使用有序的两列 Grid；无可见状态时，若 Interrupt 仍可见或主操作为 Awaiting provider confirmation、Executing command 或 Add to current turn 等长标签，不足 516px 保持第二行，达到 516px 后才与设置同排。有可见状态时，346px 以下三行，346px 至不足 516px 两行，达到 516px 后三组同一行。状态与主操作同排时，Grid 为两者分别分配受限宽度，避免长操作标签挤没状态；三组同排时还保留设置组的最小宽度。组内文字换行只增加本组高度，不能重新拆开操作组、覆盖相邻控件或横向溢出。DOM 按设置、状态、Interrupt、submit 排列，不通过 CSS order 或重复控件改变键盘顺序。模型按钮中的文字 span 可收缩并省略，caret 独立且不收缩；按钮最小宽度通常为 52px，图片入口的紧凑空闲行降为 44px。粗指针下底部按钮最小高度和命令入口最小宽度均为 36px。
 
 `SessionActivity` 继续拥有计时、状态选择与 Interrupt 的可见性和门禁；可选的 `render(status, interrupt)` 只让默认 composer 分别安放已生成的节点。即使状态由 Session 主提示代为显示，中断仍按独立条件保留。没有可见状态或中断时仍调用该 render，以保留默认主操作中的 submit。未提供 render 时仍返回原有状态与 Interrupt 的组合。`presentation.renderFooter({ settings, activity, submit })` 继续收到这一组合 activity 与原 submit，保持自定义布局契约；默认 Grid 仅应用于默认 footer。快捷键提示仍由 submit 自己的操作容器持有，Interrupt 的 hover 或 focus 不获得发送提示。此分组不改变 Session header、外层布局或发送、追加、中断、设置、命令的协议。取舍和后续入口的约束见[响应式底部操作区决策](../../.agents/notes/implemented/bug-fix/2026-11-06-responsive-session-footer.md)。
 
@@ -521,7 +562,7 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 Controller 用 `cleanupInteractionIds` 标识清理阶段实际产生的交互。服务端冻结时保存 Timeline 序号边界，拒绝将冻结前的 pending 交互重新标为 cleanup；只有边界后且属于当前白名单的交互响应可以提交。浏览器按相同白名单启用控件，服务端在接受、Poll 投递和 operation_begin 时分别重验，避免排队期间权限变化绕过限制。
 
-Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。主动 Job 终止前，先打开并固定全部已知原 Controller/native 实例的进程句柄，核对出生时间和仍运行实例的完整身份；终止后在原绝对 deadline 内等待这些原句柄 signaled，并确认同一 Job 成员清单为空。原 PID 已不存在或已是不同出生实例时不操作替代进程；退出码变化、ESRCH 与空清单不能代替已固定原句柄的完成状态。缺失名称或无法取得可信句柄保持未知，不能推断空 Job。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞。摘要保护一致性，不认证本机恶意写入者。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。未确认的权限、查询、终止和释放失败均保留错误；任一等待到期、身份冲突或未知状态均不能提交完整停止结果。全部已取得进程句柄逐一释放，主要操作与关闭同时失败时保留原错误链。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。主动 Job 终止前，先打开并固定全部已知原 Controller/native 实例的进程句柄，核对出生时间和仍运行实例的完整身份；终止后在原绝对 deadline 内等待这些原句柄 signaled，并确认同一 Job 成员清单为空。原 PID 已不存在或已是不同出生实例时不操作替代进程；退出码变化、ESRCH 与空清单不能代替已固定原句柄的完成状态。缺失名称或无法取得可信句柄保持未知，不能推断空 Job；临时 Job 对象可在成员仍运行时失去名称。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞。摘要保护一致性，不认证本机恶意写入者。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。未确认的权限、查询、终止和释放失败均保留错误；任一等待到期、身份冲突或未知状态均不能提交完整停止结果。全部已取得进程句柄逐一释放，主要操作与关闭同时失败时保留原错误链。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
 
 ## 升级与安全失败
 
@@ -531,6 +572,6 @@ Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。�
 
 未协商扩展协议的写请求携带旧 worker 限制。服务层保留原有输入校验顺序，在项目写锁内核对版本及实际 claim，然后决定是否允许更新、状态改变、删除或 worker 操作；claim 还检查新 descriptor。旧客户端看不到的执行不能被当作无主任务重新认领或操作。兼容投影不作为写入依据，也不代替项目权限。
 
-服务端可在保留既有 CLI/Herdr worker 的情况下升级；只有使用 Web 或新增 Provider 的调用方需要支持对应能力的客户端。新客户端仍将旧服务端响应中缺失的 mode 规范化为 Herdr，Herdr claim 不添加旧服务端无法识别的 mode 字段。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。选择及其成本见[Worker 协议协商决策](../../.agents/notes/archived/architecture/2026-10-28-worker-protocol-negotiation.md)。
+服务端新 claim 只接受显式 Web；旧 Herdr claim 仍按原义读取，但不能通过执行摘要更新推进。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。选择及其成本见[Worker 协议协商决策](../../.agents/notes/archived/architecture/2026-10-28-worker-protocol-negotiation.md)。
 
 协议解析不授予项目权限，也不能证明原生进程停止。鉴权、持久操作去重、连接代次校验、初始化输入门控和停止证明仍必须在实际调用边界实施。故障不得通过换 ID、重建会话或提升连接代次绕过。

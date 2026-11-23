@@ -27,7 +27,7 @@ func mgmtInstallEndpointList(f *mgmtFixture, endpoints []wm.Endpoint) {
 	}
 }
 func TestManagementListCursorIsScopedToActorFiltersAndDisclosure(t *testing.T) {
-	for _, kind := range []string{"valid", "actor", "filter", "enabled", "disclosure", "invalid encoding"} {
+	for _, kind := range []string{"valid", "actor", "filter", "enabled", "client key", "disclosure", "invalid encoding"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newMgmtFixture(t)
 			second := f.endpoint
@@ -68,6 +68,8 @@ func TestManagementListCursorIsScopedToActorFiltersAndDisclosure(t *testing.T) {
 				q.Query = "changed"
 			case "enabled":
 				q.Enabled = mgmtPtr(true)
+			case "client key":
+				q.ClientKey = mgmtPtr("inbox")
 			case "invalid encoding":
 				raw = "%%%"
 			}
@@ -82,6 +84,34 @@ func TestManagementListCursorIsScopedToActorFiltersAndDisclosure(t *testing.T) {
 				t.Fatalf("continuation=%#v", p)
 			}
 		})
+	}
+}
+
+func TestManagementListFiltersByClientKey(t *testing.T) {
+	f := newMgmtFixture(t)
+	keyed := f.endpoint
+	keyed.ID = "44444444-4444-4444-8444-444444444444"
+	keyed.ClientKey = "inbox"
+	other := f.endpoint
+	other.ID = "77777777-7777-4777-8777-777777777777"
+	other.ClientKey = "inbox-2"
+	mgmtInstallEndpointList(f, []wm.Endpoint{f.endpoint, keyed, other})
+	result, err := f.service.List(f.ctx, f.principal, f.owner, ListQuery{ClientKey: mgmtPtr("inbox")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := result.(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != keyed.ID || items[0].(map[string]any)["clientKey"] != "inbox" {
+		t.Fatalf("filtered=%#v", items)
+	}
+	f.reads = 0
+	all, err := f.service.List(f.ctx, f.principal, f.owner, ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items = all.(map[string]any)["items"].([]any)
+	if len(items) != 3 || items[0].(map[string]any)["clientKey"] != nil {
+		t.Fatalf("unfiltered=%#v", items)
 	}
 }
 

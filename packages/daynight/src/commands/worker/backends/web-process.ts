@@ -1,11 +1,12 @@
+import { assertWorkerLifecycleAdmission, currentLifecycleBinding } from "../lifecycle-context.js";
 import { assertConfigurationAdmission } from "../configuration-admission.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
@@ -13,7 +14,8 @@ import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
-import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
+import { controllerLaunchNeedsReplacement, createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import { matchesLaunchConfiguration, readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
@@ -86,16 +88,73 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       ? await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses, undefined, await options.jobLeases?.get(ticket.launchId))
       : await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses));
   };
+  const prepareExistingTicket = async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<ControllerLaunchTicket> => {
+    await prepareExistingSelection(input, ticket, signal, canAdmitNewExecution);
+    let original = current(input);
+    if (original.webExecution!.ticketPath === null || original.webExecution!.nativeHome === null) {
+      original = options.store.updateWebExecution(original, { ticketPath: controllerTicketPath(options.homeDirectory, ticket.launchId), nativeHome: ticket.nativeHome }, options.now());
+    }
+    if (original.webExecution!.launchSubmission !== "not-submitted") return ticket;
+    const binding = currentLifecycleBinding();
+    const needsReplacement = controllerLaunchNeedsReplacement(options.homeDirectory, ticket);
+    if (!needsReplacement && (binding === undefined || controllerPayloadHash(ticket.lifecycleBinding ?? null) === controllerPayloadHash(binding))) return ticket;
+    if (binding === undefined) throw new Error("Task launch replacement requires current Worker lifecycle authorization.");
+    const assertPending = (): void => {
+      signal.throwIfAborted(); assertWorkerLifecycleAdmission(); assertConfigurationAdmission(canAdmitNewExecution);
+      controllerLaunchNeedsReplacement(options.homeDirectory, ticket);
+      const task = current(original), execution = task.webExecution!;
+      checkTicket(task, ticket);
+      // Missing observation alone does not imply dispatch. Keep that report and
+      // require independent submission, reservation and journal evidence below.
+      if (task.status !== "active" || task.cleanup !== null || task.control !== null
+        || controllerPayloadHash([task.webExecution, task.configuration, task.resources, task.recovery]) !== controllerPayloadHash([original.webExecution, original.configuration, original.resources, original.recovery])
+        || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0
+        || execution.restartAfterShutdown || execution.cleanupOperationId !== null
+        || execution.startupReport !== undefined && execution.startupReport.startup.state !== "starting"
+          && !(execution.startupReport.startup.state === "unknown" && execution.startupReport.startup.reasonCode === "evidence_missing")
+          && !(execution.startupReport.startup.state === "failed" && execution.startupReport.startup.reasonCode === "controller_launch_failed")
+        || binding.serverOrigin !== task.serverOrigin || binding.userId !== task.userId || binding.workerId !== task.workerId) throw new Error("Task launch replacement requires proven never-submitted execution.");
+      const previous = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
+      if (execution.executionGeneration === "1") {
+        if (previous !== null || task.resources.nativeSession !== null || execution.initialInputState !== "not_submitted") throw new Error("Task launch replacement cannot discard original execution evidence.");
+      } else if (previous === null || previous.executionId !== execution.executionId || previous.claimId !== task.claimId || previous.sessionId !== execution.sessionId
+        || String(BigInt(previous.executionGeneration) + 1n) !== execution.executionGeneration || previous.controllerInstanceId === execution.controllerInstanceId
+        || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId
+        || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null || previous.controllerProcess === null) {
+        throw new Error("Task launch replacement requires its original stopped recovery generation.");
+      }
+    };
+    assertPending();
+    const launchId = randomUUID();
+    const replacement: ControllerLaunchTicket = { ...ticket, schemaVersion: 2, lifecycleBinding: { ...binding }, launchId,
+      ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, launchId), ipcSecret: randomBytes(32).toString("hex") };
+    assertPending();
+    // Publish immutable ticket and tool evidence before atomically switching the
+    // saved attempt. An interruption cannot rewrite or revive the old reservation.
+    await writeLaunchTicket(options.homeDirectory, replacement);
+    syncDurableDirectory(path.dirname(controllerTicketPath(options.homeDirectory, launchId)));
+    if (ticket.provider !== "claude" && ticket.configuration.toolLaunch === undefined) {
+      const selection = await readLaunchToolSelection(options.homeDirectory, ticket);
+      if (selection === undefined) throw missingSelection(original);
+      await writeLaunchToolSelection(options.homeDirectory, replacement, selection, assertPending);
+    }
+    assertPending();
+    const updated = options.store.replaceUnsubmittedWebLaunch(original, launchId, options.homeDirectory, options.now());
+    const saved = await readLaunchTicket(options.homeDirectory, updated.webExecution!.launchId);
+    checkTicket(current(updated), saved);
+    return saved;
+  };
   const methods = {
     prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<ControllerLaunchTicket> => {
       let task = current(input); let execution = task.webExecution!;
-      if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); await prepareExistingSelection(task, ticket, signal, canAdmitNewExecution); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
-      try {
-        const existing = await readLaunchTicket(options.homeDirectory, execution.launchId);
+      if (execution.ticketPath !== null) return prepareExistingTicket(task, await readLaunchTicket(options.homeDirectory, execution.launchId), signal, canAdmitNewExecution);
+      let existing: ControllerLaunchTicket | undefined;
+      try { existing = await readLaunchTicket(options.homeDirectory, execution.launchId); }
+      catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+      if (existing !== undefined) {
         if (existing.executionId !== execution.executionId || existing.claimId !== task.claimId || existing.executionGeneration !== execution.executionGeneration || existing.controllerInstanceId !== execution.controllerInstanceId || existing.initialOperationId !== execution.initialOperationId || existing.sessionId !== execution.sessionId || existing.initialPrompt !== execution.initialPrompt) throw new Error("An existing launch ticket does not match the durable execution intent.");
-        await prepareExistingSelection(task, existing, signal, canAdmitNewExecution);
-        options.store.updateWebExecution(task, { ticketPath: controllerTicketPath(options.homeDirectory, execution.launchId), nativeHome: existing.nativeHome }, options.now()); return existing;
-      } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+        return await prepareExistingTicket(task, existing, signal, canAdmitNewExecution);
+      }
       if (task.resources.worktree === null || task.configuration === null || task.userId === null) throw new Error("Controller launch requires its original worktree, provider and owner.");
       if (task.configuration.agent !== "claude" && task.configuration.toolLaunch === undefined) {
         assertUnsubmitted(task);
@@ -121,7 +180,8 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         : process.env.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
       if (execution.nativeHome === null) execution = options.store.updateWebExecution(task,{nativeHome},options.now()).webExecution!;
       const initialPrompt = execution.initialPrompt ?? (typeof prompt === "function" ? prompt() : prompt);
-      const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId, provider: task.configuration.agent, cwd: task.resources.worktree.worktreePath, nativeHome, configuration: task.configuration, initialOperationId: execution.initialOperationId, initialPrompt, resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(options.now()).toISOString() };
+      const lifecycleBinding = currentLifecycleBinding();
+      const ticket: ControllerLaunchTicket = { schemaVersion: lifecycleBinding === undefined ? 1 : 2, ...(lifecycleBinding === undefined ? {} : { lifecycleBinding: { ...lifecycleBinding } }), launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId, provider: task.configuration.agent, cwd: task.resources.worktree.worktreePath, nativeHome, configuration: task.configuration, initialOperationId: execution.initialOperationId, initialPrompt, resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(options.now()).toISOString() };
       try { serializeLaunchTicket(ticket); }
       catch (error) {
         if (error instanceof LaunchTicketLimitError) throw new PromptInputLimitError("web_ticket", error.actualBytes, error.maxBytes);
@@ -149,8 +209,18 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         await launchControllerProcess({
           homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, signal,
           env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
+          retainBirthCleanup: cleanup => {
+            if (options.jobLeases === undefined) throw new Error("Controller launch has no ownership registry.");
+            return options.jobLeases.retainBirthCleanup(ticket.launchId, cleanup);
+          },
           onSubmitting: () => { assertConfigurationAdmission(canAdmitNewExecution); submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
-          onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
+          onSpawned: (proof, ownership) => {
+            task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now());
+            if (ownership !== undefined) {
+              if (options.jobLeases === undefined) throw new Error("Controller launch has no Job ownership registry.");
+              options.jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
+            }
+          },
           onObserved: async snapshot => {
             if (process.platform === "win32") {
               const proof = current(task).webExecution!.controllerProcess;

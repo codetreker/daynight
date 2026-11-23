@@ -11,7 +11,7 @@ test('server configuration is private and preserves serialized credentials and t
   try {
     const secret = 'quote " newline\n hash # colon : backslash \\';
     await writeServerConfig(root, {
-      listenAddress: '127.0.0.1:1234', publicOrigin: 'http://127.0.0.1:4321',
+      listenAddress: '127.0.0.1:1234', publicOrigin: 'http://127.0.0.1:4321', previewOrigin: 'http://127.0.0.1:4322',
       databaseURL: 'postgres://example/db?value=%23', storageRoot: 'storage',
       authURL: 'http://127.0.0.1:5678', appId: 'example', appSecret: secret,
       callbackURL: 'http://127.0.0.1:4321/auth/callback',
@@ -24,6 +24,7 @@ test('server configuration is private and preserves serialized credentials and t
     assert.equal(configuration.uniauth.app_secret, secret);
     assert.equal(configuration.uniauth.allow_loopback_http, true);
     assert.equal(configuration.server.allow_http_test_origin, true);
+    assert.equal(configuration.server.preview_origin, 'http://127.0.0.1:4322');
     assert.equal(configuration.database.url, 'postgres://example/db?value=%23');
   } finally {
     await rm(root, { recursive: true, force: true });

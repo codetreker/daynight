@@ -12,8 +12,18 @@ while a page or request still holds associated details.
 ## Decision
 
 The Worker pages read the independent monitoring contract alongside the existing
-snapshot. The list batches loaded Worker IDs, and detail shows the actual scheduler,
-capacity, activities, failures and latest recovery before host resources. Redis
+snapshot. The list batches loaded Worker IDs. Detail places the monitoring time
+line after Worker read and offline notices and before the task panel, so the
+observation age is visible before interpreting task and runtime data. The task
+panel remains the first business panel, followed by monitoring errors, projection
+notices, scheduler, capacity and tasks in cleanup in Runtime monitoring. The
+original detail presented every activity kind; the [cleanup task decision](../simplification/2026-11-20-worker-cleanup-tasks.md)
+narrows that section. The [diagnostic panel decision](../simplification/2026-11-20-worker-monitoring-diagnostic-panels.md)
+removes the failure, recovery and delivery panels. Both retain the complete
+observation contract. The [system monitoring decision](2026-11-18-worker-system-monitoring-tab.md)
+places host resources on a peer tab. The time line and monitoring body consume
+the same read state and expiry predicate; moving presentation does not add
+another request or clock. Redis
 observation time and a monotonic browser clock determine monitoring freshness;
 the existing heartbeat clock still determines online status. Missing, expired and
 failed reads remain distinct. The [Web design](../../../../docs/design/daynight-web.md#我的-worker-列表与详情)
@@ -39,8 +49,11 @@ runtime information as healthy.
 ## Consequences
 
 Monitoring storage failures do not hide host telemetry or imply a Worker is idle.
-The list is limited to the fields in the batch summary; richer diagnostics require
-opening detail. The [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
+The list is limited to the fields in the batch summary; the full observation
+retains diagnostic fields even though the Web detail no longer renders them.
+The [capacity responsibility decision](../simplification/2026-11-18-worker-capacity-responsibilities.md)
+removes the independent responsibility section while retaining the capacity
+breakdown. The [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
 removes admission reasons and monitoring times from list cards. Current permission
 checks and client withdrawal prevent a retained
 page from restoring inaccessible associations, but the observation remains a

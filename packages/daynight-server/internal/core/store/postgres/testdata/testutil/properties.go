@@ -7,13 +7,20 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TaskProperties(t *testing.T, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	properties, err := taskprops.WithWorker(model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
+	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}
+	if worker != nil {
+		raw, err := taskproperties.EncodeWorker(worker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		properties["worker"] = raw
+	}
+	properties, err := taskproperties.NormalizeStored(properties)
 	if err != nil {
 		t.Fatal(err)
 	}

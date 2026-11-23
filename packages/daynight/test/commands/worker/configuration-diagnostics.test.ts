@@ -1,3 +1,4 @@
+import { receivedDesired } from "../../helpers/worker-received-configuration.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,9 +70,8 @@ it("records reason and target changes immediately without claiming a different t
 });
 
 it.each([
-  { change: "mode", secondFails: true }, { change: "mode", secondFails: false },
   { change: "tool path", secondFails: true }, { change: "tool path", secondFails: false },
-] as const)("keeps changed $change recipes separate when second failure=$secondFails at the same revision", async ({ change, secondFails }) => {
+] as const)("keeps changed $change recipes separate when second failure=$secondFails across target revisions", async ({ change, secondFails }) => {
   const root = fileURLToPath(new URL("../../../../../.tmp/configuration-diagnostic-targets/", import.meta.url));
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(path.join(root, "run-")), file = path.join(directory, "configuration.json");
@@ -79,30 +79,30 @@ it.each([
   const attempts: { mode: string; path: string | null }[] = [];
   const diagnostics = createWorkerConfigurationDiagnostics({ now: () => 1_000, emit: event => { events.push(event); } });
   const firstPath = path.join(directory, "private-old-tool"), nextPath = path.join(directory, "private-new-tool"), privateArgument = "private-native-argument";
-  const desired = (changed: boolean): WorkerCloudDesired => ({ revision: "5", updatedAt: "2026-11-13T04:00:00Z", value: {
+  const desired = (changed: boolean): WorkerCloudDesired => ({ revision: changed ? "6" : "5", updatedAt: "2026-11-13T04:00:00Z", value: {
     maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false,
-    agentControlMode: change === "mode" && changed ? "herdr" : "web", native: { agent: "codex", model: null, args: [privateArgument] }, projects: [],
-    toolPaths: { codex: { kind: "path", path: change === "tool path" && changed ? nextPath : firstPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } },
+    native: { agent: "codex", model: null, args: [privateArgument] }, projects: [],
+    toolPaths: { codex: { kind: "path", path: change === "tool path" && changed ? nextPath : firstPath }, copilot: { kind: "auto" } },
   } });
   const manager = await createWorkerConfigurationManager({ file, identity: { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" },
     signal: new AbortController().signal, now: () => 1_000, applyNative: async () => {},
-    prepareToolSelection: async (_native, mode, tools) => {
+    prepareToolSelection: async (_native, tools) => {
       const choice = tools.choices.codex;
-      attempts.push({ mode, path: choice.kind === "path" ? choice.path : null });
-      if (attempts.length === 1 || secondFails) throw new ToolSelectionError("codex", mode, "probe", "probe_timeout");
+      attempts.push({ mode: "web", path: choice?.kind === "path" ? choice.path : null });
+      if (attempts.length === 1 || secondFails) throw new ToolSelectionError("codex", "web", "probe", "probe_timeout");
     },
     onApplication: event => { applications.push(event); diagnostics.application(event); },
   });
   try {
-    await manager.receive(desired(false), "0"); await manager.settle();
+    await manager.receive(receivedDesired(desired(false)), "0"); await manager.settle();
     const original: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
     const originalNative = original.currentItems.find(item => item.value.key.kind === "native")!;
-    await manager.receive(desired(true), "0"); await manager.settle();
+    await manager.receive(receivedDesired(desired(true)), "0"); await manager.settle();
     const current: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
     const currentNative = current.currentItems.find(item => item.value.key.kind === "native")!;
-    expect(attempts).toEqual([{ mode: "web", path: firstPath }, { mode: change === "mode" ? "herdr" : "web", path: change === "tool path" ? nextPath : firstPath }]);
-    expect(current.authority.desired?.revision).toBe("5");
-    expect(current.authority.desired?.value.native).toEqual(original.authority.desired?.value.native);
+    expect(attempts).toEqual([{ mode: "web", path: firstPath }, { mode: "web", path: change === "tool path" ? nextPath : firstPath }]);
+    expect(JSON.parse(current.authority.desiredJson!).revision).toBe("6");
+    expect(JSON.parse(current.authority.desiredJson!).value.native).toEqual(JSON.parse(original.authority.desiredJson!).value.native);
     expect(currentNative.recordId).not.toBe(originalNative.recordId);
     expect(current.authority.generation).not.toBe(original.authority.generation);
     expect(currentNative.value.state).toBe(secondFails ? "error" : "applied");
@@ -113,7 +113,7 @@ it.each([
     expect(events.filter(event => event.kind === "worker-configuration-recovered" && event.configuration?.key?.kind === "native")).toHaveLength(0);
     const pending = applications.filter(event => event.key.kind === "native" && event.kind === "failed" && event.local === "pending");
     expect(pending).toHaveLength(secondFails ? 2 : 1);
-    expect(pending[0]!.target).toEqual({ native: desired(false).value.native, mode: "web", tools: [{ tool: "codex", choice: { kind: "path", path: firstPath } }] });
+    expect(pending[0]!.target).toEqual({ native: desired(false).value.native, tools: [{ tool: "codex", choice: { kind: "path", path: firstPath } }] });
     expect(Object.isFrozen(pending[0]!.target)).toBe(true);
     const persisted = applications.find(event => event.attemptId === pending[0]!.attemptId && event.kind === "failed" && event.local === "persisted")!;
     expect(persisted.target).toBe(pending[0]!.target);

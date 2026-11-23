@@ -40,10 +40,18 @@ export type NativeImageRuntime = {
   writeState(key: string, value: unknown): void;
   createSpool(maximumBytes: number): NativeMediaSpool;
   indexDirectory(): string;
-  reserveIndex(additionalBytes: number): void;
-  acquireIndexReservation(additionalBytes: number, owner?: ProcessProof): { release(): void };
+  acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  copilotBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  claudeBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  codexBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  usageRuntime?: {
+    ready?(input: { nativeSessionId: string; providerVersion: string }): void;
+    bindTurn?(turnId: string): void;
+    observe(input: { nativeSessionId: string; providerVersion: string; event: unknown }): void;
+    gap(reason: string): void;
+  };
   toolLaunch?: import("../../../platform/tool-executables.js").ResolvedToolLaunch;
   toolRuntimeRoot?: string;
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
@@ -56,6 +64,8 @@ export type ProviderOptions = {
   imageRuntime?: NativeImageRuntime;
   /** Recheck the owning Controller before a new native side effect. */
   assertNativeDispatch?(): void;
+  /** Original persistent admission identity for native helper dispatch. */
+  nativeLifecycleFence?: import("../native-lifecycle.js").NativeLifecycleFence;
   onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;
@@ -77,13 +87,19 @@ export type ProviderOptions = {
   /** Registration is durable; capture must wait until the original position is acknowledged. */
   onImageOccurrence?(occurrence: ImageOccurrence, source: NativeImageSource | null): boolean;
   imageOccurrenceAcknowledged?(imageId: string): boolean;
-  prepareImageCapture?(request: ImageCaptureRequest): Promise<void>;
+  prepareImageCapture?(request: ImageCaptureRequest, signal?: AbortSignal): Promise<void>;
+  verifyImageCapture?(captureId: string, attemptId: string): void;
+  freezeImageCapture?(submission: DirectCaptureSubmission): void;
   submitImageCapture?(submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt>;
   registerImageCapture?(request: ImageCaptureRequest): Promise<ImageCaptureReceipt>;
   queryImageCapture?(captureId: string): Promise<ImageCaptureReceipt>;
   commitImageCapture?(captureId: string, attemptId: string, validated: ValidatedImage): Promise<ImageCaptureReceipt>;
   failImageCapture?(captureId: string, attemptId: string, error: ImageError): Promise<ImageCaptureReceipt>;
   stageImageCapture?(input: CaptureStageInput): Promise<ValidatedImage>;
+  /** Stage a registered native source under its current authority and join its writer. */
+  stageNativeImageCapture?(request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage>;
+  /** Observe an already admitted native stage without restarting source I/O. */
+  recoverNativeImageCapture?(request: ImageCaptureRequest): Promise<ValidatedImage | null>;
   /** The source owner opens only an acknowledged, registered capture and joins cancellation. */
   resolveImageCaptureSource?(request: ImageCaptureRequest, signal: AbortSignal): Promise<NativeImageFile>;
 };

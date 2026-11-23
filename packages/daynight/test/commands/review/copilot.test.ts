@@ -1,8 +1,12 @@
 import path from "node:path";
+import { retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { performance } from "node:perf_hooks";
+import { Readable, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
+import { LastLine, createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
 import * as windowsJobs from "../../../src/commands/review/windows-job-scope.js";
 import type { CopilotRunOptions, CopilotRunnerOptions } from "../../../src/commands/review/adapters/copilot.js";
@@ -55,21 +59,16 @@ const session=path.join(process.env.COPILOT_HOME,'session-state',id);
 if(mode!=='no-history') {mkdirSync(session,{recursive:true});writeFileSync(path.join(session,'opaque.jsonl'),'not valid JSONL');}
 writeFileSync(process.env.FIXTURE_REPORT,JSON.stringify({args,prompt,cwd:process.cwd(),env:Object.fromEntries(['COPILOT_SKILLS_DIRS','copilot_skills_dirs','COPILOT_HOME','COPILOT_CACHE_HOME','TMPDIR','TMP','TEMP','HOME','GH_CONFIG_DIR','GIT_DIR','GIT_WORK_TREE','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','GIT_CONFIG_KEY_99','GIT_CONFIG_PARAMETERS','GIT_TRACE','GIT_CURL_VERBOSE','GIT_NO_REPLACE_OBJECTS','GIT_GRAFT_FILE','GH_TOKEN','COPILOT_GITHUB_TOKEN'].map(k=>[k,process.env[k]]))}));
 const marker='PR 101 Review Completed';
-if(mode==='hang') {process.stdout.write(marker+'\\n');setInterval(()=>{},1000);}
+if(mode==='hang-descendant') {
+ const {spawn}=await import('node:child_process');
+ spawn(process.execPath,['-e',"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000);",process.env.FIXTURE_REPORT+'.child'],{stdio:'ignore'});
+ setInterval(()=>{},1000);
+}
+else if(mode==='hang') {process.stdout.write(marker+'\\n');setInterval(()=>{},1000);}
 else if(mode==='stderr') process.stderr.write(marker+'\\n');
-else if(mode==='wrong-pr') process.stdout.write('PR 102 Review Completed\\n');
-else if(mode==='prefix') process.stdout.write('done: '+marker+'\\n');
-else if(mode==='leading-space') process.stdout.write(' '+marker+'\\n');
-else if(mode==='trailing-space') process.stdout.write(marker+' \\n');
-else if(mode==='fence') process.stdout.write('~~~\\n'+marker+'\\n~~~\\n');
-else if(mode==='later') process.stdout.write(marker+'\\nnot finished\\n');
-else if(mode==='spaces-after') process.stdout.write(marker+'\\n \\n');
 else if(mode==='invalid-utf8') process.stdout.write(Buffer.concat([Buffer.from([0xc3]),Buffer.from('\\n'+marker+'\\n')]));
-else if(mode==='bom') process.stdout.write('\\ufeff'+marker+'\\n');
 else if(mode==='truncated-utf8') process.stdout.write(Buffer.concat([Buffer.from(marker+'\\n'),Buffer.from([0xc3])]));
 else if(mode==='large-after') process.stdout.write(marker+'\\n'+'x'.repeat(200000));
-else if(mode==='large-before') process.stdout.write('x'.repeat(200000)+'\\n'+marker+'\\n');
-else if(mode==='no-newline') process.stdout.write(marker);
 else if(mode==='crlf') {
  const output=Buffer.from('中文 progress\\r\\n'+marker+'\\r\\n\\r\\n');
  for(let i=0;i<output.length;i++) await new Promise(r=>process.stdout.write(output.subarray(i,i+1),r));
@@ -132,7 +131,77 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+describe("Worker-owned reviewer processes", () => {
+  it.each(["success", "nonzero"])("keeps streaming logs, stdin and native results through the shared launcher: %s", async mode => {
+    const f = fixture(), events: OwnedCommandLifecycleEvent[] = [];
+    const outcome = await withOwnedCommandLifecycle(async event => { events.push(event); }, () => f.run(mode));
+    expect(outcome).toMatchObject({ completed: mode === "success", directProcessClosed: true, captureComplete: true, exitCode: mode === "success" ? 0 : 7, signal: null });
+    expect(outcome.processExclusionFailure).toBeNull();
+    expect(readFileSync(outcome.stdoutLogPath, "utf8")).toBe("PR 101 Review Completed\n\n");
+    expect(readFileSync(outcome.stderrLogPath, "utf8")).toBe("independent diagnostics\n");
+    expect(JSON.parse(readFileSync(f.report, "utf8")).prompt).toContain("explicitly invoke /daynight-review");
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+    expect(new Set(events.map(event => event.resourceId)).size).toBe(2);
+    expect(f.store.getReview(f.review.id)).toMatchObject({ status: "running", attemptCount: 1, processId: null });
+  }, 35_000);
+
+  it("does not run discovery before boundary persistence and cancellation settles that reservation", async () => {
+    const f = fixture(), cancellation = new AbortController();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const pending = withOwnedCommandLifecycle(async event => {
+      events.push(event);
+      if (event.stage === "bound") { entered.resolve(); await release.promise; }
+    }, () => f.run("success", {}, { signal: cancellation.signal }));
+    try {
+      await entered.promise;
+      expect(existsSync(`${f.report}.discovery`)).toBe(false);
+      expect(f.store.getReview(f.review.id)?.status).toBe("running");
+      cancellation.abort(); release.resolve();
+      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, captureComplete: true, interruption: "aborted", processExclusionFailure: null });
+      expect(existsSync(`${f.report}.discovery`)).toBe(false);
+      expect(existsSync(f.report)).toBe(false);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === events[0]!.resourceId)).toBe(false);
+      await vi.waitFor(async () => expect(await inspectProcessProof(events[1]!.proof!)).toBe("stopped"), { timeout: 5000 });
+    } finally { cancellation.abort(); release.resolve(); await pending; }
+  }, 35_000);
+
+  it("joins the original reviewer group and its child when the scope is cancelled", async () => {
+    const f = fixture(), cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
+    const pending = withOwnedCommandLifecycle(async event => { events.push(event); }, () => f.run("hang-descendant", {}, { signal: cancellation.signal }));
+    try {
+      await vi.waitFor(() => expect(existsSync(`${f.report}.child`)).toBe(true), { timeout: 10_000 });
+      const originalChild = await captureProcessProof(Number(readFileSync(`${f.report}.child`, "utf8")));
+      cancellation.abort();
+      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, captureComplete: true, interruption: "aborted", processExclusionFailure: null });
+      await vi.waitFor(async () => expect(await inspectProcessProof(originalChild)).toBe("stopped"), { timeout: 5000 });
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+    } finally { cancellation.abort(); await pending; }
+  }, 35_000);
+});
+
 describe("Copilot persisted sessions and direct attempts", () => {
+  it("delivers all three 32 KiB reviewer prompts in order over stdin", async () => {
+    const f = fixture();
+    const value = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: uuid(1), revision: "1", text, updatedAt: null });
+    const values = { user: value("user", "u".repeat(32768)), project: value("project", "p".repeat(32768)), worker: value("worker", "w".repeat(32768)) };
+    expect(await f.run("success", {}, { promptValues: values, assertAdmission: () => {} })).toMatchObject({ completed: true });
+    const report = JSON.parse(readFileSync(f.report, "utf8")) as { prompt: string; args: string[] };
+    expect(report.prompt).toContain("explicitly invoke /daynight-review");
+    expect(report.prompt.endsWith(`----- begin user prompt -----\n${values.user.text}\n----- end user prompt -----\n\n----- begin project prompt -----\n${values.project.text}\n----- end project prompt -----\n\n----- begin worker prompt -----\n${values.worker.text}\n----- end worker prompt -----`)).toBe(true);
+    expect(report.args.join(" ")).not.toContain(values.user.text);
+  });
+
+  it("checks assignment immediately before intent and again after skill discovery", async () => {
+    const f = fixture();
+    let checks = 0;
+    await expect(f.run("success", {}, { assertAdmission: () => { if (++checks === 2) throw new Error("revoked"); } })).rejects.toThrow("revoked");
+    expect(checks).toBe(2);
+    expect(f.store.getReview(f.review.id)).toMatchObject({ status: "running", attemptCount: 1, processId: null });
+    expect(existsSync(`${f.report}.discovery`)).toBe(true);
+    expect(existsSync(f.report)).toBe(false);
+  });
   it("launches the platform's copilot PATH wrapper with the prompt confined to stdin", async () => {
     const f = fixture();
     const tools = path.join(f.directory, "tools with spaces");
@@ -547,13 +616,61 @@ describe("Copilot skill discovery and phase ownership", () => {
   });
 });
 
+describe("Copilot completion marker parser", () => {
+  const marker = "PR 101 Review Completed";
+  const capture = async (chunks: Buffer[]) => {
+    const parser = new LastLine(8_192);
+    const output: Buffer[] = [];
+    await pipeline(Readable.from(chunks, { objectMode: false }), parser, new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        output.push(chunk);
+        callback();
+      },
+    }));
+    expect(Buffer.concat(output)).toEqual(Buffer.concat(chunks));
+    return parser;
+  };
+
+  it.each([
+    { mode: "no-newline", stdout: marker, last: marker, completed: true },
+    { mode: "large-before", stdout: `${"x".repeat(200_000)}\n${marker}\n`, last: marker, completed: true },
+    { mode: "wrong-pr", stdout: "PR 102 Review Completed\n", last: "PR 102 Review Completed", completed: false },
+    { mode: "prefix", stdout: `done: ${marker}\n`, last: `done: ${marker}`, completed: false },
+    { mode: "leading-space", stdout: ` ${marker}\n`, last: ` ${marker}`, completed: false },
+    { mode: "trailing-space", stdout: `${marker} \n`, last: `${marker} `, completed: false },
+    { mode: "fence", stdout: `~~~\n${marker}\n~~~\n`, last: "~~~", completed: false },
+    { mode: "later", stdout: `${marker}\nnot finished\n`, last: "not finished", completed: false },
+    { mode: "spaces-after", stdout: `${marker}\n \n`, last: " ", completed: false },
+    { mode: "missing", stdout: "incomplete\n", last: "incomplete", completed: false },
+    { mode: "bom", stdout: `\ufeff${marker}\n`, last: `\ufeff${marker}`, completed: false },
+  ])("recognizes the exact final stdout marker: $mode", async ({ stdout, last, completed }) => {
+    const parser = await capture([Buffer.from(stdout)]);
+    expect(parser.lastNonempty).toBe(last);
+    expect(parser.matchesCompletion(101)).toBe(completed);
+  });
+
+  it("recognizes the marker across bytewise UTF-8 and CRLF chunks", async () => {
+    const bytes = Buffer.from(`中文 progress\r\n${marker}\r\n\r\n`);
+    const parser = await capture(Array.from(bytes, (_byte, index) => bytes.subarray(index, index + 1)));
+    expect(parser.lastNonempty).toBe(marker);
+    expect(parser.matchesCompletion(101)).toBe(true);
+  });
+
+  it.each([
+    { mode: "invalid UTF-8 before a marker", chunks: [Buffer.from([0xc3]), Buffer.from(`\n${marker}\n`)] },
+    { mode: "truncated UTF-8 after a marker", chunks: [Buffer.from(`${marker}\n`), Buffer.from([0xc3])] },
+  ])("rejects $mode as a stream failure", async ({ chunks }) => {
+    await expect(capture(chunks)).rejects.toThrow();
+  });
+});
+
 describe("Copilot completion protocol", () => {
-  it.each(["success", "crlf", "no-newline", "large-before"])("accepts a complete normal capture with exact final marker: %s", async (mode) => {
+  it.each(["success", "crlf"])("accepts a complete normal capture with exact final marker: %s", async (mode) => {
     const outcome = await fixture().run(mode);
     expect(outcome).toMatchObject({ completed: true, captureComplete: true, exitCode: 0, lastNonemptyLine: "PR 101 Review Completed" });
   });
 
-  it.each(["stderr", "wrong-pr", "prefix", "leading-space", "trailing-space", "fence", "later", "spaces-after", "missing", "large-after", "nonzero", "no-history", "invalid-utf8", "truncated-utf8", "bom"])("rejects an incomplete or invalid result: %s", async (mode) => {
+  it.each(["stderr", "large-after", "nonzero", "no-history", "invalid-utf8", "truncated-utf8"])("rejects an incomplete or invalid result: %s", async (mode) => {
     expect(await fixture().run(mode)).toMatchObject({ completed: false, directProcessClosed: true });
   });
 

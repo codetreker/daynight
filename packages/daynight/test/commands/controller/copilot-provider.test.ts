@@ -1,3 +1,4 @@
+import { LifecycleAdmissionError } from "../../../src/commands/worker/lifecycle-store.js";
 import { imageQualificationFingerprint } from "../../../src/commands/controller/providers/image-qualification.js";
 import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
@@ -12,7 +13,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { ChildProcess } from "node:child_process";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
-import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
+import { NativeRpcTimeoutError, NativeDispatchRejectedError } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
 import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
@@ -61,6 +62,67 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.steerOnly = false; sdk.authority = null; sdk.beforeImageVerify = undefined; sdk.observeRoute.mockImplementation(async (native: any) => ({ kind: "native_declared_route_v1", sessionId: native.sessionId, modelId: (await native.rpc.model.getCurrent()).modelId, backendIdentity: "b".repeat(64), generation: 1 })); sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+
+test("Copilot sends ephemeral usage to durable ingress before startup history buffering", async () => {
+  Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
+  const nativeUsage = { ...event("assistant.usage", { model: "model", outputTokens: 7 }), ephemeral: true };
+  const observed = vi.fn(), gap = vi.fn(), ready = vi.fn();
+  const create = fixture.client.createSession.getMockImplementation()!;
+  fixture.client.createSession.mockImplementation(async config => {
+    const native = await create(config);
+    fixture.emit(nativeUsage);
+    expect(observed).toHaveBeenCalledWith({ nativeSessionId: config.sessionId, providerVersion: "1.0.11/1.0.105", event: nativeUsage });
+    return native;
+  });
+  const provider = await openCopilotProvider({ ...fixture.options, usageRuntime: { observe: observed, gap, ready } });
+  try {
+    expect(observed).toHaveBeenCalledOnce(); expect(gap).toHaveBeenCalledWith("native_recovery_gap");
+    expect(ready).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledWith({ nativeSessionId: provider.nativeSessionId, providerVersion: "1.0.11/1.0.105" });
+    expect(fixture.states.some(state => state.nativeSessionId === provider.nativeSessionId)).toBe(true);
+  }
+  finally { await provider.close(); }
+});
+
+test("Copilot usage failures and unavailable versions do not stop the native task", async () => {
+  const observed = vi.fn(), gap = vi.fn(() => { throw new Error("local storage unavailable"); });
+  const provider = await openCopilotProvider({ ...fixture.options, usageRuntime: { observe: observed, gap } });
+  try {
+    fixture.emit({ ...event("assistant.usage", { model: "model", outputTokens: 7 }), ephemeral: true });
+    expect(observed).not.toHaveBeenCalled();
+    expect(gap).toHaveBeenCalledWith("profile_unverified");
+    expect(fixture.states.at(-1)?.activity).toBe("idle");
+    await provider.send(textNativeInput("continue"), randomUUID(), null);
+    expect(fixture.native.send).toHaveBeenCalledOnce();
+  } finally { await provider.close(); }
+});
+
+test("Copilot rejected usage ingress reports a gap without disconnecting the provider", async () => {
+  Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
+  const observed = vi.fn(() => { throw new Error("native_integer_unrepresentable"); }), gap = vi.fn();
+  const provider = await openCopilotProvider({ ...fixture.options, usageRuntime: { observe: observed, gap } });
+  try {
+    fixture.emit({ ...event("assistant.usage", { model: "model", outputTokens: Number.MAX_SAFE_INTEGER + 1 }), ephemeral: true });
+    expect(observed).toHaveBeenCalledOnce();
+    expect(gap).toHaveBeenCalledWith("native_integer_unrepresentable");
+    expect(fixture.states.at(-1)?.activity).toBe("idle");
+  } finally { await provider.close(); }
+});
+
+test("Copilot confirmed identity announces usage readiness before any model call", async () => {
+  Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
+  const ready = vi.fn(() => {
+    expect(fixture.states.at(-1)?.nativeSessionId).toBe(fixture.native.sessionId);
+    throw new Error("usage registration unavailable");
+  }), observed = vi.fn(), gap = vi.fn();
+  const provider = await openCopilotProvider({ ...fixture.options, usageRuntime: { ready, observe: observed, gap } });
+  try {
+    expect(ready).toHaveBeenCalledOnce();
+    expect(observed).not.toHaveBeenCalled();
+    expect(gap).toHaveBeenCalledWith("collector_failed");
+    expect(fixture.states.at(-1)?.activity).toBe("idle");
+  } finally { await provider.close(); }
+});
 
 async function sourceAuthorityFixture() {
   const { CopilotReadAuthority, copilotAuthorityProtocol } = await vi.importActual<typeof import("../../../src/commands/controller/providers/copilot-read-authority.js")>("../../../src/commands/controller/providers/copilot-read-authority.js");
@@ -435,6 +497,19 @@ test("Copilot cannot submit input when the working-state callback fences its que
   try {
     await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
     expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test("Copilot reports the final queued lifecycle refusal as not dispatched and restores idle state", async () => {
+  let fenced = false;
+  const provider = await openCopilotProvider({ ...fixture.options,
+    onState: state => { fixture.options.onState(state); if (state.activity === "working") fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw new LifecycleAdmissionError(); },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBeInstanceOf(NativeDispatchRejectedError);
+    expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null });
   } finally { await provider.close(); }
 });
 

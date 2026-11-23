@@ -1,6 +1,7 @@
 import { useRef, type ReactNode } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useWorkspaceDrawer } from "../src/app/sidebar/useWorkspaceDrawer";
 import { WorkspaceSidebar } from "../src/app/sidebar/WorkspaceSidebar";
 import type { AuthRoute } from "../src/app/router";
 import type { Project } from "../src/api/types";
@@ -23,7 +24,8 @@ const response = (items: readonly Project[], nextCursor: string | null = null) =
 const failure = () => new Response(JSON.stringify({ error: { code: "internal_error", message: "private server detail", requestId: "rq-projects" } }), { status: 500, headers: { "Content-Type": "application/json" } });
 const Harness = ({ activeProjectId = null, route, collapsed = false, onNavigate = () => {}, children }: { readonly activeProjectId?: string | null; readonly route?: AuthRoute; readonly collapsed?: boolean; readonly onNavigate?: () => void; readonly children?: ReactNode }) => {
   const workspace = useRef<HTMLDivElement>(null);
-  return <ProjectsProvider><WorkspaceSidebar collapsed={collapsed} onToggle={() => {}} routeKey={activeProjectId ?? "projects"} route={route ?? (activeProjectId === null ? { kind: "projects" } : { kind: "project", projectId: activeProjectId })} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: "00000000-0000-4000-8000-000000000701", visibilityTeamId: "00000000-0000-4000-8000-000000000701" }} webhooksAvailable={false} blocked={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}>{children}</div></ProjectsProvider>;
+  const drawer = useWorkspaceDrawer(activeProjectId ?? "projects", false);
+  return <ProjectsProvider><WorkspaceSidebar drawer={drawer} collapsed={collapsed} onToggle={() => {}} route={route ?? (activeProjectId === null ? { kind: "projects" } : { kind: "project", projectId: activeProjectId, tab: null })} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: "00000000-0000-4000-8000-000000000701", visibilityTeamId: "00000000-0000-4000-8000-000000000701" }} webhooksAvailable={false} blocked={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}><button ref={drawer.openerRef} onClick={drawer.open} hidden={!drawer.narrow}>Open navigation</button>{children}</div></ProjectsProvider>;
 };
 const navigation = () => within(screen.getByRole("complementary", { name: "Workspace navigation" }));
 
@@ -109,8 +111,8 @@ describe("sidebar project navigation", () => {
     const onNavigate = vi.fn();
     render(<Harness collapsed onNavigate={onNavigate} />);
     await act(async () => {});
-    expect(navigation().queryByRole("link", { name })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(screen.queryByRole("link", { name })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const drawer = screen.getByRole("dialog");
     const link = within(drawer).getByRole("link", { name });
     expect(link).toHaveAttribute("title", name);

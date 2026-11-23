@@ -8,6 +8,7 @@ import { AssistantTaskRecords } from '../src/features/bots/AssistantTaskRecords'
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botDefinition, botId } from './helpers/bots';
 
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({ MermaidDiagram: ({ source }: { source: string }) => <div data-testid="diagram">{source}</div> }));
 vi.mock(import('../src/api/assistant-tasks'), async importOriginal => ({ ...await importOriginal(), listAssistantTaskItems: vi.fn(), listAssistantTaskRecords: vi.fn() }));
 const taskId = botId(30);
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Coordination', purpose: '', scope: '', application: '', kind: 'once', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '2', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
@@ -15,6 +16,11 @@ const manual: Manual = { taskId, version: '2', body: 'Current **manual**', rules
 const initial: Manual = { ...manual, version: '1', body: 'Original manual', source: 'initial', proposalId: null };
 const appendix: AssistantTaskAppendix = { id: botId(32), taskId, text: 'Reference note', sourceRecords: [botId(40)], authorBotId: botId(1), state: 'active', version: '1', createdAt: BOT_TIME, updatedAt: BOT_TIME };
 const proposal: AssistantTaskProposal = { id: botId(33), taskId, baseVersion: '2', body: 'New manual', rules: [], reason: 'Two observed successes', evidenceRecords: [botId(40)], authorBotId: botId(1), widens: true, status: 'pending', decisionNote: '', createdAt: BOT_TIME, decidedAt: null };
+
+it('routes proposal Mermaid through the shared diagram owner', () => {
+  renderWithLocale(<AssistantTaskProposalPanel taskVersion="7" proposals={[{ ...proposal, body: '```mermaid\nflowchart LR\nA-->B\n```' }]} disabled={false} onDecide={vi.fn()} />, { locale: 'en' });
+  expect(screen.getByTestId('diagram')).toHaveTextContent('flowchart LR');
+});
 const record = (n: number, itemId: string | null, kind: AssistantTaskRecord['kind']): AssistantTaskRecord => ({ id: botId(n), taskId, itemId, kind, author: 'bot', authorBotId: botId(1), text: `Evidence ${n}`, refs: [], createdAt: BOT_TIME });
 beforeEach(() => { vi.mocked(listAssistantTaskItems).mockReset(); vi.mocked(listAssistantTaskRecords).mockReset(); });
 
@@ -127,6 +133,21 @@ it('loads record pages without losing earlier records, groups by item and distin
   expect(screen.queryByText('Evidence 40')).toBeNull(); expect(screen.getByText('Evidence 42')).toBeVisible();
   fireEvent.change(screen.getByRole('combobox', { name: 'Record type' }), { target: { value: 'guess' } });
   expect(screen.getByText('Evidence 41')).toBeVisible(); expect(screen.queryByText('Evidence 42')).toBeNull();
+});
+
+it('renders an outcome record beside other kinds and follows its evaluated action', async () => {
+  const onRecords = vi.fn();
+  const outcome: AssistantTaskRecord = { ...record(46, null, 'outcome'), outcome: 'ineffective', actionRecordId: botId(45) };
+  vi.mocked(listAssistantTaskItems).mockResolvedValue({ items: [], nextCursor: null, observedAt: BOT_TIME });
+  vi.mocked(listAssistantTaskRecords).mockResolvedValue({ items: [record(45, null, 'action'), outcome, record(47, null, 'note')], nextCursor: null, observedAt: BOT_TIME });
+  renderWithLocale(<AssistantTaskRecords taskId={taskId} enabled onRecords={onRecords} />, { locale: 'en', taskCache: true });
+  const entry = (await screen.findByText('Evidence 46')).closest('li')!;
+  expect(screen.getByText('Evidence 45')).toBeVisible(); expect(screen.getByText('Evidence 47')).toBeVisible();
+  expect(within(entry).getByText('Ineffective')).toBeVisible(); expect(within(entry).getByText('Evaluated action')).toBeVisible();
+  fireEvent.click(within(entry).getByRole('button', { name: `Record ${botId(45)}` }));
+  expect(onRecords).toHaveBeenCalledWith(botId(45));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Record type' }), { target: { value: 'outcome' } });
+  expect(screen.getByText('Evidence 46')).toBeVisible(); expect(screen.queryByText('Evidence 45')).toBeNull(); expect(screen.queryByText('Evidence 47')).toBeNull();
 });
 
 it('distinguishes empty records from failed reads and resolves an evidence link across pages', async () => {

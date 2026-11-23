@@ -18,6 +18,13 @@ execution, lose responsibility or authorize removal of a replacement file.
 
 ## Decision
 
+The [storage contract decision](2026-11-18-session-storage-contracts.md) defines
+Bot-owned persistence and independent takeover requirements for a new recovery
+capability. [Bot-owned storage](2026-11-19-bot-owned-storage.md) replaces the
+shared database and Controller locations for new Bots. The Worker formats below
+continue to own unmigrated records; neither storage isolation nor the new
+specification establishes native recovery acceptance.
+
 Bot launch uses the existing independent Session and Controller contracts with
 no initial user input. Frozen registration and role intent retain their
 existing inventory ownership; the
@@ -76,7 +83,7 @@ birth and current-generation observations from an already submitted child remain
 recordable. Otherwise a deletion arriving between spawn and its acknowledgement
 could hide the evidence needed to stop that child.
 
-After exact process-tree stop, Worker SQLite retains the stop receipt and the
+After exact process-tree stop, the Bot's owning SQLite retains the stop receipt and the
 restricted private-resource plan outside the sources being removed. Each
 completed target is recorded so a retry does not revisit a path that may now
 belong to another instance. Local cleanup removes the Bot's execution sources,
@@ -115,7 +122,7 @@ allowing unrelated Bots to progress.
 
 **Keep the only deletion receipt in the execution journal.** Removing private
 conversation sources would also remove the proof needed to retry after a lost
-response. Worker SQLite retains the minimal responsibility and the original
+response. The owning SQLite retains the minimal responsibility and the original
 completion identity independently of the files it authorizes removing.
 
 **Add optional cleanup JSON without a format admission change.** Older inventory

@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
-import { startCommand } from "../src/command.ts";
+import { test, expect, topology, cli, cliEnvironment, startOwnedCommand } from "./fixtures.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
+import { verifyWorkerPatrol } from "./worker-patrol.ts";
+import { verifyPreviewFlow } from "./preview-flow.ts";
+import { verifyWorkerMonitoring } from "./worker-monitoring.ts";
+import { verifyTeamMemberFlow } from "./team-member-flow.ts";
+import { verifyProjectMemberFlow } from "./project-member-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
 type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(540_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
@@ -21,7 +25,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   let output = "";
   let resolveAuthorization: (value: { uri: string; code: string }) => void = () => {};
   const authorization = new Promise<{ uri: string; code: string }>((resolve) => { resolveAuthorization = resolve; });
-  const login = startCommand(process.execPath, [topology.cliEntry, "login", "--no-browser"], {
+  const login = await startOwnedCommand(process.execPath, [topology.cliEntry, "login", "--no-browser"], {
     cwd: topology.cliConfigDirectory,
     env: cliEnvironment,
     timeoutMs: 60_000,
@@ -35,6 +39,9 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   try {
     const device = await Promise.race([authorization, login.finished.then(() => { throw new Error("CLI login exited before publishing authorization instructions."); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    const teamPermissions = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+    await teamPermissions.locator('summary').click();
+    await teamPermissions.getByRole('checkbox', { name: /^Select this group/ }).check();
     await page.getByRole("checkbox", { name: "This code matches the one in my terminal", exact: true }).check();
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);
@@ -47,6 +54,10 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const cliToken = issued[0]!;
   expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
 
+  await verifyTeamMemberFlow(page);
+  await verifyProjectMemberFlow(page);
+  await verifyWorkerMonitoring(page);
+
   const name = `Product E2E ${randomUUID()}`;
   const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);
   const projectId = project.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
@@ -58,8 +69,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   }, { timeout: 60_000, intervals: [1_000] }).toEqual(expect.any(String));
 
   await page.goto(`${topology.baseURL}/account`);
-  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v1/me/tokens") && response.request().method() === "GET");
-  await page.getByRole("button", { name: "Access credentials", exact: true }).click();
+  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v2/me/tokens") && response.request().method() === "GET");
+  await page.getByRole("link", { name: "Access credentials", exact: true }).click();
   const tokenResponse = await tokenList;
   expect(tokenResponse.status()).toBe(200);
   const shownToken = (await tokenResponse.json() as { items: Token[] }).items.find(token => token.id === cliToken.id);
@@ -92,11 +103,12 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(task).toMatchObject({ id: taskId, status: "proposed", version: 1 });
 
   const referenceTitle = `Reference ${task.id}`;
-  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle, "--status", "todo"]);
+  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle, "--description", "[Open preview](index.html)", "--status", "todo"]);
   const referenceId = referenceCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(referenceId).toBeDefined();
   const reference = JSON.parse((await cli(["task", "show", referenceId!, "--project", projectId!, "--json"])).stdout) as Task;
   expect(reference).toMatchObject({ id: referenceId, status: "todo", version: 1 });
+  await verifyPreviewFlow(page, projectId!, [task.id, referenceId!]);
   const results = JSON.parse((await cli(["task", "search", task.id, "--project", projectId!, "--json"])).stdout) as SearchItem[];
   expect(results.map(({ id, title, match }) => ({ id, title, match }))).toEqual([
     { id: task.id, title: name, match: { fields: ["id"], descriptionSnippet: null } },
@@ -153,22 +165,40 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const observed = JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout) as Task;
   expect(observed).toMatchObject({ id: task.id, title: name, description: "Shared E2E content" });
 
+  const personalRead = page.waitForResponse(response => response.url().includes('/api/v1/me/in-progress-tasks?') && response.request().method() === 'GET');
   await page.goto(`${topology.baseURL}/my-tasks`);
+  const personalResponse = await personalRead;
+  expect(personalResponse.status()).toBe(200);
+  const personalData = await personalResponse.json() as { items: { task: { id: string; allowAgents: boolean }; sessionRow: { state: string } }[] };
+  expect(personalData.items.find(item => item.task.id === task.id)).toMatchObject({ task: { allowAgents: false }, sessionRow: { state: 'no_session' } });
   await expect(page.getByRole("heading", { name: "In-progress tasks", exact: true })).toBeVisible();
   const projectGroup = page.getByRole("region", { name: `${name} · Personal · ${projectId}` });
   await expect(projectGroup).toContainText("1 in progress");
   await expect(projectGroup.getByText(referenceTitle, { exact: true })).toHaveCount(0);
-  await expect(projectGroup).toContainText("No current Session");
+  await expect(projectGroup).not.toContainText("No current session");
   const personalRow = projectGroup.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(personalRow.locator('.task-row-id')).toHaveText(task.id);
+  await expect(personalRow).toHaveAttribute('data-task-status', 'in_progress');
+  await expect(personalRow.locator('.task-row-primary-status')).toHaveText('In progress');
+  await expect(personalRow.getByRole('button', { name: /Open Session/ })).toHaveCount(0);
+  await expect(personalRow.locator('.task-agent-permission')).toHaveCount(0);
   const sharedFacts = await personalRow.locator('.task-row-meta > :not(.task-row-execution)').allTextContents();
+  const projectRead = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === 'GET');
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  const projectResponse = await projectRead;
+  expect(projectResponse.status()).toBe(200);
+  const projectData = await projectResponse.json() as { taskObservations: Record<string, { state: string }> };
+  expect(projectData.taskObservations[task.id]).toMatchObject({ state: 'no_session' });
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
   const projectRow = page.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(projectRow.locator('.task-row-id')).toHaveText(task.id);
+  await expect(projectRow).toHaveAttribute('data-task-status', 'in_progress');
+  await expect(projectRow.locator('.task-row-primary-status')).toHaveText('In progress');
   await expect(projectRow.locator('.task-row-meta > :not(.task-row-execution)')).toHaveText(sharedFacts);
-  await expect(projectRow).toContainText('No current Session');
+  await expect(projectRow).not.toContainText('No current session');
+  await expect(projectRow.getByRole('button', { name: /Open Session/ })).toHaveCount(0);
+  await expect(projectRow.locator('.task-agent-permission')).toHaveCount(0);
   await page.goto(`${topology.baseURL}/my-tasks`);
   await projectGroup.getByRole("link", { name, exact: true }).click();
   await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
@@ -192,12 +222,13 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   // MCP and Session registration use the PAT issued to the CLI by device login.
   // Keep it out of the browser and Playwright traces.
   const configModule = pathToFileURL(path.join(path.dirname(topology.cliEntry), "config/server.js")).href;
-  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverToken?: string }> };
-  const { serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
+  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverUrl: string; serverToken?: string }> };
+  const { serverUrl, serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
   if (serverToken === undefined) throw new Error("CLI device login did not save its Worker credential.");
 
   await verifyCompletionFlow(page, projectId!, task.id);
   await verifyControllerImages(page);
+  await verifyWorkerPatrol({ serverUrl, serverToken });
   await verifyTagFlow(page, projectId!, serverToken);
 
   // These API registrations exercise the assembled service without starting a
@@ -208,6 +239,31 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(patch.status(), await patch.text()).toBe(200);
   const ready = await patch.json() as Task;
   const workerId = randomUUID(), firstClaimId = randomUUID(), firstWorktreeId = randomUUID();
+  const workerRoot = `/api/v1/me/workers/${workerId}`;
+  const sampledAt = new Date().toISOString();
+  const probe = (value: unknown) => ({ state: "ok", checkedAt: sampledAt, value });
+  const machine = { id: randomUUID(), name: "Product E2E worker" };
+  const report = await fetch(`${topology.baseURL}${workerRoot}/report`, {
+    method: "POST", headers: { "Content-Type": "application/json", "Daynight-Worker-Tool-Paths": "2", Authorization: `Bearer ${serverToken}` },
+    body: JSON.stringify({
+      machine, platform: "linux", workingDirectory: "/work", sampledAt,
+      os: probe({ type: "Linux", release: "6.8", version: "kernel", arch: "x64" }),
+      cpu: probe({ model: "CPU", logicalProcessors: 4, usagePercent: 1 }),
+      memory: probe({ usedBytes: 4, totalBytes: 8 }), disk: probe({ availableBytes: 8, totalBytes: 16 }),
+      versions: { daynight: "1.0.0", codex: probe("1.0.0"), copilot: probe("1.0.0") },
+      taskInventory: null,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  expect(report.status, await report.text()).toBe(200);
+  expect(report.headers.get("Daynight-Worker-Tool-Paths")).toBe("2");
+  const worker = await page.request.get(workerRoot, { headers: { "Daynight-Worker-Tool-Paths": "2" } });
+  expect(worker.status(), await worker.text()).toBe(200);
+  expect(worker.headers()["daynight-worker-tool-paths"]).toBe("2");
+  expect(await worker.json()).toMatchObject({ worker: { workerId, machine } });
+  const monitoring = await page.request.get(`${workerRoot}/monitoring`);
+  expect(monitoring.status(), await monitoring.text()).toBe(200);
+  expect(await monitoring.json()).toMatchObject({ state: "absent", data: null });
   const claim = async (version: number, claimId: string, worktreeId: string, machine: string) => {
     const response = await page.request.post(`${taskRoot}/worker-claim`, { headers, data: {
       version, claimId, workerId, worktreeId, machine: { id: randomUUID(), name: machine },
@@ -267,4 +323,64 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await page.reload();
   await expect(page.locator(".task-claim")).toContainText("New E2E worker");
   await expect(page.locator(".task-claim")).not.toContainText("Original E2E worker");
+
+  const firstChain = await cli(["task", "create", "--project", projectId!, "--title", "Share chain root", "--status", "todo"]);
+  const chainId = firstChain.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(chainId).toBeDefined();
+  const secondChain = await cli(["task", "create", "--project", projectId!, "--title", "Share chain successor", "--status", "todo", "--depends-on", chainId!]);
+  const successorId = secondChain.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(successorId).toBeDefined();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: topology.baseURL });
+  await page.goto(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+  await page.getByRole("tab", { name: "Task chains", exact: true }).click();
+  await page.locator(`#task-chain-graph-${chainId}`).click();
+  const chain = page.locator(".task-chain-dialog");
+  await chain.getByRole("button", { name: "More task chain actions" }).click();
+  await chain.getByRole("menuitem", { name: "Copy link" }).click();
+  const shared = `${topology.baseURL}/projects/${projectId}?tab=tasks&chain=${chainId}`;
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(shared);
+  const anonymous = await page.context().browser()!.newContext({ locale: "en-US", ignoreHTTPSErrors: true, proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
+  try {
+    const reader = await anonymous.newPage();
+    await reader.goto(shared);
+    await expect(reader).toHaveURL(/\/login\?returnPath=/);
+    await reader.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await reader.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    await expect(reader.locator(".task-chain-dialog .react-flow__node")).toHaveCount(2);
+    await expect(reader.locator(`.task-chain-dialog .react-flow__node[data-id="${chainId}"]`)).toBeVisible();
+    await expect(reader.locator(`.task-chain-dialog .react-flow__node[data-id="${successorId}"]`)).toBeVisible();
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+  } finally { await anonymous.close(); }
+
+  const goalTitle = `Share Goal ${randomUUID()}`;
+  const goalCreation = await cli(["task", "create", "--project", projectId!, "--type", "goal", "--title", goalTitle]);
+  const goalId = goalCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(goalId).toBeDefined();
+  const goalTaskTitle = `Goal task ${randomUUID()}`;
+  const goalTaskCreation = await cli(["task", "create", "--project", projectId!, "--parent", goalId!, "--title", goalTaskTitle, "--status", "todo"]);
+  const goalTaskId = goalTaskCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(goalTaskId).toBeDefined();
+  const goalURL = `${topology.baseURL}/projects/${projectId}?tab=tasks&goalGraph=${goalId}`;
+  const goalReaderContext = await page.context().browser()!.newContext({ locale: "en-US", ignoreHTTPSErrors: true, proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
+  try {
+    const reader = await goalReaderContext.newPage();
+    await reader.goto(goalURL);
+    await expect(reader).toHaveURL(/\/login\?returnPath=/);
+    await reader.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await reader.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    const graph = reader.locator(`#task-graph-${goalId}`);
+    await expect(reader).toHaveURL(goalURL);
+    await expect(graph.getByRole("heading", { name: goalTitle, exact: true })).toBeVisible();
+    await expect(graph.locator(`.react-flow__node[data-id="${goalTaskId}"]`)).toContainText(goalTaskTitle);
+    await reader.reload();
+    await expect(reader).toHaveURL(goalURL);
+    await expect(graph.getByRole("heading", { name: goalTitle, exact: true })).toBeVisible();
+    await expect(graph.locator(`.react-flow__node[data-id="${goalTaskId}"]`)).toContainText(goalTaskTitle);
+    await graph.getByRole("button", { name: "Close dependency graph", exact: true }).click();
+    await expect(graph).toHaveCount(0);
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+    await reader.reload();
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+    await expect(graph).toHaveCount(0);
+  } finally { await goalReaderContext.close(); }
 });

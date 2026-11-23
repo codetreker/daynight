@@ -293,6 +293,75 @@ const waitForGroupGone = async (pgid: number): Promise<void> => {
   }
 };
 
+const waitForDriver = async <T>(closed: Promise<T>, diagnostic = (): string => ""): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([closed, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Update fixture driver did not close. ${diagnostic()}`)), 8_000);
+    })]);
+  } finally { clearTimeout(timer); }
+};
+
+const waitForOwnedAnchor = async (filename: string): Promise<void> => {
+  let text: string;
+  try { text = await readFile(filename, "utf8"); }
+  catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") throw new Error("Update fixture anchor identity was not recorded.", { cause });
+    throw cause;
+  }
+  const pgid = Number(text);
+  if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(pgid) || pgid <= 1) throw new Error(`Invalid fixture anchor: ${text}`);
+  await waitForGroupGone(pgid);
+};
+
+const cleanupDeadlineDriver = async (child: ReturnType<typeof spawn>, closed: Promise<number | null>, anchorPid: string): Promise<void> => {
+  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  const results = await Promise.allSettled([waitForOwnedAnchor(anchorPid), waitForDriver(closed)]);
+  const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  if (failures.length > 0) throw new AggregateError(failures, "Update fixture driver cleanup failed.");
+};
+
+// Inserted into isolated drivers so unrelated tests and their real timers are unaffected.
+// A synchronous product listener identifies the timer before its IPC request, even
+// when the production duration changes. Only that window uses placeholder timers.
+const controlledDeadlineDriver = `
+const assert=require('node:assert/strict');
+const realSetTimeout=globalThis.setTimeout,realClearTimeout=globalThis.clearTimeout;
+const registered=[];let inWindow=false,target;
+function deadlineWindow(fn){const previous=inWindow;inWindow=true;try{return fn();}finally{inWindow=previous;}}
+globalThis.setTimeout=(fn,ms,...args)=>{
+  if(!inWindow)return realSetTimeout(fn,ms,...args);
+  const entry={ms,cleared:false,delivered:false,handle:undefined,callback:()=>fn(...args)};
+  entry.handle=realSetTimeout(()=>{},60000);registered.push(entry);return entry.handle;
+};
+globalThis.clearTimeout=(handle)=>{const entry=registered.find(item=>item.handle===handle);if(entry)entry.cleared=true;return realClearTimeout(handle);};
+function selectDeadline(){assert.equal(registered.length,1,'expected one timer before IPC request');target=registered[0];assert.equal(target.ms,10000,'production deadline');assert.equal(target.cleared,false);}
+function assertActive(){assert.ok(target);assert.equal(registered.length,1,'deadline must not be reset');assert.equal(registered[0],target);assert.equal(target.cleared,false);assert.equal(target.delivered,false);}
+function expireDeadline(){assertActive();realClearTimeout(target.handle);target.delivered=true;target.callback();}
+function waitForStage(stage,outcome,details){return Promise.race([stage,outcome.then(()=>{throw new Error('Command settled before the required stage: '+details());})]);}
+`;
+
+// Only the timeout variants install this in their isolated updater driver.
+const controlledCommandExpiry = `
+import assert from 'node:assert/strict';
+const realSetTimeout=globalThis.setTimeout,realClearTimeout=globalThis.clearTimeout;
+let commandTimer,expireCommand,active=false;
+globalThis.setTimeout=(callback,ms,...args)=>{
+  if(ms!==3000)return realSetTimeout(callback,ms,...args);
+  assert.equal(commandTimer,undefined,'expected one command deadline');
+  commandTimer=realSetTimeout(()=>{},60000);commandTimer.unref();active=true;
+  expireCommand=()=>callback(...args);
+  return commandTimer;
+};
+globalThis.clearTimeout=(handle)=>{if(handle===commandTimer)active=false;return realClearTimeout(handle);};
+process.on('message',message=>{
+  if(message!=='expire-command')return;
+  assert.equal(active,true,'expected an active 3000ms command deadline');
+  active=false;realClearTimeout(commandTimer);expireCommand();
+  process.stdout.write('Command expiry delivered: 3000ms\\n');
+});
+`;
+
 describe("update subprocess supervision", () => {
   it("waits for the complete PID to be atomically published", async () => {
     const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
@@ -414,6 +483,7 @@ else{spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'inherit'
     const { environment: _environment, ...driverCommand } = command;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};
+${interruption === "timeout" ? controlledCommandExpiry : ""}
 process.on('message',message=>{if(message==='SIGINT'||message==='SIGTERM')process.emit(message);});
 const before=[process.listenerCount('SIGINT'),process.listenerCount('SIGTERM')];
 try{await runUpdateCommand({...${JSON.stringify(driverCommand)},environment:process.env});process.stdout.write('Unexpected success');process.exitCode=1;}
@@ -433,11 +503,13 @@ if(process.connected)process.disconnect();`;
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
       const pgid = process.platform === "win32" ? undefined : processGroupOf(Number(await waitForFile(leafPid)));
-      if (interruption !== "timeout") {
+      if (interruption === "timeout") child.send("expire-command");
+      else {
         if (process.platform === "win32") child.send(interruption);
         else child.kill(interruption);
       }
       expect(await closed, output).toBe(0);
+      if (interruption === "timeout") expect(output).toContain("Command expiry delivered: 3000ms");
       expect(output).toContain(interruption === "timeout" ? "timed out after 3 seconds" : `interrupted by ${interruption}`);
       expect(output).toContain("Handlers restored: true");
       if (pgid !== undefined) {
@@ -473,7 +545,9 @@ if(process.connected)process.disconnect();`;
     const helper = path.resolve(import.meta.dirname, "../../../dist/commands/skill/refresh-installed.js");
     const command = { executable: process.execPath, arguments: [helper], cwd: directory, timeoutMs: interruption === "timeout" ? 3_000 : 10_000, output: "capture", cleanupProcessGroup: true };
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
-    const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};process.on('message',signal=>process.emit(signal));try { await runUpdateCommand({...${JSON.stringify(command)},environment:process.env});process.exitCode=1; } catch(error) { for(let current=error;current;current=current.cause)process.stdout.write(current.message+'\\n'); }if(process.connected)process.disconnect();`;
+    const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};
+${interruption === "timeout" ? controlledCommandExpiry : ""}
+process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.emit(signal);});try { await runUpdateCommand({...${JSON.stringify(command)},environment:process.env});process.exitCode=1; } catch(error) { for(let current=error;current;current=current.cause)process.stdout.write(current.message+'\\n'); }if(process.connected)process.disconnect();`;
     const child = spawn(process.execPath, ["--input-type=module", "--eval", driver], {
       cwd: directory, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: home, USERPROFILE: home },
       stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
@@ -495,8 +569,9 @@ if(process.connected)process.disconnect();`;
         if (Date.now() >= deadline) throw new Error(`The refresh Git fixture did not start: ${output}`);
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
-      if (interruption !== "timeout") child.send(interruption);
+      child.send(interruption === "timeout" ? "expire-command" : interruption);
       expect(await closed, output).toBe(0);
+      if (interruption === "timeout") expect(output).toContain("Command expiry delivered: 3000ms");
       expect(output).toContain(interruption === "timeout" ? "timed out after 3 seconds" : `interrupted by ${interruption}`);
       // ESRCH after the updater resolves is the process-group completion barrier;
       // the earlier marker and ticks prove this was the active fixture's group.
@@ -576,17 +651,17 @@ if(process.connected)process.disconnect();`;
       return stopPromise;
     };
     try {
-      await writeFile(leaf, `const fs=require('node:fs');const net=require('node:net');const socket=net.connect(${address.port},'127.0.0.1');socket.on('connect',()=>fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)));socket.on('error',()=>process.exit(0));socket.on('close',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'stopped');process.exit(0);});`);
-      await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{detached:true,stdio:${holdOutput ? "['ignore','inherit','ignore']" : "'ignore'"}});child.unref();fs.writeFileSync(${JSON.stringify(helperReady)},String(process.pid));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})&&fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
+      await writeFile(leaf, `const fs=require('node:fs');const net=require('node:net');const socket=net.connect(${address.port},'127.0.0.1');socket.on('connect',()=>{${publishFixturePid(ready)}});socket.on('error',()=>process.exit(0));socket.on('close',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'stopped');process.exit(0);});`);
+      await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{detached:true,stdio:${holdOutput ? "['ignore','inherit','ignore']" : "'ignore'"}});child.unref();${publishFixturePid(helperReady)}const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})&&fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
       let outcome: { output?: string; error?: unknown } | undefined;
       let leafStarted = false;
       let escapedGroup: number | undefined;
       const result = runUpdateCommand({ executable: process.execPath, arguments: [helper], cwd: directory, environment: process.env, timeoutMs: 5_000, output: "capture", cleanupProcessGroup: true });
       const observed = result.then((output) => { outcome = { output }; }, (error: unknown) => { outcome = { error }; });
       try {
-        const helperPid = Number(await waitForFile(helperReady));
+        const helperPid = await waitForFixturePid(helperReady);
         const pgid = processGroupOf(helperPid);
-        const escapedPid = Number(await waitForFile(ready));
+        const escapedPid = await waitForFixturePid(ready);
         leafStarted = true;
         escapedGroup = processGroupOf(escapedPid);
         await writeFile(release, "release");
@@ -624,16 +699,30 @@ if(process.connected)process.disconnect();`;
     directories.push(directory);
     const ready = path.join(directory, "ready");
     const stop = path.join(directory, "stop");
+    const anchorPid = path.join(directory, "anchor-pid");
     const command = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
-    const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};
-const original=process.kill.bind(process);const calls=[];let interval;
-process.kill=(pid,signal)=>{if(pid<0){calls.push(signal);if(signal===0){if(${JSON.stringify(mode)}==='reused')return true;throw Object.assign(new Error('observer failure'),{code:${JSON.stringify(mode)}});}}return original(pid,signal);};
-process.on('message',()=>{process.emit('SIGINT');if(${JSON.stringify(mode)}==='reused')interval=setInterval(()=>process.emit('SIGTERM'),100);});
-let message='';const start=Date.now();try{await runUpdateCommand({executable:process.execPath,arguments:['--eval',${JSON.stringify(command)}],cwd:${JSON.stringify(directory)},environment:process.env,timeoutMs:5000,output:'capture',cleanupProcessGroup:true});message='unexpected success';}
-catch(error){for(let current=error;current;current=current.cause)message+=String(current.message)+'\\n';}
-clearInterval(interval);process.stdout.write(JSON.stringify({message,calls,elapsed:Date.now()-start}));if(process.connected)process.disconnect();`;
-    const child = spawn(process.execPath, ["--input-type=module", "--eval", driver], { cwd: directory, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');
+${controlledDeadlineDriver}
+const mode=${JSON.stringify(mode)},originalSpawn=cp.spawn,original=process.kill.bind(process),calls=[];
+const on=process.on.bind(process),removeListener=process.removeListener.bind(process);let termCalls=0,termListener,termWrapper;
+process.on=(event,listener)=>{if(mode==='reused'&&event==='SIGTERM'){termListener=listener;termWrapper=(...args)=>{termCalls++;return listener(...args);};return on(event,termWrapper);}return on(event,listener);};
+process.removeListener=(event,listener)=>removeListener(event,event==='SIGTERM'&&listener===termListener?termWrapper:listener);
+let signalObserved;const observation=new Promise(resolve=>{signalObserved=resolve;});
+cp.spawn=(...args)=>{const anchor=originalSpawn(...args),send=anchor.send.bind(anchor);if(anchor.pid!==undefined)require('node:fs').writeFileSync(${JSON.stringify(anchorPid)},String(anchor.pid));anchor.send=(message,...rest)=>{if(mode==='reused'&&message.type==='cleanup')selectDeadline();return send(message,...rest);};return anchor;};syncBuiltinESMExports();
+process.kill=(pid,signal)=>{if(pid<0){calls.push(signal);if(signal===0){if(mode==='reused'){signalObserved();return true;}throw Object.assign(new Error('observer failure'),{code:mode});}}return original(pid,signal);};
+process.on('message',()=>{if(mode==='reused')deadlineWindow(()=>process.emit('SIGINT'));else process.emit('SIGINT');});
+const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});let message='',settled=false;const start=Date.now();
+const result=runUpdateCommand({executable:process.execPath,arguments:['--eval',${JSON.stringify(command)}],cwd:${JSON.stringify(directory)},environment:process.env,timeoutMs:5000,output:'capture',cleanupProcessGroup:true});
+const outcome=result.then(()=>{settled=true;message='unexpected success';},error=>{settled=true;for(let current=error;current;current=current.cause)message+=String(current.message)+'\\n';});
+if(mode==='reused'){
+  await waitForStage(observation,outcome,()=>JSON.stringify({message,calls}));assertActive();
+  deadlineWindow(()=>process.emit('SIGTERM'));deadlineWindow(()=>process.emit('SIGTERM'));
+  await Promise.resolve();assert.equal(termCalls,2);assertActive();assert.equal(settled,false);assert.ok(calls.length>0);assert.ok(calls.every(signal=>signal===0));
+  expireDeadline();
+}
+await outcome;process.stdout.write(JSON.stringify({message,calls,elapsed:Date.now()-start}));if(process.connected)process.disconnect();`;
+    const child = spawn(process.execPath, ["--input-type=commonjs", "--eval", `(async()=>{${driver}})().catch(error=>{console.error(error);process.exitCode=1;if(process.connected)process.disconnect();});`], { cwd: directory, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     let stdout = ""; let stderr = "";
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
@@ -641,7 +730,7 @@ clearInterval(interval);process.stdout.write(JSON.stringify({message,calls,elaps
     try {
       const pgid = processGroupOf(Number(await waitForFile(ready)));
       child.send("interrupt");
-      expect(await closed, stderr).toBe(0);
+      expect(await waitForDriver(closed, () => stderr), stderr).toBe(0);
       const observed = JSON.parse(stdout) as { message: string; calls: unknown[]; elapsed: number };
       expect(observed.message).toMatch(/cleanup.*unconfirmed|cannot confirm/i);
       expect(observed.message).toContain("interrupted by SIGINT");
@@ -651,9 +740,9 @@ clearInterval(interval);process.stdout.write(JSON.stringify({message,calls,elaps
       await waitForGroupGone(pgid);
     } finally {
       await writeFile(stop, "stop");
-      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await closed; }
+      await cleanupDeadlineDriver(child, closed, anchorPid);
     }
-  }, 20_000);
+  }, 35_000);
 
   it.skipIf(process.platform === "win32")("keeps the command deadline separate from the cleanup deadline", async () => {
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
@@ -773,46 +862,63 @@ const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});try{await ru
     directories.push(directory);
     const ready = path.join(directory, "ready");
     const stop = path.join(directory, "stop");
-    const command = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
+    const anchorPid = path.join(directory, "anchor-pid");
+    const command = `const fs=require('node:fs');${publishFixturePid(ready)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');const originalSpawn=cp.spawn;let anchor,cleanupRequests=0;
-cp.spawn=(...args)=>{anchor=originalSpawn(...args);const send=anchor.send.bind(anchor);anchor.send=(message,...rest)=>{if(${JSON.stringify(mode)}==='deadline'&&message.type==='cleanup'){cleanupRequests++;const callback=rest.find(value=>typeof value==='function');if(callback)setImmediate(()=>callback(null));return true;}return send(message,...rest);};return anchor;};syncBuiltinESMExports();
-process.on('message',()=>{if(${JSON.stringify(mode)}==='interrupt')process.emit('SIGINT');anchor.stdout.emit('error',new Error('capture stream failure'));});
-const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});let message='';const start=Date.now();try{await runUpdateCommand({executable:process.execPath,arguments:['--eval',${JSON.stringify(command)}],cwd:${JSON.stringify(directory)},environment:process.env,timeoutMs:5000,output:'capture',cleanupProcessGroup:true});message='unexpected success';}
-catch(error){for(let current=error;current;current=current.cause)message+=String(current.message)+'\\n';}process.stdout.write(JSON.stringify({message,cleanupRequests,elapsed:Date.now()-start}));if(process.connected)process.disconnect();`;
-    const child = spawn(process.execPath, ["--input-type=commonjs", "--eval", `(async()=>{${driver}})().catch(error=>{console.error(error);process.exitCode=1;});`], { cwd: directory, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+${controlledDeadlineDriver}
+let callbackDone;const cleanupCallback=new Promise(resolve=>{callbackDone=resolve;});
+cp.spawn=(...args)=>{anchor=originalSpawn(...args);if(anchor.pid!==undefined)require('node:fs').writeFileSync(${JSON.stringify(anchorPid)},String(anchor.pid));const send=anchor.send.bind(anchor);anchor.send=(message,...rest)=>{if(${JSON.stringify(mode)}==='deadline'&&message.type==='cleanup'){cleanupRequests++;selectDeadline();const callback=rest.find(value=>typeof value==='function');assert.ok(callback);setImmediate(()=>{callback(null);callbackDone();});return true;}return send(message,...rest);};return anchor;};syncBuiltinESMExports();
+process.on('message',()=>{if(${JSON.stringify(mode)}==='interrupt')process.emit('SIGINT');deadlineWindow(()=>anchor.stdout.emit('error',new Error('capture stream failure')));});
+const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});let message='',settled=false;const start=Date.now();
+const result=runUpdateCommand({executable:process.execPath,arguments:['--eval',${JSON.stringify(command)}],cwd:${JSON.stringify(directory)},environment:process.env,timeoutMs:5000,output:'capture',cleanupProcessGroup:true});
+const outcome=result.then(()=>{settled=true;message='unexpected success';},error=>{settled=true;for(let current=error;current;current=current.cause)message+=String(current.message)+'\\n';});
+if(${JSON.stringify(mode)}==='deadline'){await waitForStage(cleanupCallback,outcome,()=>JSON.stringify({message,cleanupRequests}));await Promise.resolve();assert.equal(cleanupRequests,1);assert.equal(settled,false);expireDeadline();}
+await outcome;process.stdout.write(JSON.stringify({message,cleanupRequests,elapsed:Date.now()-start}));if(process.connected)process.disconnect();`;
+    const child = spawn(process.execPath, ["--input-type=commonjs", "--eval", `(async()=>{${driver}})().catch(error=>{console.error(error);process.exitCode=1;if(process.connected)process.disconnect();});`], { cwd: directory, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     let stdout = ""; let stderr = "";
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     try {
-      const pgid = processGroupOf(Number(await waitForFile(ready)));
+      const pgid = processGroupOf(await waitForFixturePid(ready));
       child.send("interrupt");
-      expect(await closed, stderr).toBe(0);
+      expect(await waitForDriver(closed, () => stderr), stderr).toBe(0);
       const observed = JSON.parse(stdout) as { message: string; cleanupRequests: number; elapsed: number };
       expect(observed.message).toMatch(/cleanup.*unconfirmed|cannot confirm/i);
       if (mode === "interrupt") expect(observed.message).toContain("interrupted by SIGINT");
       else {
         expect(observed.message).toContain("capture stream failure");
         expect(observed.cleanupRequests).toBe(1);
-        expect(observed.elapsed).toBeGreaterThanOrEqual(9_000);
         expect(observed.elapsed).toBeLessThan(15_000);
       }
       await waitForGroupGone(pgid);
     } finally {
       await writeFile(stop, "stop");
-      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await closed; }
+      await cleanupDeadlineDriver(child, closed, anchorPid);
     }
-  }, 20_000);
+  }, 35_000);
 
   it.skipIf(process.platform === "win32").each(["finish", "close"] as const)("bounds a stalled normal anchor %s", async (stall) => {
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
+    await mkdir(temporary, { recursive: true });
+    const directory = await mkdtemp(path.join(temporary, "Normal anchor "));
+    directories.push(directory);
+    const anchorPid = path.join(directory, "anchor-pid");
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');const originalSpawn=cp.spawn;
-cp.spawn=(...args)=>{const child=originalSpawn(...args);const send=child.send.bind(child);const once=child.once.bind(child);
-child.send=(message,...rest)=>{if(${JSON.stringify(stall)}==='finish'&&message.type==='finish'){const callback=rest.find(value=>typeof value==='function');if(callback)setImmediate(()=>callback(null));return true;}return send(message,...rest);};
-child.once=(event,listener)=>{if(${JSON.stringify(stall)}==='close'&&event==='close')return once(event,()=>{});return once(event,listener);};return child;};syncBuiltinESMExports();
-const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});const start=Date.now();let message='';
-try{await runUpdateCommand({executable:process.execPath,arguments:['--eval',"process.stdout.write('ok')"],cwd:process.cwd(),environment:process.env,timeoutMs:1000,output:'capture'});message='unexpected success';}catch(error){message=error.message;}
+${controlledDeadlineDriver}
+const stall=${JSON.stringify(stall)};let stageDone;const stage=new Promise(resolve=>{stageDone=resolve;});let finished=false,outcomeDelivered=false,eofDelivered=false;const events=[];
+cp.spawn=(...args)=>{const child=originalSpawn(...args),send=child.send.bind(child),on=child.on.bind(child),once=child.once.bind(child),streamOnce=child.stdout.once.bind(child.stdout);if(child.pid!==undefined)require('node:fs').writeFileSync(${JSON.stringify(anchorPid)},String(child.pid));
+on('exit',(code,signal)=>events.push('exit:'+code+':'+signal));
+child.on=(event,listener)=>event==='message'?on(event,message=>{events.push('message:'+message.type);if(message.type==='outcome')outcomeDelivered=true;if(message.type==='finished')finished=true;return deadlineWindow(()=>listener(message));}):on(event,listener);
+child.stdout.once=(event,listener)=>event==='end'?streamOnce(event,(...values)=>{eofDelivered=true;events.push('eof');return deadlineWindow(()=>listener(...values));}):streamOnce(event,listener);
+child.send=(message,...rest)=>{events.push('send:'+message.type);if(message.type==='finish'){assert.equal(outcomeDelivered,true);assert.equal(eofDelivered,true);selectDeadline();if(stall==='finish'){const callback=rest.find(value=>typeof value==='function');assert.ok(callback);setImmediate(()=>{callback(null);stageDone();});return true;}}return send(message,...rest);};
+child.once=(event,listener)=>{if(stall==='close'&&event==='close')return once(event,()=>{assert.equal(finished,true,JSON.stringify(events));stageDone();});return once(event,listener);};return child;};syncBuiltinESMExports();
+const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});const start=Date.now();let message='',settled=false;
+const result=runUpdateCommand({executable:process.execPath,arguments:['--eval',"process.stdout.write('ok')"],cwd:process.cwd(),environment:process.env,timeoutMs:1000,output:'capture'});
+const outcome=result.then(()=>{settled=true;message='unexpected success';},error=>{settled=true;for(let current=error;current;current=current.cause)message+=String(current.message)+'\\n';});
+await waitForStage(stage,outcome,()=>JSON.stringify({message,events}));await Promise.resolve();assert.equal(outcomeDelivered,true);assert.equal(eofDelivered,true);assert.equal(settled,false);expireDeadline();await outcome;
 process.stdout.write(JSON.stringify({message,elapsed:Date.now()-start}));`;
     const child = spawn(process.execPath, ["--input-type=commonjs", "--eval", `(async()=>{${driver}})().catch(error=>{console.error(error);process.exitCode=1;});`], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = ""; let stderr = "";
@@ -820,14 +926,14 @@ process.stdout.write(JSON.stringify({message,elapsed:Date.now()-start}));`;
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     try {
-      expect(await closed, stderr).toBe(0);
+      expect(await waitForDriver(closed, () => stderr), stderr).toBe(0);
       const observed = JSON.parse(stdout) as { message: string; elapsed: number };
       expect(observed.message).toMatch(/cleanup.*unconfirmed|cannot confirm/i);
       expect(observed.elapsed).toBeLessThan(15_000);
     } finally {
-      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await closed; }
+      await cleanupDeadlineDriver(child, closed, anchorPid);
     }
-  }, 20_000);
+  }, 35_000);
 
   it("removes interruption handlers after successful and failed commands", async () => {
     const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];

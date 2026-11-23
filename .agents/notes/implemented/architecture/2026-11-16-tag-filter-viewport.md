@@ -13,7 +13,7 @@ must continue to respect independent filter conditions and other overlays.
 ## Decision
 
 A task-tags local lifecycle composes the existing controlled filter with its
-root, trigger, panel and search elements. It retains the
+root, trigger, panel, search and selected-condition elements. It retains the
 [dismissal decision](../bug-fix/2026-11-16-tag-filter-dismissal.md), handles
 opening focus only on an interactive transition within the mounted instance,
 so remounting an already-open controller preserves external focus. It observes geometry without
@@ -23,7 +23,16 @@ and event boundaries.
 
 Position and height follow the visible viewport rectangle, falling back to the
 layout viewport where `visualViewport` is unavailable. The natural panel width
-remains the current 285px, capped by the available width with side margins.
+is 352px, capped by the available width with side margins. At the time of this
+decision the existing skin used 285px; the selector decision later changed it.
+The vertical anchor is the union of the interactive trigger and visible selected
+chips, while horizontal alignment follows the trigger. This keeps chips outside
+the panel where space permits without moving them into the event root. Changes to
+the selected region, its container and surrounding controls update placement.
+Color feedback follows the chips, so dismissing the panel cannot move their
+pointer targets when feedback for unselected catalog entries disappears. Filter
+wrappers align to the start of their flex row so their own height changes do not
+shift targets when a taller neighboring control determines the row height.
 Available space above and below the anchor is intersected with the visible
 rectangle before choosing placement. Extremely small visible areas reduce margins
 and padding, and placement may overlap the anchor to retain a scrollport. The
@@ -31,9 +40,9 @@ list and, when needed, the panel itself
 scroll so that controls remain reachable. The [toolbar decision](../feature/2026-11-14-unified-tag-filter-toolbar.md)
 retains the independent filter ownership and its original placement rationale.
 
-The local lifecycle does not own filter data or the panel's presentation. This
-keeps the existing native matching control and skin while allowing the separate
-selector presentation to change without duplicating event and geometry rules.
+The local lifecycle does not own filter data or the panel's presentation. The
+[selector decision](../feature/2026-11-16-tag-filter-selector.md) owns the radio
+matching controls and skin without duplicating event and geometry rules.
 
 ## Alternatives
 
@@ -45,6 +54,9 @@ changes; offscreen distances can be mistaken for usable space.
 the DOM ownership used by outside actions and overlay events. The existing modal
 registration also acquires an inert lease, which the non-modal filter does not
 need.
+
+**Position from the trigger alone.** A downward panel can cover external chips,
+preventing the same pointer action from dismissing the panel and removing a condition.
 
 ## Consequences
 

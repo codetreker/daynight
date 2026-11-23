@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
@@ -34,13 +37,47 @@ func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
 		"cpu":           probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 1}),
 		"memory":        probe(map[string]any{"usedBytes": 4, "totalBytes": 8}),
 		"disk":          probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("1.0.0"), "codex": probe("1.0.0"), "copilot": probe("1.0.0")},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": probe("1.0.0"), "copilot": probe("1.0.0")},
 		"taskInventory": nil,
 	}
-	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK)
+	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK, http.Header{"Daynight-Worker-Tool-Paths": {"2"}})
+	monitoring := requestJSON[struct {
+		State string `json:"state"`
+	}](t, f, http.MethodGet, base+"/monitoring", nil, http.StatusOK)
+	if monitoring.State != "absent" {
+		t.Fatalf("new Worker monitoring state differs: %+v", monitoring)
+	}
 
-	ctx, cancel := context.WithTimeout(f.context, 5*time.Second)
+	const exchangeBudget = 5 * time.Second
+	if exchangeBudget >= credentialusage.Cooldown {
+		t.Fatal("readonly exchange must finish inside the credential usage cooldown")
+	}
+	ctx, cancel := context.WithTimeout(f.context, exchangeBudget)
 	defer cancel()
+	// Commit the first sample through a plain identity read before authorization
+	// takes grant locks. The complete exchange shares a budget below the sampler
+	// cooldown, so its later usage events cannot flush during those grant locks.
+	primed := *application
+	primed.context = ctx
+	started := time.Now()
+	identity, _ := usageRequest(t, &primed, primed.client, http.MethodGet, "/api/v1/me", "", "", "", http.StatusOK)
+	finished := time.Now()
+	if identity.Header.Get("Daynight-User-ID") != f.userID {
+		t.Fatal("application usage preparation authenticated another owner")
+	}
+	database, err := pgxpool.New(ctx, f.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	accessHash := secret.Hash(application.client.Transport.(tokenTransport).token)
+	usageWait(t, &primed, func() *time.Time {
+		var usedAt *time.Time
+		if err := database.QueryRow(ctx, `SELECT g.last_used_at FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id AND a.user_id=g.user_id WHERE a.token_hash=$1 AND g.user_id=$2`, accessHash, f.userID).Scan(&usedAt); err != nil {
+			t.Fatal(err)
+		}
+		return usedAt
+	}, nil, started, finished)
 	conn, response, err := websocket.Dial(ctx, strings.Replace(f.origin, "http:", "ws:", 1)+base+"/readonly/channel", &websocket.DialOptions{HTTPClient: f.client})
 	if err != nil {
 		t.Fatal(err)

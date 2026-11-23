@@ -2,6 +2,8 @@
 
 Bot 执行层消费[持久库存](worker-bot-inventory.md)与[角色及环境](bot-role-environment.md)，提供普通目录内的独立 Controller 启动、原身份观察、授权维护、退出停止、同一会话恢复与私有资料删除。调用者持有 Worker 实例锁，使用当前服务、账号与 Worker 绑定；Bot 不占 Task `maxConcurrent`，不创建 Project、Task、claim 或 worktree。
 
+本文现行公共 Worker SQLite、执行路径和原 Worker 绑定要求适用于未迁移格式。`botRecoveryVersion=1` 的新增[本地存储与恢复合同](assistant.md#bot-本地存储与恢复合同)要求 SQLite、执行及恢复材料归 `bots/<botId>/`，由 Bot 本机锁和独立接管保护。两端能力、迁移和原生恢复未经验证时，不能凭新规格绕过旧绑定或宣称独立恢复可用。
+
 ## 启动与身份
 
 新 Bot 初始化须使用独立的 `canAdmitNewExecution` 动态门禁，不能把能力采样 `configuration()` 的返回值当作准入。存储或当前配置不就绪时保持等待；异步环境/工具准备之后、首次持久 intent、注册以及初次 launch submission 前再次检查。初次 intent 或 Session 已固定但尚未提交原生 launch 时，仍须守住后续边界，不重新分配身份。已经提交或提交结果未知的原操作、拥有已知原生会话的冻结恢复及输入/停止仍遵守原归属，不被新初始化门禁误停或改称 environment failure。
@@ -22,6 +24,8 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 ## 退出与恢复
 
+Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#linux-进程出生身份)：同一内核出生实例不能仅因 `ps lstart` 展示漂移而失去正常停止与恢复能力。旧记录缺少稳定身份时保留原证据和责任，不通过当前 PID 自动升级或重建会话；完整原生停止仍是恢复与删除的前置条件。
+
 取消持续运行或调用 `shutdown` 时，先停止发现与续期调度，取消并等待已开始的管理工作，再独立停止每个 Bot。一个 Bot 的失败不能跳过其它 Bot 的停止；调用者收到汇总错误，无法确认的执行仍保留完整责任。退出不递交 cleanup prompt，不调用 StopTest，不以归档、删除 Bot、清理对话或删除普通 cwd 为前置条件。
 
 停止针对原 ticket 和进程出生身份，认证 IPC stop 回执仅表示请求结果；原 Controller 及原生进程树须经 OS 核验确已停止，并在同一 journal 保存匹配 fence 的停止证据。恢复子进程已经提交但 journal 仍为前代时，必须继续依据当前子进程的已持久出生证明尝试停止；前代 journal 不能证明当前代停止，缺失当前代完整停证仍报告失败。Windows 的完整停止必须沿原 Job lease 确认成员清空，并确认终止前已固定的原 Controller/native 出生实例句柄全部 signaled；ESRCH、变化的退出码及空成员清单单独不构成完成证明。已核对出生身份的退出中实例只等待同一句柄，不放宽运行身份冲突或操作 PID 替代实例。原绝对 deadline、未知状态和主要/关闭错误保持。IPC 不可达、进程查询失败和停止超时都不等于已停止。ticket、journal、操作回执、原角色、原生身份及各代私有路径保留，供恢复和精确删除使用。
@@ -34,11 +38,11 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 ## 删除与私有资料
 
-只有当前服务、账号和绑定 Worker 的权威删除投影才能启动清理。删除责任固定到原 `deletionId` 和执行身份；清单遗漏、404、网络失败或权限失败都不能当作清理授权。运行时必须接入删除管理器，发现删除投影后推进同一责任；单 Bot 的清理失败不阻塞其它 Bot，下次权威对账后继续重试。删除状态阻止新启动、恢复和续期，但已提交子进程的出生证明及观察仍须保存，不能因删除先到而遗失停止原 writer 所需的证据。
+只有当前服务、账号和绑定 Worker 的权威删除投影才能启动清理。删除责任固定到原 `deletionId` 和执行身份；清单遗漏、404、网络失败或权限失败都不能当作清理授权。运行时必须接入删除管理器，发现删除投影后推进同一责任；单 Bot 的清理失败不阻塞其它 Bot，可重试失败在下次权威对账后继续处理。`failed/execution_evidence_missing` 则持续保留明确失败，自动处理只读核对，不重复停止、私有清理或无效完成回执；该状态跨重启生效。删除状态阻止新启动、恢复和续期，但已提交子进程的出生证明及观察仍须保存，不能因删除先到而遗失停止原 writer 所需的证据。
 
 删除与原执行共用同一串行化入口，等待在途启动结束后停止原 writer。IPC stop 成功回执不能替代 OS 进程树停证；停止未确认时，ticket、journal、pending 内容和操作回执保持完整。停证须匹配原 generation、Controller instance 和 Session；不能借前代停证清理可能仍运行的新代。`never_started` 仅用于确证从未启动执行的收尾，包括未提交和明确 OS 启动拒绝且没有任何进程或 snapshot 证据的首次执行；不能把未知 spawn 或未知恢复 grant 降为未启动。
 
-停止确认后，先在 Worker SQLite 持久保存停证、受限清理目标和精确完成回执，再删除执行私有资料。删除责任不能放在即将删除的 journal 内。中断和部分失败须保留同一责任并允许重试，已确认清理的目标不再重新删除；旧 `deletionId`、旧执行或被替换的文件身份不得成为清理新实例的依据。
+停止确认后，先持久保存停证、受限清理目标和精确完成回执，再删除执行私有资料。未迁移格式在 Worker SQLite 保存该责任；支持 `botRecoveryVersion=1` 的格式按 Bot 专属所有权保留最小责任，直至两端确认。删除责任不能放在即将删除的 journal 内，也不能因整个 Bot 目录先行删除而丢失。中断和部分失败须保留同一责任并允许重试，已确认清理的目标不再重新删除；旧 `deletionId`、旧执行或被替换的文件身份不得成为清理新实例的依据。
 
 清理范围仅包括该 Bot 的私有执行目录（journal、pending 内容、操作回执、日志及 relay 凭据）、本次与保留各代的 ticket 及其原子写入临时文件、认证 IPC 端点和已登记的独占 CLI 别名目录。临时文件只接受原 launch 对应的 `<launchId>.json.<uuid>.tmp`，不清理共享 launch 目录中的其它文件；正式 ticket 须核对原 Bot 执行归属。路径须由原执行身份和配置根核对，拒绝越界、符号链接及归属冲突，也拒绝以 cwd、native home 本身或包含它们的目录作为清理目标。普通 cwd、共享 native home、Bot 创建的 Task 及其 worktree 均保持不变；不调用 Agent cleanup prompt、Task worktree removal 或 StopTest，不以归档上传为前置条件。
 
@@ -46,7 +50,13 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 离线或权限错误保留责任并显示实际失败；停证缺失、执行代际不明和文件清理失败不得报告完成。已保存注册意图却没有确认 sessionId，或恢复目标尚未提交而服务端 grant 是否换代无法确认时，均保留原执行资料，不能把未知注册视为从未绑定，也不能猜测一个可被接受的 stopProof。
 
-首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。Provider 自身历史不在清理范围内，不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
+空记录、历史 `localCompleted:true`、仅有 intent 而原执行行缺失，均不能证明原执行从未启动；发现证据不足须在私有清理前报告既有 `execution_evidence_missing`。完整持久记录明确未提交或明确 OS 启动拒绝时，仍可沿正常 `never_started` 路径完成。历史 null 或 `never_started` 完成回执收到 `session_conflict` 后，先核对原删除；只有权威读取确认 Worker 清理仍未完成，才报告证据缺失并停止同一无效回执，不能仅凭错误响应推定回执未提交。
+
+用户可先用 `daynight bot show <bot-id> --json` 核对，再在原执行机器、原 `DN_CONFIG_DIR` 和账号下停止 Worker，显式执行 `daynight bot recover <bot-id> --deletion-id <deletion-id> [--json]`。命令取得既有 Worker/Bot 锁，沿本地确认的承载身份、原执行和停止能力尽力补偿；完整停证及全部私有清理成功后才提交既有 completed 回执。执行行丢失但原 intent/ticket/journal 可核对时，可停止原 generation 并将真实停证留在原 journal；历史私有清理材料仍缺，因此保留失败，不重建 execution 或部分 cleanup 计划，不删除 ticket/journal，不提交 completed。重复补偿保留原停止时间，CLI hint 区分“原 generation 已停止”与“删除未完成”。证据彻底丢失时允许继续失败，不保证服务端完成；不新增服务端恢复协议或无证明结清能力，也不改变普通 Worker 流程。
+
+显式补偿须在核实承载身份、确认原执行已停止或第一代确实从未启动并取得完整清理计划后，先保存清理责任中的 Worker 身份，再删除任何私有文件。never_started 计划必须由仍保留的首次执行记录证明未提交或明确 OS 启动拒绝，停止证明须与原 Session、执行、代际、Controller、实例及 launchId 完全一致。未完成计划每次续做都重新验证原执行，已有 Worker 绑定不能替代缺失或矛盾的执行证据；完成本地擦除后保留该绑定供同一 Worker 核对及提交原回执。历史已完成但无此绑定的 never_started 责任仍拒绝。原回执收到 session_conflict，且后续权威读取确认 Worker 清理未完成时，撤销该已完成 never_started 责任的重试绑定；传输未知不能撤销。即使清理已移除 `recovery.json`，匹配本机 Worker、原 `deletionId/requestedVersion` 和停证的责任仍可用于剩余清理及回执；它不授予新的停止、启动或一般承载权限。原 Worker 保留既有身份准入；由其他 Worker 承载的旧责任若未保存 Worker 身份，仍须有现存可确认的承载证据，不得从原归属推定接管身份。完成回执在实际提交前的失败保持未提交语义；提交后的错误须报告 `outcomeUnconfirmed:true`。即使收到完整 4xx，回执也可能已保存而服务端后续清理再次认证失败，不能据此宣称确定未提交或误报停证缺失。只有匹配的成功回执或原 Bot 的权威读取才能确认结果，用户须先沿原 Bot GET 核对。
+
+首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。共享 Provider 历史不在清理范围内；新存储合同中的 Bot 专属原生副本属于其私有资料。不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
 
 ## 集成与验证边界
 

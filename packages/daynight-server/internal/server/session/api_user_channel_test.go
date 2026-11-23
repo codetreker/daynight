@@ -47,31 +47,28 @@ func (b *apiChannelLogs) text() string {
 }
 
 type apiChannelFixture struct {
-	t                               *testing.T
-	routes                          *Routes
-	server                          *httptest.Server
-	auth                            *authhttp.RequestAuthentication
-	identity                        store.OAuthAccessIdentity
-	snapshot                        sp.Snapshot
-	state                           map[string]any
-	token                           string
-	native                          model.Principal
-	nativeCalls                     atomic.Int32
-	apiCalls                        atomic.Int32
-	polls                           atomic.Int32
-	logs                            apiChannelLogs
-	project, task, session, browser string
-	onPoll                          func(context.Context, model.Principal, int32) error
-	onDisconnect                    func(context.Context, model.Principal, string, string, string)
+	t                      *testing.T
+	routes                 *Routes
+	server                 *httptest.Server
+	auth                   *authhttp.RequestAuthentication
+	identity               store.OAuthAccessIdentity
+	snapshot               sp.Snapshot
+	token                  string
+	native                 model.Principal
+	nativeCalls            atomic.Int32
+	apiCalls               atomic.Int32
+	polls                  atomic.Int32
+	logs                   apiChannelLogs
+	project, task, session string
+	onPoll                 func(context.Context, model.Principal, int32) error
 }
 
 func newAPIChannelFixture(t *testing.T, expires time.Time) *apiChannelFixture {
 	t.Helper()
-	f := &apiChannelFixture{t: t, token: secret.Random("dnapi_"), project: uuid.NewString(), task: uuid.NewString(), session: uuid.NewString(), browser: uuid.NewString()}
+	f := &apiChannelFixture{t: t, token: secret.Random("dnapi_"), project: uuid.NewString(), task: uuid.NewString(), session: uuid.NewString()}
 	f.identity = store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, GrantID: uuid.NewString(), ExpiresAt: expires}
 	f.native = model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	f.snapshot = sp.Snapshot{Protocol: sp.Protocol, ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: f.session, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "2"}, HistoryEpoch: uuid.NewString()}
-	f.state = map[string]any{"type": "state", "protocol": v2.Protocol, "claimId": f.snapshot.ClaimID, "connectionEpoch": f.snapshot.ConnectionEpoch}
 	logger := slog.New(slog.NewJSONHandler(&f.logs, nil))
 	var err error
 	f.auth, err = authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
@@ -107,18 +104,6 @@ func newAPIChannelFixture(t *testing.T, expires time.Time) *apiChannelFixture {
 			}
 			return f.snapshot, nil, "initial-cursor", poll(ctx, p)
 		},
-		TerminalState: func(ctx context.Context, p model.Principal, project, task, session string) (map[string]any, error) {
-			if session != f.session {
-				t.Errorf("terminal session = %q", session)
-			}
-			return f.state, poll(ctx, p)
-		},
-		DisconnectTerminalViewer: func(ctx context.Context, p model.Principal, project, task, session, browser, claim, epoch string) error {
-			if f.onDisconnect != nil {
-				f.onDisconnect(ctx, p, browser, claim, epoch)
-			}
-			return nil
-		},
 		AuthenticateController: func(context.Context, string) error { return authhttp.Failure() },
 	}, f.auth, logger)
 	mux := http.NewServeMux()
@@ -128,15 +113,11 @@ func newAPIChannelFixture(t *testing.T, expires time.Time) *apiChannelFixture {
 	return f
 }
 
-func (f *apiChannelFixture) path(protocol string, test bool) string {
+func (f *apiChannelFixture) path(_ string, test bool) string {
 	if test {
 		return "/api/v1/test-sessions/" + f.session + "/channel"
 	}
-	path := "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions/" + f.session + "/channel"
-	if protocol == v2.Protocol {
-		path += "?browserClientId=" + f.browser
-	}
-	return path
+	return "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions/" + f.session + "/channel"
 }
 
 func (f *apiChannelFixture) dial(path string, protocols []string, headers http.Header) (*websocket.Conn, *http.Response, error) {
@@ -154,8 +135,8 @@ func (f *apiChannelFixture) shutdown() {
 	}
 	f.routes.mutex.Lock()
 	defer f.routes.mutex.Unlock()
-	if f.routes.reserved != 0 || len(f.routes.connections) != 0 || len(f.routes.terminalViewers) != 0 {
-		f.t.Errorf("channel resources remain: reserved=%d connections=%d viewers=%d", f.routes.reserved, len(f.routes.connections), len(f.routes.terminalViewers))
+	if f.routes.reserved != 0 || len(f.routes.connections) != 0 {
+		f.t.Errorf("channel resources remain: reserved=%d connections=%d", f.routes.reserved, len(f.routes.connections))
 	}
 }
 
@@ -174,11 +155,40 @@ func readAPIChannel(t *testing.T, conn *websocket.Conn) (map[string]any, error) 
 	return frame, nil
 }
 
+func TestAPIUserChannelRejectsRetiredTerminalProtocolBeforeUpgrade(t *testing.T) {
+	f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
+	conn, response, err := f.dial(f.path(sp.Protocol, false), []string{v2.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("retired terminal channel response=%v error=%v", response, err)
+	}
+	defer response.Body.Close()
+	var failure struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&failure); err != nil || failure.Error.Code != "unsupported_content_kind" {
+		t.Fatalf("retired terminal channel failure=%+v error=%v", failure, err)
+	}
+	if f.apiCalls.Load() != 1 || f.nativeCalls.Load() != 0 || f.polls.Load() != 0 || f.routes.ActiveConnections() != 0 {
+		t.Fatal("retired terminal channel did not authenticate the marker or entered business work")
+	}
+	f.routes.mutex.Lock()
+	reserved := f.routes.reserved
+	f.routes.mutex.Unlock()
+	if reserved != 0 {
+		t.Fatal("retired terminal channel occupied a reservation")
+	}
+}
+
 func TestAPIUserChannelSelectsRealProtocolAndPreservesIdentity(t *testing.T) {
 	for _, c := range []struct {
 		protocol string
 		test     bool
-	}{{sp.Protocol, false}, {v2.Protocol, false}, {sp.Protocol, true}} {
+	}{{sp.Protocol, false}, {sp.Protocol, true}} {
 		t.Run(c.protocol+map[bool]string{true: "-test"}[c.test], func(t *testing.T) {
 			f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
 			seen := make(chan model.Principal, 1)
@@ -351,7 +361,6 @@ func TestAPIUserChannelRejectsBearerWithoutAuthorizationMarker(t *testing.T) {
 		test           bool
 	}{
 		{name: "task v1", protocol: sp.Protocol},
-		{name: "task v2", protocol: v2.Protocol},
 		{name: "test v1", protocol: sp.Protocol, test: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -379,7 +388,7 @@ func TestAPIUserChannelRejectsBearerWithoutAuthorizationMarker(t *testing.T) {
 }
 
 func TestAPIUserChannelDeadlineCancelsAdmittedPollAndReleasesConnection(t *testing.T) {
-	for _, protocol := range []string{sp.Protocol, v2.Protocol} {
+	for _, protocol := range []string{sp.Protocol} {
 		t.Run(protocol, func(t *testing.T) {
 			deadline := time.Now().Add(time.Second)
 			f := newAPIChannelFixture(t, deadline)
@@ -396,10 +405,6 @@ func TestAPIUserChannelDeadlineCancelsAdmittedPollAndReleasesConnection(t *testi
 				<-ctx.Done()
 				stopped <- ctx.Err()
 				return ctx.Err()
-			}
-			released := make(chan bool, 1)
-			f.onDisconnect = func(ctx context.Context, p model.Principal, browser, claim, epoch string) {
-				released <- ctx.Err() == nil && p == f.identity.Principal && browser == f.browser && claim == f.snapshot.ClaimID && epoch == f.snapshot.ConnectionEpoch
 			}
 			conn, _, err := f.dial(f.path(protocol, false), []string{protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
 			if err != nil {
@@ -435,22 +440,12 @@ func TestAPIUserChannelDeadlineCancelsAdmittedPollAndReleasesConnection(t *testi
 				t.Fatal("expired socket published another frame")
 			}
 			f.shutdown()
-			if protocol == v2.Protocol {
-				select {
-				case ok := <-released:
-					if !ok {
-						t.Fatal("viewer cleanup changed original principal/fence or reused canceled context")
-					}
-				default:
-					t.Fatal("viewer cleanup absent")
-				}
-			}
 		})
 	}
 }
 
 func TestAPIUserChannelPollRefusalClosesWithFixedPolicyReason(t *testing.T) {
-	for _, protocol := range []string{sp.Protocol, v2.Protocol} {
+	for _, protocol := range []string{sp.Protocol} {
 		for _, code := range []string{"unauthenticated", "forbidden"} {
 			t.Run(protocol+"-"+code, func(t *testing.T) {
 				f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
@@ -483,7 +478,7 @@ func TestAPIUserChannelPollRefusalClosesWithFixedPolicyReason(t *testing.T) {
 }
 
 func TestAPIUserChannelInfrastructureFailureUsesFixedInternalClose(t *testing.T) {
-	for _, protocol := range []string{sp.Protocol, v2.Protocol} {
+	for _, protocol := range []string{sp.Protocol} {
 		t.Run(protocol, func(t *testing.T) {
 			f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
 			f.onPoll = func(_ context.Context, _ model.Principal, count int32) error {
@@ -634,14 +629,12 @@ func TestAPIUserChannelUpgradeFailureReleasesReservation(t *testing.T) {
 
 func TestAPIUserChannelProducerMarkersDoNotSelectAPIAuthentication(t *testing.T) {
 	f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
-	for _, path := range []string{"/api/v1/controller-channel", "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions/" + f.session + "/worker-channel"} {
-		conn, response, err := f.dial(path, []string{sp.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
-		if conn != nil {
-			conn.CloseNow()
-		}
-		if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
-			t.Fatal(response, err)
-		}
+	conn, response, err := f.dial("/api/v1/controller-channel", []string{sp.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatal(response, err)
 	}
 	if f.apiCalls.Load() != 0 {
 		t.Fatal("producer selected browser API verifier")
@@ -678,14 +671,7 @@ func TestAPIUserChannelNewAccessDoesNotExtendOldSocketAndReconnectsAfterRelease(
 		}
 		return nil
 	}
-	released := make(chan model.Principal, 2)
-	f.onDisconnect = func(ctx context.Context, p model.Principal, browser, claim, epoch string) {
-		if ctx.Err() != nil || browser != f.browser || claim != f.snapshot.ClaimID || epoch != f.snapshot.ConnectionEpoch {
-			t.Error("reconnect cleanup changed original lease or used canceled context")
-		}
-		released <- p
-	}
-	oldConn, _, err := f.dial(f.path(v2.Protocol, false), []string{v2.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
+	oldConn, _, err := f.dial(f.path(sp.Protocol, false), []string{sp.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,17 +696,7 @@ func TestAPIUserChannelNewAccessDoesNotExtendOldSocketAndReconnectsAfterRelease(
 	if _, err := readAPIChannel(t, oldConn); err == nil {
 		t.Fatal("old socket survived new access availability")
 	}
-	select {
-	case p := <-released:
-		if p != f.identity.Principal {
-			t.Fatal("new access replaced old cleanup Actor", p)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("old viewer was not released")
-	}
-	// Viewer deletion and connection reservation release follow the detached cleanup callback.
-	f.routes.active.Wait()
-	newConn, response, err := f.dial(f.path(v2.Protocol, false), []string{v2.Protocol, "daynight.authorization." + newToken}, http.Header{"Origin": {apiChannelOrigin}})
+	newConn, response, err := f.dial(f.path(sp.Protocol, false), []string{sp.Protocol, "daynight.authorization." + newToken}, http.Header{"Origin": {apiChannelOrigin}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,8 +705,12 @@ func TestAPIUserChannelNewAccessDoesNotExtendOldSocketAndReconnectsAfterRelease(
 		t.Fatal("refresh changed user")
 	}
 	frame, err := readAPIChannel(t, newConn)
-	if err != nil || frame["claimId"] != f.snapshot.ClaimID || frame["connectionEpoch"] != f.snapshot.ConnectionEpoch {
-		t.Fatal("reconnect changed original fence", frame, err)
+	if err != nil || frame["protocol"] != sp.Protocol || frame["userId"] != f.identity.Principal.UserID {
+		t.Fatal("reconnect changed original identity", frame, err)
+	}
+	snapshot, ok := frame["snapshot"].(map[string]any)
+	if !ok || snapshot["sessionId"] != f.snapshot.SessionID || snapshot["claimId"] != f.snapshot.ClaimID || snapshot["connectionEpoch"] != f.snapshot.ConnectionEpoch {
+		t.Fatal("reconnect changed original fence", frame)
 	}
 	select {
 	case ctx := <-newPoll:

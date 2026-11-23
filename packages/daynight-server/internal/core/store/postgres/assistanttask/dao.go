@@ -21,21 +21,38 @@ var _ store.AssistantTaskScope = (*DAO)(nil)
 var _ store.AssistantTaskDAO = (*DAO)(nil)
 
 func (d *DAO) Credential(ctx context.Context, p model.Principal) error {
-	if _, err := pg.ThreadCredential(ctx, d.tx, p, " FOR SHARE"); err != nil {
-		return err
-	}
-	// Natural expiry can pass while the shared lock waits without changing the
-	// row. Read again in a fresh statement under the acquired deletion barrier.
-	_, err := pg.ThreadCredential(ctx, d.tx, p, "")
+	_, err := d.credential(ctx, p)
 	return err
 }
 
-func (d *DAO) Bot(ctx context.Context, id string) (model.Bot, error) {
-	var locked string
-	if err := d.tx.QueryRow(ctx, `SELECT id::text FROM bots WHERE id=$1 FOR SHARE`, id).Scan(&locked); err != nil {
-		return model.Bot{}, pg.QueryError("lock assistant Bot", err)
+func (d *DAO) CredentialAuthorization(ctx context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+	c, err := d.credential(ctx, p)
+	if err != nil {
+		return model.CredentialAuthorization{}, err
 	}
-	return botpg.NewReader(d.tx).Bot(ctx, id)
+	authorization := model.CredentialAuthorization{Principal: p, Policy: c.ScopePolicy}
+	switch p.Kind {
+	case model.SessionCredential:
+		authorization.Profile = model.SessionProfile
+	case model.PATCredential:
+		authorization.Profile = model.ScopedPATProfile
+	default:
+		return model.CredentialAuthorization{}, model.Unauthenticated(nil)
+	}
+	return authorization, authorization.Validate()
+}
+
+func (d *DAO) credential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
+	if _, err := pg.ThreadCredential(ctx, d.tx, p, " FOR SHARE"); err != nil {
+		return store.ThreadCredential{}, err
+	}
+	// Natural expiry can pass while the shared lock waits without changing the
+	// row. Read again in a fresh statement under the acquired deletion barrier.
+	return pg.ThreadCredential(ctx, d.tx, p, "")
+}
+
+func (d *DAO) Bot(ctx context.Context, id string) (model.Bot, error) {
+	return botpg.NewBarrier(d.tx).Bot(ctx, id)
 }
 
 func (d *DAO) Now(ctx context.Context) (time.Time, error) {

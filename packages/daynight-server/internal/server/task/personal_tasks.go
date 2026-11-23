@@ -18,7 +18,7 @@ import (
 
 type PersonalTasksOperation func(context.Context, model.Principal, int, *string) (service.PersonalTaskPage, error)
 
-func PersonalTaskRoutes(mux *http.ServeMux, run PersonalTasksOperation, auth RouteAuthentication, logger *slog.Logger) {
+func PersonalTaskRoutes(mux httpx.RouteRegistrar, run PersonalTasksOperation, auth RouteAuthentication, logger *slog.Logger) {
 	h := personalTaskHandler{run: run, logger: logger}
 	mux.HandleFunc("GET /api/v1/me/in-progress-tasks", auth.Require(h.list))
 	mux.HandleFunc("/api/v1/me/in-progress-tasks", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
@@ -29,7 +29,7 @@ type personalTaskHandler struct {
 	logger *slog.Logger
 }
 
-func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPage {
+func personalTaskResponse(page service.PersonalTaskPage, identity bool) protocol.PersonalTaskPage {
 	out := protocol.PersonalTaskPage{ObservedAt: page.ObservedAt, ResponseTaskAt: page.ResponseTaskAt, ResponseSessionAt: page.ResponseSessionAt, InventoryRevision: page.InventoryRevision, TotalTaskCount: page.TotalTaskCount, TotalProjectCount: page.TotalProjectCount, SessionPartial: page.SessionPartial, Items: make([]protocol.PersonalTaskItem, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, item := range page.Items {
 		var goal *protocol.PersonalTaskGoal
@@ -39,6 +39,9 @@ func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPa
 		var worker *protocol.PersonalTaskWorker
 		if item.Worker != nil {
 			worker = &protocol.PersonalTaskWorker{WorkerID: item.Worker.WorkerID, State: string(item.Worker.State), Machine: protocol.PersonalTaskMachine{ID: item.Worker.Machine.ID, Name: item.Worker.Machine.Name}}
+		}
+		if worker != nil && identity {
+			worker.UserID = &item.Worker.UserID
 		}
 		var platform *string
 		if item.Task.RequiredPlatform != nil {
@@ -60,6 +63,11 @@ func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPa
 func (h personalTaskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
+	identity, err := httpx.WorkerIdentityProtocol(request.Header)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "personal_tasks", "parse", err)
+		return
+	}
 	page, err := httpx.PageRequest(request)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "personal_tasks", "parse", err)
@@ -79,12 +87,15 @@ func (h personalTaskHandler) list(w http.ResponseWriter, request *http.Request, 
 		return
 	}
 	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(personalTaskResponse(result)); err != nil {
+	if err := json.NewEncoder(&body).Encode(personalTaskResponse(result, identity)); err != nil {
 		httpx.WriteError(w, request, logger, "personal_tasks", "encode", err)
 		return
 	}
 	if request.Context().Err() != nil {
 		return
+	}
+	if identity {
+		w.Header().Set(httpx.WorkerIdentityHeader, "1")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
