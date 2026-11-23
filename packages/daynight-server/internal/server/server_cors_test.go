@@ -264,7 +264,7 @@ func TestRootCORSRefusesUnregisteredMethodsAndProducerHeaders(t *testing.T) {
 			assertBrowserCORS(t, w, true)
 		})
 	}
-	for _, name := range []string{"Daynight-Controller-Fence", "Daynight-Controller-Token", "Daynight-File-Byte-Length", "Daynight-File-SHA256", "Content-Encoding", "X-Unknown"} {
+	for _, name := range []string{"Daynight-Controller-Fence", "Daynight-Controller-Token", "Daynight-File-Byte-Length", "Daynight-File-SHA256", "Daynight-Archive-Upload-Version", "Daynight-Resource-Descriptor", "Content-Encoding", "X-Unknown"} {
 		t.Run(name, func(t *testing.T) {
 			w := corsHTTP(t, handler, "OPTIONS", "/api/v1/me", http.Header{"Origin": {browserAPIOrigin}, "Access-Control-Request-Method": {"GET"}, "Access-Control-Request-Headers": {"Authorization, " + name}})
 			if w.Code != 403 {
@@ -439,8 +439,12 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 		add("PUT", base+"/archive/content")
 		add("PUT", base+"/archive/prepare/history/"+id)
 		add("GET HEAD", base+"/archive/prepare/history/"+id+"/status")
+		add("POST", base+"/archive/prepare/history/"+id+"/complete")
+		add("POST", base+"/archive/prepare/history/"+id+"/restart")
 		add("PUT", base+"/archive/files/"+id)
 		add("GET HEAD", base+"/archive/files/"+id+"/status")
+		add("POST", base+"/archive/files/"+id+"/complete")
+		add("POST", base+"/archive/files/"+id+"/restart")
 	}
 	for _, route := range routes {
 		for _, method := range strings.Fields(route.methods) {

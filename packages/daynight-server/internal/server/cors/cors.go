@@ -9,8 +9,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal, Daynight-Archive-Upload-Version, Daynight-File-Byte-Length, Daynight-File-SHA256, Daynight-Resource-Descriptor"
-const exposedHeaders = "Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Archive-Upload-Version"
+const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal"
+const exposedHeaders = "Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
 
 // Wrap decorates user REST responses before authentication and path validation.
 // Route lookup never runs a handler or authenticates a preflight request.
@@ -127,6 +127,8 @@ func producerRoute(method, pattern string) bool {
 	case "/archive/prepare":
 		return method == "GET" || method == "HEAD" || method == "POST"
 	case "/archive/source-tail", "/archive/seal":
+		return method == "POST"
+	case "/archive/prepare/history/{fileId}/complete", "/archive/prepare/history/{fileId}/restart", "/archive/files/{fileId}/complete", "/archive/files/{fileId}/restart":
 		return method == "POST"
 	case "/archive/content", "/archive/prepare/history/{fileId}", "/archive/files/{fileId}":
 		return method == "PUT"
