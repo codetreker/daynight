@@ -62,7 +62,7 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 复制和校验阶段持久化后，原 Worker SQLite 在同一事务内删除目标两行并写入绑定 manifest 摘要的迁移回执，作为唯一权威切换点。`019-bot-migration.sql` 引入回执表和源格式门槛。中断后按持久阶段与该回执核对，不能仅凭原行消失推断提交成功。源 schema 升级阻止旧 Worker 再次打开旧格式写入；未完成的迁移由本地存储路由拒绝，避免部分副本进入正常执行。
 
-本地提交保留独立的 `registration_pending` 执行屏障。对账可为已绑定 Session 完成跨端恢复登记并保存回执，但登记成功不解除该屏障；未具备经验证 Provider 恢复点及专属执行代次时明确报告 `recovery_material_missing`，启动、观察、续期、停止和删除不依据原 intent 访问旧目录。`worker migrated-bot-history` 通过副本映射和原 ticket 校验读取保留历史，不启动 Provider，也不声明新增浏览器离线历史服务。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。迁移取舍由[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-bot-storage-migration.md)说明。
+本地提交保留独立的 `registration_pending` 执行屏障。对账可为已绑定 Session 完成跨端恢复登记并保存回执，但登记成功不解除该屏障；未具备经验证 Provider 恢复点及专属执行代次时明确报告 `recovery_material_missing`，启动、观察、续期、停止和删除不依据原 intent 访问旧目录。`worker migrated-bot-history` 通过副本映射和原 ticket 校验读取保留历史，不启动 Provider，也不声明新增浏览器离线历史服务。迁移副本的摘要在历史与恢复读取前核验；Controller v16/v17 的只读兼容入口验证实际 schema 和完整原 snapshot 身份，timeline 使用同一格式检查。升级 CLI 后，已提交的 v16 副本继续保持所有文件字节和 manifest 摘要，不在读取时迁移或重写；迁移源的只读检查沿用相同规则。未知、无版本、结构不符或身份冲突继续拒绝。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。迁移取舍由[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-bot-storage-migration.md)说明。
 
 新位置的精确删除使用同一归属解析器，Bot 私有原生副本随其私有资料处理，共享 native home 和 cwd 保留。最小删除责任必须在执行 journal 删除后仍可读取，直至两端确认；不能通过先删整个 Bot 目录丢弃原回执和未完成责任。存储、迁移、接管和 Provider 验证分别完成前，不声明该能力或同机恢复验收成功。
 

@@ -101,9 +101,9 @@ test.each([5, 7, 9].flatMap(version => ["text", "list"].map(kind => ({ version, 
 });
 
 test("canonical discovery includes the current schema and preserves shipped DDL", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(16);
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(17);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
   const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
   expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");
