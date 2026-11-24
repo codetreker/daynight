@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, expect } from '@playwright/test';
+import { chromium, expect, type BrowserContext, type Response } from '@playwright/test';
 import { beginBrowserScope, bindBrowserScope, finishBrowserScope } from './fixture-owner.ts';
 import { deviceInstructionReader } from './subtask-compat-recovery-device.ts';
+import { probeHigherTaskCache, recoveryFailureDetail, verifyRecoveryReadback, type CacheProbe } from './subtask-compat-recovery-readback.ts';
+import { recoverySnapshot, type RecoverySnapshot } from './subtask-compat-recovery-snapshot.ts';
 
 type Input = { repository: string; browserOwnerDirectory: string; authURL: string; baseURL: string; proxyURL: string; receiverPort: number; directory: string; cliEntry: string; resolver: string; certificate: string };
 const input = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as Input;
@@ -42,7 +44,12 @@ const cli = async (args: string[], onOutput?: (channel: 'stdout' | 'stderr', chu
 };
 let browser: Awaited<ReturnType<typeof chromium.connect>> | undefined;
 let server: Awaited<ReturnType<typeof chromium.launchServer>> | undefined;
+let restoredContext: BrowserContext | undefined;
 let phase = 'launch';
+let navigationStatus: number | undefined;
+let taskResponseStatus: number | undefined;
+let cacheProbe: CacheProbe | null = null;
+let navigationRoute: () => 'expected' | 'login' | 'other' | 'unknown' = () => 'unknown';
 const setPhase = async (value: string): Promise<void> => { phase = value; await writeAtomic(path.join(privateDirectory, 'browser-phase.json'), JSON.stringify({ phase })); };
 let scope: string | undefined, bound = false;
 try {
@@ -54,7 +61,7 @@ try {
   await bindBrowserScope(input.repository, input.browserOwnerDirectory, scope, browserPID); bound = true;
   browser = await chromium.connect(server.wsEndpoint());
   const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'en-US' });
-  const page = await context.newPage(); page.setDefaultTimeout(30_000);
+  let page = await context.newPage(); page.setDefaultTimeout(30_000);
   await setPhase('register-uniauth');
   await page.goto(`${input.authURL}/console/`);
   await page.getByRole('button', { name: 'Continue with GitHub', exact: true }).click();
@@ -126,13 +133,17 @@ try {
   await writeFile(path.join(privateDirectory, 'fixture.json'), JSON.stringify({ user: me.id, project, goal, child, hiddenGoal, hiddenChild, endpoint, token }), { mode: 0o600 });
   await page.goto('about:blank');
   await send({ type: 'fixture-ready', project, goal, child, hiddenGoal, hiddenChild });
+  let baselineSnapshot: RecoverySnapshot | undefined, pendingTask: string | undefined;
   while (true) {
     const operation = await next();
     if (operation === 'finish') break;
     if (operation === 'pending') {
       await setPhase('pending-event');
       const task = await create(['--title', 'Recovery pending event', '--status', 'todo']);
-      await send({ type: 'pending', task }); continue;
+      const response = await context.request.get(`${input.baseURL}/api/v1/projects/${project}/task-sync`, { headers: { Authorization: `Bearer ${token}` } });
+      if (response.status() !== 200) throw new Error('Baseline task sync failed.');
+      baselineSnapshot = recoverySnapshot(await response.json(), project, goal, child, task); pendingTask = task;
+      await send({ type: 'pending', task, snapshot: baselineSnapshot }); continue;
     }
     if (operation === 'repair-write') {
       await setPhase('repair-read-write');
@@ -152,23 +163,90 @@ try {
       if ((await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project])) !== 'post124') throw new Error('Post-upgrade attachment readback mismatch.');
       await send({ type: 'written', task }); continue;
     }
-    if (operation !== 'verify') throw new Error('Unknown browser operation.');
-    await setPhase('cross-client-readback');
-    await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`);
-    await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
-    const current = JSON.parse(await cli(['task', 'show', child, '--project', project, '--json'])) as { id?: string; parentId?: string };
-    if (current.id !== child || current.parentId !== goal) throw new Error('Cross-client Task readback mismatch.');
-    if ((await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project])) !== 'paired122') throw new Error('Cross-client attachment mismatch.');
-    await page.goto('about:blank');
-    await send({ type: 'verified', project, goal, child });
+    if (operation !== 'verify' && operation !== 'verify-restored') throw new Error('Unknown browser operation.');
+    if (operation === 'verify-restored') {
+      if (!baselineSnapshot || !pendingTask) throw new Error('Baseline sync evidence is unavailable.');
+      await setPhase('restore-original-profile');
+      const originalResponse = await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`);
+      if (originalResponse?.status() !== 200 || new URL(page.url()).pathname !== `/projects/${project}/tasks/${child}`) throw new Error('Original profile navigation failed.');
+      let unavailable = false;
+      try { await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible({ timeout: 3_000 }); }
+      catch { if (page.isClosed()) throw new Error('Original profile closed unexpectedly.'); unavailable = true; }
+      if (unavailable) {
+        const originalCache = await page.evaluate(probeHigherTaskCache);
+        if (!originalCache || originalCache.version <= 13 || originalCache.result !== 'version-error') throw new Error('Original profile downgrade observation did not match.');
+        await send({ type: 'original-profile', status: 'unavailable', cacheVersion: originalCache.version, schema13Open: originalCache.result, headingUnavailableAfterMs: 3000 });
+      } else {
+        await verifyRecoveryReadback({
+          phase: setPhase, child, goal,
+          navigate: async () => { await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`); },
+          heading: async () => { await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible(); },
+          readTask: async () => JSON.parse(await cli(['task', 'show', child, '--project', project, '--json'])) as { id?: string; parentId?: string },
+          readAttachment: async () => await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project]),
+          leave: async () => { await page.goto('about:blank'); },
+        });
+        await send({ type: 'original-profile', status: 'available', readback: true });
+      }
+      await setPhase('restore-isolated-login');
+      restoredContext = await browser!.newContext({ ignoreHTTPSErrors: true, locale: 'en-US' });
+      page = await restoredContext.newPage(); page.setDefaultTimeout(30_000);
+      await page.goto(`${input.baseURL}/login`);
+      await page.getByRole('button', { name: 'Sign in with GitHub', exact: true }).click();
+      await page.getByRole('button', { name: 'Authorize local identity', exact: true }).click();
+      await expect(page.getByRole('link', { name: 'Projects', exact: true })).toBeVisible();
+      const identity = await restoredContext.request.get(`${input.baseURL}/api/v1/me`);
+      if (identity.status() !== 200 || (await identity.json() as { id?: unknown }).id !== me.id) throw new Error('Restored browser identity differs from baseline.');
+      await setPhase('restore-original-epoch-sync');
+      const query = new URLSearchParams({ epoch: baselineSnapshot.epoch, since: baselineSnapshot.observedAt });
+      const response = await restoredContext.request.get(`${input.baseURL}/api/v1/projects/${project}/task-sync?${query}`);
+      if (response.status() !== 200) throw new Error('Restored task sync failed.');
+      const restored = recoverySnapshot(await response.json(), project, goal, child, pendingTask);
+      if (restored.epoch === baselineSnapshot.epoch || JSON.stringify(restored.tasks) !== JSON.stringify(baselineSnapshot.tasks)) throw new Error('Restored task sync did not replace the original epoch and snapshot.');
+      await send({ type: 'restore-snapshot', oldEpoch: baselineSnapshot.epoch, oldObservedAt: baselineSnapshot.observedAt, newEpoch: restored.epoch, tasks: restored.tasks, mode: 'snapshot', profile: 'isolated', sameUser: true });
+    }
+    navigationStatus = undefined; taskResponseStatus = undefined; cacheProbe = null;
+    navigationRoute = () => {
+      try {
+        const url = new URL(page.url());
+        if (url.origin !== new URL(input.baseURL).origin) return 'other';
+        if (url.pathname === `/projects/${project}/tasks/${child}`) return 'expected';
+        if (url.pathname === '/login') return 'login';
+        return 'other';
+      } catch { return 'unknown'; }
+    };
+    const observeTaskResponse = (response: Response): void => {
+      try {
+        const url = new URL(response.url());
+        if (url.origin === new URL(input.baseURL).origin && url.pathname === `/api/v1/projects/${project}/tasks/${child}` && response.request().method() === 'GET') taskResponseStatus = response.status();
+      } catch { /* Invalid addresses are not included in diagnostics. */ }
+    };
+    page.on('response', observeTaskResponse);
+    try {
+      await verifyRecoveryReadback({
+        phase: setPhase, child, goal,
+        navigate: async () => { const response = await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`); navigationStatus = response?.status(); },
+        heading: async () => { await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible(); },
+        readTask: async () => JSON.parse(await cli(['task', 'show', child, '--project', project, '--json'])) as { id?: string; parentId?: string },
+        readAttachment: async () => await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project]),
+        leave: async () => { await page.goto('about:blank'); },
+      });
+    } catch (error) {
+      if (phase === 'verify-web-heading' && navigationRoute() === 'expected') {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          cacheProbe = await Promise.race([page.evaluate(probeHigherTaskCache), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 3_000); })]);
+        } catch { /* An unavailable probe cannot change the original failure. */ }
+        finally { if (timer !== undefined) clearTimeout(timer); }
+      }
+      throw error;
+    } finally { page.off('response', observeTaskResponse); }
+    await send({ type: operation === 'verify-restored' ? 'verified-restored' : 'verified', project, goal, child });
   }
+  if (restoredContext) await restoredContext.close();
   await context.close();
 } catch (error) {
   const category = error instanceof Error && ['Error', 'TimeoutError', 'AssertionError'].includes(error.name) ? error.name : 'unknown';
-  const message = error instanceof Error ? error.message : '';
-  const apiStatus = message.match(/^Fixture API creation failed \((\d{3})\)\.$/)?.[1];
-  const cliFailure = message.match(/^CLI (project|task|login) (create|show|delete|attachment|--no-browser) failed \(exit=(\d+|null)\)\.$/);
-  const detail = apiStatus ? `api-status-${apiStatus}` : cliFailure ? `cli-${cliFailure[1]}-${cliFailure[2]!.replaceAll('-', '')}-exit-${cliFailure[3]}` : undefined;
+  const detail = recoveryFailureDetail(error, phase, { status: navigationStatus, taskStatus: taskResponseStatus, route: navigationRoute(), cache: cacheProbe });
   await send({ type: 'failed', phase, category, ...(detail ? { detail } : {}) }); process.exitCode = 1;
 }
 finally {

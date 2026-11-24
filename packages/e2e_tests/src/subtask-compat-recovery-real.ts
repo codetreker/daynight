@@ -346,7 +346,13 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     if (oldHidden !== 't' || !uuid.test(epoch) || !projection) throw new Error('Baseline historical Goal evidence missing.');
     await stopServer(resources.old);
     await startServer(resources.old, 'server122'); await waitServer(resources.old);
-    await tellBrowser('pending'); await nextEvent('pending'); await stopServer(resources.old);
+    await tellBrowser('pending'); const pending = await nextEvent('pending');
+    const originalSnapshot = pending.snapshot as { epoch?: unknown; observedAt?: unknown; tasks?: unknown } | undefined;
+    if (typeof pending.task !== 'string' || !uuid.test(pending.task) || !originalSnapshot || originalSnapshot.epoch !== epoch || typeof originalSnapshot.observedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(originalSnapshot.observedAt) || !Array.isArray(originalSnapshot.tasks) || originalSnapshot.tasks.some(item => typeof item !== 'string' || !uuid.test(item))) throw new Error('Original authenticated task sync evidence is invalid.');
+    const visibleTasks = await psql(`SELECT COALESCE(string_agg(t.id::text, ',' ORDER BY t.id::text), '') FROM tasks t JOIN task_resource_rows r ON r.id=t.id WHERE t.project_id='${fixture.project}' AND r.effective_deleted_at IS NULL`);
+    if (visibleTasks !== [...originalSnapshot.tasks].sort().join(',')) throw new Error('Original task sync does not match the visible database fixture.');
+    await ctx.evidence('originalSync', { epoch, observedAt: originalSnapshot.observedAt, tasks: originalSnapshot.tasks, mode: 'snapshot' });
+    await stopServer(resources.old);
     if ((await control('count')).count !== 0) throw new Error('Unexpected Webhook delivery before migration.');
     await ctx.phase('snapshot');
     await command('docker', ['exec', resources.postgres, 'pg_dump', '-U', 'daynight', '-d', 'daynight', '--no-owner', '--no-acl', '--file=/tmp/recovery.sql']);
@@ -450,15 +456,27 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     if (restoredLedger.state !== 'baseline' || restoredLedger.raw !== ledger) throw new Error('Restored ledger differs from backup.');
     if (await psql(`SELECT count(*) FROM tasks WHERE id='${post.task}'`) !== '0') throw new Error('Post-upgrade write remains after restore.');
     await psql(`UPDATE webhook_endpoints SET enabled=false WHERE id='${fixture.endpoint}'; UPDATE projects SET task_cache_epoch=gen_random_uuid()`);
-    if (await psql(`SELECT task_cache_epoch::text <> '${epoch}' FROM projects WHERE id='${fixture.project}'`) !== 't') throw new Error('Restored cache epoch did not rotate.');
+    const rotatedEpoch = await psql(`SELECT task_cache_epoch::text FROM projects WHERE id='${fixture.project}'`);
+    if (!uuid.test(rotatedEpoch) || rotatedEpoch === epoch) throw new Error('Restored cache epoch did not rotate.');
     if (await psql(`SELECT enabled FROM webhook_endpoints WHERE id='${fixture.endpoint}'`) !== 'f') throw new Error('Webhook reconciliation did not persist.');
-    await startServer(resources.old, 'server122'); await waitServer(resources.old); await tellBrowser('verify'); await nextEvent('verified'); await stopServer(resources.old);
-    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true });
+    await startServer(resources.old, 'server122'); await waitServer(resources.old); await tellBrowser('verify-restored');
+    const originalProfile = await nextEvent('original-profile');
+    if (originalProfile.status === 'unavailable') {
+      if (typeof originalProfile.cacheVersion !== 'number' || !Number.isSafeInteger(originalProfile.cacheVersion) || originalProfile.cacheVersion <= 13 || originalProfile.schema13Open !== 'version-error' || originalProfile.headingUnavailableAfterMs !== 3000) throw new Error('Original browser downgrade observation is invalid.');
+    } else if (originalProfile.status !== 'available' || originalProfile.readback !== true) throw new Error('Original browser readback observation is invalid.');
+    const profileEvidence = originalProfile.status === 'unavailable'
+      ? { status: 'unavailable', cacheVersion: originalProfile.cacheVersion, schema13Open: 'version-error', headingUnavailableAfterMs: 3000 }
+      : { status: 'available', readback: true };
+    await ctx.evidence('originalProfile', profileEvidence);
+    const restoredSnapshot = await nextEvent('restore-snapshot');
+    if (restoredSnapshot.oldEpoch !== epoch || restoredSnapshot.oldObservedAt !== originalSnapshot.observedAt || restoredSnapshot.newEpoch !== rotatedEpoch || restoredSnapshot.mode !== 'snapshot' || restoredSnapshot.profile !== 'isolated' || restoredSnapshot.sameUser !== true || JSON.stringify(restoredSnapshot.tasks) !== JSON.stringify(originalSnapshot.tasks)) throw new Error('Restored authenticated task sync evidence is invalid.');
+    await nextEvent('verified-restored'); await stopServer(resources.old);
+    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, isolatedProfileReadback: true });
     await tellBrowser('finish'); if ((await browser.finished).exitCode !== 0) throw new Error('Recovery browser did not stop cleanly.'); browserStopped = true;
     if (ctx.sharedCandidate && await hash(candidateBinary) !== ctx.sharedCandidate.sha256) throw new Error('Shared candidate digest changed during recovery.');
-    return { fixture: { project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild },
+    return { fixture: { project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild, pending: pending.task },
       artifacts: { candidate: await hash(path.join(artifacts, 'server-candidate')), baseline: await hash(path.join(artifacts, 'server122')), repair: await hash(path.join(artifacts, 'server-repair')), candidateServerTree: candidateTree, repairServerTree: repairTree, repairRevision: ctx.repair.revision, repairSuppliedSHA256: ctx.repair.sha256, repairReproducedSHA256: await hash(reproducedRepair), authRevision, candidateOrigin: 'candidate-combination', baselineCli: { version: '0.72.0', gitHead: 'f5d73f3275c8e2774a588967a0fbdcd2a261c379', integrity: oldCliIntegrity }, candidateWeb: 'production', baselineWeb: 'production', repairWeb: 'repair production', controlledWebhook: 'test transport' },
-      recovery: { baselineVersion, candidateVersion, migrationManifests: manifestEvidence, candidateLedgerState: committed.state, candidateLedgerSettled: committed.settled, precommitLedgerUnchanged: true, candidateLedger, snapshotSHA256: snapshotHash, storageSHA256: storageHash, historicalProjectionPreserved: true, receiverBefore: zeroEffects.count, receiverAfter: effect.count, receiverHashes: effect.hashes, restoredLedger: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true } };
+      recovery: { baselineVersion, candidateVersion, migrationManifests: manifestEvidence, candidateLedgerState: committed.state, candidateLedgerSettled: committed.settled, precommitLedgerUnchanged: true, candidateLedger, snapshotSHA256: snapshotHash, storageSHA256: storageHash, historicalProjectionPreserved: true, receiverBefore: zeroEffects.count, receiverAfter: effect.count, receiverHashes: effect.hashes, restoredLedger: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, originalProfile: profileEvidence, restoredSnapshot: { oldEpoch: epoch, oldObservedAt: originalSnapshot.observedAt, newEpoch: rotatedEpoch, tasks: originalSnapshot.tasks, mode: 'snapshot', profile: 'isolated', sameUser: true } } };
   } finally {
     if (!browserStopped) await browser.stop();
   }

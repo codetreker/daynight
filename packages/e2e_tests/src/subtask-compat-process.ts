@@ -91,8 +91,8 @@ export type RecoveryReceipt = {
   artifacts?: { candidate?: string; candidateOrigin?: string; candidateWeb?: string; baselineWeb?: string; repairWeb?: string; repair?: string; repairRevision?: string; repairSuppliedSHA256?: string; repairReproducedSHA256?: string; controlledWebhook?: string; baselineCli?: { version?: string; gitHead?: string; integrity?: string } };
   acceptance?: { authentication?: string; execution?: string };
   fixtureVerification?: { verified?: boolean; mode?: string };
-  fixture?: { project?: string; goal?: string; child?: string; hiddenGoal?: string; hiddenChild?: string };
-  recovery?: { baselineVersion?: number; candidateVersion?: number; migrationManifests?: { baselineRevision?: string; candidateRevision?: string; repairRevision?: string; sourceFingerprints?: { baseline?: string; candidate?: string; repair?: string }; probeSHA256?: string; baseline?: unknown; candidate?: unknown; repair?: unknown; baselineSHA256?: string; candidateSHA256?: string; repairSHA256?: string }; candidateLedgerState?: string; candidateLedgerSettled?: boolean; precommitLedgerUnchanged?: boolean; candidateLedger?: string; snapshotSHA256?: string; storageSHA256?: string; historicalProjectionPreserved?: boolean; receiverBefore?: number; receiverAfter?: number; receiverHashes?: unknown; restoredLedger?: boolean; attachmentRestored?: boolean; postUpgradeWriteRemoved?: boolean; epochRotated?: boolean; endpointReconciled?: boolean };
+  fixture?: { project?: string; goal?: string; child?: string; hiddenGoal?: string; hiddenChild?: string; pending?: string };
+  recovery?: { baselineVersion?: number; candidateVersion?: number; migrationManifests?: { baselineRevision?: string; candidateRevision?: string; repairRevision?: string; sourceFingerprints?: { baseline?: string; candidate?: string; repair?: string }; probeSHA256?: string; baseline?: unknown; candidate?: unknown; repair?: unknown; baselineSHA256?: string; candidateSHA256?: string; repairSHA256?: string }; candidateLedgerState?: string; candidateLedgerSettled?: boolean; precommitLedgerUnchanged?: boolean; candidateLedger?: string; snapshotSHA256?: string; storageSHA256?: string; historicalProjectionPreserved?: boolean; receiverBefore?: number; receiverAfter?: number; receiverHashes?: unknown; restoredLedger?: boolean; attachmentRestored?: boolean; postUpgradeWriteRemoved?: boolean; epochRotated?: boolean; endpointReconciled?: boolean; originalProfile?: { status?: string; readback?: boolean; cacheVersion?: number; schema13Open?: string; headingUnavailableAfterMs?: number }; restoredSnapshot?: { oldEpoch?: string; oldObservedAt?: string; newEpoch?: string; tasks?: unknown; mode?: string; profile?: string; sameUser?: boolean } };
 };
 export type RepairIdentity = { revision: string; artifact: string; sha256: string };
 export type RecoveryFingerprints = { candidate: string; baseline: string; repair: string };
@@ -126,11 +126,18 @@ const validRecoveryLedger = (recovery: RecoveryReceipt['recovery'], candidateSha
   } catch { return false; }
 };
 const validFixture = (fixture: RecoveryReceipt['fixture']): boolean => {
-  const ids = [fixture?.project, fixture?.goal, fixture?.child, fixture?.hiddenGoal, fixture?.hiddenChild];
+  const ids = [fixture?.project, fixture?.goal, fixture?.child, fixture?.hiddenGoal, fixture?.hiddenChild, fixture?.pending];
   return ids.every(value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)) && new Set(ids).size === ids.length;
 };
+const validRestoredReadback = (fixture: RecoveryReceipt['fixture'], recovery: RecoveryReceipt['recovery']): boolean => {
+  const original = recovery?.originalProfile, snapshot = recovery?.restoredSnapshot;
+  const id = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+  const profileValid = original?.status === 'available' && original.readback === true || original?.status === 'unavailable' && typeof original.cacheVersion === 'number' && Number.isSafeInteger(original.cacheVersion) && original.cacheVersion > 13 && original.schema13Open === 'version-error' && original.headingUnavailableAfterMs === 3000;
+  if (!profileValid || !snapshot || !id(snapshot.oldEpoch) || !id(snapshot.newEpoch) || snapshot.oldEpoch === snapshot.newEpoch || typeof snapshot.oldObservedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(snapshot.oldObservedAt) || !Number.isFinite(Date.parse(snapshot.oldObservedAt)) || snapshot.mode !== 'snapshot' || snapshot.profile !== 'isolated' || snapshot.sameUser !== true || !Array.isArray(snapshot.tasks)) return false;
+  return JSON.stringify(snapshot.tasks) === JSON.stringify([fixture?.goal, fixture?.child, fixture?.pending].sort());
+};
 export const recoveryPassed = (result: CombinationResult, receipt: RecoveryReceipt | null, candidate: string, baseline: string, candidateServer: string | undefined, repair: RepairIdentity, fingerprints: RecoveryFingerprints): boolean =>
-  result.exitCode === 0 && result.signal === null && !result.interrupted && !result.cleanupUnconfirmed && receipt?.schemaVersion === 4 &&
+  result.exitCode === 0 && result.signal === null && !result.interrupted && !result.cleanupUnconfirmed && receipt?.schemaVersion === 5 &&
   receipt.status === 'passed' && receipt.candidate === candidate && receipt.baseline === baseline && receipt.cleanup?.verified === true &&
   receipt.cleanup.quiescent === true && receipt.cleanup.originQuiescent === true && receipt.cleanup.usersStopped === true && receipt.cleanup.pendingDocker === 0 && receipt.cleanup.pendingProcesses === 0 &&
   candidateServer !== undefined && /^[a-f0-9]{64}$/.test(candidateServer) && receipt.artifacts?.candidate === candidateServer && receipt.artifacts.candidateOrigin === 'candidate-combination' &&
@@ -139,7 +146,7 @@ export const recoveryPassed = (result: CombinationResult, receipt: RecoveryRecei
   receipt.artifacts.candidateWeb === 'production' && receipt.artifacts.baselineWeb === 'production' && receipt.artifacts.controlledWebhook === 'test transport' &&
   receipt.artifacts.baselineCli?.version === '0.72.0' && receipt.artifacts.baselineCli.gitHead === 'f5d73f3275c8e2774a588967a0fbdcd2a261c379' && receipt.artifacts.baselineCli.integrity === 'sha512-T85y9vOcRHjHvjFImEoDpOs25JxQkfSOLkSbmwUgVZi8S/KsQnVx3EJ5+r6Q/vwoGEP64HIPKdNHdUOVxpDe9w==' &&
   receipt.fixtureVerification?.verified === true && receipt.fixtureVerification.mode === 'normal-login-baseline-container' && receipt.acceptance?.authentication === 'normal' && receipt.acceptance.execution === 'dedicated-container' &&
-  validFixture(receipt.fixture) &&
+  validFixture(receipt.fixture) && validRestoredReadback(receipt.fixture, receipt.recovery) &&
   validRecoveryLedger(receipt.recovery, candidate, baseline, repair.revision, fingerprints) && receipt.recovery?.precommitLedgerUnchanged === true &&
   /^[a-f0-9]{64}$/.test(receipt.recovery.snapshotSHA256 ?? '') && /^[a-f0-9]{64}$/.test(receipt.recovery.storageSHA256 ?? '') &&
   receipt.recovery.historicalProjectionPreserved === true && receipt.recovery.receiverBefore === 0 && receipt.recovery.receiverAfter === 1 && Array.isArray(receipt.recovery.receiverHashes) && receipt.recovery.receiverHashes.length === 1 && /^[a-f0-9]{64}$/.test(receipt.recovery.receiverHashes[0]) &&

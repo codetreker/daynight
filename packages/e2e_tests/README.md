@@ -89,6 +89,18 @@ creation outcomes remain unconfirmed.
 The recovery control client addresses the socket in its private run directory
 through an open directory descriptor, avoiding Unix socket path-length limits
 without moving the socket outside the owned runtime.
+Recovery readback failures identify the Web, CLI or comparison stage. Browser
+diagnostics contain only bounded status codes, route categories and allowlisted
+network errors; page content, addresses and credentials are not reported. If the
+task cache database already has a schema greater than 13, the browser also
+records its version and the category of a read-only schema-13 open.
+The paired-restore case retains the original browser context and records its
+actual old-page readback or a newer cache's schema-13 refusal. A separate
+context signs in normally as the same user and verifies Web, CLI and attachment
+readback. An authenticated task-sync request reuses the actual pre-restore epoch
+and observation time, requiring the rotated epoch and complete original visible
+Task snapshot. Success in the separate context does not establish that the
+original browser can use the older Web bundle.
 
 ## Runtime topology
 
@@ -290,6 +302,7 @@ node --test packages/e2e_tests/validation/provider-navigation.test.mjs
 node --test packages/e2e_tests/validation/worker-monitoring-response.test.mjs
 node --test packages/e2e_tests/validation/compat-worker-container.test.ts
 node --test packages/e2e_tests/validation/subtask-compat-recovery-control-docker.test.ts
+node --test packages/e2e_tests/validation/recovery-cache-probe.test.ts
 ```
 
 ## Results and cleanup
