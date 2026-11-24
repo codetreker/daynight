@@ -205,7 +205,10 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     await vi.waitFor(() => expect(readControllerSnapshot(intent!.journalPath)).toMatchObject({ lifecycle: "ready", nativeSessionId: nativeId }), { timeout: 30_000, interval: 100 });
     const first = readControllerSnapshot(intent!.journalPath)!;
     originalSnapshot = first;
-    if (process.platform === "win32") observerLease = await acquireControllerJobLease(intent!.launchId, first.controllerProcess!, Date.now() + 10_000);
+    if (process.platform === "win32") {
+      if ("kind" in first.controllerProcess!) throw new Error("Linux Controller cannot own a Windows Job.");
+      observerLease = await acquireControllerJobLease(intent!.launchId, first.controllerProcess!, Date.now() + 10_000);
+    }
     // Crash the real owner instead of using graceful close to abandon live resources.
     originalHost.kill("SIGKILL"); await hostExited;
     expect(await inspectProcessProof(first.controllerProcess!)).toBe("running");

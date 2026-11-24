@@ -133,6 +133,43 @@ test("resume binds the original stopped native identity and holds an exclusive l
   await lease.release(); await lease.release(); const next = await acquireResume(input, f.context, config); await next.release();
 });
 
+test.skipIf(process.platform !== "linux")("Linux resume consumes the ticket-bound stopped generation before checking reused PIDs", async () => {
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite");
+  const db = new Database(file);
+  try {
+    const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+    const snapshot = JSON.parse(row.snapshot);
+    snapshot.controllerProcess = { kind: "linux-controller-launch", pid: identity.pid, launchId: f.ticket.launchId };
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
+  } finally { db.close(); }
+  await recordStoppedControllerGeneration(file, f.ticket, {});
+  proof.stopped.mockReset().mockResolvedValue(false);
+  const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
+  expect(lease.nativeSessionId).toBe(f.nativeSessionId); expect(proof.stopped).not.toHaveBeenCalled();
+  await lease.release();
+  const corrupt = new Database(file);
+  try {
+    const row = corrupt.prepare("SELECT ticket_hash,snapshot FROM stopped_generations").get() as { ticket_hash: string; snapshot: string };
+    const snapshot = JSON.parse(row.snapshot); snapshot.nativeSessionId = randomUUID();
+    corrupt.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify(snapshot), row.ticket_hash);
+  } finally { corrupt.close(); }
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow(/stopped history conflicts/);
+  expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux")("Linux resume without a committed stop receipt still checks the live boundary", async () => {
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
+  try {
+    const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+    const snapshot = JSON.parse(row.snapshot);
+    snapshot.controllerProcess = { kind: "linux-controller-launch", pid: identity.pid, launchId: f.ticket.launchId };
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
+  } finally { db.close(); }
+  proof.stopped.mockResolvedValue(false);
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow(/still running/);
+  expect(proof.stopped).toHaveBeenCalledOnce();
+});
+
 test.each([[16, 16], [17, 17], [journalVersion, 16], [journalVersion, 17]] as const)("resume reads a stopped v%i target without migrating an unrelated live v%i writer", async (version, unrelatedVersion) => {
   const f = await fixture(), executionId = randomUUID();
   const unrelated = { ...f.ticket, launchId: randomUUID(), executionId, testExecutionId: executionId, controllerInstanceId: randomUUID(), sessionId: randomUUID() };

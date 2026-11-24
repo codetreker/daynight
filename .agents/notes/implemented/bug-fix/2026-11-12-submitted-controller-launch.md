@@ -23,6 +23,12 @@ conflicting identity and unknown process facts remain errors. The
 [protocol design](../../../../docs/design/task-session-protocol.md) owns the
 identity, cancellation and recovery contracts.
 
+The later [Linux Controller launch identity decision](2026-11-24-linux-controller-launch-identity.md)
+uses a distinct Controller record, settles a provably unreleased bootstrap and
+persists an externally verified complete stop for new Linux records. The ticket,
+authenticated IPC and retention of uncertain submissions remain essential;
+legacy records and other platforms keep their existing observation rules.
+
 Bootstrap cancellation stops the single original process through a bounded,
 identity-checked operation. On Windows, one birth-verified original process
 handle covers identity, necessary termination and completion. If the original is
@@ -49,6 +55,35 @@ same cleanup deadline bounds process probes, Job operations and stop recording;
 started native calls still finish and release their handles. A pure journal I/O
 failure can use previously authenticated POSIX evidence only to attempt stopping
 an attributable original group; it cannot establish complete native stop.
+For Linux Bot stopped history, bounded SQLite lock waits leave time for cleanup,
+and a reread exposes a recovered identity conflict before signaling. A pure read I/O failure
+does not bypass normal authenticated stop, and remains reported even if later
+observation succeeds; unclassified or conflicting evidence cannot authorize the
+retained-proof fallback.
+Task shutdown also rechecks a historical read I/O failure within bounded lock
+waits before using the retained-proof stop path. A recovered stopped record or
+an identity or format conflict prevents signaling, and the original read error
+remains reported.
+Retired Task cleanup and explicit Bot deletion recovery likewise retain their
+original error and resources after a historical read failure. They may stop only
+an independently verified current boundary; a missing execution row cannot be
+reconstructed into a deletion completion receipt. Non-Linux Bot recovery uses its
+existing current-journal and Job proof path without reading Linux stop history.
+Receipt read I/O is rechecked separately from receipt validation; a recovered
+conflict blocks signaling. Persistent receipt I/O permits bounded cleanup only
+with an acknowledged, matching saved Controller snapshot and an independently
+confirmed absent receipt path, and never settles the
+receipt or hides the original failure. A close error cannot replace a prior
+malformed or conflicting receipt error.
+Receipt reads and presence probes use the cleanup deadline. A timed-out
+observation retains responsibility; it does not cancel the underlying file call.
+Bot deletion routes submitted executions through the same receipt and stop path,
+then consumes the persisted unreleased or stopped proof for its original fence.
+If the ticket reread fails with pure I/O after a successful identity check, the
+checked ticket can authorize bounded cleanup; the reread error and resources
+remain retained, and later observed identity conflicts still prevent signaling.
+Once a receipt has been parsed, an I/O failure during synchronization or close
+keeps that evidence unconfirmed and cannot authorize the read-I/O fallback.
 
 A Windows Job name can be reused after the original name or object disappears.
 The Controller retains its Job handle for its lifetime. An observer acquires a

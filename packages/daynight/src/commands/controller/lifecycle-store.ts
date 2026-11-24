@@ -40,7 +40,8 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
 import { controllerPayloadHash, controllerTicketPath, isBotHistoryTicket, readLaunchTicket, MAX_TICKET_BYTES, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
-import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
+import { confirmControllerProcessesStopped, type ControllerProcessProof, type ProcessProof } from "./process-proof.js";
+import { isLinuxControllerLaunch } from "./linux-controller-launch.js";
 import type { ControllerJobLease } from "./windows-job.js";
 export type ControllerSnapshot = SessionBinding & {
   executionId: string; sessionId: string; executionGeneration: string; controllerInstanceId: string;
@@ -48,7 +49,7 @@ export type ControllerSnapshot = SessionBinding & {
   nativeSessionId: string | null; initialInputState: InitialInputState;
   activity: "initializing" | "idle" | "working" | "waiting_input" | "stopped" | "unknown";
   currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; controlsRevisionFloor?: string; turnStartedAt?: string | null;
-  controllerProcess: ProcessProof | null; nativeProcesses: readonly ProcessProof[];
+  controllerProcess: ControllerProcessProof | null; nativeProcesses: readonly ProcessProof[];
   nativeStopped: boolean; stoppedAt: string | null; error: string | null; startup?: StartupObservation;
   windowsJobStopProof?: { readonly version: 1; readonly ticketHash: string; readonly snapshotHash: string };
 };
@@ -80,12 +81,17 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file also identifies its Session-bound resource files. */
-type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; botHistoryBudget?: BotHistoryCacheBudget; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; botHistoryBudget?: BotHistoryCacheBudget; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ControllerProcessProof };
+const hasLinuxLaunchKind = (value: unknown): boolean => value !== null && typeof value === "object" && "kind" in value && value.kind === "linux-controller-launch";
+const validateLaunchIdentity = (value: unknown, ticket: ControllerLaunchTicket): void => {
+  if (hasLinuxLaunchKind(value) && (!isLinuxControllerLaunch(value) || value.launchId !== ticket.launchId)) throw new Error("Linux Controller launch identity conflicts with its original ticket.");
+};
 const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions, permit: ControllerStoragePermit) => {
   assertControllerStoragePermit(permit, file);
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
+  validateLaunchIdentity(options.controllerProcess, ticket);
   if (options.historyPolicy !== undefined && options.historyPolicy !== "legacy" && options.historyPolicy !== "task_body") throw new Error("Invalid Controller history policy.");
   if (options.historyPolicy === "task_body" && (ticket.claimId === undefined || !options.contentOwnedLocally)) throw new Error("Task body history requires a locally owned Task Session.");
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
@@ -146,7 +152,12 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
           if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
           if (process.platform === "win32") validateWindowsStoredStopProof(previous, existing.ticket_hash);
-          if (previous.controllerProcess !== null) retainStoppedGeneration(db, existing.ticket_hash, previous);
+          if (hasLinuxLaunchKind(previous.controllerProcess)) {
+            if (!/^[a-f0-9]{64}$/.test(existing.ticket_hash) || !isLinuxControllerLaunch(previous.controllerProcess) || existing.owner_pid !== null || !Array.isArray(previous.nativeProcesses) || !previous.nativeProcesses.every(isValidNativeProcessProof)
+              || typeof previous.stoppedAt !== "string" || !Number.isFinite(Date.parse(previous.stoppedAt))) throw new Error("Linux Controller stopped generation identity or writer is invalid.");
+            const receipt = db.prepare("SELECT snapshot FROM stopped_generations WHERE ticket_hash=?").get(existing.ticket_hash) as { snapshot: string } | undefined;
+            if (receipt === undefined || controllerPayloadHash(json<ControllerSnapshot>(receipt.snapshot)) !== controllerPayloadHash(previous)) throw new Error("Linux Controller stopped generation receipt is unavailable or conflicts with its original evidence.");
+          } else if (previous.controllerProcess !== null) retainStoppedGeneration(db, existing.ticket_hash, previous);
           db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(ticket), JSON.stringify({ ...initial, initialInputState: previous.initialInputState, controlsRevisionFloor: (() => {
             let floor = BigInt(previous.controls?.revision ?? previous.controlsRevisionFloor ?? "0");
             // Old source events are replayed before new provider state. Keep their
@@ -182,6 +193,8 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (Object.hasOwn(patch, "windowsJobStopProof") || current.windowsJobStopProof !== undefined) throw new Error("A completed Windows Job stop proof cannot be patched by the Controller.");
     if (Object.keys(patch).some((key) => ["executionId", "claimId", "testExecutionId", "sessionId", "executionGeneration", "controllerInstanceId"].includes(key))) throw new Error("Controller identity cannot change within a generation.");
     if (current.nativeSessionId !== null && patch.nativeSessionId !== undefined && patch.nativeSessionId !== current.nativeSessionId) throw new Error("The original native session cannot be replaced.");
+    validateLaunchIdentity(patch.controllerProcess, ticket);
+    if (isLinuxControllerLaunch(current.controllerProcess) && Object.hasOwn(patch, "controllerProcess") && controllerPayloadHash(patch.controllerProcess) !== controllerPayloadHash(current.controllerProcess)) throw new Error("Linux Controller launch identity cannot change within a generation.");
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => read(() => outbox.byteLength());
@@ -641,12 +654,27 @@ export const readControllerSnapshot = (file: SqliteDatabaseSource, permit?: Cont
 });
 
 type ControllerStopRow = { snapshot: ControllerSnapshot; rawSnapshot: string; ticketHash: string; ownerPid: number | null };
-const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit, historicalTicketHash?: string, allowPreviousFormat = false): ControllerStopRow | null => {
+const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit, historicalTicketHash?: string, allowPreviousFormat = false, maxBusyMs?: number): ControllerStopRow | null => {
   const read = (db: Database.Database, historyAvailable = true): ControllerStopRow | null => {
     if (historicalTicketHash !== undefined) {
       if (!historyAvailable) return null;
       const historical = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(historicalTicketHash) as { snapshot: string; ticket_hash: string } | undefined;
-      return historical === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(historical.snapshot)), rawSnapshot: historical.snapshot, ticketHash: historical.ticket_hash, ownerPid: null };
+      if (historical === undefined) return null;
+      const snapshot = checkedSnapshot(json<ControllerSnapshot>(historical.snapshot));
+      if (isLinuxControllerLaunch(snapshot.controllerProcess)) {
+        // A ticket-bound complete stop is immutable. A current row for the
+        // same generation must still be that settled state; a later writer
+        // may coexist with the receipt only in the same execution lineage.
+        const current = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
+        if (current === undefined) throw new Error("Controller stopped history has no current execution evidence.");
+        const value = checkedSnapshot(json<ControllerSnapshot>(current.snapshot));
+        if (current.ticket_hash === historical.ticket_hash) {
+          if (current.owner_pid !== null || controllerPayloadHash(value) !== controllerPayloadHash(snapshot)) throw new Error("Controller stopped history conflicts with its current generation.");
+        } else if (value.executionId !== snapshot.executionId || value.sessionId !== snapshot.sessionId || value.claimId !== snapshot.claimId || value.testExecutionId !== snapshot.testExecutionId
+          || typeof value.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(value.executionGeneration)
+          || BigInt(value.executionGeneration) <= BigInt(snapshot.executionGeneration)) throw new Error("Controller stopped history conflicts with its current execution lineage.");
+      }
+      return { snapshot, rawSnapshot: historical.snapshot, ticketHash: historical.ticket_hash, ownerPid: null };
     }
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
     return row === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), rawSnapshot: row.snapshot, ticketHash: row.ticket_hash, ownerPid: row.owner_pid };
@@ -659,19 +687,21 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
     if (left <= 0) throw new Error("Controller stop recording exceeded its deadline.");
     return Math.min(5000, left);
   };
+  if (maxBusyMs !== undefined && (!Number.isSafeInteger(maxBusyMs) || maxBusyMs < 1)) throw new Error("Invalid controller journal busy timeout.");
+  const busyTimeout = () => Math.min(remaining(), maxBusyMs ?? 5000);
   try {
     remaining();
     if (!path.isAbsolute(file)) throw new TypeError("The SQLite database path must be absolute.");
     if (sqliteDatabaseIsMissing(file)) { remaining(); return null; }
-    const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+    const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: busyTimeout() });
     let result: ControllerStopRow | null = null;
     closeJournal(db, file, () => {
-      db.pragma(`busy_timeout = ${remaining()}`); remaining();
+      db.pragma(`busy_timeout = ${busyTimeout()}`); remaining();
       result = db.transaction(() => {
         remaining();
         const source = allowPreviousFormat ? inspectReadCompatibleControllerJournal(db) : inspectSqlite(db, controllerJournalFormat);
         if (!allowPreviousFormat && source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
-        db.pragma(`busy_timeout = ${remaining()}`);
+        db.pragma(`busy_timeout = ${busyTimeout()}`);
         const row = read(db, source.version >= 17); remaining(); return row;
       }).deferred();
     }, "not-started");
@@ -686,8 +716,9 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
   }
 };
 
+const isValidNativeProcessProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && isProcessBirth(proof.startedAt) && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
+const isValidLegacyControllerProof = (proof: unknown): boolean => !hasLinuxLaunchKind(proof) && isValidNativeProcessProof(proof as ProcessProof);
 const validateControllerSnapshot = (value: ControllerSnapshot, ticket: ControllerLaunchTicket, ticketHash: string): ControllerSnapshot => {
-    const processProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && isProcessBirth(proof.startedAt) && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
     if (value === null || typeof value !== "object" || Array.isArray(value) || ticketHash !== controllerPayloadHash(ticket)
       || value.executionId !== ticket.executionId || value.sessionId !== ticket.sessionId || value.claimId !== ticket.claimId || value.testExecutionId !== ticket.testExecutionId
       || value.executionGeneration !== ticket.executionGeneration || value.controllerInstanceId !== ticket.controllerInstanceId
@@ -695,7 +726,8 @@ const validateControllerSnapshot = (value: ControllerSnapshot, ticket: Controlle
       || !["initializing", "idle", "working", "waiting_input", "stopped", "unknown"].includes(value.activity)
       || !["not_required", "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"].includes(value.initialInputState)
       || !(value.nativeSessionId === null || typeof value.nativeSessionId === "string" && value.nativeSessionId.trim() !== "" && value.nativeSessionId.isWellFormed())
-      || !(value.controllerProcess === null || processProof(value.controllerProcess)) || !Array.isArray(value.nativeProcesses) || !value.nativeProcesses.every(processProof)
+      || !(value.controllerProcess === null || isLinuxControllerLaunch(value.controllerProcess) && value.controllerProcess.launchId === ticket.launchId
+        || isValidLegacyControllerProof(value.controllerProcess)) || !Array.isArray(value.nativeProcesses) || !value.nativeProcesses.every(isValidNativeProcessProof)
       || typeof value.nativeStopped !== "boolean" || !(value.stoppedAt === null || typeof value.stoppedAt === "string" && Number.isFinite(Date.parse(value.stoppedAt)))
       || !(value.error === null || typeof value.error === "string") || !(value.currentTurnId === null || typeof value.currentTurnId === "string")
       || value.capabilities === null || typeof value.capabilities !== "object" || ["send", "steer", "cancel", "respond"].some(key => typeof value.capabilities[key as keyof SessionCapabilities] !== "boolean")) throw new Error("Controller current journal conflicts with its original ticket or snapshot format.");
@@ -856,7 +888,7 @@ export const validateWindowsStoredStopProof = (snapshot: ControllerSnapshot, tic
   const { windowsJobStopProof: _marker, ...original } = snapshot;
   if (marker.ticketHash !== ticketHash || marker.snapshotHash !== controllerPayloadHash(original)
     || snapshot.lifecycle !== "stopped" || snapshot.nativeStopped !== true || typeof snapshot.stoppedAt !== "string" || !Number.isFinite(Date.parse(snapshot.stoppedAt))
-    || snapshot.controllerProcess === null || typeof snapshot.controllerProcess?.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(snapshot.controllerProcess.jobObjectName) || !Array.isArray(snapshot.nativeProcesses)) throw new Error("Windows Job stop proof conflicts with its original ticket or snapshot.");
+    || snapshot.controllerProcess === null || isLinuxControllerLaunch(snapshot.controllerProcess) || typeof snapshot.controllerProcess?.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(snapshot.controllerProcess.jobObjectName) || !Array.isArray(snapshot.nativeProcesses)) throw new Error("Windows Job stop proof conflicts with its original ticket or snapshot.");
 };
 
 export const validateWindowsControllerStopProof = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTicket, ticketHash: string): void => {
@@ -864,7 +896,7 @@ export const validateWindowsControllerStopProof = (snapshot: ControllerSnapshot,
   if (ticketHash !== controllerPayloadHash(ticket)
     || snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.claimId !== ticket.claimId || snapshot.testExecutionId !== ticket.testExecutionId
     || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId
-    || snapshot.controllerProcess?.jobObjectName !== `Local\\Daynight-${ticket.launchId}`) throw new Error("Windows Job stop proof conflicts with its original ticket or snapshot.");
+    || snapshot.controllerProcess == null || isLinuxControllerLaunch(snapshot.controllerProcess) || snapshot.controllerProcess.jobObjectName !== `Local\\Daynight-${ticket.launchId}`) throw new Error("Windows Job stop proof conflicts with its original ticket or snapshot.");
 };
 
 const retainStoppedGeneration = (db: Database.Database, ticketHash: string, snapshot: ControllerSnapshot): void => {
@@ -890,11 +922,11 @@ export const readHistoricalWindowsStoppedControllerGeneration = (file: string, t
 };
 
 /** Recover the exact prior ticket's stopped boundary without migrating the journal. */
-export const readHistoricalStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number): ControllerSnapshot | null => {
-  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true);
+export const readHistoricalStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number, options: { maxBusyMs?: number } = {}): ControllerSnapshot | null => {
+  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true, options.maxBusyMs);
   if (row === null) return null;
   const snapshot = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
-  if (snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.controllerProcess === null || snapshot.stoppedAt === null)
+  if (snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.controllerProcess === null || snapshot.stoppedAt === null || !Number.isFinite(Date.parse(snapshot.stoppedAt)))
     throw new Error("Original historical Controller stopped boundary is incomplete.");
   if (process.platform === "win32") validateWindowsControllerStopProof(snapshot, ticket, row.ticketHash);
   if (Date.now() >= deadline) throw new Error("Controller stopped generation observation exceeded its deadline.");
@@ -947,9 +979,31 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   try { observedRow = readControllerStopRow(file, deadline, true, permit); }
   catch (error) { failedAtDeadline(error, "not-started", error instanceof SqliteAccessError ? error.connectionClosed : true); }
   const observed = observedRow?.snapshot ?? null;
-  if (observed === null || observed.controllerProcess === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Original controller stop evidence is unavailable.");
   const ticketHash = controllerPayloadHash(ticket);
+  if (observed === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.sessionId !== ticket.sessionId) throw new Error("Original controller stop evidence is unavailable.");
+  const history = hasLinuxLaunchKind(observed.controllerProcess) || observedRow!.ticketHash !== ticketHash
+    ? readControllerStopRow(file, deadline, true, permit, ticketHash) : null;
+  if (history !== null && hasLinuxLaunchKind(history.snapshot.controllerProcess)) {
+    const stopped = validateControllerSnapshot(history.snapshot, ticket, history.ticketHash);
+    if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null) throw new Error("Controller stopped generation receipt conflicts with its original evidence.");
+    if (observedRow!.ticketHash === ticketHash) {
+      if (observedRow!.ownerPid !== null || controllerPayloadHash(stopped) !== controllerPayloadHash(observed)) throw new Error("Controller stopped generation receipt conflicts with its original evidence.");
+    } else if (!/^[1-9][0-9]*$/.test(observed.executionGeneration) || BigInt(observed.executionGeneration) <= BigInt(ticket.executionGeneration)) throw new Error("Controller stopped generation receipt conflicts with its current execution.");
+    remaining();
+    return stopped;
+  }
+  if (observed.controllerProcess === null || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Original controller stop evidence is unavailable.");
   if (observedRow!.ticketHash !== ticketHash || observed.sessionId !== ticket.sessionId) throw new Error("Original controller stop ticket conflicts with its journal.");
+  if (hasLinuxLaunchKind(observed.controllerProcess)) {
+    validateControllerSnapshot(observed, ticket, observedRow!.ticketHash);
+    if (history !== null) {
+      const stopped = validateControllerSnapshot(history.snapshot, ticket, history.ticketHash);
+      if (observedRow!.ownerPid !== null || stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null
+        || controllerPayloadHash(stopped) !== controllerPayloadHash(observed)) throw new Error("Controller stopped generation receipt conflicts with its original evidence.");
+      remaining();
+      return stopped;
+    }
+  }
   if (process.platform === "win32" && observed.windowsJobStopProof !== undefined) {
     try {
       validateWindowsControllerStopProof(observed, ticket, observedRow!.ticketHash); remaining();

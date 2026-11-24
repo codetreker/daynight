@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
-import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerSnapshot, readHistoricalStoppedControllerGeneration } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
 import type { WebExecutionStore } from "./web-store.js";
@@ -21,6 +21,65 @@ import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/t
 import type { FrozenToolObservation } from "../types.js";
 import type { ControllerJobLeases } from "./controller-job-leases.js";
 import { preservesControllerProcessProof } from "./orchestration.js";
+import { readUnreleasedLaunch } from "../../controller/unreleased-launch.js";
+import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+
+export const sameUnreleasedWebState = (previous: LocalTask, current: LocalTask): boolean => {
+  const a = previous.webExecution, b = current.webExecution;
+  return a !== null && b !== null && previous.claimId === current.claimId && previous.projectId === current.projectId
+    && previous.taskId === current.taskId && previous.workerId === current.workerId && previous.worktreeId === current.worktreeId
+    && previous.userId === current.userId && previous.serverOrigin === current.serverOrigin && a.executionId === b.executionId
+    && a.controllerId === b.controllerId && a.launchId === b.launchId && a.executionGeneration === b.executionGeneration && a.controllerInstanceId === b.controllerInstanceId
+    && a.initialOperationId === b.initialOperationId && a.initialPrompt === b.initialPrompt && a.nativeHome === b.nativeHome
+    && a.sessionId === b.sessionId && a.launchSubmission === b.launchSubmission && a.initialInputState === b.initialInputState
+    && JSON.stringify(a.controllerProcess) === JSON.stringify(b.controllerProcess) && JSON.stringify(a.nativeProcesses) === JSON.stringify(b.nativeProcesses)
+    && JSON.stringify(previous.resources.nativeSession) === JSON.stringify(current.resources.nativeSession)
+    && JSON.stringify(previous.resources.worktree) === JSON.stringify(current.resources.worktree) && JSON.stringify(previous.configuration) === JSON.stringify(current.configuration);
+};
+
+/** A receipt settles only its original ticket and cannot override current writer evidence. */
+export const isUnreleasedWebLaunch = async (home: string, task: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal,
+  request: typeof requestController = requestController, deadline = Date.now() + 5000): Promise<boolean> => {
+  const execution = task.webExecution;
+  if (execution === null || ticket.launchId !== execution.launchId) throw new Error("Unreleased Web ticket conflicts with the original execution.");
+  const receipt = await readUnreleasedLaunch(home, ticket);
+  if (receipt === undefined) return false;
+  if (ticket.executionId !== execution.executionId
+    || ticket.controllerId !== execution.controllerId || ticket.controllerInstanceId !== execution.controllerInstanceId
+    || ticket.executionGeneration !== execution.executionGeneration || ticket.sessionId !== execution.sessionId
+    || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.claimId !== task.claimId
+    || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.userId !== task.userId
+    || ticket.serverOrigin !== task.serverOrigin || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
+    || task.configuration === null || ticket.provider !== task.configuration.agent || !matchesLaunchConfiguration(ticket.configuration, task.configuration)
+    || task.resources.worktree !== null && ticket.cwd !== task.resources.worktree.worktreePath
+    || execution.nativeHome !== null && ticket.nativeHome !== execution.nativeHome
+    || execution.executionGeneration !== "1" && ticket.resumeNativeSessionId !== task.resources.nativeSession?.sessionId)
+    throw new Error("Unreleased Web ticket conflicts with the original execution.");
+  if (execution.launchSubmission !== "unknown" || execution.controllerProcess !== null && execution.controllerProcess.pid !== receipt.pid
+    || execution.nativeProcesses.length !== 0 || execution.executionGeneration === "1"
+      && (["dispatching", "provider_accepted", "confirmed", "failed"].includes(execution.initialInputState) || task.resources.nativeSession !== null))
+    throw new Error("Unreleased Web launch conflicts with its persisted process evidence.");
+  const journal = path.join(controllerExecutionDirectory(home, execution.executionId), "journal.sqlite");
+  const before = readControllerSnapshot(journal);
+  if (before !== null && (before.executionId !== execution.executionId || before.claimId !== task.claimId
+    || before.sessionId !== execution.sessionId || BigInt(before.executionGeneration) >= BigInt(execution.executionGeneration)))
+    throw new Error("Unreleased Web launch conflicts with its Controller journal.");
+  signal.throwIfAborted();
+  if (Date.now() >= deadline) throw new Error("Unreleased Web launch observation exceeded its deadline.");
+  try {
+    await request(ticket, { kind: "observe" }, { signal, timeoutMs: Math.max(1, Math.min(2000, deadline - Date.now())) });
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
+    const cause = error.cause;
+    if (!(cause instanceof Error && "code" in cause && (cause.code === "ENOENT" || cause.code === "ECONNREFUSED"))) throw error;
+    if (Date.now() >= deadline) throw error;
+    if (JSON.stringify(readControllerSnapshot(journal)) !== JSON.stringify(before)) throw new Error("Controller journal changed during unreleased launch observation.");
+    return true;
+  }
+  throw new Error("Unreleased Web launch conflicts with an authenticated Controller.");
+};
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number;
   jobLeases?: ControllerJobLeases;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
@@ -78,7 +137,16 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     if (execution.launchSubmission === "not-submitted" || execution.controllerProcess === null) return false;
     const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
     checkTicket(task, ticket);
-    const observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), ticket, spawnProof: execution.controllerProcess, signal: new AbortController().signal });
+    const journalFile = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
+    if (isLinuxControllerLaunch(execution.controllerProcess)) {
+      const historical = readHistoricalStoppedControllerGeneration(journalFile, ticket, Date.now() + 5000);
+      if (historical !== null) {
+        if (!preservesControllerProcessProof(execution.controllerProcess, historical.controllerProcess, ticket.launchId)
+          || !execution.nativeProcesses.every((proof, index) => JSON.stringify(proof) === JSON.stringify(historical.nativeProcesses[index]))) throw new Error("Controller credential cleanup conflicts with stopped history.");
+        return true;
+      }
+    }
+    const observation = await reconcileSubmittedControllerLaunch({ journalFile, ticket, spawnProof: execution.controllerProcess, signal: new AbortController().signal });
     if (observation.kind === "unknown") throw new Error("Controller credential renewal cannot determine cleanup process status.", { cause: observation.cause });
     if (observation.kind === "running-unobserved" || observation.kind === "pre-writer-exited") return false;
     const saved = observation.snapshot;
@@ -158,6 +226,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
             task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now());
             if (ownership !== undefined) {
               if (options.jobLeases === undefined) throw new Error("Controller launch has no Job ownership registry.");
+              if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
               options.jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
             }
           },
@@ -166,6 +235,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
               const proof = current(task).webExecution!.controllerProcess;
               if (snapshot.controllerProcess !== null) {
                 if (proof === null || !preservesControllerProcessProof(proof, snapshot.controllerProcess, ticket.launchId)) throw new Error("The observed Web controller conflicts with its spawn proof.");
+                if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
                 await options.jobLeases?.retain(ticket.launchId, proof, Date.now() + 10_000);
               }
             }

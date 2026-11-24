@@ -85,6 +85,18 @@ it("accepts original Windows Job capture after launcher process capture for live
   expect(preservesControllerProcessProof({ ...core, processGroupId: core.pid }, { ...observed.controllerProcess!, processGroupId: core.pid }, execution.launchId)).toBe(false);
 });
 
+it("binds Linux controller identity to the original launch and PID", async () => {
+  const { task, observed, execution } = await windowsProofFixture();
+  const proof = { kind: "linux-controller-launch" as const, pid: 123, launchId: execution.launchId };
+  task.webExecution!.controllerProcess = proof;
+  observed.controllerProcess = proof;
+  expect(healthyOriginalGeneration(task, observed)).toBe(true);
+  expect(preservesControllerProcessProof(proof, { ...proof }, execution.launchId)).toBe(true);
+  expect(preservesControllerProcessProof(proof, { ...proof, pid: 124 }, execution.launchId)).toBe(false);
+  expect(preservesControllerProcessProof(proof, { ...proof, launchId: randomUUID() }, execution.launchId)).toBe(false);
+  expect(preservesControllerProcessProof(proof, proof, randomUUID())).toBe(false);
+});
+
 it.each(["pid", "parent", "group", "birth", "command", "other-launch", "known-job", "lost-job"] as const)("rejects %s changes when comparing Windows controller proofs", async conflict => {
   const f = await windowsProofFixture();
   if (conflict === "pid") f.observed.controllerProcess = { ...f.observed.controllerProcess!, pid: 999 };

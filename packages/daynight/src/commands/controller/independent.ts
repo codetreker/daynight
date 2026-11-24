@@ -2,6 +2,8 @@ import { isProcessBirth } from "./linux-process-proof.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
 import { replayStoppedControllerUsage } from "./usage/stopped.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
+import { replaceFileAtomically } from "../../platform/files.js";
+import { syncDurableDirectory } from "../../platform/durable-directory.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, realpath, writeFile, rename } from "node:fs/promises";
@@ -16,7 +18,8 @@ import { writeControllerCredential } from "../worker/backends/session-api.js";
 import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { recordStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "./launch-observation.js";
-import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
+import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ControllerProcessProof, type ProcessProof } from "./process-proof.js";
+import { captureLinuxControllerLaunch, isLinuxControllerLaunch } from "./linux-controller-launch.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { prepareControllerIpcEndpoint } from "./paths.js";
@@ -78,7 +81,7 @@ const causedByCancellation = (error: unknown, reason: unknown): boolean => error
 
 // A saved IPC observation may authorize only a later attempt to stop its known
 // process group. It cannot prove that the snapshot contains every later native.
-const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTicket, spawn: ProcessProof, previous: ControllerSnapshot | undefined): ControllerSnapshot | undefined => {
+const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTicket, spawn: ControllerProcessProof, previous: ControllerSnapshot | undefined): ControllerSnapshot | undefined => {
   const controller = snapshot.controllerProcess;
   if (controller === null || controller === undefined) {
     if (previous !== undefined) throw new ControllerSnapshotEvidenceConflictError("Test controller IPC discarded its original process evidence.");
@@ -93,11 +96,14 @@ const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLa
     && (value.jobObjectName === undefined || typeof value.jobObjectName === "string" && value.jobObjectName.trim() !== "" && !value.jobObjectName.includes("\0"));
   const same = (left: ProcessProof, right: ProcessProof): boolean => left.pid === right.pid && left.parentPid === right.parentPid
     && left.processGroupId === right.processGroupId && left.startedAt === right.startedAt && left.commandHash === right.commandHash;
-  if (!valid(controller) || !valid(spawn) || !same(controller, spawn)
+  const matchingController = isLinuxControllerLaunch(spawn)
+    ? isLinuxControllerLaunch(controller) && controller.pid === spawn.pid && controller.launchId === ticket.launchId && spawn.launchId === ticket.launchId
+    : !isLinuxControllerLaunch(controller) && valid(controller) && valid(spawn) && same(controller, spawn)
+      && (process.platform === "win32" ? controller.jobObjectName === `Local\\Daynight-${ticket.launchId}` : controller.jobObjectName === undefined && controller.processGroupId === controller.pid);
+  if (!matchingController
     || snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.testExecutionId !== ticket.testExecutionId
     || snapshot.claimId !== ticket.claimId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId
     || !Array.isArray(snapshot.nativeProcesses) || !snapshot.nativeProcesses.every(valid)
-    || (process.platform === "win32" ? controller.jobObjectName !== `Local\\Daynight-${ticket.launchId}` : controller.jobObjectName !== undefined || controller.processGroupId !== controller.pid)
     || previous !== undefined && !previous.nativeProcesses.every(proof => snapshot.nativeProcesses.some(current => same(proof, current) && proof.jobObjectName === current.jobObjectName))) {
     throw new ControllerSnapshotEvidenceConflictError("Test controller IPC snapshot has conflicting process evidence.");
   }
@@ -118,7 +124,8 @@ export const runIndependentController = async (input: IndependentControllerInput
   let registeredSession: SessionSnapshot | undefined;
   let spawnAttempted = false, spawnConfirmed = false, archived = false, nativeStopped = false, unstartedTicketRetired = true;
   let resume: ResumeLease | undefined;
-  let processProof: ProcessProof | undefined;
+  let processProof: ControllerProcessProof | undefined;
+  let gateReleased = false, confirmedUnreleased = false;
   let initialObservationFailure: { cause: unknown } | undefined;
   let previousAuthenticatedSnapshot: ControllerSnapshot | undefined;
   let jobLease: ControllerJobLease | undefined;
@@ -186,15 +193,28 @@ export const runIndependentController = async (input: IndependentControllerInput
     const log = await open(path.join(directory, "controller.log"), "a", 0o600);
     try {
       spawnAttempted = true;
-      child = spawn(process.execPath, [path.join(context.packageDirectory, "dist", "main.js"), "controller", input.provider, "--launch-id", launchId], { cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(home).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
+      const target = path.join(context.packageDirectory, "dist", "main.js");
+      const linux = process.platform === "linux";
+      const args = linux ? [path.join(context.packageDirectory, "dist", "commands", "worker", "backends", "controller-bootstrap.js"), target, input.provider, "--launch-id", launchId, path.join(directory, "controller.log")] : [target, "controller", input.provider, "--launch-id", launchId];
+      const environment: NodeJS.ProcessEnv = { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(home).stateDirectory };
+      if (linux) for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key];
+      child = spawn(process.execPath, args, { cwd, env: environment, detached: process.platform !== "win32", stdio: linux ? ["ignore", log.fd, log.fd, "ipc"] : ["ignore", log.fd, log.fd], windowsHide: true });
       childExit = new Promise<void>(resolve => { child!.once("exit", () => { childExited = true; resolve(); }); });
       child.on("error", error => { childFailures.push(error); });
       await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
       spawnConfirmed = true;
     } finally { await log.close(); }
     if (!child.pid) throw new Error("Test controller process identity is unknown.");
-    processProof = await captureProcessProof(child.pid);
-    await persist("process.json", processProof);
+    processProof = process.platform === "linux" ? await captureLinuxControllerLaunch(child.pid, launchId) : await captureProcessProof(child.pid);
+    if (process.platform === "linux") {
+      await replaceFileAtomically(path.join(directory, "process.json"), `${JSON.stringify(processProof)}\n`, 0o600);
+      syncDurableDirectory(directory);
+      cancellation.signal.throwIfAborted();
+      if (!child.connected) throw new Error("Test controller launch gate disconnected before release.");
+      gateReleased = true;
+      child.send!({ launchId });
+      child.channel?.unref();
+    } else await persist("process.json", processProof);
     let submitted = input.prompt === null, connected = false;
     let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false, hasObserved = false, startupTimeoutReported = false;
     const startupDeadline = Date.now() + 60_000;
@@ -208,7 +228,7 @@ export const runIndependentController = async (input: IndependentControllerInput
       if (observation.kind === "observed") {
         try { previousAuthenticatedSnapshot = savedCleanupSnapshot(observation.snapshot, ticket, processProof, previousAuthenticatedSnapshot); }
         catch (error) { initialObservationFailure = { cause: error }; throw error; }
-        if (process.platform === "win32" && previousAuthenticatedSnapshot && !jobLease) {
+        if (process.platform === "win32" && !isLinuxControllerLaunch(processProof) && previousAuthenticatedSnapshot && !jobLease) {
           try { jobLease = await acquireControllerJobLease(ticket.launchId, processProof, Date.now() + 15_000); }
           catch (error) { jobLeaseFailures.push(error); initialObservationFailure = { cause: error }; throw error; }
         }
@@ -270,13 +290,23 @@ export const runIndependentController = async (input: IndependentControllerInput
     }
   } catch (error) { if (!requestedStop || !causedByCancellation(error, cancellation.signal.reason) || sqliteFailure(error)) failed = error; }
   finally {
+    if (process.platform === "linux" && child && spawnConfirmed && !gateReleased) {
+      try {
+        if (child.connected) child.disconnect();
+        await waitForExit(childExit, 15_000);
+        if (!childExited) throw new Error("Test controller launch gate exit remains unconfirmed.");
+        confirmedUnreleased = true;
+      } catch (error) {
+        failed = failed === undefined ? error : new AggregateError([failed, error], "Test controller launch and gate cleanup failed.");
+      }
+    }
     // Credential revocation and network failure must never prevent local stop.
-    if (child && ticket && directory) {
+    if (child && ticket && directory && !confirmedUnreleased && !(process.platform === "linux" && spawnConfirmed && !gateReleased)) {
       let ipcStopFailure: { cause: unknown } | undefined;
       try {
         const deadline = Date.now() + 15_000;
         const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Test controller cleanup exceeded its deadline; execution evidence is retained."); return time; };
-        if (process.platform === "win32" && processProof && !jobLease) {
+        if (process.platform === "win32" && processProof && !isLinuxControllerLaunch(processProof) && !jobLease) {
           try { remaining(); jobLease = await acquireControllerJobLease(ticket.launchId, processProof, deadline); remaining(); }
           catch (error) { jobLeaseFailures.push(error); }
         }
@@ -480,13 +510,13 @@ export const runIndependentController = async (input: IndependentControllerInput
         context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`);
       }
     }
-    if (ticket && directory && !spawnAttempted) {
+    if (ticket && directory && (!spawnAttempted || confirmedUnreleased)) {
       // A never-launched continuation has no journal. Keep its launch intent as
       // evidence outside the active ticket inventory so it cannot block resume.
       try { await rename(controllerTicketPath(home, ticket.launchId), path.join(directory, "unstarted-launch.json")); }
       catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) { unstartedTicketRetired = false; failed ??= error; } }
     }
-    if (registeredSession && directory && !spawnAttempted) {
+    if (registeredSession && directory && (!spawnAttempted || confirmedUnreleased)) {
       try {
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(registeredSession), controllerId: registeredSession.identity.controllerId, controllerInstanceId: registeredSession.identity.controllerInstanceId, stopProof: { kind: "never_started", recordId: randomUUID(), previousControllerInstanceId: registeredSession.identity.controllerInstanceId, stoppedAt: new Date().toISOString() } };
         await persist("stop-proof.json", body);
@@ -497,9 +527,9 @@ export const runIndependentController = async (input: IndependentControllerInput
         context.stdout("Test Session archived; no controller process was started.\n");
       } catch { /* The printed identity and private proof remain available for reconciliation. */ }
     }
-    if (registeredSession && !archived && (!child || !child.pid)) context.stderr(`Test Session ${registeredSession.sessionId} remains unarchived. ${spawnAttempted ? "Controller launch outcome is unconfirmed." : "No controller process was started."} Registration evidence: ${directory}.\n`);
+    if (registeredSession && !archived && (!child || !child.pid || confirmedUnreleased || process.platform === "linux" && spawnConfirmed && !gateReleased)) context.stderr(`Test Session ${registeredSession.sessionId} remains unarchived. ${confirmedUnreleased || !spawnAttempted ? "No controller process was started." : "Controller launch outcome is unconfirmed."} Registration evidence: ${directory}.\n`);
     else if (!registeredSession && directory) context.stderr(`Test Session registration was not confirmed. Preserve and reconcile the original registration identity in ${path.join(directory, "registration.json")} before starting another execution.\n`);
-    if (resume && (!spawnAttempted && unstartedTicketRetired || nativeStopped)) { try { await resume.release(); } catch (error) { failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and lease release failed."); } }
+    if (resume && ((!spawnAttempted || confirmedUnreleased) && unstartedTicketRetired || nativeStopped)) { try { await resume.release(); } catch (error) { failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and lease release failed."); } }
     process.off("SIGINT", signal); process.off("SIGTERM", signal);
   }
   if (failed) throw failed;

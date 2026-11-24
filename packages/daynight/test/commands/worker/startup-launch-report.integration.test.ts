@@ -9,7 +9,7 @@ import type { Task } from "../../../src/api/types.js";
 import { readSessionStartupReport, readWorkerClaim } from "../../../src/api/task-properties.js";
 import { openControllerLifecycleStore, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, writeLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -68,7 +68,8 @@ vi.mock("../../../src/commands/controller/process-proof.js", async importOrigina
     },
   };
 });
-vi.mock("../../../src/commands/controller/launch-observation.js", () => ({
+vi.mock("../../../src/commands/controller/launch-observation.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../../../src/commands/controller/launch-observation.js")>(),
   reconcileSubmittedControllerLaunch: async ({ spawnProof }: { spawnProof: unknown }) => {
     const child = native.children.at(-1)!;
     if (child.exitCode === null) await new Promise<void>(resolve => child.once("exit", () => resolve()));
@@ -109,6 +110,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     provider: "codex", cwd: home, nativeHome: path.join(home, "native"), configuration, initialOperationId: e.initialOperationId,
     initialPrompt: "fixture", resumeNativeSessionId: null, credentialFile: path.join(directory, "credential.json"),
     ipcEndpoint: path.join(home, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date(0).toISOString() };
+  await writeLaunchTicket(home, ticket);
   const journalFile = path.join(directory, "journal.sqlite");
   const journal = openControllerLifecycleStore(journalFile, { ...ticket, ...journalIdentity }, { onMigration() {} });
   disposals.push(async () => { journal.close(); });

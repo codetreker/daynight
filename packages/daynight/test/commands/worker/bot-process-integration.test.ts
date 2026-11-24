@@ -34,7 +34,8 @@ import { controllerExecutionDirectory, controllerTicketPath } from "../../../src
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ControllerProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../../src/commands/controller/linux-controller-launch.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
@@ -57,7 +58,7 @@ class FixtureStopTimeoutError extends Error {
     super("Original fixture processes did not stop within the observation window.", { cause: conflict });
   }
 }
-const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number, lease?: ControllerJobLease,
+const waitForProcessesStopped = async (controller: ControllerProcessProof, native: readonly ProcessProof[], timeoutMs: number, lease?: ControllerJobLease,
   clock = { now: Date.now, wait: (ms: number) => delay(ms) }): Promise<void> => {
   const deadline = clock.now() + timeoutMs;
   let conflict: ControllerProcessIdentityConflictError | undefined;
@@ -84,7 +85,7 @@ const waitForProcessesStopped = async (controller: ProcessProof, native: readonl
     if (clock.now() >= deadline) throw new FixtureStopTimeoutError(conflict);
   }
 };
-const cleanupFixtureProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease,
+const cleanupFixtureProcesses = async (controller: ControllerProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease,
   operations = { wait: waitForProcessesStopped, stop: stopControllerProcesses, confirm: confirmControllerProcessesStopped }): Promise<void> => {
   let observationFailure: unknown;
   try { await operations.wait(controller, native, 5000, lease); }
@@ -357,7 +358,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       // Only inspect identities created by this fixture; retain the original
       // failure even if a diagnostic probe also fails.
       const identities = await Promise.all([controller, ...native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
-      const jobMembers = controller.jobObjectName === undefined ? null : await inspectControllerJob(controller.jobObjectName).catch(() => "unconfirmed");
+      const jobMembers = isLinuxControllerLaunch(controller) || controller.jobObjectName === undefined ? null : await inspectControllerJob(controller.jobObjectName).catch(() => "unconfirmed");
       console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-original-process-evidence", elapsedMs: Date.now() - started, deadlineExpired: Date.now() >= deadline, identities, jobMembers }));
       throw error;
     }
@@ -396,13 +397,14 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   });
   const observerJobs = new Map<string, ControllerJobLease>();
   const managers: ReturnType<typeof createControllerJobLeases>[] = [];
-  const observerFor = (proof: ProcessProof): ControllerJobLease | undefined => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
+  const observerFor = (proof: ControllerProcessProof): ControllerJobLease | undefined => isLinuxControllerLaunch(proof) || proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
   const create = (sessionApi: Parameters<typeof createBotProcess>[0]["sessionApi"] = api) => {
     const owned = createControllerJobLeases(); managers.push(owned);
-    const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
+    const jobLeases = { ...owned, retain: async (launchId: string, proof: ControllerProcessProof, deadline: number) => {
       const lease = await owned.retain(launchId, proof, deadline);
       if (process.platform === "win32") {
         const name = `Local\\Daynight-${launchId}`;
+        if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller cannot own a Windows Job.");
         if (!observerJobs.has(name)) observerJobs.set(name, await acquireControllerJobLease(launchId, proof, deadline));
       }
       return lease;
@@ -494,7 +496,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
         let alreadyProven = false;
         if (process.platform === "win32" && lease === undefined && proof !== null) {
           if (saved?.windowsJobStopProof !== undefined) { readProvenWindowsStoppedControllerGeneration(record.intent!.journalPath, ticket); alreadyProven = true; }
-          else { lease = await acquireControllerJobLease(ticket.launchId, execution.controllerProcess ?? proof, Date.now() + 10_000); observerJobs.set(`Local\\Daynight-${ticket.launchId}`, lease); }
+          else { const jobProof = execution.controllerProcess ?? proof; if (isLinuxControllerLaunch(jobProof)) throw new Error("Linux Controller cannot own a Windows Job."); lease = await acquireControllerJobLease(ticket.launchId, jobProof, Date.now() + 10_000); observerJobs.set(`Local\\Daynight-${ticket.launchId}`, lease); }
         }
         if (!alreadyProven) try { await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
         // Shutdown joins startup, which can publish native proofs after the
@@ -924,7 +926,8 @@ test("explicit recovery stops a real journal-bound Controller after its Bot exec
   const ticket = await f.process.readTicket(f.current()), original = f.journal()!;
   expect(original.controllerProcess).not.toBeNull(); expect(original.nativeStopped).toBe(false);
   const proof = original.controllerProcess!;
-  const cleanupLease = process.platform === "win32" ? await acquireControllerJobLease(ticket.launchId, proof, Date.now() + 10_000) : undefined;
+  if (process.platform === "win32" && isLinuxControllerLaunch(proof)) throw new Error("Linux Controller cannot own a Windows Job.");
+  const cleanupLease = process.platform === "win32" && !isLinuxControllerLaunch(proof) ? await acquireControllerJobLease(ticket.launchId, proof, Date.now() + 10_000) : undefined;
   // Keep independently authenticated cleanup authority even if compensation fails.
   cleanups.push(async () => {
     try { await cleanupFixtureProcesses(proof, original.nativeProcesses, cleanupLease); }

@@ -1,4 +1,5 @@
 import { isProcessBirth } from "../../controller/linux-process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
 import { parseSessionStartupReport } from "../../../session/startup.js";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
@@ -70,7 +71,11 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   version(data.executionGeneration); oneOf(data.launchSubmission, ["not-submitted", "unknown", "acknowledged"], "Controller launch submission");
   nullable(data.initialPrompt, entry => text(entry, "Initial prompt")); nullable(data.ticketPath, entry => absolutePath(entry, "Controller ticket"));
   const proof = (value: unknown): void => { const hasJob = typeof value === "object" && value !== null && "jobObjectName" in value; const p = record(value, ["pid", "parentPid", "processGroupId", "startedAt", "commandHash", ...(hasJob ? ["jobObjectName"] : [])], "Process proof"); if (hasJob && (typeof p.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(p.jobObjectName))) throw new Error("Invalid Windows job identity."); integer(p.pid, "Process ID", 1); integer(p.parentPid, "Parent ID"); nullable(p.processGroupId, entry => integer(entry, "Process group", 1)); if (!isProcessBirth(p.startedAt)) throw new Error("Invalid process birth identity."); if (typeof p.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(p.commandHash)) throw new Error("Invalid process command proof."); };
-  if (data.controllerProcess !== null) proof(data.controllerProcess);
+  if (data.controllerProcess !== null) {
+    if (isLinuxControllerLaunch(data.controllerProcess)) {
+      if (data.controllerProcess.launchId !== data.launchId) throw new Error("Controller launch identity differs from its execution.");
+    } else proof(data.controllerProcess);
+  }
   if (!Array.isArray(data.nativeProcesses)) throw new Error("Native process evidence must be an array."); data.nativeProcesses.forEach(proof);
   data.restartAfterShutdown ??= false; bool(data.restartAfterShutdown, "Orderly controller restart");
   data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));

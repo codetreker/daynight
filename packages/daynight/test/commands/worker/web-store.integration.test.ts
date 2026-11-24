@@ -24,6 +24,17 @@ it("persists a distinct web execution without inventing Herdr resources or works
   expect(connect(file).pragma("user_version", { simple: true })).toBe(5);
 });
 
+it("persists a Linux Controller identity only for its own launch", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const task = store.initializeWebExecution(claim, 2);
+  const proof = { kind: "linux-controller-launch" as const, pid: 12345, launchId: task.webExecution!.launchId };
+  store.updateWebExecution(claim, { controllerProcess: proof }, 3);
+  expect(() => store.updateWebExecution(claim, { controllerProcess: { ...proof, launchId: id(9) } }, 4)).toThrow();
+  close(store);
+  expect(open(file).getTask(claim)?.webExecution?.controllerProcess).toEqual(proof);
+});
+
 it("migrates version-two records intact, persists independent blockers, and fences old readers", () => {
   const { file, store, project, claim } = fixture();
   const original = store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);

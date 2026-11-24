@@ -200,9 +200,13 @@ test("an unfinished historical never-started plan cannot erase files after its e
 });
 
 test("cleans only private sources, strips execution records, and retains exact minimal receipt",async()=>{
- const f=fixture();await f.create().advance(f.current(),new AbortController().signal);
+ const f=fixture(), launchRoot=path.dirname(f.intent.ticketPath);
+ const receipt=path.join(launchRoot,`${f.intent.launchId}.unreleased.json`), temporary=`${receipt}.${id(42)}.tmp`, other=path.join(launchRoot,`${id(43)}.unreleased.json`);
+ for(const file of [receipt,temporary,other]) writeFileSync(file,"private",{mode:0o600});
+ await f.create().advance(f.current(),new AbortController().signal);
  expect(f.remote.read).toHaveBeenCalledWith(f.current().botId, expect.any(AbortSignal), f.current().owner);
  expect(existsSync(f.intent.journalPath)).toBe(false);expect(existsSync(f.intent.ticketPath)).toBe(false);
+ expect(existsSync(receipt)).toBe(false);expect(existsSync(temporary)).toBe(false);expect(existsSync(other)).toBe(true);
  for(const name of ["cwd.txt","native-home.txt","task.txt","worktree.txt"])expect(existsSync(path.join(f.home,name))).toBe(true);
  expect(f.current()).toMatchObject({definition:null,intent:null,cleanup:{localCompleted:true,stop:f.stopProof,targets:[]}});
  expect(f.api.completeDeletion).toHaveBeenCalledTimes(1);expect(f.api.completeDeletion.mock.calls[0]![1]).toEqual({deletionId:id(8),stop:f.stopProof,result:{state:"completed",code:null}});

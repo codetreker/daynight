@@ -7,7 +7,9 @@ import { createControllerJobLease, releaseControllerJobLease, type ControllerJob
 import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
-import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { captureProcessProof, type ControllerProcessProof } from "../../controller/process-proof.js";
+import { captureLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+import { readUnreleasedLaunch, writeUnreleasedLaunch } from "../../controller/unreleased-launch.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
@@ -77,7 +79,7 @@ export const launchControllerProcess = async (options: {
   /** Keep original birth handles reachable until failed pre-dispatch cleanup joins. */
   retainBirthCleanup(cleanup: (deadline: number) => Promise<void>): () => void;
   /** Commit the proof, then retain supplied native ownership before returning. */
-  onSpawned(proof: ProcessProof, ownership?: { lease: ControllerJobLease; closeHandles(): void }): void | Promise<void>;
+  onSpawned(proof: ControllerProcessProof, ownership?: { lease: ControllerJobLease; closeHandles(): void }): void | Promise<void>;
   onObserved(snapshot: ControllerSnapshot): void | Promise<void>;
 }): Promise<ControllerSnapshot> => {
   const { ticket, signal } = options;
@@ -98,12 +100,12 @@ export const launchControllerProcess = async (options: {
     if (submission !== undefined) await submission;
     signal.throwIfAborted();
     const bootstrap = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../../../../dist/commands/worker/backends/controller-bootstrap.js" : "./controller-bootstrap.js", import.meta.url));
-    const args = [bootstrap, path.join(options.packageDirectory, "dist", "main.js"), ticket.provider, ticket.launchId, path.join(directory, "controller.log")];
+    const args = [bootstrap, path.join(options.packageDirectory, "dist", "main.js"), ticket.provider, ...(process.platform === "linux" ? ["--launch-id"] : []), ticket.launchId, path.join(directory, "controller.log")];
     const environment = { ...options.env, DAYNIGHT_CONTROLLER_STORAGE_DIR: options.storageStateDirectory,
       ...(process.platform === "win32" ? { DAYNIGHT_CONTROLLER_ASSIGNED_JOB: ticket.launchId } : {}) };
     for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key as keyof typeof environment];
     let child: ChildProcess | undefined, suspended: WindowsSuspendedProcess | undefined, lease: ControllerJobLease | undefined;
-    let spawnProof: ProcessProof, released = false;
+    let spawnProof: ControllerProcessProof, released = false;
     try {
       try {
         if (process.platform === "win32") suspended = await createSuspendedProcess({ file: process.execPath, args, cwd: ticket.cwd, environment });
@@ -120,8 +122,9 @@ export const launchControllerProcess = async (options: {
       }
       const pid = suspended?.pid ?? child?.pid;
       if (pid === undefined) throw new Error("Controller spawn did not establish its process identity.");
-      spawnProof = await captureProcessProof(pid);
+      spawnProof = process.platform === "linux" ? await captureLinuxControllerLaunch(pid, ticket.launchId) : await captureProcessProof(pid);
       if (suspended !== undefined) {
+        if ("kind" in spawnProof) throw new Error("A Windows suspended Controller cannot use Linux identity.");
         spawnProof = { ...spawnProof, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
         lease = await createControllerJobLease(ticket.launchId, spawnProof, Date.now() + 15_000);
       }
@@ -140,6 +143,7 @@ export const launchControllerProcess = async (options: {
     } catch (error) {
       if (!released && (suspended !== undefined || child?.pid !== undefined)) {
         let closedLeaseFailure: unknown;
+        let receiptAttempted = false, receiptFailure: unknown;
         const cleanup = async (deadline: number): Promise<void> => {
           if (closedLeaseFailure !== undefined) throw closedLeaseFailure;
           if (suspended !== undefined) {
@@ -152,16 +156,31 @@ export const launchControllerProcess = async (options: {
               catch (failure) { closedLeaseFailure = failure; throw failure; }
             }
           } else if (child !== undefined && child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
+            if (process.platform === "linux" && child.connected) child.disconnect();
+            else if (process.platform !== "linux") child.kill("SIGKILL");
             if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve, reject) => {
-              const timer = setTimeout(() => { child!.off("close", finished); reject(new Error("Controller launch gate stop remains unconfirmed.", { cause: error })); }, Math.max(1, deadline - Date.now()));
-              const finished = () => { clearTimeout(timer); resolve(); };
-              child!.once("close", finished);
+              const timer = setTimeout(() => { child!.off("exit", finished); reject(new Error("Controller launch gate stop remains unconfirmed.", { cause: error })); }, Math.max(1, deadline - Date.now()));
+              const finished = () => { clearTimeout(timer); child!.off("exit", finished); resolve(); };
+              child!.once("exit", finished);
+              if (child!.exitCode !== null || child!.signalCode !== null) finished();
             });
+          }
+          if (process.platform === "linux" && child?.pid !== undefined) {
+            if (receiptAttempted) {
+              const saved = await readUnreleasedLaunch(options.homeDirectory, ticket, options.storageStateDirectory);
+              if (!saved || saved.pid !== child.pid) throw new Error("Unreleased Controller receipt outcome remains unconfirmed.", { cause: receiptFailure });
+            } else {
+              receiptAttempted = true;
+              try { await writeUnreleasedLaunch(options.homeDirectory, ticket, child.pid, options.storageStateDirectory); }
+              catch (failure) { receiptFailure = failure; throw failure; }
+            }
           }
         };
         const forget = options.retainBirthCleanup(cleanup);
-        try { await cleanup(Date.now() + 5000); forget(); }
+        try {
+          await cleanup(Date.now() + 5000);
+          forget();
+        }
         catch (failure) { throw new AggregateError([error, failure], "Controller launch failed with retained original birth handles.", { cause: error }); }
       }
       throw error;

@@ -2,11 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import Database from "better-sqlite3";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../../src/commands/controller/paths.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import * as processProofs from "../../../src/commands/controller/process-proof.js";
@@ -109,6 +114,183 @@ const journalProcessFixture = async (platform: "posix" | "windows", change: Part
   const adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, jobLeases: createControllerJobLeases("linux") });
   return { ...f, store, ticket, launchProof, journalProof, adapter };
 };
+
+const linuxHistoricalFixture = async (withLifecycle = false) => {
+  const f = await fixture(), legacy = withLifecycle ? f.lifecycle() : undefined;
+  const ticket = f.ticket(legacy === undefined ? {} : { schemaVersion: 2, lifecycleBinding: legacy.binding });
+  await writeLaunchTicket(f.home, ticket);
+  const journalFile = path.join(controllerExecutionDirectory(f.home, ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalFile), { recursive: true });
+  const controller = { kind: "linux-controller-launch" as const, pid: 987654, launchId: ticket.launchId };
+  const native = { pid: 987655, parentPid: controller.pid, processGroupId: controller.pid, startedAt: "original-native", commandHash: "a".repeat(64) };
+  const journal = openControllerLifecycleStore(journalFile, ticket, { controllerProcess: controller });
+  journal.patchSnapshot({ lifecycle: "ready", nativeProcesses: [native] }); journal.close();
+  const adapter = f.adapter(), inventory = await located(adapter, f.target);
+  return { ...f, legacy, ticket, journalFile, controller, native, adapter, inventory };
+};
+
+it.skipIf(process.platform !== "linux").each(["transient", "persistent"] as const)("retains a %s historical I/O error while stopping the revalidated current boundary", async mode => {
+  const f = await linuxHistoricalFixture(), first = Object.assign(new Error("first historical read"), { code: "EIO" });
+  const second = Object.assign(new Error("second historical read"), { code: "EIO" });
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw first; });
+  if (mode === "persistent") history.mockImplementationOnce(() => { throw second; });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  vi.spyOn(processProofs, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const release = vi.spyOn(f.jobLeases, "release");
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  if (mode === "transient") expect(error).toBe(first);
+  else { expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([first, second]); }
+  expect(history).toHaveBeenCalledTimes(2);
+  expect(history.mock.calls.every(call => call[3]?.maxBusyMs === 1000)).toBe(true);
+  expect(stop).toHaveBeenCalledExactlyOnceWith(f.controller, [f.native], expect.any(Number));
+  expect(release).not.toHaveBeenCalled();
+  expect(await readFile(controllerTicketPath(f.home, f.ticket.launchId), "utf8")).toContain(f.ticket.launchId);
+  expect(lifecycle.readCurrentControllerSnapshot(f.journalFile, f.ticket)).toMatchObject({ lifecycle: "ready", controllerProcess: f.controller, nativeProcesses: [f.native] });
+});
+
+it.skipIf(process.platform !== "linux")("stops the original real process group after a historical I/O failure and retains its evidence", async () => {
+  const f = await fixture(), ticket = f.ticket();
+  await writeLaunchTicket(f.home, ticket);
+  const bootstrap = path.join(f.home, "controller-bootstrap.js");
+  await writeFile(bootstrap, `const {spawn}=require("node:child_process");
+const native=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});
+process.send({nativePid:native.pid});
+process.on("message", message => { if (message === "cleanup") { if (native.exitCode !== null || native.signalCode !== null) process.exit(0); native.once("exit", () => process.exit(0)); if (!native.kill("SIGKILL")) process.exit(1); } });
+setInterval(()=>{},1000);
+`);
+  const child = spawn(process.execPath, [bootstrap, "main.js", "codex", "--launch-id", ticket.launchId, "fixture.log"],
+    { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(30_000) });
+  void exited.catch(() => {});
+  let controller: { kind: "linux-controller-launch"; pid: number; launchId: string } | undefined;
+  let native: processProofs.ProcessProof | undefined;
+  try {
+    const [message] = await once(child, "message", { signal: AbortSignal.timeout(10_000) }) as [{ nativePid: number }];
+    controller = { kind: "linux-controller-launch", pid: child.pid!, launchId: ticket.launchId };
+    native = await processProofs.captureProcessProof(message.nativePid);
+    expect(await processProofs.inspectProcessProof(controller)).toBe("running");
+    expect(await processProofs.inspectProcessProof(native)).toBe("running");
+    const journalFile = path.join(controllerExecutionDirectory(f.home, ticket.executionId), "journal.sqlite");
+    await mkdir(path.dirname(journalFile), { recursive: true });
+    const journal = openControllerLifecycleStore(journalFile, ticket, { controllerProcess: controller });
+    journal.patchSnapshot({ lifecycle: "ready", nativeProcesses: [native] }); journal.close();
+    const adapter = f.adapter(), inventory = await located(adapter, f.target);
+    const failure = Object.assign(new Error("historical read"), { code: "EIO" });
+    vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+    await expect(adapter.stop(inventory, request())).rejects.toBe(failure);
+    expect(await processProofs.confirmControllerProcessesStopped(controller, [native], Date.now() + 5000)).toBe(true);
+    await exited;
+    expect(lifecycle.readCurrentControllerSnapshot(journalFile, ticket)).toMatchObject({ lifecycle: "ready", controllerProcess: controller, nativeProcesses: [native] });
+    expect(await readFile(controllerTicketPath(f.home, ticket.launchId), "utf8")).toContain(ticket.launchId);
+  } finally {
+    if (controller !== undefined && native !== undefined && !await processProofs.confirmControllerProcessesStopped(controller, [native], Date.now() + 5000))
+      await processProofs.stopControllerProcesses(controller, [native], Date.now() + 10_000);
+    else if ((controller === undefined || native === undefined) && child.exitCode === null && child.signalCode === null) {
+      if (child.connected) child.send("cleanup"); else child.kill("SIGKILL");
+    }
+    await exited;
+  }
+}, 40_000);
+
+it.skipIf(process.platform !== "linux")("does not signal when a historical stop becomes visible after an I/O failure", async () => {
+  const f = await linuxHistoricalFixture(), first = Object.assign(new Error("historical read"), { code: "EIO" });
+  const snapshot = lifecycle.readCurrentControllerSnapshot(f.journalFile, f.ticket);
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw first; })
+    .mockReturnValueOnce({ ...snapshot, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first);
+  expect(String(error.errors[1])).toMatch(/settled historical stop/); expect(stop).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("retains both historical and process-stop errors without releasing resources", async () => {
+  const f = await linuxHistoricalFixture(), failure = Object.assign(new Error("historical read"), { code: "EIO" });
+  const stopFailure = new Error("original process stop failed");
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  vi.spyOn(processProofs, "stopControllerProcesses").mockRejectedValueOnce(stopFailure);
+  const release = vi.spyOn(f.jobLeases, "release");
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([failure, stopFailure]);
+  expect(release).not.toHaveBeenCalled();
+  expect(lifecycle.readCurrentControllerSnapshot(f.journalFile, f.ticket)).toMatchObject({ lifecycle: "ready", controllerProcess: f.controller });
+});
+
+it.skipIf(process.platform !== "linux")("does not signal a previously settled generation when its historical receipt is unreadable", async () => {
+  const f = await linuxHistoricalFixture(), failure = Object.assign(new Error("historical read"), { code: "EIO" });
+  vi.spyOn(processProofs, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const settled = await lifecycle.recordStoppedControllerGeneration(f.journalFile, f.ticket, { deadline: Date.now() + 10_000 });
+  expect(settled).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: f.controller });
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(failure);
+  expect(String(error.errors[1])).toMatch(/no unambiguous current boundary/); expect(stop).not.toHaveBeenCalled();
+  expect(lifecycle.readHistoricalStoppedControllerGeneration(f.journalFile, f.ticket, Date.now() + 5000)).toEqual(settled);
+});
+
+it.skipIf(process.platform !== "linux")("does not signal when current journal identity changes after a historical I/O failure", async () => {
+  const f = await linuxHistoricalFixture(), first = Object.assign(new Error("historical read"), { code: "EIO" });
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw first; }).mockImplementationOnce(() => {
+    const db = new Database(f.journalFile);
+    try {
+      const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+      const snapshot = JSON.parse(row.snapshot); snapshot.controllerProcess.pid++;
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
+    } finally { db.close(); }
+    return null;
+  });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first);
+  expect(String(error.errors[1])).toMatch(/journal changed|identity|conflict/i); expect(stop).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("retains a changed ticket or a historical conflict without signaling", async () => {
+  const f = await linuxHistoricalFixture(), first = Object.assign(new Error("historical read"), { code: "EIO" });
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => {
+    writeFileSync(controllerTicketPath(f.home, f.ticket.launchId), JSON.stringify({ ...f.ticket, ipcSecret: "b".repeat(64) }));
+    throw first;
+  });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(f.inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first);
+  expect(String(error.errors[1])).toMatch(/ticket changed/); expect(history).toHaveBeenCalledOnce(); expect(stop).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("does not treat a mixed historical conflict as an I/O-only failure", async () => {
+  const f = await linuxHistoricalFixture(), io = Object.assign(new Error("historical read"), { code: "EIO" });
+  const failure = new AggregateError([io, new Error("historical identity conflict")]);
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  await expect(f.adapter.stop(f.inventory, request())).rejects.toBe(failure); expect(stop).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("bounds ticket revalidation after a historical I/O failure", async () => {
+  const f = await linuxHistoricalFixture(), failure = Object.assign(new Error("historical read"), { code: "EIO" });
+  const read = launchTickets.readLaunchTicket;
+  vi.spyOn(launchTickets, "readLaunchTicket").mockImplementationOnce(read).mockImplementationOnce(() => new Promise(() => {}));
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(f.inventory, { deadline: Date.now() + 2000, signal: new AbortController().signal }).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(failure);
+  expect(String(error.errors[1])).toMatch(/deadline/); expect(stop).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("does not signal conflicting native proofs after a historical I/O failure", async () => {
+  const f = await linuxHistoricalFixture(true), failure = Object.assign(new Error("historical read"), { code: "EIO" });
+  const { store } = f.legacy!;
+  store.register({ resourceId: f.ticket.controllerInstanceId, ownerKind: "controller", operationId: f.ticket.launchId, stage: "running",
+    processProof: { ...f.native, commandHash: "b".repeat(64) }, identity: { ...f.target, kind: "provider", executionId: f.ticket.executionId,
+      sessionId: f.ticket.sessionId, executionGeneration: f.ticket.executionGeneration, controllerId: f.ticket.controllerId,
+      controllerInstanceId: f.ticket.controllerInstanceId, launchId: f.ticket.launchId, storageStateDirectory: resolveControllerStateDirectory(f.home),
+      ticketHash: controllerPayloadHash(f.ticket), journalFile: f.journalFile } });
+  const inventory = await located(f.adapter, f.target);
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  const error = await f.adapter.stop(inventory, request()).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(failure);
+  expect(String(error.errors[1])).toMatch(/Provider has conflicting/); expect(stop).not.toHaveBeenCalled();
+});
 
 it.skipIf(process.platform === "win32")("stops the original detached POSIX Controller after its journal self-capture observes a new parent", async () => {
   const f = await journalProcessFixture("posix", { parentPid: 1 });

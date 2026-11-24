@@ -9,6 +9,8 @@ import { expect, it, vi } from "vitest";
 import type { Task } from "../../../src/api/types.js";
 import { ControllerBootstrapReplacedError } from "../../../src/commands/controller/bootstrap-error.js";
 import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
+import * as localClient from "../../../src/commands/controller/local-client.js";
+import { writeUnreleasedLaunch } from "../../../src/commands/controller/unreleased-launch.js";
 import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { openControllerLifecycleStore, readControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
@@ -237,6 +239,35 @@ const cases = [
   ...(["complete", "missing", "incomplete"] as const).flatMap(state => (["patrol", "shutdown"] as const).map(mode => ({ state, mode, recovered: false }))),
   { state: "missing" as const, mode: "patrol" as const, recovered: true },
 ];
+
+it.each(["absent", "timeout", "journal"] as const)("settles a retired unreleased ticket only with compatible evidence (%s)", async condition => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/retired-web-native"); await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "unreleased-"));
+  const owner = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
+  const identity = { serverOrigin: origin, workerId: randomUUID(), userId: randomUUID() };
+  const launchId = randomUUID(), executionId = randomUUID();
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, ...owner, ...identity, launchId, executionId,
+    sessionId: randomUUID(), executionGeneration: "1", controllerId: randomUUID(), controllerInstanceId: randomUUID(), provider: "codex", cwd: home,
+    nativeHome: path.join(home, "native"), configuration, initialOperationId: randomUUID(), initialPrompt: "managed", resumeNativeSessionId: null,
+    credentialFile: path.join(home, "grant.json"), ipcEndpoint: resolveControllerIpcEndpoint(home, launchId), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const leases = createControllerJobLeases();
+  try {
+    await writeLaunchTicket(home, ticket);
+    await writeUnreleasedLaunch(home, ticket, 12345);
+    if (condition === "journal") {
+      const directory = controllerExecutionDirectory(home, executionId); await mkdir(directory, { recursive: true });
+      openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket).close();
+    }
+    if (condition === "timeout") vi.spyOn(localClient, "requestController").mockRejectedValue(new ControllerIpcOutcomeUnknownError("timed out"));
+    const adapter = createRetiredClaimNativeCleanup({ homeDirectory: home, identity, jobLeases: leases });
+    const locations = await workerOperation(operation => adapter.locate([owner], operation));
+    const entry = [...locations.values()][0]!;
+    if ("error" in entry) throw entry.error;
+    const stop = adapter.stop(entry.located, { deadline: Date.now() + 5000, signal: AbortSignal.timeout(5000) });
+    if (condition === "absent") expect(await stop).toMatchObject({ resourcesCleared: true, stoppedExecutions: [] });
+    else await expect(stop).rejects.toThrow();
+  } finally { vi.restoreAllMocks(); await leases.close(); await rm(home, { recursive: true, force: true }); }
+});
 
 it.each(cases)("cleans the real retired $state Web boundary and Git worktree during $mode (recovered: $recovered) without touching its successor", async ({ state, mode, recovered }) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/retired-web-native"); await mkdir(base, { recursive: true });

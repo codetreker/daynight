@@ -3,6 +3,7 @@ import { chmod, copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { cliEnvironment, expect, topology, startOwnedCommand } from "./fixtures.ts";
+import { verifyIndependentControllerLaunch } from "./controller-launch-evidence.ts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgZGL+DwABFAEG9O6t0QAAAABJRU5ErkJggg==", "base64");
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -52,6 +53,7 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
       throw new Error(`Controller image publication did not complete.\nController output:\n${output}\nTimeline:\n${JSON.stringify(entries)}`, { cause });
     });
     const images = imageParts(entries);
+    await verifyIndependentControllerLaunch(topology.cliConfigDirectory, sessionId!);
     expect(new Set(images.map(part => part.resourceId)).size).toBe(2);
     const readOriginal = async (resourceId: string): Promise<void> => {
       const response = await page.request.get(`${root}/resources/${resourceId}/content?offset=0&limit=524288`, { headers: { "Daynight-Session-Content-Revision": "2" } });

@@ -23,7 +23,7 @@ beforeAll(async () => {
     const source = await readFile(path.resolve(`src/commands/controller/providers/${name}.ts`), "utf8");
     await writeFile(path.join(controller, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
   }
-  for (const name of ["bootstrap-error", "process-proof", "linux-process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(controller, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
+  for (const name of ["bootstrap-error", "process-proof", "linux-controller-launch", "linux-process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(controller, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
   openHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(controller, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
 });
 afterEach(async () => {

@@ -5,7 +5,9 @@ import { readFile } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { createLinuxProcessCapture, isLinuxProcessBirth, isProcessBirth, type LinuxPartialObservation } from "./linux-process-proof.js";
 import { captureWindowsProcessProof, inspectWindowsProcessProof, withWindowsProcessStopHandles } from "./windows-process-proof.js";
+import { captureLinuxControllerLaunch, inspectLinuxControllerLaunch, isLinuxControllerLaunch, parseLinuxControllerLaunchArgv, type LinuxControllerLaunch } from "./linux-controller-launch.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
+export type ControllerProcessProof = ProcessProof | LinuxControllerLaunch;
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
 // The evidence is private to this process and tied to the exact error graph.
@@ -108,14 +110,20 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
   if (observed.zombie || observed.exiting) throw new Error("An exiting process cannot supply a running process proof.");
   return observed.proof;
 };
-export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {
+export const captureControllerProcessProof = async (launchId: string): Promise<ControllerProcessProof> => {
+  if (process.platform === "linux") {
+    const argv = await readFile(`/proc/${process.pid}/cmdline`);
+    if (parseLinuxControllerLaunchArgv(argv) === launchId) return captureLinuxControllerLaunch(process.pid, launchId);
+    const args = argv.toString("utf8").split("\0");
+    if (args[1]?.endsWith("/controller-bootstrap.js") && args[4] === "--launch-id") throw new Error("Linux Controller launch arguments conflict with its ticket.");
+  }
   const proof = await captureProcessProof(process.pid);
   return process.platform === "win32" ? { ...proof, jobObjectName: await (process.env.DAYNIGHT_CONTROLLER_ASSIGNED_JOB === launchId ? adoptOwnedControllerJob(launchId) : createOwnedControllerJob(launchId, process.pid)) } : proof;
 };
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
 export class ControllerProcessIdentityConflictError extends Error {
   constructor(readonly pid: number, readonly evidence: ProcessMismatch) {
-    super("An original process has conflicting identity evidence; complete stop is unconfirmed.");
+    super(`An original process has conflicting identity evidence (PID ${pid}); complete stop is unconfirmed.`);
   }
 }
 const completedLinuxObservationDeadline = (expected: ProcessProof, observed: { proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }): Error => {
@@ -209,12 +217,23 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
   onMismatch?.({ status, sameBirth: current.startedAt === proof.startedAt, sameParent: current.parentPid === proof.parentPid, sameGroup: current.processGroupId === proof.processGroupId, sameCommand: current.commandHash === proof.commandHash });
   return "replaced";
 };
-export const inspectProcessProof = async (proof: ProcessProof, timeoutMs = 5000, options: ProcessObservationOptions = {}): Promise<"running" | "stopped" | "replaced"> => {
+export const inspectProcessProof = async (proof: ControllerProcessProof, timeoutMs = 5000, options: ProcessObservationOptions = {}): Promise<"running" | "stopped" | "replaced"> => {
+  if (isLinuxControllerLaunch(proof)) {
+    const state = await inspectLinuxControllerLaunch(proof, timeoutMs);
+    return state === "mismatch" ? "replaced" : state;
+  }
   const state = await inspectProcessState(proof, timeoutMs, undefined, options);
   if (state === "exiting") throw new Error("The original process is exiting and its full identity cannot be rechecked yet.");
   return state;
 };
-export const inspectBootstrapProcessProof = (proof: ProcessProof, timeoutMs = 5000, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => inspectProcessState(proof, timeoutMs, onMismatch);
+export const inspectBootstrapProcessProof = async (proof: ControllerProcessProof, timeoutMs = 5000, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
+  if (isLinuxControllerLaunch(proof)) {
+    const state = await inspectLinuxControllerLaunch(proof, timeoutMs);
+    if (state === "mismatch") { onMismatch?.({ status: null, sameBirth: true, sameParent: false, sameGroup: false, sameCommand: false }); return "replaced"; }
+    return state;
+  }
+  return inspectProcessState(proof, timeoutMs, onMismatch);
+};
 const remaining = (deadline: number | undefined, maximum = 5000): number => {
   if (deadline === undefined) return maximum;
   if (!Number.isSafeInteger(deadline) || deadline <= 0) throw new Error("Invalid controller process deadline.");
@@ -241,19 +260,22 @@ const groupMembers = async (group: number, deadline?: number, waitPhase?: "term"
   remaining(deadline);
   return result;
 };
-const confirmRetainedProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, options: ProcessObservationOptions = {}): Promise<boolean> => {
+const confirmRetainedProcessesStopped = async (controller: ControllerProcessProof, native: readonly ProcessProof[], deadline?: number, options: ProcessObservationOptions = {}): Promise<boolean> => {
   for (const proof of [controller, ...native]) {
     let mismatch: ProcessMismatch | undefined;
-    const state = await bounded(deadline, () => inspectProcessState(proof, remaining(deadline), evidence => { mismatch = evidence; }, options));
+    const state = await bounded(deadline, () => isLinuxControllerLaunch(proof)
+      ? inspectBootstrapProcessProof(proof, remaining(deadline), evidence => { mismatch = evidence; })
+      : inspectProcessState(proof, remaining(deadline), evidence => { mismatch = evidence; }, options));
     remaining(deadline);
     if (state === "running" || state === "exiting") return false;
     if (state === "replaced" && mismatch?.sameBirth === true) throw new ControllerProcessIdentityConflictError(proof.pid, mismatch);
   }
   return true;
 };
-export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, lease?: ControllerJobLease, options: ProcessObservationOptions = {}): Promise<boolean> => {
+export const confirmControllerProcessesStopped = async (controller: ControllerProcessProof, native: readonly ProcessProof[], deadline?: number, lease?: ControllerJobLease, options: ProcessObservationOptions = {}): Promise<boolean> => {
   if (!await confirmRetainedProcessesStopped(controller, native, deadline, options)) return false;
   if (process.platform === "win32") {
+    if (isLinuxControllerLaunch(controller)) throw new Error("Linux Controller identity cannot be used on Windows.");
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; its descendants cannot be inferred stopped.");
     if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
     remaining(deadline);
@@ -261,7 +283,7 @@ export const confirmControllerProcessesStopped = async (controller: ProcessProof
     remaining(deadline);
     return members.length === 0;
   }
-  if (controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
+  if (!isLinuxControllerLaunch(controller) && controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
   return (await groupMembers(controller.pid, deadline)).length === 0;
 };
 /** Only the original command owner can supply its joined child handle. */
@@ -270,9 +292,10 @@ export const confirmClosedOwnedCommandGroup = async (proof: ProcessProof, child:
   if (proof.processGroupId !== proof.pid) throw new Error("Owned command was not launched in its own process group.");
   return (await groupMembers(proof.pid, deadline)).length === 0;
 };
-export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease, options: ProcessObservationOptions & { guardian?: boolean } = {}): Promise<void> => {
+export const stopControllerProcesses = async (controller: ControllerProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease, options: ProcessObservationOptions & { guardian?: boolean } = {}): Promise<void> => {
   remaining(deadline);
   if (process.platform === "win32") {
+    if (isLinuxControllerLaunch(controller)) throw new Error("Linux Controller identity cannot be used on Windows.");
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
     if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
     await withWindowsProcessStopHandles([controller, ...native], deadline, async () => {
@@ -281,12 +304,12 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
     });
     return;
   }
-  if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
+  if (!isLinuxControllerLaunch(controller) && controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   const signal = async (value: NodeJS.Signals): Promise<boolean> => {
     if ((await groupMembers(controller.pid, deadline)).length === 0) return false;
     let attributable = false, originalsStopped = true;
     for (const proof of [controller, ...native]) {
-      if (proof.processGroupId !== controller.pid) continue;
+      if (!isLinuxControllerLaunch(proof) && proof.processGroupId !== controller.pid) continue;
       const state = await bounded(deadline, () => inspectProcessProof(proof, remaining(deadline), options));
       remaining(deadline);
       if (state === "running") attributable = true;

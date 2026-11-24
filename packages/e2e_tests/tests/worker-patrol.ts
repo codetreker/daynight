@@ -7,9 +7,10 @@ import type { ManagedCommand } from "../src/command.ts";
 import { markFixtureStopped, prepareFixtureOwnership, registerFixtureBot, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
 import { completeFixtureTask, type WorkerCompletionTask } from "../src/worker-completion.ts";
-import { stopAndRecordFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
+import { readFixtureBot, readFixtureExecutions, stopAndRecordFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
 import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtures.ts";
 import { verifyAssistantInbox, type PeerEvent } from "./assistant-inbox.ts";
+import { verifyControllerLaunch, verifyLaunchIds, verifyLaunchTicket } from "./controller-launch-evidence.ts";
 
 type Task = WorkerCompletionTask & { session?: { lifecycle?: string } };
 // POSIX single quotes keep every byte literal; an embedded quote closes, escapes and reopens the literal.
@@ -89,8 +90,23 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     const first = await readTask(), workerClaim = first.properties.worker;
     expect(first.status).toBe("in_progress"); expect(workerClaim).toMatchObject({ state: "active", workerId, userId: task.assignedTo, platform: "linux", agent: "codex", agentControlMode: "web", nativeSessionId: expect.any(String) });
     const original = { claimId: workerClaim!.claimId, workerId: workerClaim!.workerId, worktreeId: workerClaim!.worktreeId, nativeSessionId: workerClaim!.nativeSessionId, state: "active", platform: workerClaim!.platform, agent: workerClaim!.agent, agentControlMode: workerClaim!.agentControlMode };
+    const verifyTaskLaunch = async () => {
+      const records = (await readFixtureExecutions(workerConfigDirectory!)).filter(record => record.taskId === taskId && record.claimId === original.claimId);
+      expect(records.length, "One local Worker execution belongs to the claim").toBe(1);
+      const execution = records[0]!.webExecution;
+      if (!execution) throw new Error("Worker Task Controller execution is unavailable.");
+      verifyLaunchIds(execution.launchId, execution.executionId);
+      const storage = path.join(workerConfigDirectory!, "controller");
+      const ticket = path.join(storage, "launches", `${execution.launchId}.json`);
+      expect(execution.ticketPath === ticket, "Worker Task ticket belongs to the isolated fixture").toBe(true);
+      await verifyLaunchTicket(ticket, execution);
+      const process = await verifyControllerLaunch({ parent: execution.controllerProcess, launchId: execution.launchId, executionId: execution.executionId,
+        journal: path.join(storage, "executions", execution.executionId, "journal.sqlite") });
+      return { process, generation: execution.executionGeneration };
+    };
     identity.claimId = original.claimId;
     await registerFixtureClaim(checkout, runDirectory, original.claimId);
+    const firstLaunch = await verifyTaskLaunch();
     await stop();
     const stopped = await readTask(); expect(stopped.properties.worker).toMatchObject(original);
     await start();
@@ -105,6 +121,9 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     expect(turns[0]!.text).toContain("Assignment:");
     for (const turn of turns.slice(1, 4)) expect(turn.text).toContain("periodic check");
     const resumed = await readTask(); expect(resumed.properties.worker).toMatchObject(original!);
+    const resumedLaunch = await verifyTaskLaunch();
+    if (resumedLaunch.generation === firstLaunch.generation) expect(resumedLaunch.process).toEqual(firstLaunch.process);
+    else expect(resumedLaunch.process.launchId).not.toBe(firstLaunch.process.launchId);
     await cli(["task", "set-property", taskId, "paused", "true", "--project", projectId, "--if-version", String(resumed.version)]);
     await new Promise(resolve => setTimeout(resolve, 3_000));
     const pausedCount = (await entries()).filter(event => event.method === "turn/start").length;
@@ -123,7 +142,22 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     await new Promise(resolve => setTimeout(resolve, 3_000));
     expect((await entries()).filter(event => event.method === "turn/start" && event.text?.includes("periodic check")).length).toBe(completedPings);
     // The completed Task released the Worker's only execution slot for a hosted Bot.
-    await verifyAssistantInbox({ workerId, root, events, registerBot: async botId => {
+    await verifyAssistantInbox({ workerId, root, events, verifyBotLaunch: async botId => {
+      const record = await readFixtureBot(workerConfigDirectory!, botId);
+      if (!record?.intent || !record.execution) throw new Error("Worker Bot Controller execution is unavailable.");
+      const { intent, execution } = record;
+      verifyLaunchIds(execution.launchId, execution.executionId);
+      expect(record.workerId === workerId && record.botId === botId && intent.launchId === execution.launchId
+        && intent.executionId === execution.executionId && intent.executionGeneration === execution.executionGeneration,
+      "Bot execution belongs to its original Worker and launch intent").toBe(true);
+      if (intent.sessionId === null) throw new Error("Worker Bot Session identity is unavailable.");
+      const storage = path.join(workerConfigDirectory!, "bots", botId, "controller");
+      const ticket = path.join(storage, "launches", `${execution.launchId}.json`);
+      const journal = path.join(storage, "executions", execution.executionId, "journal.sqlite");
+      expect(intent.ticketPath === ticket && intent.journalPath === journal, "Bot evidence belongs to the isolated fixture").toBe(true);
+      await verifyLaunchTicket(ticket, { ...execution, sessionId: intent.sessionId });
+      await verifyControllerLaunch({ parent: execution.controllerProcess, launchId: execution.launchId, executionId: execution.executionId, journal });
+    }, registerBot: async botId => {
       identity!.botId = botId; await registerFixtureBot(checkout, runDirectory, botId);
     } });
   } catch (error) { scenarioFailure = error; }

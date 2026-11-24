@@ -11,7 +11,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readCompatibleControllerSnapshot, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCompatibleControllerSnapshot, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readHistoricalStoppedControllerGeneration, readHistoricalWindowsStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, serializeLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
@@ -44,6 +44,130 @@ const currentStopFixture = async () => {
   journal.close();
   return f;
 };
+
+const linuxLaunchFixture = async () => {
+  const f = await fixture(), nativeSessionId = randomUUID();
+  const launch = { kind: "linux-controller-launch" as const, pid: 123, launchId: f.ticket.launchId };
+  const journal = openControllerLifecycleStore(f.file, f.ticket, { controllerProcess: launch });
+  journal.patchSnapshot({ nativeSessionId });
+  return { ...f, journal, launch, nativeSessionId, next: { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId } };
+};
+
+test.skipIf(process.platform !== "linux")("requires external complete stop evidence before rolling over a Linux launch", async () => {
+  const f = await linuxLaunchFixture();
+  f.journal.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() });
+  f.journal.close();
+  expect(() => openControllerLifecycleStore(f.file, f.next)).toThrow(/receipt/);
+  const db = new Database(f.file, { readonly: true });
+  try { expect(db.prepare("SELECT count(*) AS count FROM stopped_generations").get()).toEqual({ count: 0 }); } finally { db.close(); }
+  proof.stopped.mockResolvedValueOnce(false);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/still running/);
+  expect(() => openControllerLifecycleStore(f.file, f.next)).toThrow(/receipt/);
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  expect(readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  proof.stopped.mockClear();
+  expect(await recordStoppedControllerGeneration(f.file, f.ticket, {})).toEqual(stopped);
+  const next = openControllerLifecycleStore(f.file, f.next); next.close();
+  expect(await recordStoppedControllerGeneration(f.file, f.ticket, {})).toEqual(stopped);
+  expect(proof.stopped).not.toHaveBeenCalled();
+  expect(readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+});
+
+test.skipIf(process.platform !== "linux")("rejects Linux launch identities that do not match the ticket or change within a generation", async () => {
+  const invalid = await fixture();
+  expect(() => openControllerLifecycleStore(invalid.file, invalid.ticket, { controllerProcess: { kind: "linux-controller-launch", pid: 123, launchId: randomUUID() } })).toThrow(/identity/);
+  const f = await linuxLaunchFixture();
+  expect(() => f.journal.patchSnapshot({ controllerProcess: { ...f.launch, launchId: randomUUID() } })).toThrow(/identity/);
+  expect(() => f.journal.patchSnapshot({ controllerProcess: { ...f.launch, pid: 456 } })).toThrow(/identity/);
+  expect(() => f.journal.patchSnapshot({ controllerProcess: null })).toThrow(/identity/);
+  f.journal.close();
+  const db = new Database(f.file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+  db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...JSON.parse(row.snapshot), controllerProcess: { ...f.launch, launchId: randomUUID() } })); db.close();
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/conflicts/);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/current journal conflicts/);
+  expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux")("does not record Linux stop when the journal changes during external verification", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  proof.stopped.mockImplementationOnce(async () => {
+    const db = new Database(f.file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+    db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...JSON.parse(row.snapshot), error: "changed" })); db.close();
+    return true;
+  });
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/state changed/);
+  const db = new Database(f.file, { readonly: true });
+  try { expect(db.prepare("SELECT count(*) AS count FROM stopped_generations").get()).toEqual({ count: 0 }); } finally { db.close(); }
+  expect(() => openControllerLifecycleStore(f.file, f.next)).toThrow(/stopped original generation/);
+});
+
+test.skipIf(process.platform !== "linux")("rejects a conflicting Linux stopped receipt without rechecking process IDs", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const db = new Database(f.file);
+  db.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify({ ...stopped, nativeSessionId: randomUUID() }), controllerPayloadHash(f.ticket)); db.close();
+  proof.stopped.mockClear();
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/stopped history conflicts/);
+  expect(() => openControllerLifecycleStore(f.file, f.next)).toThrow(/receipt/);
+  expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux").each(["snapshot", "owner"] as const)("rejects a Linux historical stop when its same-generation execution %s conflicts", async conflict => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const db = new Database(f.file);
+  try {
+    if (conflict === "snapshot") db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...stopped, error: "changed after stop" }));
+    else db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+    const execution = db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get();
+    const receipt = db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket));
+    proof.stopped.mockClear();
+
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow();
+    expect(db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get()).toEqual(execution);
+    expect(db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual(receipt);
+    expect(proof.stopped).not.toHaveBeenCalled();
+  } finally { db.close(); }
+});
+
+test.skipIf(process.platform !== "linux")("reads a Linux historical stop after a newer generation owns the journal", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const next = openControllerLifecycleStore(f.file, f.next, { controllerProcess: { kind: "linux-controller-launch", pid: 456, launchId: f.next.launchId } });
+  try {
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.prepare("SELECT ticket_hash,owner_pid FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(f.next), owner_pid: process.pid });
+      proof.stopped.mockClear();
+      expect(readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+      expect(db.prepare("SELECT ticket_hash,owner_pid FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(f.next), owner_pid: process.pid });
+      expect(proof.stopped).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  } finally { next.close(); }
+});
+
+test.skipIf(process.platform !== "linux")("rejects a historical stop beside a different execution lineage", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const db = new Database(f.file);
+  try {
+    db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(f.next), JSON.stringify({ ...stopped, executionId: randomUUID(), executionGeneration: f.next.executionGeneration }));
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow(/execution lineage/);
+  } finally { db.close(); }
+});
+
+test.skipIf(process.platform !== "linux")("bounds the SQLite lock wait for a historical stop without shortening its overall deadline", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const lock = new Database(f.file);
+  try {
+    lock.pragma("journal_mode = DELETE");
+    lock.exec("BEGIN EXCLUSIVE");
+    const start = Date.now();
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, start + 5000, { maxBusyMs: 100 })).toThrow(/locked|busy/i);
+    expect(Date.now() - start).toBeLessThan(3000);
+  } finally { if (lock.inTransaction) lock.exec("ROLLBACK"); lock.close(); }
+});
 
 test.each(fixturePlatforms)("does not write stopped if complete proof consumes the stop deadline (%s)", async mode => {
   selectFixturePlatform(mode);

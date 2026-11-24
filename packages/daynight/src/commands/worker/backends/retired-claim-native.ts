@@ -6,7 +6,11 @@ import { controllerPayloadHash, controllerTicketPath, readLaunchTicket } from ".
 import { readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, recordStoppedControllerGeneration, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../controller/paths.js";
-import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectBootstrapProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
+import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectBootstrapProcessProof, stopControllerProcesses, type ControllerProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+import { isControllerEvidenceReadIoFailure } from "../../controller/launch-observation.js";
+import { readUnreleasedLaunch } from "../../controller/unreleased-launch.js";
+import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
 import type { CleanupTarget } from "../execution-stop.js";
 import type { ResourceOwner } from "../types.js";
 import { hasLegacyUnreleasedControllerGateProof, isDurableLegacyResource, readLegacyWorkerResources, type LegacyWorkerIdentity } from "./legacy-retired-evidence.js";
@@ -20,11 +24,12 @@ export type ClaimNativeClearance = {
   stoppedExecutions: readonly { launchId: string; executionId: string; executionGeneration: string; controllerInstanceId: string; journalFile: string }[];
 };
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
-const confirmDurableBoundaryProcesses = async (proofs: readonly ProcessProof[], deadline: number): Promise<void> => {
+const confirmDurableBoundaryProcesses = async (proofs: readonly ControllerProcessProof[], deadline: number): Promise<void> => {
   for (const proof of proofs) {
     if (Date.now() >= deadline) throw new Error("Retired claim native cleanup exceeded its deadline.");
     let conflict: ConstructorParameters<typeof ControllerProcessIdentityConflictError>[1] | undefined;
     const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { conflict = evidence; });
+    if (state === "replaced" && isLinuxControllerLaunch(proof)) throw new Error("Original Controller identity conflicts with its durable boundary stop receipt.");
     if (state === "replaced" && conflict?.sameBirth === true) throw new ControllerProcessIdentityConflictError(proof.pid, conflict);
     if (state === "running" || state === "exiting") throw new Error("Original native process conflicts with its durable boundary stop receipt.");
   }
@@ -97,6 +102,17 @@ export const createRetiredClaimNativeCleanup = (options: {
   };
   const stopController = async (located: LocatedClaimController, controllers: readonly LocatedClaimController[], request: { deadline: number; signal: AbortSignal }): Promise<boolean> => {
     const check = () => { request.signal.throwIfAborted(); if (Date.now() >= request.deadline) throw new Error("Retired claim native cleanup exceeded its deadline."); };
+    const waitForEvidence = async <T>(observe: () => Promise<T>): Promise<T> => {
+      check();
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => finish(() => reject(new Error("Retired claim native cleanup exceeded its deadline."))), Math.min(2_147_483_647, request.deadline - Date.now()));
+        const abort = () => finish(() => reject(request.signal.reason));
+        const finish = (complete: () => void) => { clearTimeout(timer); request.signal.removeEventListener("abort", abort); complete(); };
+        request.signal.addEventListener("abort", abort, { once: true });
+        if (request.signal.aborted) { abort(); return; }
+        Promise.resolve().then(observe).then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+      });
+    };
     check();
     const ticket = await readLaunchTicket(options.homeDirectory, located.ticket.launchId, located.storageStateDirectory);
     if (controllerPayloadHash(ticket) !== controllerPayloadHash(located.ticket)) throw new Error("Original Controller launch ticket changed during cleanup.");
@@ -107,7 +123,108 @@ export const createRetiredClaimNativeCleanup = (options: {
     const submissionMarker = `${ticketFile}.submitted`;
     const submitted = await ordinaryFileExists(submissionMarker);
     const snapshot = await currentSnapshot(located, controllers, request.deadline);
-    const historical = snapshot === null ? readHistoricalStoppedControllerGeneration(located.journalFile, ticket, request.deadline) : null;
+    let historical: ControllerSnapshot | null = null, historicalFailure: unknown;
+    try {
+      if (snapshot === null || isLinuxControllerLaunch(snapshot.controllerProcess))
+        historical = readHistoricalStoppedControllerGeneration(located.journalFile, ticket, request.deadline, { maxBusyMs: 1000 });
+    } catch (error) {
+      if (!isControllerEvidenceReadIoFailure(error)) throw error;
+      historicalFailure = error;
+    }
+    let unreleased;
+    try { unreleased = await (historicalFailure === undefined
+      ? readUnreleasedLaunch(options.homeDirectory, ticket, located.storageStateDirectory)
+      : waitForEvidence(() => readUnreleasedLaunch(options.homeDirectory, ticket, located.storageStateDirectory))); }
+    catch (error) {
+      if (historicalFailure !== undefined) throw new AggregateError([historicalFailure, error], "Retired Controller historical and unreleased observations failed; resources are retained.", { cause: historicalFailure });
+      throw error;
+    }
+    if (historicalFailure !== undefined) {
+      const failures: unknown[] = [historicalFailure];
+      try {
+        // Only the current, unsettled Linux writer supplies an independently
+        // attributable boundary when its historical stop could not be read.
+        if (unreleased !== undefined || snapshot === null || !isLinuxControllerLaunch(snapshot.controllerProcess)
+          || snapshot.lifecycle === "stopped" || snapshot.nativeStopped || snapshot.stoppedAt !== null)
+          throw new Error("Retired Controller has no unambiguous current boundary for cleanup.");
+        check();
+        const observedTicket = await waitForEvidence(() => readLaunchTicket(options.homeDirectory, ticket.launchId, located.storageStateDirectory));
+        if (controllerPayloadHash(observedTicket) !== controllerPayloadHash(ticket)) throw new Error("Original Controller launch ticket changed during cleanup.");
+        try {
+          if (readHistoricalStoppedControllerGeneration(located.journalFile, ticket, request.deadline, { maxBusyMs: 1000 }) !== null)
+            throw new Error("Retired Controller has a settled historical stop; its process must not be signaled.");
+        } catch (error) {
+          if (!isControllerEvidenceReadIoFailure(error)) throw error;
+          failures.push(error);
+        }
+        const current = await waitForEvidence(() => currentSnapshot(located, controllers, request.deadline));
+        if (current === null || current.lifecycle === "stopped" || current.nativeStopped || current.stoppedAt !== null
+          || !isDeepStrictEqual(current.controllerProcess, snapshot.controllerProcess)
+          || !isDeepStrictEqual(current.nativeProcesses, snapshot.nativeProcesses)
+          || current.nativeSessionId !== snapshot.nativeSessionId)
+          throw new Error("Retired Controller current journal changed during historical stop observation.");
+        const resources = readLegacyWorkerResources(options.homeDirectory, options.identity, "controller").filter(({ identity }) =>
+          identity.projectId === located.ticket.projectId && identity.taskId === located.ticket.taskId && identity.claimId === located.ticket.claimId);
+        const original = controllers.flatMap(controller => controller.resources).sort((a, b) => a.resourceId.localeCompare(b.resourceId));
+        if (!isDeepStrictEqual(resources, original)) throw new Error("Original retired claim lifecycle evidence changed during cleanup.");
+        if (submitted !== await waitForEvidence(() => ordinaryFileExists(submissionMarker))) throw new Error("Original Controller submission changed during retired claim cleanup.");
+        if (await waitForEvidence(() => readUnreleasedLaunch(options.homeDirectory, ticket, located.storageStateDirectory)) !== undefined)
+          throw new Error("Unreleased retired Controller conflicts with its current journal.");
+        const native = [...current.nativeProcesses];
+        for (const resource of located.resources) {
+          if (resource.identity.kind === "launch" && resource.processProof !== null) {
+            const launch = processProof(resource.processProof);
+            if (!(submitted && hasLegacyUnreleasedControllerGateProof(ticket, resource, launch))
+              && !preservesControllerProcessProof(launch, snapshot.controllerProcess, ticket.launchId))
+              throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
+          }
+          if (resource.identity.kind === "provider" && resource.processProof !== null) {
+            const provider = processProof(resource.processProof);
+            if (native.some(existing => existing.pid === provider.pid && !isDeepStrictEqual(existing, provider)))
+              throw new Error("Original Provider has conflicting lifecycle and journal process proofs.");
+            if (!native.some(existing => isDeepStrictEqual(existing, provider))) native.push(provider);
+          }
+        }
+        check();
+        const finalTicket = await waitForEvidence(() => readLaunchTicket(options.homeDirectory, ticket.launchId, located.storageStateDirectory));
+        if (controllerPayloadHash(finalTicket) !== controllerPayloadHash(ticket)) throw new Error("Original Controller launch ticket changed during cleanup.");
+        const final = await waitForEvidence(() => currentSnapshot(located, controllers, request.deadline));
+        if (final === null || final.lifecycle === "stopped" || final.nativeStopped || final.stoppedAt !== null
+          || !isDeepStrictEqual(final.controllerProcess, current.controllerProcess)
+          || !isDeepStrictEqual(final.nativeProcesses, current.nativeProcesses) || final.nativeSessionId !== current.nativeSessionId)
+          throw new Error("Retired Controller current journal changed before stopping.");
+        check();
+        if (options.jobLeases.enabled) throw new Error("Linux Controller identity cannot own a Windows Job.");
+        await stopControllerProcesses(snapshot.controllerProcess, native, request.deadline);
+        check();
+        if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, native, request.deadline))
+          throw new Error("Original retired claim Controller boundary remains running.");
+        check();
+      } catch (error) {
+        throw new AggregateError([...failures, error], "Retired Controller historical observation and cleanup failed; resources are retained.", { cause: historicalFailure });
+      }
+      if (failures.length > 1) throw new AggregateError(failures, "Retired Controller historical observations failed; resources are retained.", { cause: historicalFailure });
+      throw historicalFailure;
+    }
+    if (unreleased !== undefined) {
+      if (snapshot !== null || historical !== null || located.resources.some(resource => resource.identity.kind === "provider" && resource.processProof !== null
+        || resource.identity.kind === "launch" && resource.processProof !== null && processProof(resource.processProof).pid !== unreleased.pid))
+        throw new Error("Unreleased retired Controller conflicts with its journal or process evidence.");
+      try {
+        await requestController(ticket, { kind: "observe" }, { signal: request.signal, timeoutMs: Math.max(1, Math.min(2000, request.deadline - Date.now())) });
+      } catch (error) {
+        check();
+        if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
+        const cause = error.cause;
+        if (!(cause instanceof Error && "code" in cause && (cause.code === "ENOENT" || cause.code === "ECONNREFUSED"))) throw error;
+        if (await currentSnapshot(located, controllers, request.deadline) !== null) throw new Error("Unreleased retired Controller gained journal evidence.");
+        await options.jobLeases.release(ticket.launchId);
+        await removeEndpoint(ticket.ipcEndpoint);
+        check();
+        return false;
+      }
+      throw new Error("Unreleased retired Controller conflicts with an authenticated Controller.");
+    }
     const launches = located.resources.flatMap(resource => {
       if (resource.identity.kind !== "launch" || resource.processProof === null) return [];
       const launch = processProof(resource.processProof);
@@ -126,11 +243,12 @@ export const createRetiredClaimNativeCleanup = (options: {
       if (resource.identity.kind === "provider" && resource.processProof !== null) addNative(processProof(resource.processProof));
     }
     if (proof !== null) {
-      if (process.platform === "win32" && proof.jobObjectName !== `Local\\Daynight-${located.ticket.launchId}`) throw new Error("Original Controller Windows Job conflicts with its launch identity.");
+      if (process.platform === "win32" && (isLinuxControllerLaunch(proof) || proof.jobObjectName !== `Local\\Daynight-${located.ticket.launchId}`)) throw new Error("Original Controller Windows Job conflicts with its launch identity.");
       const receiptFile = `${ticketFile}.retired-stop`;
       let lease = await options.jobLeases.get(ticket.launchId);
       let durableBoundary = false;
       if (!submitted && options.jobLeases.enabled && lease === undefined) {
+        if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
         const detached = await readDetachedReceipt(receiptFile);
         if (detached !== undefined) {
           const processes = receiptProcesses(located, proof, detached);
@@ -148,9 +266,14 @@ export const createRetiredClaimNativeCleanup = (options: {
           durableBoundary = true;
         }
       }
-      if (lease === undefined && historical !== null) {
+      if (historical !== null && isLinuxControllerLaunch(historical.controllerProcess)) {
+        if (!preservesControllerProcessProof(proof, historical.controllerProcess, ticket.launchId)
+          || snapshot !== null && (snapshot.executionId !== historical.executionId || snapshot.executionGeneration !== historical.executionGeneration
+            || snapshot.controllerInstanceId !== historical.controllerInstanceId || snapshot.nativeSessionId !== historical.nativeSessionId)
+          || !isDeepStrictEqual(native, historical.nativeProcesses)) throw new Error("Retired Controller stopped history conflicts with its original boundary.");
+      } else if (lease === undefined && historical !== null) {
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
-      } else if (!submitted && lease === undefined && snapshot === null && native.length === 0 && located.resources.some(resource => hasLegacyUnreleasedControllerGateProof(located.ticket, resource, proof))) {
+      } else if (!submitted && lease === undefined && snapshot === null && native.length === 0 && !isLinuxControllerLaunch(proof) && located.resources.some(resource => hasLegacyUnreleasedControllerGateProof(located.ticket, resource, proof))) {
         await confirmDurableBoundaryProcesses([proof], request.deadline);
       } else if (options.jobLeases.enabled && lease === undefined && snapshot?.lifecycle === "stopped" && snapshot.nativeStopped) {
         validateWindowsControllerStopProof(snapshot, located.ticket, controllerPayloadHash(located.ticket));
@@ -159,13 +282,17 @@ export const createRetiredClaimNativeCleanup = (options: {
       } else if (lease === undefined && durableBoundary) {
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
       } else {
-        if (options.jobLeases.enabled && lease === undefined) lease = await options.jobLeases.retain(located.ticket.launchId, proof, request.deadline);
+        if (options.jobLeases.enabled && lease === undefined) {
+          if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
+          lease = await options.jobLeases.retain(located.ticket.launchId, proof, request.deadline);
+        }
         await stopControllerProcesses(proof, native, request.deadline, lease);
         check();
         if (!await confirmControllerProcessesStopped(proof, native, request.deadline, lease)) throw new Error("Original retired claim Controller boundary remains running.");
         if (snapshot !== null && snapshot.controllerProcess !== null) {
           await recordStoppedControllerGeneration(located.journalFile, ticket, { deadline: request.deadline, signal: request.signal, ...(lease === undefined ? {} : { jobLease: lease }) });
         } else if (lease !== undefined && historical === null) {
+          if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
           // A legacy launch can have an original native boundary without owning
           // the current journal. Persist its stop before releasing the Job.
           await replaceFileAtomically(receiptFile, JSON.stringify(boundaryReceipt(located, proof, native)), 0o600);
