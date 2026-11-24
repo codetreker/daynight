@@ -29,7 +29,7 @@ jobs:
           file=packages/daynight/test/commands/worker/web-live-journal.integration.test.ts
           cp "$file" .tmp/journal-dedup/candidate.ts
           git show 8f6c8076757afedfc98567b7730d45a08e194cdc:"$file" > .tmp/journal-dedup/baseline.ts
-          trap 'cp .tmp/journal-dedup/candidate.ts "$file"' EXIT
+          trap 'status=$?; cp .tmp/journal-dedup/candidate.ts "$file"; exit "$status"' EXIT
           node -e "if(process.platform!=='darwin'||process.arch!=='arm64') process.exit(1)"
           node --version
           pnpm --version
@@ -41,9 +41,11 @@ jobs:
               cp ".tmp/journal-dedup/$mode.ts" "$file"
               n=$(find .tmp/journal-dedup -name "$selection-$mode-*.log" | wc -l | tr -d ' ')
               start=$(python3 -c 'import time; print(time.monotonic())')
-              args=()
-              if [[ "$selection" == target ]]; then args=(-t 'live v16|healthy exhausted v16'); fi
-              pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/web-live-journal.integration.test.ts "${args[@]}" --maxWorkers=1 > ".tmp/journal-dedup/$selection-$mode-$n.log" 2>&1
+              if [[ "$selection" == target ]]; then
+                pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/web-live-journal.integration.test.ts -t 'live v16|healthy exhausted v16' --maxWorkers=1 > ".tmp/journal-dedup/$selection-$mode-$n.log" 2>&1
+              else
+                pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/web-live-journal.integration.test.ts --maxWorkers=1 > ".tmp/journal-dedup/$selection-$mode-$n.log" 2>&1
+              fi
               end=$(python3 -c 'import time; print(time.monotonic())')
               python3 -c 'import sys; print(sys.argv[1:4], "elapsed_seconds", float(sys.argv[5])-float(sys.argv[4]))' "$selection" "$mode" "$n" "$start" "$end"
               tail -6 ".tmp/journal-dedup/$selection-$mode-$n.log"
