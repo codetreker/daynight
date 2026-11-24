@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -213,6 +214,26 @@ func (s *Execution) replaceBotWindowReferences(ctx context.Context, tx *operatio
 	if err != nil {
 		return err
 	}
+	// Retained captures must close over their committed originals even after an
+	// earlier checkpoint replaced the message pin with a window pin. Validate
+	// every occurrence before changing any reference, including other entries.
+	for _, entry := range in.Entries {
+		for _, occurrence := range entry.ImageOccurrences {
+			capture, e := resources.SessionCaptureByImage(ctx, in.SessionID, occurrence.ImageID)
+			if onlyCaptureMissing(e) {
+				continue
+			}
+			if e != nil {
+				return e
+			}
+			if capture.Receipt.State != "committed" || !jsonEqual(encode(occurrence), encode(capture.Request.Occurrence)) {
+				continue
+			}
+			if capture.Receipt.ResourceID == nil || *capture.Receipt.ResourceID == "" || !slices.Contains(entry.ResourceIDs, *capture.Receipt.ResourceID) {
+				return fault("resource_conflict", "A retained image is missing from the Bot window resource closure.")
+			}
+		}
+	}
 	// Pin the entire new closure first. A missing or reclaiming original refuses
 	// the transaction before any old reference can be released.
 	for _, entry := range in.Entries {
@@ -257,20 +278,6 @@ func (s *Execution) replaceBotWindowReferences(ctx context.Context, tx *operatio
 				}
 				if capture.Receipt.State != "committed" {
 					continue
-				}
-				for _, entry := range in.Entries {
-					for _, occurrence := range entry.ImageOccurrences {
-						if !jsonEqual(encode(occurrence), encode(capture.Request.Occurrence)) {
-							continue
-						}
-						included := false
-						for _, id := range entry.ResourceIDs {
-							included = included || id == ref.ResourceID
-						}
-						if !included {
-							return fault("resource_conflict", "A retained image is missing from the Bot window resource closure.")
-						}
-					}
 				}
 			}
 			if e = resources.RemoveSessionResourceReference(ctx, ref); e != nil {

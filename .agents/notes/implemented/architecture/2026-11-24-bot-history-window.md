@@ -29,7 +29,10 @@ window connection. Empty retained content preserves prior observation and
 eviction facts.
 
 Window references are updated transactionally and independently from operation,
-approval, recovery and archive ownership. Physical reclamation waits for the
+approval, recovery and archive ownership. Each publication validates retained
+image occurrences against committed capture receipts before changing references.
+That resource closure remains mandatory after message references have become
+window references. Physical reclamation waits for the
 last reference and active resource lease. The
 [server design](../../../../docs/design/bot-history-window.md) owns the protocol,
 storage and lifecycle details. The
@@ -56,6 +59,11 @@ counter without changing the connection fence or logical history epoch. Old
 publications and saved metadata could then pass admission again. Persisting and
 checking the source epoch distinguishes event generations without treating a
 source reset as display-history eviction.
+
+**Validate image closure only while migrating message references.** Once the
+first checkpoint replaces those references, later revisions would bypass the
+check and could release a retained image's last resource owner. Capture receipts
+preserve the occurrence-to-resource mapping independently of reference kind.
 
 ## Consequences
 

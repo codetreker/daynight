@@ -536,7 +536,7 @@ func TestBotHistoryMessagePinsRequireSettledCaptureAndCompleteClosure(t *testing
 			image, resource := uuid.NewString(), uuid.NewString()
 			occurrence := sp.ImageOccurrence{ImageID: image, EntryID: in.Entries[0].EntryID, Container: "content", SourceKey: "original"}
 			in.Entries[0].ImageOccurrences = []sp.ImageOccurrence{occurrence}
-			if kind == "retained with resource" {
+			if kind == "retained with resource" || kind == "pending approval" {
 				in.Entries[0].ResourceIDs = []string{resource}
 			}
 			ref := store.SessionResourceReference{SessionID: in.SessionID, ResourceID: resource, Kind: "message", ReferenceID: image}
@@ -578,7 +578,7 @@ func TestBotHistoryMessagePinsRequireSettledCaptureAndCompleteClosure(t *testing
 				if kind == "capture read failure" {
 					return store.SessionCaptureRecord{}, cause
 				}
-				out := store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: occurrence}, Receipt: sp.ImageCaptureReceipt{State: "committed"}}
+				out := store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: occurrence}, Receipt: sp.ImageCaptureReceipt{State: "committed", ResourceID: &resource}}
 				if kind == "capture pending" {
 					out.Receipt.State = "receiving"
 				}
@@ -612,6 +612,9 @@ func TestBotHistoryMessagePinsRequireSettledCaptureAndCompleteClosure(t *testing
 			wantRemoval, wantPins := 0, 0
 			if kind == "retained with resource" {
 				wantRemoval, wantPins = 1, 1
+			}
+			if kind == "pending approval" {
+				wantPins = 1
 			}
 			if kind == "evicted occurrence" {
 				wantRemoval = 1

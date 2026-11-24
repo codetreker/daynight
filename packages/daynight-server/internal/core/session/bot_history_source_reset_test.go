@@ -105,6 +105,12 @@ func TestBotWindowSourceResetCannotReviveCheckpointAtReusedWatermark(t *testing.
 	stored := encode(old)
 	reads, referenceReads, writes, touches, saves := 0, 0, 0, 0, 0
 	dao := &botWindowSourceResetDAO{checkpointRuleDAO: &checkpointRuleDAO{
+		capture: func(actual context.Context, id, image string) (store.SessionCaptureRecord, error) {
+			if actual != ctx || id != old.SessionID || image != occurrence.ImageID {
+				t.Fatal("capture lookup changed authority")
+			}
+			return store.SessionCaptureRecord{}, model.ErrNotFound
+		},
 		read: func(actual context.Context, id string) ([]byte, error) {
 			reads++
 			if actual != ctx || id != old.SessionID {
