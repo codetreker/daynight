@@ -87,7 +87,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 发送屏障另以 origin+actor+SessionFence 的执行key建立跨owner索引；expectedNativeSessionId从null变为值不能绕过原未决提交。相同执行的任一旧target unresolved存在时，新owner只准本地编辑，不发新命令；原operation接受后按确切初始化关联结算并解除。新的generation不读取旧target为当前输入。历史未决操作按相同 origin、actor、resolver、实际 Session 及其原 claimId/testExecutionId 独立发现，保留原 owner、fence 和 operationId 的只读查询入口；该恢复查找不依赖当前 executionGeneration，也不把旧内容绑定到新 owner。普通消息和原生命令的准入均检查持久屏障，不能因当前内存 operation 列表为空或旧查询404绕过。
 
-上传锁持有至本次变更已返回或等待取消完成并把 unknown 写入 IDB；即使浏览器取消 fetch，下一持有者也先 GET，不能认为服务撤回。发送只允许事务中的 `prepared → dispatch_claimed` 单次转换者发原命令；状态提交后崩溃即当可能已派发，仅查询。这样暂停旧 tab 恢复也不能与新 tab 同时拿到 dispatch 权。浏览器局部锁不取代服务 operationId/intent 去重。
+上传锁持有至本次变更已返回或等待取消完成并把 unknown 写入 IDB；即使浏览器取消 fetch，下一持有者也先 GET，不能认为服务撤回。发送只允许事务中的 `prepared → dispatch_claimed` 单次转换者发原命令；状态提交后崩溃即当可能已派发，仅查询。这样暂停旧 tab 恢复也不能与新 tab 同时拿到 dispatch 权。浏览器局部锁不取代服务 operationId/intent 去重。派发认领后再核对发送准入；尚未调用 dispatch 时，只有原认领撤销和冻结草稿恢复事务成功，才向仍属原 owner/epoch 的调用方拒绝 Promise 并报告原准入原因。恢复失败报告真实存储错误，保留原 operation 责任；owner/epoch 已变化时不向新 owner 发布旧快照或错误。Controller 发布当前发送错误后继续向调用方拒绝，Composer 不执行成功处理；附件区已展示同一错误时不重复提示。准入恢复只开放用户手动重试，不自动发送。
 
 首版应用本地持久预算每账户 256 MiB 原始 bytes、所有账户合计 512 MiB；计入 frozen、editable 和待清理有效引用，同 blob 不重复计费。每 owner 最多两份 20 MiB 集合（冻结加编辑），单图仍 10 MiB。到达预算拒绝新 Blob 保存，保留既有内容并显示本地存储不足；不淘汰任何未发送或 unknown 草稿。不自动设置未发送草稿 TTL，避免“重开恢复”被无提示过期破坏；移除/清空/接受/确认撤权或删除时按引用清理。用户清浏览器数据/浏览器驱逐导致丢失不能修复成假成功，恢复时明确缺失；本地草稿不承诺跨设备或永久备份。
 

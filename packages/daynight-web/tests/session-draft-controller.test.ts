@@ -41,6 +41,59 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it.each(['canSend', 'capability', 'turn', 'network'] as const)('rejects a same-owner %s change after claiming without losing images or retrying automatically', async change => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'keep original');
+    const before = controller.getSnapshot(), originalContext = f.context();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), claim = f.store.claimDispatch.bind(f.store);
+    vi.spyOn(f.store, 'claimDispatch').mockImplementationOnce(async (...args) => { const result = await claim(...args); entered.resolve(); await release.promise; return result; });
+    const issue = change === 'capability' || change === 'turn' ? 'image_capability_changed' : 'image_session_unavailable';
+    const sending = controller.send(), rejected = expect(sending).rejects.toThrow(issue);
+    try {
+      await entered.promise;
+      f.setContext({ ...originalContext,
+        ...(change === 'canSend' ? { canSend: false } : {}),
+        ...(change === 'capability' ? { capabilities: { ...capability, revision: '3' } } : {}),
+        ...(change === 'turn' ? { expectedTurnId: 'new-turn' } : {}),
+        ...(change === 'network' ? { active: false } : {}),
+      });
+      release.resolve(); await rejected;
+      expect(controller.getSnapshot()).toMatchObject({ text: 'keep original', draftId: before.draftId, error: issue, submission: null, executionBlocked: false, readOnly: false });
+      expect(controller.getSnapshot().items[0]!.draftImageId).toBe(before.items[0]!.draftImageId);
+      expect((await f.store.readExisting(identity))?.editable?.items).toHaveLength(1);
+      expect(f.commands).toEqual([]);
+      f.setContext(originalContext); await controller.sync(); expect(f.commands).toEqual([]);
+      f.dispatch.mockImplementation(async command => { f.commands.push(command); return f.operation(command, 'provider_accepted'); });
+      await controller.send(); expect(f.commands).toHaveLength(1);
+      expect(controller.getSnapshot()).toMatchObject({ text: '', items: [], submission: null, error: null });
+    } finally { release.resolve(); await rejected; }
+  });
+  it('reports a failed claimed refusal without replacing its recovery identity', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'keep original');
+    const claim = f.store.claimDispatch.bind(f.store), fault = new Error('storage confirmation lost');
+    vi.spyOn(f.store, 'claimDispatch').mockImplementationOnce(async (...args) => { const result = await claim(...args); f.setContext({ ...f.context(), canSend: false }); return result; });
+    vi.spyOn(f.store, 'refuseClaimed').mockRejectedValueOnce(fault);
+    await expect(controller.send()).rejects.toBe(fault);
+    const original = (await f.store.readExisting(identity))!.submission!;
+    expect(controller.getSnapshot()).toMatchObject({ error: 'image_draft_failed', submission: { operationId: original.operationId, state: 'prepared' } });
+    expect(original.state).toBe('dispatch_claimed'); expect(f.commands).toEqual([]);
+    f.setContext({ ...f.context(), canSend: true });
+    f.query.mockImplementation(async (_fence, id) => f.operation({ ...original.command!, operationId: id }, 'unknown'));
+    await controller.send(); expect(f.commands).toEqual([]);
+    expect(f.query).toHaveBeenCalledWith(target.fence, original.operationId, expect.any(AbortSignal));
+    expect(controller.getSnapshot().submission?.operationId).toBe(original.operationId);
+  });
+  it('keeps a dispatched original without querying while same-owner network admission is unavailable', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original'); await controller.send();
+    const original = f.commands[0]!;
+    f.setContext({ ...f.context(), active: false });
+    await expect(controller.send()).rejects.toThrow('image_session_unavailable');
+    expect(f.query).not.toHaveBeenCalled(); expect(f.commands).toHaveLength(1);
+    expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(original.operationId);
+    f.setContext({ ...f.context(), active: true });
+    f.query.mockResolvedValue(f.operation(original, 'provider_accepted')); await controller.send();
+    expect(f.query).toHaveBeenCalledWith(target.fence, original.operationId, expect.any(AbortSignal));
+    expect(f.commands).toHaveLength(1); expect(controller.getSnapshot().submission).toBeNull();
+  });
   it('retains the original recovery when settling fails and retries the same operation', async () => {
     const f = fixture(null);
     await f.store.importLegacy(identity, { text: 'Retained input', revision: '1', submission: null });
@@ -462,7 +515,8 @@ describe('durable Session image coordination', () => {
     const f = fixture(null), controller = f.create();
     await f.store.importLegacy(identity, { text: 'original frozen', revision: '1', submission: null }); await controller.sync();
     if (action === 'prepared') vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('ended before claim'));
-    await controller.send();
+    if (action === 'prepared') await expect(controller.send()).rejects.toThrow('ended before claim');
+    else await controller.send();
     if (action === 'failure') {
       await controller.continueEditing(); controller.setText('later edit'); await controller.flush();
       f.query.mockResolvedValue(f.operation(f.commands[0]!, 'rejected')); await controller.checkStatus();
@@ -1076,7 +1130,7 @@ describe('durable Session image coordination', () => {
     vi.stubGlobal('BroadcastChannel', undefined);
     const f = fixture(), first = f.create(); await first.addFiles([file()], 'first');
     const second = f.create(); await second.sync(); second.setText('another window'); await second.flush();
-    await first.send(); expect(f.commands).toEqual([]); expect(first.getSnapshot().text).toBe('first'); expect(first.getSnapshot().error).not.toBeNull();
+    await expect(first.send()).rejects.toThrow('image_draft_conflict'); expect(f.commands).toEqual([]); expect(first.getSnapshot().text).toBe('first'); expect(first.getSnapshot().error).not.toBeNull();
   });
   it('retries a lost original prepare explicitly without allocating another upload identity', async () => {
     const f = fixture(), controller = f.create(), original = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
@@ -1189,7 +1243,7 @@ describe('durable Session image coordination', () => {
       expect(controller.getSnapshot()).toMatchObject({ readOnly: true, executionBlocked: true, submission: { operationId } });
       release.resolve(); await sending;
       expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(operationId);
-      await controller.send(); expect(f.commands).toHaveLength(1);
+      await expect(controller.send()).rejects.toThrow('status unavailable'); expect(f.commands).toHaveLength(1);
       expect(controller.getSnapshot().submission?.operationId).toBe(operationId);
     } finally { release.resolve(); await sending; }
   });
@@ -1197,7 +1251,7 @@ describe('durable Session image coordination', () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], '');
     const caps = vi.mocked(f.resources.capabilities).getMockImplementation()!;
     vi.mocked(f.resources.capabilities).mockImplementation(async signal => { const result = await caps(signal); f.setContext({ ...f.context(), capabilities: { ...capability, revision: '3', send: 'unsupported' } }); return result; });
-    await controller.send(); expect(f.commands).toEqual([]); expect(controller.getSnapshot().canSend).toBe(false);
+    await expect(controller.send()).rejects.toThrow('image_capability_changed'); expect(f.commands).toEqual([]); expect(controller.getSnapshot().canSend).toBe(false);
   });
   it('uses the service effective capability revision when the snapshot has the same model profile', async () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], '');
@@ -1208,14 +1262,14 @@ describe('durable Session image coordination', () => {
   it('restores a prepared intent without dispatching until the user explicitly resumes that same intent', async () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original');
     vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before claim'));
-    await controller.send(); const saved = await f.store.readExisting(identity), operationId = saved!.submission!.operationId;
+    await expect(controller.send()).rejects.toThrow('page ended before claim'); const saved = await f.store.readExisting(identity), operationId = saved!.submission!.operationId;
     expect(saved!.submission!.state).toBe('prepared'); expect(f.commands).toEqual([]);
     await controller.close(); const reopened = f.create(); await reopened.sync(); expect(f.commands).toEqual([]); expect(reopened.getSnapshot().canResumePrepared).toBe(true);
     await reopened.resumePrepared(); expect(f.commands).toHaveLength(1); expect(f.commands[0]!.operationId).toBe(operationId);
   });
   it('explicitly cancels an unclaimed old-native submission while preserving its original editable content', async () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'old native draft');
-    vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before claim')); await controller.send();
+    vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before claim')); await expect(controller.send()).rejects.toThrow('page ended before claim');
     const nativeTarget = { ...target, expectedNativeSessionId: 'native' }; f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
     await controller.sync(); expect(controller.getSnapshot().canCancelPrepared).toBe(true); await controller.cancelPrepared(controller.getSnapshot().recoveries.find(entry => entry.canCancelPrepared)!.ref);
     expect(controller.getSnapshot().canCancelPrepared).toBe(false); expect(controller.getSnapshot().submission).toBeNull();

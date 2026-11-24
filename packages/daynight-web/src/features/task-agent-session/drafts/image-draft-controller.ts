@@ -764,7 +764,7 @@ export class ImageDraftController {
     await this.prepareUploads(true, upload?.pendingAction?.kind === 'prepare' && !upload.receipt ? upload.uploadId : undefined);
   };
   private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand, attempt?: NonNullable<ImageDraftController['freezing']>): DraftSender {
-    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
+    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
       ...(nativeCommand ? { commandDraft: { text: nativeCommand.draftText, commandName: nativeCommand.commandName } } : {}),
       command: snapshot => {
         const c = this.context(), draft = snapshot.editable!;
@@ -772,7 +772,11 @@ export class ImageDraftController {
         return { protocol: SESSION_PROTOCOL, ...c.target.fence, ...(draft.items.length ? { contentRevision: 2 as const } : {}), requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: {
           content: [...(draft.text.trim() ? [{ type: 'text' as const, text: draft.text }] : []), ...draft.items.map(item => { const upload = snapshot.uploads.find(upload => upload.uploadId === item.uploadId)!; return { type: 'image' as const, imageId: item.imageId, uploadId: upload.uploadId, resourceId: upload.receipt!.resource!.resourceId, sha256: upload.spec.sha256, byteLength: upload.spec.byteLength }; })], expectedTurnId: c.expectedTurnId,
           ...(draft.items.length ? { target: c.target, expectedImageCapabilityRevision: this.capability(c)!.revision, draftId: draft.draftId, draftRevision: draft.revision } : {}) } };
-      }, dispatch: this.options.dispatch, query: this.options.query, signal: this.network.signal,
+      }, dispatch: this.options.dispatch,
+      query: (fence, operationId, signal) => {
+        if (!this.networkAllowed()) throw new Error('image_session_unavailable');
+        return this.options.query(fence, operationId, signal);
+      }, signal: this.network.signal,
       ...(this.options.isDefinitiveNotDispatched ? { isDefinitiveNotDispatched: this.options.isDefinitiveNotDispatched } : {}),
       changed: async snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission && attempt && this.freezing === attempt) this.freezing = null; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } } });
   }
@@ -793,7 +797,7 @@ export class ImageDraftController {
       }
       await this.sender(epoch, this.saved.owner, nativeCommand, attempt).send(this.saved.owner);
       if (this.current(epoch)) { this.publish(); this.observeLater(true); }
-    } catch (error) { if (this.current(epochAtStart)) this.fail(error); }
+    } catch (error) { if (this.current(epochAtStart)) { this.fail(error); throw error; } }
     finally { if (attempt && this.freezing === attempt) { this.freezing = null; this.publish(); } }
   }
   resumePrepared = async (): Promise<void> => { if (this.saved?.submission?.state === 'prepared') await this.send(); };

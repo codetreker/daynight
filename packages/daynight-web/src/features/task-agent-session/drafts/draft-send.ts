@@ -84,10 +84,14 @@ export class DraftSender {
       }
       const claimed = claim.submission;
       snapshot = await o.store.read(handle);
-      if (!o.isCurrent() || o.admit(snapshot, claimed)) {
-        // The request has not been called, so this is a proven local refusal.
+      const claimedIssue = o.isCurrent() ? o.admit(snapshot, claimed) : null;
+      if (!o.isCurrent() || claimedIssue) {
+        // Only successful restoration proves refusal; a failed transaction keeps
+        // the original dispatch responsibility and its storage error.
         const restored = await o.store.refuseClaimed(handle, claim.authority);
-        if (o.isCurrent()) await o.changed(restored);
+        if (!o.isCurrent()) return;
+        await o.changed(restored);
+        if (o.isCurrent() && claimedIssue) throw new Error(claimedIssue);
         return;
       }
       let operation: SessionOperation;
