@@ -19,6 +19,10 @@ private repository with their existing manager and then use that operation.
 The associated Git, filesystem, policy, cancellation and ownership faults
 remain at their original points. Cases with two managers retain separately
 constructed instances so their gate and fresh observation assertions are real.
+The successor discovery cases also start with this registered checkout; the
+verified successor still uses production preparation, while the unrelated
+checkout is registered by Git outside the managed namespace. Both retain real
+removal and registration checks.
 
 ## Alternatives
 
