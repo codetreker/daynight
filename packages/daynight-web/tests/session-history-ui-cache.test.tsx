@@ -40,7 +40,7 @@ it('rebuilds a schema 10 snapshot and refetches the history directory', async ()
   const fence = '30000000-0000-4000-8000-000000000001';
   const old = new TaskCacheDatabase(vi.fn(), 10); const db = await old.open();
   await db.put('userScopes', { userId: TEST_VIEWER_ID, userFence: fence });
-  await db.put('projects', { userId: TEST_VIEWER_ID, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: fence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+  await db.put('projects', { userId: TEST_VIEWER_ID, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: fence, project: null, coverageUpdatedAt: null, syncRevision: crypto.randomUUID(), taskCount: 1, edgeCount: 0 });
   await db.put('summaries', { userId: TEST_VIEWER_ID, projectId, taskId, summary: { id: taskId, properties: { worker: { state: 'released' } } }, dependencyState: null } as unknown as TaskCacheSchema['summaries']['value']);
   await db.put('sessionHistory', { userId: TEST_VIEWER_ID, projectId, taskId, userFence: fence, cacheGeneration: fence, requestToken: fence, clearedToken: null, leaseExpiresAt: null, settled: 'saved', paginationToken: null, page: { items: [second], nextCursor: null }, confirmedCompleteEmpty: false, observedNonEmpty: false, byteSize: 1, lastUsedAt: 1 });
   old.close();

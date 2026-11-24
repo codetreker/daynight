@@ -624,6 +624,7 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000005')).toBeNull();
     expectUnfinishedCounts(1, 0);
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(await screen.findByText('任务 00000000-0000-4000-8000-000000000004')).toBeVisible();
@@ -689,6 +690,7 @@ describe('project task views', () => {
     await waitFor(() => expect(count()).toHaveTextContent(/^0$/));
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(2);
     expect(document.querySelector('#project-goal-list .task-view-summary')).toHaveTextContent('2 / 2 个 Goal');
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(count()).toHaveTextContent(/^0$/);

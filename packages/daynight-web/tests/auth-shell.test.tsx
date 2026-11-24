@@ -794,10 +794,11 @@ describe("authenticated application shell", () => {
     });
     await act(async () => { render(<AuthenticatedApp />); });
     await act(async () => initialSync.promise);
+    await vi.waitFor(() => expect(screen.queryByRole('status', { name: '正在加载任务图' })).toBeNull());
     expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
     expired = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await screen.findByRole("heading", { name: "登录你的工作空间" });
+    await vi.waitFor(() => expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeVisible());
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     const graphReads = () => fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
     expect(graphReads()).toBe(2);

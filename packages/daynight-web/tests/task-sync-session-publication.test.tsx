@@ -36,6 +36,31 @@ const mount = (scope: TaskCacheScope) => renderHook(() => useTaskGraph(projectId
 beforeEach(() => { vi.mocked(getTaskSync).mockReset(); });
 afterEach(() => scopes.splice(0).forEach((scope) => scope.dispose()));
 
+it('keeps a committed deletion after an older applied response returns to the page', async () => {
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(sync({ [taskId]: 'notice' })));
+  const scope = cache(); const view = mount(scope);
+  act(() => view.result.current.sessionStore.setChain('chain', [taskId], true));
+  await waitFor(() => expect(view.result.current.sessionStore.snapshot().get(taskId)?.indicator).toBe('notice'));
+  const apply = scope.applySync.bind(scope);
+  const coverageUpdatedAt = '2026-10-22T10:00:01Z';
+  vi.spyOn(scope, 'applySync').mockImplementationOnce(async (...args) => {
+    const old = await apply(...args);
+    const ticket = await scope.beginSync(projectId, new AbortController().signal);
+    await apply(ticket, { ...sync({}, { epoch: ticket.epoch! }), tasks: [], dependencyStates: {}, taskObservations: {}, deletedTaskIds: [taskId], coverageUpdatedAt }, new AbortController().signal);
+    return old;
+  });
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture(sync({ [taskId]: 'working' }, query)));
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...sync({}, query), tasks: [], dependencyStates: {}, taskObservations: {}, coverageUpdatedAt }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(view.result.current.snapshot?.summaries.has(taskId)).toBe(false));
+  await waitFor(() => expect(view.result.current.refreshing).toBe(false));
+  expect(view.result.current.sessionStore.snapshot().has(taskId)).toBe(false);
+  expect(view.result.current.observationStore.snapshot().has(taskId)).toBe(false);
+  expect(scope.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(false);
+  expect(getTaskSync).toHaveBeenCalledTimes(3);
+  expect(view.result.current.error).toBeNull();
+});
+
 it('distinguishes a missing or mismatched observation from a confirmed failure and expiration', async () => {
   const missing = { ...sync({}), taskObservations: {} };
   vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(missing));
@@ -124,7 +149,7 @@ it('persists a hidden background Task update without publishing its Session', as
   const view = mount(scope);
   act(() => view.result.current.sessionStore.setChain('chain', [taskId], true));
   await act(async () => { await applied[0]!.promise; });
-  expect(view.result.current.sessionStore.snapshot().get(taskId)?.indicator).toBe('working');
+  await vi.waitFor(() => expect(view.result.current.sessionStore.snapshot().get(taskId)?.indicator).toBe('working'));
   const changed = { ...task, title: 'Background update', version: 2n, updatedAt: '2026-10-22T10:00:01Z' };
   vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture(taskSyncFromGraph(graphFixture([changed]), {
     query, sessions: { [taskId]: 'notice' }, versionForTask: () => 2n, propertiesForTask: () => changed.properties,
@@ -133,7 +158,7 @@ it('persists a hidden background Task update without publishing its Session', as
   expect(view.result.current.sessionStore.snapshot().size).toBe(0);
   await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
   await act(async () => { await applied[1]!.promise; });
-  expect(view.result.current.snapshot?.summaries.get(taskId)?.version).toBe(2n);
+  await vi.waitFor(() => expect(view.result.current.snapshot?.summaries.get(taskId)?.version).toBe(2n));
   expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe('Background update');
   expect(view.result.current.sessionStore.snapshot().size).toBe(0);
   const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);

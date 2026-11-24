@@ -167,7 +167,7 @@ it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), 
   await waitFor(() => expect(result.current.error).toBe(failure));
   expect(result.current.status).toBe("ready"); expect(result.current.snapshot!.graph).toBe(data);
   expect(result.current.snapshot!.receivedAt).toBeNull();
-  expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.maxUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
+  expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.coverageUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
   const retried = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await retried.promise));
   act(() => { result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));

@@ -136,7 +136,8 @@ describe('Session snapshot admission and expiry', () => {
     const changed = task(taskId, { version: 2n, updatedAt: '2026-10-22T10:00:01Z', properties: { worker: { ...worker({ claimId: id(50) }) } } });
     const newer = await read(scope, [changed], { [taskId]: 'working' });
     await vi.advanceTimersByTimeAsync(1000); publish(store, newer, (await apply(scope, newer)).project, 1000);
-    await vi.advanceTimersByTimeAsync(19_000); publish(store, old, (await apply(scope, old)).project, 20_000);
+    await vi.advanceTimersByTimeAsync(19_000); await expect(apply(scope, old)).rejects.toMatchObject({ name: 'AbortError' });
+    publish(store, old, scope.getAuthorizedProject(projectId)!, 20_000);
     expect(store.snapshot().get(taskId)?.indicator).toBe('working');
     await vi.advanceTimersByTimeAsync(11_001); expect(store.snapshot().has(taskId)).toBe(false);
   });

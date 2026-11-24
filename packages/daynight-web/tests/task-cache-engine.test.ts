@@ -23,7 +23,7 @@ const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, tags: [], title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, responseTaskAt: later, responseSessionAt: later, sessionPartial: false, taskObservations: {}, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ coverageUpdatedAt: tasks.reduce<string | null>((maximum, task) => maximum === null || task.updatedAt > maximum ? task.updatedAt : maximum, null), deletedTaskIds: [], assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, responseTaskAt: later, responseSessionAt: later, sessionPartial: false, taskObservations: {}, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
   const blockedBy = task.dependsOn.filter(id => !tasks.some(candidate => candidate.id === id && (candidate.status === "done" || candidate.status === "cancelled")));
   return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === "todo" && blockedBy.length === 0 }];
 })), ...changes });
@@ -58,7 +58,7 @@ const seed = async (cache: TaskCacheScope, tasks: readonly TaskSummary[] = [task
 };
 const delta = async (cache: TaskCacheScope, tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}) => {
   const ticket = await cache.beginSync(projectId, signal());
-  return cache.applySync(ticket, response(tasks, changes), signal());
+  return cache.applySync(ticket, response(tasks, { coverageUpdatedAt: tasks.reduce((maximum, task) => maximum === null || task.updatedAt > maximum ? task.updatedAt : maximum, ticket.coverageUpdatedAt), ...changes }), signal());
 };
 const putCounts = () => {
   const counts = new Map<string, number>(); const put = fake.IDBObjectStore.prototype.put;
@@ -77,6 +77,148 @@ afterEach(() => {
   for (const database of connections.splice(0)) database.close();
 });
 
+it("commits deletion, dependent readiness and coverage together while retaining unrelated caches", async () => {
+  const cache = scope();
+  await seed(cache, [task(1, { updatedAt: later }), task(2, { dependsOn: [taskId(1)] }), task(3)]);
+  await seed(cache, [task(8)], { ...project, id: otherProject });
+  const ticket = await cache.beginSync(projectId, signal());
+  const database = await inspect();
+  const details = [task(1), task(3)].map(task => ({ userId, projectId, taskId: task.id, userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
+    detail: { ...task, projectId, description: "Retained body" }, byteSize: 100, lastUsedAt: 1 }));
+  for (const detail of details) await database.put("details", detail);
+  await database.put("sessionHistory", { userId, projectId, taskId: taskId(1), userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
+    requestToken: taskId(95), clearedToken: null, leaseExpiresAt: null, settled: null, paginationToken: null, page: null,
+    confirmedCompleteEmpty: false, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 });
+  const events: unknown[] = []; cache.subscribe(event => events.push(event));
+  const committed = await cache.applySync(ticket, response([task(2, { version: 2n })], { coverageUpdatedAt: later, deletedTaskIds: [taskId(1)] }), signal());
+  expect([...committed.project.summaries.keys()]).toEqual([taskId(2), taskId(3)]);
+  expect(committed.project.dependencyStates.get(taskId(2))).toMatchObject({ ready: true, blockedBy: [] });
+  expect(committed.project.manifest).toMatchObject({ coverageUpdatedAt: later, cacheGeneration: ticket.cacheGeneration });
+  expect(committed.project.manifest.syncRevision).not.toBe(ticket.syncRevision);
+  expect(await database.getAll("sessionHistory")).toEqual([]);
+  expect((await database.getAll("details")).map(row => row.taskId)).toEqual([taskId(3)]);
+  expect(await cache.taskReadQualification(projectId, taskId(1), signal())).toMatchObject({ removed: true, inBaseline: false, epoch });
+  expect((await cache.readProject(otherProject, signal()))?.summaries.has(taskId(8))).toBe(true);
+  expect(events).toContainEqual(expect.objectContaining({ projectId, deletedTaskIds: [taskId(1)], syncRevision: committed.project.manifest.syncRevision }));
+});
+
+it("retains the last deletion's coverage on an empty baseline and makes repeated unknown deletions idempotent", async () => {
+  const cache = scope(); await seed(cache);
+  await delta(cache, [], { coverageUpdatedAt: later, deletedTaskIds: [taskId(1), taskId(99)] });
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(ticket).toMatchObject({ epoch, coverageUpdatedAt: later });
+  expect((await cache.readProject(projectId, signal()))?.summaries.size).toBe(0);
+  const counts = putCounts(); Channel.hints = [];
+  const deletes = vi.spyOn(fake.IDBObjectStore.prototype, "delete");
+  const repeated = await delta(cache, [], { deletedTaskIds: [taskId(1), taskId(99)] });
+  expect(repeated.changed).toBe(false); expect(repeated.project.manifest.syncRevision).toBe(ticket.syncRevision);
+  expect([...counts]).toEqual([]); expect(Channel.hints).toEqual([]);
+  expect(deletes).not.toHaveBeenCalled();
+  expect(await cache.taskReadQualification(projectId, taskId(99), signal())).toMatchObject({ removed: true });
+  await delta(cache, [task(2, { updatedAt: later })]);
+  expect((await cache.readProject(projectId, signal()))?.summaries.has(taskId(2))).toBe(true);
+});
+
+it("rejects stale history retirement and same-history resurrection before changing the baseline", async () => {
+  const cache = scope(); await seed(cache);
+  const stale = await cache.beginSync(projectId, signal());
+  await delta(cache, [], { coverageUpdatedAt: later, deletedTaskIds: [taskId(1)] });
+  const current = await cache.beginSync(projectId, signal());
+  await expect(cache.observeHistory(stale, nextEpoch, signal())).rejects.toMatchObject({ name: "AbortError" });
+  await expect(cache.applySync(stale, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal())).rejects.toMatchObject({ name: "AbortError" });
+  await expect(delta(cache, [task(1, { version: 9n, updatedAt: later })])).rejects.toMatchObject({ kind: "protocol" });
+  await expect(delta(cache, [], { coverageUpdatedAt: time })).rejects.toMatchObject({ kind: "protocol" });
+  expect((await cache.beginSync(projectId, signal())).syncRevision).toBe(current.syncRevision);
+  await cache.applySync(current, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+  expect(await cache.taskReadQualification(projectId, taskId(1), signal())).toMatchObject({ epoch: nextEpoch, removed: false, inBaseline: true });
+});
+
+it("rolls back removal records, cache rows and coverage after a transaction write failure", async () => {
+  const cache = scope(); const initial = await seed(cache);
+  const put = fake.IDBObjectStore.prototype.put;
+  vi.spyOn(fake.IDBObjectStore.prototype, "put").mockImplementation(function(this: IDBObjectStore, ...args) {
+    if (this.name === "projects") throw new DOMException("Quota exhausted", "QuotaExceededError");
+    return put.apply(this, args);
+  });
+  await expect(delta(cache, [], { coverageUpdatedAt: later, deletedTaskIds: [taskId(1)] })).rejects.toMatchObject({ category: "storage" });
+  vi.restoreAllMocks();
+  const database = await inspect();
+  expect(await database.getAll("taskRemovals")).toEqual([]);
+  expect((await cache.readProject(projectId, signal()))?.manifest).toEqual(initial.project.manifest);
+  expect((await database.getAll("summaries")).map(row => row.taskId)).toEqual([taskId(1)]);
+});
+
+it("verifies peer removals from shared storage for an independent read without granting graph access", async () => {
+  const cache = scope(); await seed(cache);
+  const direct = scope(); await direct.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const events: unknown[] = []; direct.subscribeProjection(event => events.push(event));
+  const other = scope(otherUser); const unrelated = vi.fn(); other.subscribeProjection(unrelated);
+  await delta(cache, [], { coverageUpdatedAt: later, deletedTaskIds: [taskId(1)] });
+  await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ projectId, deletedTaskIds: [taskId(1)] })));
+  expect(direct.getAuthorizedProject(projectId)).toBeNull(); expect(unrelated).not.toHaveBeenCalled();
+  expect(await direct.taskReadQualification(projectId, taskId(1), signal())).toMatchObject({ removed: true });
+});
+
+it("rebuilds the same epoch with precise known removals and retains unrelated detail records", async () => {
+  const cache = scope(); await seed(cache, [task(1), task(2)]);
+  await delta(cache, [], { deletedTaskIds: [taskId(99)] });
+  const ticket = await cache.beginSync(projectId, signal());
+  const database = await inspect();
+  await database.put("details", { userId, projectId, taskId: taskId(2), userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
+    detail: { ...task(2), projectId, description: "Keep" }, byteSize: 50, lastUsedAt: 1 });
+  const next = await cache.applySync(ticket, response([task(2)], { mode: "snapshot" }), signal(), true, { rebuild: true });
+  expect(next.project.manifest.cacheGeneration).toBe(ticket.cacheGeneration);
+  expect(next.project.manifest.syncRevision).not.toBe(ticket.syncRevision);
+  expect((await database.getAll("taskRemovals")).map(row => row.taskId)).toEqual([taskId(1), taskId(99)]);
+  expect((await database.getAll("details")).map(row => row.taskId)).toEqual([taskId(2)]);
+  expect(await cache.isSyncCommitCurrent(next.project.manifest, signal())).toBe(true);
+  await delta(cache, [task(3)]);
+  expect(await cache.isSyncCommitCurrent(next.project.manifest, signal())).toBe(false);
+});
+
+it("recovers a committed full rebuild witness when a later delta wins before its peer hint", async () => {
+  const cache = scope(); await seed(cache);
+  const direct = scope(); await direct.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const events: import("../src/features/task-cache/project-cache").CacheEvent[] = [];
+  direct.subscribeProjection(event => events.push(event));
+  for (const channel of Channel.channels) vi.spyOn(channel, "postMessage").mockImplementation(value => { Channel.hints.push(value); });
+  const ticket = await cache.beginSync(projectId, signal());
+  const rebuilt = await cache.applySync(ticket, response([task(1)], { mode: "snapshot" }), signal(), true, { rebuild: true });
+  const advanced = await delta(cache, [task(2)]);
+  const delayedHint = { userId, projectId, userFence: ticket.userFence, syncRevision: rebuilt.project.manifest.syncRevision, baselineRebuilt: true };
+  for (const channel of Channel.channels) channel.onmessage?.({ data: delayedHint } as MessageEvent<unknown>);
+  await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ projectId, baselineRebuilt: true,
+    syncRevision: advanced.project.manifest.syncRevision, rebuildRevision: rebuilt.project.manifest.syncRevision })));
+  expect(await direct.taskReadQualification(projectId, taskId(1), signal())).toMatchObject({ inBaseline: true,
+    rebuildRevision: rebuilt.project.manifest.syncRevision, syncRevision: advanced.project.manifest.syncRevision });
+});
+
+it.each(["history", "suspension"] as const)("rejects publication when %s changes during the persisted commit check", async (change) => {
+  const cache = scope(); const result = await seed(cache);
+  const get = fake.IDBObjectStore.prototype.get;
+  let changed = false;
+  vi.spyOn(fake.IDBObjectStore.prototype, "get").mockImplementation(function(this: IDBObjectStore, ...args) {
+    const pending = get.apply(this, args);
+    if (this.name === "projects" && !changed) {
+      changed = true;
+      queueMicrotask(() => change === "history" ? cache.fenceTaskHistory(projectId, epoch) : cache.suspendProject(projectId));
+    }
+    return pending;
+  });
+  expect(await cache.isSyncCommitCurrent(result.project.manifest, signal())).toBe(false);
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it("accepts a direct observation begun before a cold graph establishes its empty local baseline", async () => {
+  const cache = scope();
+  const direct = await cache.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const graph = await cache.beginSync(projectId, signal());
+  const database = await inspect();
+  expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", invalidatedBy: "user", cacheGeneration: graph.cacheGeneration });
+  expect(await cache.observeHistory(direct, epoch, signal())).toBe("current");
+  expect(cache.isTaskReadCurrent(direct)).toBe(true);
+});
+
 it("notifies same-account tabs of color invalidation without relaying the hint", async () => {
   const first = scope(); const peer = scope(); const other = scope(otherUser);
   const local = vi.fn(), remote = vi.fn(), unrelated = vi.fn();
@@ -93,12 +235,12 @@ it("notifies same-account tabs of color invalidation without relaying the hint",
 it("atomically saves task data and reopens the exact maximum without granting local access", async () => {
   const first = scope(); const result = await seed(first, [task(1), task(2, { updatedAt: later, version: 9_007_199_254_740_993n })]);
   const database = await inspect();
-  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "sessionHistory", "summaries", "userScopes"]);
+  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "sessionHistory", "summaries", "taskRemovals", "userScopes"]);
   const manifest = await database.get("projects", [userId, projectId]);
-  expect(manifest).toMatchObject({ state: "active", epoch, maxUpdatedAt: later, taskCount: 2, edgeCount: 0 });
+  expect(manifest).toMatchObject({ state: "active", epoch, coverageUpdatedAt: later, taskCount: 2, edgeCount: 0 });
   expect(result.project.versions.get(taskId(2))).toBe(9_007_199_254_740_993n); first.dispose();
   const reopened = scope();
-  expect(await reopened.beginSync(projectId, signal())).toMatchObject({ epoch, maxUpdatedAt: later, cacheGeneration: manifest!.cacheGeneration });
+  expect(await reopened.beginSync(projectId, signal())).toMatchObject({ epoch, coverageUpdatedAt: later, cacheGeneration: manifest!.cacheGeneration });
   expect((await reopened.readProject(projectId, signal()))!.graph.tasks).toHaveLength(2);
   expect(reopened.getAuthorizedProject(projectId)).toBeNull();
 });
@@ -292,7 +434,7 @@ it("automatically rereads after a peer hint is confirmed as a real history repla
 
 it("keeps known empty epochs and repeated rows free of writes, hint broadcasts and index changes", async () => {
   const cache = scope(); const initial = await seed(cache, []); Channel.hints = []; const counts = putCounts();
-  const ticket = await cache.beginSync(projectId, signal()); expect(ticket).toMatchObject({ epoch, maxUpdatedAt: null });
+  const ticket = await cache.beginSync(projectId, signal()); expect(ticket).toMatchObject({ epoch, coverageUpdatedAt: null });
   const repeated = await cache.applySync(ticket, response([]), signal());
   expect(repeated.changed).toBe(false); expect(repeated.project.manifest.cacheGeneration).toBe(initial.project.manifest.cacheGeneration);
   expect(repeated.project.index).toBe(initial.project.index); expect([...counts]).toEqual([]); expect(Channel.hints).toEqual([]);
@@ -323,7 +465,7 @@ it("captures request bindings and the watermark in the existing same IndexedDB t
   });
   const ticket = await cache.beginSync(projectId, signal());
   expect(manifestTransactions).toHaveLength(1); expect(summaryTransactions).toEqual(manifestTransactions);
-  expect(ticket).toMatchObject({ epoch, maxUpdatedAt: time, cacheGeneration: initial.project.manifest.cacheGeneration });
+  expect(ticket).toMatchObject({ epoch, coverageUpdatedAt: time, cacheGeneration: initial.project.manifest.cacheGeneration });
   const binding = ticket.taskBindings.get(taskId(1))!;
   expect(binding).toEqual(taskExecutionBinding(executing()));
   expect(Object.isFrozen(binding)).toBe(true); expect(Object.isFrozen(binding.worker)).toBe(true);
@@ -337,7 +479,9 @@ it("retains the response's execution observation when a newer cache row wins its
   const observer = scope(); const old = await observer.beginSync(projectId, signal());
   await delta(owner, [executing({ version: 3n, updatedAt: later }, { claimId: taskId(95) })]);
   const incoming = response([executing({ version: 2n })], { sessions: { [taskId(1)]: "notice" } });
-  const accepted = await observer.applySync(old, incoming, signal());
+  await expect(observer.applySync(old, incoming, signal())).rejects.toMatchObject({ name: "AbortError" });
+  const fresh = await observer.beginSync(projectId, signal());
+  const accepted = await observer.applySync(fresh, { ...incoming, coverageUpdatedAt: fresh.coverageUpdatedAt }, signal());
   expect(taskExecutionBinding(accepted.project.summaries.get(taskId(1))!).worker!.claimId).toBe(taskId(95));
   expect(deriveTaskSyncBindings(old, incoming).get(taskId(1))!.worker!.claimId).toBe(taskId(91));
   expect(deriveTaskSyncBindings(old, response([])).get(taskId(1))!.worker!.claimId).toBe(taskId(91));
@@ -381,15 +525,16 @@ it("compares all execution binding fields while excluding unrelated Task present
   expect(eligibleTaskExecutionBinding(taskExecutionBinding(executing({ status: "done" })))).toBe(false);
 });
 
-it("merges late responses into the current full set even when task versions share the watermark", async () => {
+it("rejects a stale concurrent commit even when task versions share the coverage time", async () => {
   const first = scope(); const second = scope(); await seed(first);
   const a = await first.beginSync(projectId, signal()); const b = await second.beginSync(projectId, signal());
   await first.applySync(a, response([task(2)]), signal());
-  const result = await second.applySync(b, response([task(1, { version: 3n, titlePreview: "Changed" })]), signal());
+  await expect(second.applySync(b, response([task(1, { version: 3n, titlePreview: "Changed" })]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  const result = await delta(second, [task(1, { version: 3n, titlePreview: "Changed" })]);
   expect(result.project.graph.tasks.map((row) => row.id)).toEqual([taskId(1), taskId(2)]);
-  expect(result.project.manifest.maxUpdatedAt).toBe(time); expect(result.project.versions.get(taskId(1))).toBe(3n);
+  expect(result.project.manifest.coverageUpdatedAt).toBe(time); expect(result.project.versions.get(taskId(1))).toBe(3n);
   const ignored = await delta(second, [task(1, { titlePreview: "Old", updatedAt: later })]);
-  expect(ignored.changed).toBe(false); expect(ignored.project.manifest.maxUpdatedAt).toBe(time);
+  expect(ignored.changed).toBe(true); expect(ignored.project.manifest.coverageUpdatedAt).toBe(later);
 });
 
 it("rejects contradictions at the same business version without a partial write", async () => {
@@ -411,8 +556,8 @@ it("fills missing parent facts at the same version without losing details or acc
   expect(filled.project.index).not.toBe(initial.project.index);
   expect(filled.project.manifest.cacheGeneration).toBe(initial.project.manifest.cacheGeneration);
   await expect((await inspect()).getAll("details")).resolves.toHaveLength(1);
-  const ignored = await peer.applySync(stale, response([task(1), task(2)]), signal());
-  expect(ignored.project.graph.tasks.map(item => item.parentTaskId)).toEqual([taskId(2), null]);
+  await expect(peer.applySync(stale, response([task(1), task(2)]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect((await peer.readProject(projectId, signal()))?.graph.tasks.map(item => item.parentTaskId)).toEqual([taskId(2), null]);
   await expect(delta(cache, [task(1, { parentTaskId: null })])).rejects.toMatchObject({ kind: "protocol" });
   const newer = await delta(cache, [task(1, { version: 2n })]);
   expect(newer.project.summaries.get(taskId(1))?.parentTaskId).toBe(taskId(2));
@@ -464,7 +609,7 @@ it("detects a missing independent row and rebuilds without accepting a smaller c
   const cache = scope(); await seed(cache, [task(1), task(2)]); const database = await inspect();
   await database.delete("summaries", [userId, projectId, taskId(2)]);
   const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-  const ticket = await cache.beginSync(projectId, signal()); expect(ticket).toMatchObject({ epoch: null, maxUpdatedAt: null });
+  const ticket = await cache.beginSync(projectId, signal()); expect(ticket).toMatchObject({ epoch: null, coverageUpdatedAt: null });
   expect(await database.getAll("summaries")).toEqual([]); expect(warning).toHaveBeenCalled();
   const rebuilt = await cache.applySync(ticket, response([task(1), task(2)], { mode: "snapshot" }), signal()); expect(rebuilt.project.manifest.taskCount).toBe(2);
 });
@@ -473,7 +618,7 @@ it("detects corruption introduced after the request and invalidates its old base
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal()); const database = await inspect();
   await database.put("summaries", { userId, projectId, taskId: taskId(1), summary: task(1, { dependsOn: [taskId(2)] }), dependencyState: { taskVersion: 1n, blockedBy: [taskId(2)], ready: true } });
   await expect(cache.applySync(ticket, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ category: "corrupt" });
-  expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", maxUpdatedAt: null }); expect(await database.getAll("summaries")).toEqual([]);
+  expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", coverageUpdatedAt: null }); expect(await database.getAll("summaries")).toEqual([]);
 });
 
 it("aborts quota errors atomically and reopens the last valid rows and maximum", async () => {
@@ -547,7 +692,7 @@ it("exposes fenced detail transactions whose detail timestamps cannot advance th
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
   });
-  expect((await cache.beginSync(projectId, signal())).maxUpdatedAt).toBe(time); const database = await inspect(); expect(await database.getAll("details")).toHaveLength(1);
+  expect((await cache.beginSync(projectId, signal())).coverageUpdatedAt).toBe(time); const database = await inspect(); expect(await database.getAll("details")).toHaveLength(1);
   await delta(cache, [task(1)]); expect(await database.getAll("details")).toHaveLength(1);
   await delta(cache, [task(1, { version: 2n })]); expect(await database.getAll("details")).toEqual([]);
   await cache.invalidateProject(projectId, signal()); await expect(cache.detailTransaction(ticket, signal(), async () => {})).rejects.toMatchObject({ name: "AbortError" });
@@ -698,7 +843,7 @@ it("preserves caller cancellation when its signal aborts an active native transa
 });
 
 it.each([
-  { epoch }, { maxUpdatedAt: time }, { project }, { taskCount: 1 }, { edgeCount: 1 },
+  { epoch }, { coverageUpdatedAt: time }, { project }, { taskCount: 1 }, { edgeCount: 1 },
   { cacheGeneration: "damaged" }, { userFence: "damaged" }, { invalidatedBy: null }, { state: "unknown" },
 ])("rebuilds a malformed invalidated manifest before constructing its next snapshot ticket %#", async (change) => {
   const cache = scope(); await seed(cache); await cache.invalidateProject(projectId, signal()); const database = await inspect();
@@ -706,7 +851,7 @@ it.each([
   await database.put("projects", { ...previous, ...change } as typeof previous);
   const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
   const ticket = await cache.beginSync(projectId, signal());
-  expect(ticket).toMatchObject({ epoch: null, maxUpdatedAt: null }); expect(ticket.cacheGeneration).not.toBe(previous.cacheGeneration);
+  expect(ticket).toMatchObject({ epoch: null, coverageUpdatedAt: null }); expect(ticket.cacheGeneration).not.toBe(previous.cacheGeneration);
   expect(warning).toHaveBeenCalled();
   const result = await cache.applySync(ticket, response([task(1)], { mode: "snapshot" }), signal());
   expect(result.project.manifest).toMatchObject({ state: "active", epoch, taskCount: 1 });
@@ -725,7 +870,7 @@ it("repairs a cold user's damaged fence atomically across projects and four stor
   const otherBefore = await Promise.all([database.get("userScopes", otherUser), database.getAllFromIndex("projects", "by-user", otherUser), database.getAllFromIndex("summaries", "by-user", otherUser), database.getAllFromIndex("details", "by-user", otherUser)]);
   original.dispose(); await database.put("userScopes", { userId, userFence: "damaged" });
   const mismatch = vi.fn(); const cold = scope(userId, mismatch); const ticket = await cold.beginSync(projectId, signal());
-  expect(ticket).toMatchObject({ epoch: null, maxUpdatedAt: null }); expect(ticket.userFence).not.toBe("damaged");
+  expect(ticket).toMatchObject({ epoch: null, coverageUpdatedAt: null }); expect(ticket.userFence).not.toBe("damaged");
   expect(cold.signal.aborted).toBe(false); expect(mismatch).not.toHaveBeenCalled();
   expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]); expect(await database.getAllFromIndex("details", "by-user", userId)).toEqual([]);
   expect(await database.get("projects", [userId, otherProject])).toMatchObject({ state: "invalidated", invalidatedBy: "corrupt", userFence: ticket.userFence, epoch: null });
@@ -802,10 +947,11 @@ it("replaces deleted properties across tabs and prevents late values from resurr
   const late = await second.beginSync(projectId, signal());
   await delta(first, [task(1, { version: 2n, updatedAt: later, properties: {} })]);
   await vi.waitFor(() => expect(second.getAuthorizedProject(projectId)!.summaries.get(taskId(1))!.properties).toEqual({}));
-  const replay = await second.applySync(late, response([original]), signal());
+  await expect(second.applySync(late, response([original]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  const replay = await delta(second, [original]);
   expect(replay.changed).toBe(false);
   expect(replay.project.summaries.get(taskId(1))!.properties).toEqual({});
-  expect(replay.project.manifest.maxUpdatedAt).toBe(later);
+  expect(replay.project.manifest.coverageUpdatedAt).toBe(later);
   expect(replay.project.index.nodes.get(taskId(1))).not.toHaveProperty("properties");
   const database = await inspect();
   expect((await database.get("summaries", [userId, projectId, taskId(1)]))!.summary.properties).toEqual({});
@@ -947,8 +1093,8 @@ it('publishes claim changes and removal only within the authorized user and proj
   const stale = await cache.beginSync(projectId, signal());
   const changed = await delta(cache, [task(1, { version: 2n, allowAgents: false, properties: { worker: worker('finished', 'completed') } })]);
   expect(changed.project.workerMachines.get(taskId(1))).toMatchObject({ state: 'completed', machine: { name: 'finished' } });
-  const late = await cache.applySync(stale, response([task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]), signal());
-  expect(late.project.workerMachines.get(taskId(1))?.machine.name).toBe('finished');
+  await expect(cache.applySync(stale, response([task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]), signal())).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cache.getAuthorizedProject(projectId)?.workerMachines.get(taskId(1))?.machine.name).toBe('finished');
   const removed = await delta(cache, [task(1, { version: 3n, properties: {} })]);
   expect(removed.project.workerMachines.has(taskId(1))).toBe(false);
   const other = scope(otherUser);
@@ -994,7 +1140,7 @@ it("aborts an in-flight durable write after a real principal mismatch", async ()
 it("honors a peer's confirmed project withdrawal after retaining a mismatched scope", async () => {
   const retained = scope(); await seed(retained); const peer = scope();
   const ticket = await peer.beginSync(projectId, signal());
-  await peer.applySync(ticket, response([]), signal());
+  await peer.applySync(ticket, response([], { coverageUpdatedAt: ticket.coverageUpdatedAt }), signal());
   const denial = await peer.beginSync(projectId, signal());
   const events: { accessRevoked?: true }[] = []; retained.subscribe(event => events.push(event));
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));

@@ -14,9 +14,49 @@ const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, title: "Task", titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
-const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [task], dependencyStates, sessions: {} };
+const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, coverageUpdatedAt: time, deletedTaskIds: [], project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [task], dependencyStates, sessions: {} };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
+
+describe("authoritative deletion coverage", () => {
+  const removedId = "20000000-0000-0000-0000-000000000002";
+  it("requires exact coverage and deletion fields while preserving covered empty collections", () => {
+    const empty = { ...sync, tasks: [], dependencyStates: {}, coverageUpdatedAt: null };
+    expect(parseTaskSync(empty, projectId)).toMatchObject({ coverageUpdatedAt: null, deletedTaskIds: [] });
+    expect(parseTaskSync({ ...empty, coverageUpdatedAt: time }, projectId).coverageUpdatedAt).toBe(time);
+    const deleted = { ...empty, mode: "delta", coverageUpdatedAt: time, deletedTaskIds: [removedId] };
+    expect(parseTaskSync(deleted, projectId).deletedTaskIds).toEqual([removedId]);
+    for (const field of ["coverageUpdatedAt", "deletedTaskIds"]) {
+      const incomplete = { ...sync } as Record<string, unknown>;
+      delete incomplete[field];
+      expect(() => parseTaskSync(incomplete, projectId)).toThrow("invalid response");
+    }
+  });
+  it.each([undefined, "bad", "0000-01-01T00:00:00Z", "2026-10-20T12:34:56+00:00", "2026-02-30T00:00:00Z", "2026-10-20T12:34:56.123456788Z", null])("rejects invalid or insufficient live coverage %#", (coverageUpdatedAt) => {
+    expect(() => parseTaskSync({ ...sync, coverageUpdatedAt }, projectId)).toThrow("invalid response");
+  });
+  it("compares equivalent fractional timestamps precisely", () => {
+    expect(parseTaskSync({ ...sync, tasks: [{ ...task, updatedAt: "2026-10-20T12:34:56.123Z" }], coverageUpdatedAt: "2026-10-20T12:34:56.123000000Z" }, projectId).tasks[0]?.updatedAt).toBe("2026-10-20T12:34:56.123Z");
+  });
+  it.each([undefined, null, {}, [removedId, removedId], ["bad"], [taskId]])("rejects malformed or overlapping deletion IDs %#", (deletedTaskIds) => {
+    expect(() => parseTaskSync({ ...sync, mode: "delta", deletedTaskIds }, projectId)).toThrow("invalid response");
+  });
+  it("canonicalizes deletion IDs before checking duplicates", () => {
+    const mixed = "ABCDEF00-0000-0000-0000-000000000002";
+    expect(parseTaskSync({ ...sync, mode: "delta", deletedTaskIds: [mixed] }, projectId).deletedTaskIds).toEqual([mixed.toLowerCase()]);
+    expect(() => parseTaskSync({ ...sync, mode: "delta", deletedTaskIds: [mixed, mixed.toLowerCase()] }, projectId)).toThrow("invalid response");
+  });
+  it("rejects deletions without coverage and conflicts with every current projection", () => {
+    expect(() => parseTaskSync({ ...sync, deletedTaskIds: [removedId] }, projectId)).toThrow("invalid response");
+    expect(() => parseTaskSync({ ...sync, mode: "delta", tasks: [], dependencyStates: {}, deletedTaskIds: [removedId], coverageUpdatedAt: null }, projectId)).toThrow("invalid response");
+    const deleted = { ...sync, mode: "delta", deletedTaskIds: [removedId] };
+    for (const change of [
+      { dependencyStates: { ...dependencyStates, [removedId]: dependencyStates[taskId] } },
+      { sessions: { [removedId]: "working" } },
+      { taskObservations: { [removedId]: { taskVersion: "1", state: "no_session", observedAt: time, freshUntil: null, needsAttention: null, canOpen: false } } },
+    ]) expect(() => parseTaskSync({ ...deleted, ...change }, projectId)).toThrow("invalid response");
+  });
+});
 
 it("loads exact wire versions and encodes only epoch and the unmodified maximum timestamp", async () => {
   const fetch = vi.fn().mockResolvedValue(response(sync)); vi.stubGlobal("fetch", fetch);
