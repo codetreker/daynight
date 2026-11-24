@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -249,7 +249,8 @@ it.each(["checkout present", "registration only"])("adopts a task-named worktree
   } finally { provenance.resolve(); await coordinator.shutdown(); await manager.dispose(); }
 });
 
-it("removes a released prelaunch claim's task-named worktree after native clearance", async () => {
+it("retries removal of a released prelaunch claim's task-named worktree after restart", async () => {
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
   const f = await fixture();
   const candidate = f.candidates[0]!;
   f.candidates.splice(0);
@@ -263,11 +264,14 @@ it("removes a released prelaunch claim's task-named worktree after native cleara
   git("worktree", "add", "-b", `daynight/${owner.taskId}`, "--", checkout, "HEAD");
   f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
   f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
-  const { webStore, retiredNativeCleanup } = f.options;
+  const { retiredNativeCleanup } = f.options;
+  const webFile = path.join(f.root, "web.sqlite");
+  let webStore = openWebExecutionStore(webFile);
   webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
   f.grants.delete(owner.claimId);
 
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+  const createManager = () => createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+  let manager = createManager();
   const clearance = Promise.withResolvers<void>();
   const stop = retiredNativeCleanup.stop.bind(retiredNativeCleanup);
   const locate = vi.spyOn(retiredNativeCleanup, "locate");
@@ -276,12 +280,28 @@ it("removes a released prelaunch claim's task-named worktree after native cleara
     return stop(...args);
   });
   const verifyWorktree = vi.spyOn(manager, "verifyWorktree");
+  let bindingBeforeRemoval: WorktreeBinding | null | undefined;
+  const removalFailure = new Error("Removal interrupted after clearing checkout contents.");
+  const removeWorktree = vi.spyOn(manager, "removeWorktree").mockRejectedValue(removalFailure).mockImplementationOnce(async () => {
+    bindingBeforeRemoval = webStore.getTask(owner)?.resources.worktree;
+    await rm(path.join(checkout, ".git"));
+    throw removalFailure;
+  });
   const verifyWebUnregistered = vi.fn(async () => { throw new Error("The claim has been released."); });
-  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, verifyWebUnregistered });
-  try {
+  const create = () => {
+    const webBackend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager,
+      launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() },
+      platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now });
+    return createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend, verifyWebUnregistered });
+  };
+  let coordinator = create();
+  const prepare = async () => {
     const operation = createOperation();
     try { await manager.prepareRepository(f.project, operation); }
     finally { operation.dispose(); }
+  };
+  try {
+    await prepare();
     await coordinator.tick();
     await eventually(() => expect(stopNative).toHaveBeenCalledOnce());
     expect(locate).toHaveBeenCalledExactlyOnceWith([expect.objectContaining(owner)], expect.anything());
@@ -289,13 +309,33 @@ it("removes a released prelaunch claim's task-named worktree after native cleara
     expect(worktreePaths(f.project.localPath)).toContain(checkout);
 
     clearance.resolve();
-    await eventually(() => expect(webStore.getTask(owner)?.status).toBe("done"));
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, stage: "worktree-removal" }));
     expect(verifyWorktree).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything(), checkout, true);
+    expect(removeWorktree).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.objectContaining({ originalCwd: checkout }));
+    expect(bindingBeforeRemoval).toMatchObject({ worktreePath: checkout, branch: `daynight/${owner.taskId}` });
+    expect(worktreePaths(f.project.localPath)).toContain(checkout);
+    await expect(readdir(checkout)).resolves.toEqual([]);
+
+    await expect(coordinator.shutdown()).resolves.toBe(false);
+    await manager.dispose();
+    f.reopenStore();
+    webStore.close();
+    webStore = openWebExecutionStore(webFile);
+    expect(webStore.getTask(owner)?.resources.worktree).toEqual(bindingBeforeRemoval);
+    f.clock(1_000_000);
+    manager = createManager();
+    const verifyAfterRestart = vi.spyOn(manager, "verifyWorktree");
+    coordinator = create();
+    await prepare();
+    await coordinator.tick();
+    await eventually(() => expect(webStore.getTask(owner)?.status, f.events.map(event => `${event.message} ${String(event.error)} ${event.error instanceof Error ? String(event.error.cause) : ""}`).join("\n")).toBe("done"));
+    expect(verifyAfterRestart).not.toHaveBeenCalled();
     expect(verifyWebUnregistered).not.toHaveBeenCalled();
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
     expect(f.store.getTask(owner)?.status).toBe("done");
     expect(worktreePaths(f.project.localPath)).not.toContain(checkout);
     await expect(access(checkout)).rejects.toMatchObject({ code: "ENOENT" });
-  } finally { clearance.resolve(); await coordinator.shutdown(); await manager.dispose(); }
+  } finally { clearance.resolve(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
 });
 
 it("reconciles a persisted missing-Web cleanup schedule on first shutdown after the local index became done", async () => {

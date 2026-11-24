@@ -857,7 +857,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         project, store: options.store, git: options.git, signal,
         ...(currentWeb?.resources.worktree == null ? {} : { originalCwd: currentWeb.resources.worktree.worktreePath }),
         ...(currentWeb !== null && prelaunchLegacy(currentWeb)
-          ? { findLegacyCwd: async () => (await observeLegacyBinding(currentWeb, signal, "stopped"))?.worktreePath } : {}),
+          ? { findLegacyCwd: async () => {
+            const binding = await observeLegacyBinding(currentWeb, signal, "stopped");
+            if (binding === undefined) return;
+            signal.throwIfAborted();
+            options.webStore.bindWorktree(currentWeb, binding, now());
+            return binding.worktreePath;
+          } } : {}),
         deadline: Date.now() + CLEANUP_OPERATION_MS, now,
         onEffectError: error => { try { options.emit({ kind: "cleanup-effect-error", identity: owner, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error }); } catch { /* Diagnostics do not change resource settlement. */ } },
         onOwner: actual => { ending.set(identityKey, actual); },
