@@ -11,6 +11,12 @@ so the assertion could reject successful cleanup. A replacement observation
 alone is insufficient: on POSIX, the same result can indicate conflicting
 command or group evidence for the original birth.
 
+The birth-aware assertion addressed that observation rule, but provider fixture
+cleanup still called `stopControllerBootstrap` before reaching the assertion.
+That operation throws `ControllerBootstrapReplacedError` when a different birth
+already occupies the saved PID. Cleanup could therefore reject a safely ended
+original without performing its completion observation.
+
 ## Decision
 
 The retired Web native tests use the process observer's mismatch callback and
@@ -19,18 +25,20 @@ is considered stopped only for `stopped`, or for `replaced` with explicit
 `sameBirth: false`. Running, exiting, missing mismatch evidence and same-birth
 conflicts fail; native observation errors propagate.
 
-After the fixture has confirmed the original processes stopped and released
-their empty Windows Job, cleanup observes the original provider again without
-issuing another stop against its saved PID. A repeated stop can correctly reject
-a reused PID before the completion assertion gets to distinguish its birth.
-Fixtures that have not released a verified stopped Job still request a stop;
-stop failures and subsequent observation failures remain test failures.
+Provider fixture cleanup catches only `ControllerBootstrapReplacedError` from
+the bootstrap stop operation, then runs the same bounded completion assertion
+used after a successful stop. The exception alone does not complete cleanup.
+Other stop errors retain their original identity and prevent confirmation;
+confirmation failures and timeouts continue into the fixture's cleanup error
+aggregation. The stop operation receives only the original proof, once, and no
+retry targets a replacement process.
 
 The local assertion is shared by the fixture cleanup, recovered provider and
-retired generation checks. Deterministic cases control only the observer's
-result and mismatch evidence. The integration cases retain real shutdown and
-patrol, process-close witnesses, empty Windows Jobs, stopped journals, removed
-worktrees and unaffected successor processes and files.
+retired generation checks. Deterministic cases control the observer's result and
+mismatch evidence, or the fixture's stop and confirmation operations when
+verifying error classification and propagation. The integration cases retain
+real shutdown and patrol, process-close witnesses, empty Windows Jobs, stopped
+journals, removed worktrees and unaffected successor processes and files.
 
 ## Alternatives
 
@@ -40,18 +48,20 @@ same-birth identity conflicts without evidence that the original ended.
 **Require the PID to disappear.** A new process can keep the number occupied;
 waiting longer does not establish anything about the original birth.
 
-**Catch replacement errors from repeated stops.** The fixture already retains
-verified Job release evidence. Using that evidence avoids an unnecessary stop
-request and leaves production identity refusals intact, while the independent
-completion observation still rejects same-birth conflicts.
+**Treat the replacement exception as complete cleanup.** Skipping the subsequent
+observation would remove the fixture's independent confirmation and its failure
+diagnostics. The exception changes which stop outcomes reach that confirmation.
 
 ## Consequences
 
-The assertions distinguish original-instance completion from numeric PID
-availability without changing production process management or deadlines.
-Controlled observations verify the acceptance rule, including same-birth
-command and group conflicts, released-Job cleanup and observation failures;
-they do not claim to force native PID recycling.
+The assertions and fixture cleanup distinguish original-instance completion
+from numeric PID availability without changing production process management
+or deadlines. Controlled observations verify the acceptance rule, including
+same-birth command and group conflicts. Controlled stop outcomes verify that
+the precise replacement exception still requires confirmation, while unrelated
+errors, same-name errors, aggregate errors and failed confirmation propagate.
+These cases do not claim to force native PID recycling.
+
 The [Windows exit completion decision](../bug-fix/2026-11-13-windows-controller-exit-completion.md)
 owns native completion semantics, and the
 [stale birth fixture decision](2026-11-18-controller-stale-birth-fixture.md)

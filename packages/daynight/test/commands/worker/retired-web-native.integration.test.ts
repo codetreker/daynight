@@ -7,6 +7,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { expect, it, vi } from "vitest";
 import type { Task } from "../../../src/api/types.js";
+import { ControllerBootstrapReplacedError } from "../../../src/commands/controller/bootstrap-error.js";
 import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -71,6 +72,18 @@ const expectOriginalProcessStopped = async (proof: ProcessProof, inspect = inspe
     JSON.stringify({ proof, state, mismatch })).toBe(true);
 };
 
+const stopFixtureProvider = async (
+  proof: ProcessProof,
+  stop = stopControllerBootstrap,
+  confirm = async (original: ProcessProof) => {
+    await expect.poll(() => expectOriginalProcessStopped(original), { timeout: 10_000 }).toBeUndefined();
+  },
+) => {
+  try { await stop(proof, Date.now() + 10_000); }
+  catch (error) { if (!(error instanceof ControllerBootstrapReplacedError)) throw error; }
+  await confirm(proof);
+};
+
 const proof: ProcessProof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "fixture-birth", commandHash: "fixture-command" };
 it.each([
   { state: "stopped", mismatch: undefined, stopped: true },
@@ -96,51 +109,53 @@ it("preserves process observation failures when checking original completion", a
   await expect(expectOriginalProcessStopped(proof, vi.fn().mockRejectedValue(error))).rejects.toBe(error);
 });
 
-const cleanupNativeProvider = async (provider: ProcessProof, stoppedJobReleased: boolean,
-  stop = stopControllerBootstrap,
-  verify = (proof: ProcessProof) => expect.poll(() => expectOriginalProcessStopped(proof), { timeout: 10_000 }).toBeUndefined()) => {
-  // Releasing a verified stopped Job leaves its old PIDs available for reuse.
-  // Observe the original's completion again without requesting another stop.
-  if (!stoppedJobReleased) await stop(provider, Date.now() + 10_000);
-  await verify(provider);
-};
-
-it("does not stop a reused provider PID after releasing its verified stopped Job", async () => {
-  const stop = vi.fn<typeof stopControllerBootstrap>();
+it.each([
+  { state: "stopped", mismatch: undefined, stopped: true },
+  { state: "replaced", mismatch: { sameBirth: false, sameParent: true, sameGroup: true, sameCommand: true, status: null }, stopped: true },
+  { state: "replaced", mismatch: { sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false, status: null }, stopped: false },
+  { state: "replaced", mismatch: undefined, stopped: false },
+] as const)("confirms fixture provider completion after bootstrap replacement for $state with $mismatch (stopped: $stopped)", async ({ state, mismatch, stopped }) => {
+  const stop = vi.fn<typeof stopControllerBootstrap>().mockRejectedValue(new ControllerBootstrapReplacedError());
   const inspect = vi.fn<typeof inspectBootstrapProcessProof>(async (_proof, _timeout, onMismatch) => {
-    onMismatch!({ status: null, sameBirth: false, sameParent: false, sameGroup: true, sameCommand: false });
-    return "replaced";
+    if (mismatch !== undefined) onMismatch!(mismatch);
+    return state;
   });
-  await cleanupNativeProvider(proof, true, stop, value => expectOriginalProcessStopped(value, inspect));
-  expect(stop).not.toHaveBeenCalled();
+  const confirm = vi.fn((original: ProcessProof) => expectOriginalProcessStopped(original, inspect));
+  const result = stopFixtureProvider(proof, stop, confirm);
+  if (stopped) await expect(result).resolves.toBeUndefined();
+  else await expect(result).rejects.toThrow();
+  expect(stop).toHaveBeenCalledExactlyOnceWith(proof, expect.any(Number));
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(proof);
   expect(inspect).toHaveBeenCalledExactlyOnceWith(proof, 5000, expect.any(Function));
 });
 
-it("retains conflicting provider identity evidence after releasing a stopped Job", async () => {
-  const stop = vi.fn<typeof stopControllerBootstrap>();
-  const inspect = vi.fn<typeof inspectBootstrapProcessProof>(async (_proof, _timeout, onMismatch) => {
-    onMismatch!({ status: null, sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
-    return "replaced";
-  });
-  await expect(cleanupNativeProvider(proof, true, stop, value => expectOriginalProcessStopped(value, inspect))).rejects.toThrow();
-  expect(stop).not.toHaveBeenCalled();
-});
-
-it("preserves provider stop failures when a stopped Job has not been released", async () => {
-  const failure = new Error("Original provider stop is unconfirmed.");
-  const stop = vi.fn<typeof stopControllerBootstrap>().mockRejectedValue(failure), verify = vi.fn<(proof: ProcessProof) => Promise<void>>();
-  await expect(cleanupNativeProvider(proof, false, stop, verify)).rejects.toBe(failure);
-  expect(stop).toHaveBeenCalledExactlyOnceWith(proof, expect.any(Number));
-  expect(verify).not.toHaveBeenCalled();
-});
-
-it.each([false, true])("preserves provider observation failures with stopped Job released=%s", async released => {
-  const failure = new Error("Original provider observation is unavailable.");
+it("confirms fixture provider completion after a successful bootstrap stop", async () => {
   const stop = vi.fn<typeof stopControllerBootstrap>().mockResolvedValue(undefined);
-  const verify = vi.fn<(proof: ProcessProof) => Promise<void>>().mockRejectedValue(failure);
-  await expect(cleanupNativeProvider(proof, released, stop, verify)).rejects.toBe(failure);
-  expect(stop).toHaveBeenCalledTimes(released ? 0 : 1);
-  expect(verify).toHaveBeenCalledExactlyOnceWith(proof);
+  const confirm = vi.fn<(original: ProcessProof) => Promise<void>>().mockResolvedValue(undefined);
+  await expect(stopFixtureProvider(proof, stop, confirm)).resolves.toBeUndefined();
+  expect(stop).toHaveBeenCalledExactlyOnceWith(proof, expect.any(Number));
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(proof);
+});
+
+it.each([
+  new Error("Bootstrap stop failed."),
+  Object.assign(new Error("Not a birth replacement error."), { name: "ControllerBootstrapReplacedError" }),
+  new AggregateError([new ControllerBootstrapReplacedError()], "Bootstrap stop had multiple failures."),
+])("preserves unrelated fixture provider stop errors: %s", async error => {
+  const stop = vi.fn<typeof stopControllerBootstrap>().mockRejectedValue(error);
+  const confirm = vi.fn<(original: ProcessProof) => Promise<void>>();
+  await expect(stopFixtureProvider(proof, stop, confirm)).rejects.toBe(error);
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it.each([
+  new Error("Original provider observation failed."),
+  new Error("Original provider completion timed out."),
+])("preserves fixture provider confirmation failures after bootstrap replacement: %s", async error => {
+  const stop = vi.fn<typeof stopControllerBootstrap>().mockRejectedValue(new ControllerBootstrapReplacedError());
+  const confirm = vi.fn<(original: ProcessProof) => Promise<void>>().mockRejectedValue(error);
+  await expect(stopFixtureProvider(proof, stop, confirm)).rejects.toBe(error);
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(proof);
 });
 
 const nativeBoundary = async (launchId: string, cwd: string) => {
@@ -173,7 +188,7 @@ process.send('ready');setInterval(()=>{},1000);
       }
     } catch (error) { failures.push(error); }
     if (provider !== undefined) try {
-      await cleanupNativeProvider(provider, jobReleased);
+      await stopFixtureProvider(provider);
     } catch (error) { failures.push(error); }
     try { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await closed; }
     catch (error) { failures.push(error); }

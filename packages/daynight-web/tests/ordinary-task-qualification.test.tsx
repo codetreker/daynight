@@ -166,6 +166,8 @@ it.each(['uncertain', 'retired'] as const)('handles a pending create when projec
       const confirming = await scope.beginTaskRead(projectId, parentId, 0, 0, scope.signal);
       await act(async () => { expect(await scope.observeHistory(confirming, taskSyncEpoch(projectId), scope.signal)).toBe('current'); });
       act(() => document.dispatchEvent(new Event('visibilitychange')));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'New subtask' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
       expect(await screen.findByText(/creation outcome is unknown/i)).toBeVisible();
       expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Unconfirmed repair');
       expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();

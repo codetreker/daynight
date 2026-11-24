@@ -1,20 +1,21 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ApiError, createTask, getTask, getTaskObservation, listTaskChildren } from '../src/api/client';
+import { ApiError, createTask, getTask, getTaskObservation, listTaskChildren, type TaskChildrenPage } from '../src/api/client';
 import { OrdinaryTaskRelations } from '../src/features/task-detail/OrdinaryTaskRelations';
+import type { TaskDetail } from '../src/api/types';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { detailFixture } from './helpers/taskDetail';
 
 vi.mock('../src/app/polling', () => ({ pollingInterval: () => 500 }));
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), createTask: vi.fn(), getTask: vi.fn(), getTaskObservation: vi.fn(), listTaskChildren: vi.fn() }));
-const gate = vi.hoisted(() => ({ generation: 1, revision: 1, qualified: true, possible: true, verify: true, revoked: false, listeners: new Set<(event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void>(), ready: async () => {} }));
+const gate = vi.hoisted(() => ({ generation: 1, revision: 1, qualified: true, possible: true, verify: true, verifyRead: null as null | (() => Promise<boolean>), revoked: false, accessReady: true, observe: async () => 'current', listeners: new Set<(event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void>(), ready: async () => {} }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => {
-  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, hasIdentityMismatch: false, isProjectSuspended: () => gate.revoked, principalMismatch: vi.fn(), getHistoryGeneration: () => gate.generation, getProjectRevision: () => gate.revision, ready: () => gate.ready(), subscribe: (listener: (event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void) => { gate.listeners.add(listener); return () => gate.listeners.delete(listener); }, beginTaskRead: async () => ({}), observeHistory: async () => 'current', verifyTaskRead: async () => gate.verify, isTaskReadCurrent: () => gate.qualified, isTaskHistoryPossiblyCurrent: () => gate.possible, isTaskHistoryConfirmedCurrent: () => gate.qualified };
+  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, hasIdentityMismatch: false, isProjectSuspended: () => gate.revoked, principalMismatch: vi.fn(), getHistoryGeneration: () => gate.generation, getProjectRevision: () => gate.revision, ready: () => gate.ready(), subscribe: (listener: (event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void) => { gate.listeners.add(listener); return () => gate.listeners.delete(listener); }, beginTaskRead: async () => ({}), observeHistory: () => gate.observe(), verifyTaskRead: () => gate.verifyRead?.() ?? Promise.resolve(gate.verify), isTaskReadCurrent: () => gate.qualified, isTaskHistoryPossiblyCurrent: () => gate.possible, isTaskHistoryConfirmedCurrent: () => gate.qualified };
   return { useTaskCacheScope: () => scope };
 });
 vi.mock('../src/features/task-detail/TaskDetailSession', () => ({ useTaskDetailSessions: () => sessions }));
 const sessions = { captureDirectQualification: () => gate.qualified ? {} : null, verifyDirectQualificationHistory: async () => gate.qualified, isDirectQualificationHistoryCurrent: () => gate.qualified, verifyDirectQualification: async () => gate.qualified };
-vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccess: () => ({ ready: true, status: 'ready', session: { waitForFreshAccess: async () => ({}) } }), ProjectAccessBoundary: ({ children }: { children: React.ReactNode }) => children }));
+vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccess: () => ({ ready: gate.accessReady, status: 'ready', session: { waitForFreshAccess: async () => ({}), snapshot: () => ({ status: 'ready', refreshing: !gate.accessReady }) } }), ProjectAccessBoundary: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock('../src/features/task-assignment/AssigneePicker', () => ({ AssigneePicker: ({ children, onSelect }: { children: React.ReactNode; onSelect: (value: string) => void }) => <button type="button" onClick={() => onSelect('another')}>{children}</button> }));
 vi.mock('../src/features/task-assignment/TaskAssigneeIdentity', () => ({ TaskAssigneeIdentity: ({ assignedTo }: { assignedTo: string | null }) => <span>{assignedTo ?? 'Unassigned'}</span> }));
 vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: () => null }));
@@ -25,7 +26,7 @@ const { parentTaskId: _relation, ...oldParent } = parent;
 const child = (n: number, status: 'proposed' | 'todo' | 'in_progress' | 'done' | 'cancelled') => detailFixture(project, `20000000-0000-4000-8000-00000000000${n}`, { title: `Child ${n}`, status, parentTaskId: parentId });
 vi.mocked(getTaskObservation).mockImplementation(async () => ({ epoch: 'epoch', detail: parent }));
 const panel = (detail = parent) => <OrdinaryTaskRelations projectId={project} detail={detail} history={1} active onRefreshGraph={vi.fn()} />;
-afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.resetAllMocks(); vi.mocked(getTaskObservation).mockImplementation(async () => ({ epoch: 'epoch', detail: parent })); gate.generation = 1; gate.revision = 1; gate.qualified = true; gate.possible = true; gate.verify = true; gate.revoked = false; gate.listeners.clear(); gate.ready = async () => {}; });
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.resetAllMocks(); vi.mocked(getTaskObservation).mockImplementation(async () => ({ epoch: 'epoch', detail: parent })); gate.generation = 1; gate.revision = 1; gate.qualified = true; gate.possible = true; gate.verify = true; gate.revoked = false; gate.listeners.clear(); gate.ready = async () => {}; gate.observe = async () => 'current'; gate.verifyRead = null; gate.accessReady = true; });
 
 it('loads the authorized page, five states and real Task links, without treating missing projection as no parent', async () => {
   const ancestor = detailFixture(project, '20000000-0000-4000-8000-000000000009', { title: 'Ancestor', parentTaskId: null });
@@ -146,6 +147,7 @@ it('retains the in-flight outcome across a temporarily uncertain history and res
   expect(screen.queryByRole('dialog')).toBeNull();
   await act(async () => pending.reject(new ApiError('network')));
   act(() => { gate.qualified = true; for (const listener of [...gate.listeners]) listener({ projectId: project }); });
+  fireEvent.click(await screen.findByRole('button', { name: 'New subtask' }));
   await screen.findByText(/creation outcome is unknown/i);
   expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Retained draft'); expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled(); expect(createTask).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'Create another subtask' })); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -164,9 +166,129 @@ it('retains pending and unknown creation across a peer cache withdrawal', async 
   const restore = () => { gate.qualified = true; for (const listener of [...gate.listeners]) listener({ projectId: project }); };
   act(withdraw); expect(screen.queryByRole('dialog')).toBeNull();
   await act(async () => pending.reject(new ApiError('network')));
-  act(restore); await screen.findByText(/creation outcome is unknown/i);
+  act(restore); fireEvent.click(await screen.findByRole('button', { name: 'New subtask' })); await screen.findByText(/creation outcome is unknown/i);
   expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Peer retained draft');
   act(withdraw); expect(screen.queryByRole('dialog')).toBeNull(); act(restore);
+  fireEvent.click(await screen.findByRole('button', { name: 'New subtask' }));
   expect(await screen.findByText(/creation outcome is unknown/i)).toBeVisible(); expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled(); expect(createTask).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'Create another subtask' })); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+});
+
+
+it('publishes parent and children independently and retries each failure', async () => {
+  const ancestor = detailFixture(project, '20000000-0000-4000-8000-000000000009', { title: 'Ancestor', parentTaskId: null });
+  vi.mocked(getTaskObservation).mockResolvedValue({ epoch: 'epoch', detail: { ...parent, parentTaskId: ancestor.id } });
+  const pending = Promise.withResolvers<TaskChildrenPage>();
+  vi.mocked(getTask).mockResolvedValue(ancestor);
+  vi.mocked(listTaskChildren).mockReturnValueOnce(pending.promise).mockResolvedValue({ items: [child(2, 'todo')], nextCursor: null });
+  renderWithLocale(panel(), { locale: 'en' });
+  expect(await screen.findByText('Ancestor')).toBeVisible();
+  await act(async () => pending.reject(new ApiError('network')));
+  expect(await screen.findByText(/Could not load subtasks/)).toBeVisible();
+  expect(screen.getByText('Ancestor')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Child 2')).toBeVisible();
+});
+
+it('publishes children when the parent read fails and recovers the parent', async () => {
+  const ancestor = detailFixture(project, '20000000-0000-4000-8000-000000000009', { title: 'Ancestor', parentTaskId: null });
+  vi.mocked(getTaskObservation).mockResolvedValue({ epoch: 'epoch', detail: { ...parent, parentTaskId: ancestor.id } });
+  vi.mocked(getTask).mockRejectedValueOnce(new ApiError('network')).mockResolvedValue(ancestor);
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [child(2, 'todo')], nextCursor: null });
+  renderWithLocale(panel(), { locale: 'en' });
+  expect(await screen.findByText('Child 2')).toBeVisible();
+  expect(await screen.findByText(/Could not load parent Task/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Ancestor')).toBeVisible();
+  expect(screen.getByText('Child 2')).toBeVisible();
+});
+
+it('does not send an old preflight after leaving and returning to the tab', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  const pending = Promise.withResolvers<string>(); let observations = 0;
+  gate.observe = () => ++observations === 2 ? pending.promise : Promise.resolve('current');
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  const renderPanel = (visible: boolean) => <OrdinaryTaskRelations projectId={project} detail={parent} history={1} active subtasksActive={visible} onRefreshGraph={vi.fn()} />;
+  const view = renderWithLocale(renderPanel(true), { locale: 'en', container: root });
+  await screen.findByText('No subtasks'); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Old operation' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  await waitFor(() => expect(observations).toBe(2));
+  view.rerender(renderPanel(false)); expect(screen.queryByRole('dialog')).toBeNull();
+  view.rerender(renderPanel(true)); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  await act(async () => pending.resolve('current'));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled());
+  expect(createTask).not.toHaveBeenCalled();
+});
+
+it('consumes a dispatched receipt once while leaving a later presentation open', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  const pending = Promise.withResolvers<TaskDetail>(); vi.mocked(createTask).mockReturnValueOnce(pending.promise);
+  const refresh = vi.fn(); const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  const renderPanel = (visible: boolean) => <OrdinaryTaskRelations projectId={project} detail={parent} history={1} active subtasksActive={visible} onRefreshGraph={refresh} />;
+  const view = renderWithLocale(renderPanel(true), { locale: 'en', container: root });
+  await screen.findByText('No subtasks'); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Dispatched' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' })); await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  view.rerender(renderPanel(false)); expect(screen.queryByRole('dialog')).toBeNull();
+  view.rerender(renderPanel(true)); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  await act(async () => pending.resolve(child(2, 'proposed')));
+  expect(await screen.findByText(/Subtask created:/)).toBeVisible();
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  expect(screen.getByRole('dialog')).toBeVisible(); expect(createTask).toHaveBeenCalledOnce();
+  fireEvent.click(within(screen.getByRole('dialog').querySelector('footer')!).getByRole('button', { name: 'Close' }));
+});
+
+
+it('retries a failed next page at its cursor', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValueOnce({ items: [child(2, 'todo')], nextCursor: 'next' })
+    .mockRejectedValueOnce(new ApiError('network')).mockResolvedValueOnce({ items: [child(3, 'done')], nextCursor: null });
+  renderWithLocale(panel(), { locale: 'en' });
+  await screen.findByText('Child 2'); fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  await screen.findByText(/Could not load subtasks/); fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Child 3')).toBeVisible();
+  expect(vi.mocked(listTaskChildren).mock.calls[2]![2]).toBe('next');
+});
+
+
+it('retains a receipt until access is ready again, including loss during verification', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  const write = Promise.withResolvers<TaskDetail>(); vi.mocked(createTask).mockReturnValueOnce(write.promise);
+  const refresh = vi.fn(); const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  const panel = () => <OrdinaryTaskRelations projectId={project} detail={parent} history={1} active onRefreshGraph={refresh} />;
+  const view = renderWithLocale(panel(), { locale: 'en', container: root });
+  await screen.findByText('No subtasks'); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Access pending' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' })); await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  const verification = Promise.withResolvers<boolean>(); let verifications = 0;
+  gate.verifyRead = () => { verifications++; return verification.promise; };
+  await act(async () => write.resolve(child(2, 'proposed')));
+  await waitFor(() => expect(verifications).toBeGreaterThan(0));
+  gate.accessReady = false;
+  await act(async () => verification.resolve(true));
+  expect(refresh).not.toHaveBeenCalled(); expect(screen.getByRole('dialog')).toBeVisible();
+  gate.verifyRead = async () => true;
+  view.rerender(panel());
+  expect(refresh).not.toHaveBeenCalled();
+  gate.accessReady = true; view.rerender(panel());
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(createTask).toHaveBeenCalledOnce();
+});
+
+
+it('checks current project access after the final preflight await before sending', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  const pending = Promise.withResolvers<string>(); let observations = 0;
+  gate.observe = () => ++observations === 2 ? pending.promise : Promise.resolve('current');
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  renderWithLocale(panel(), { locale: 'en', container: root });
+  await screen.findByText('No subtasks'); fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Access changed' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  await waitFor(() => expect(observations).toBe(2));
+  gate.accessReady = false;
+  await act(async () => pending.resolve('current'));
+  expect(await screen.findByText('Creation failed.')).toBeVisible();
+  expect(createTask).not.toHaveBeenCalled();
 });

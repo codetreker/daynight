@@ -1283,7 +1283,7 @@ distinct; the server owns matching, ordering and context. The
 
 ## Task detail navigation
 
-Ordinary Task details provide Overview and Attachments in both dialogs and
+Ordinary Task details provide Overview, Subtasks and Attachments in both dialogs and
 standalone pages, followed by Discussion, Session and Usage when available.
 The tab row supports keyboard navigation and reveals the selected tab when its
 labels or container change. At heights up to 500px, a single scrollable row
@@ -1395,7 +1395,7 @@ historical identity, archive verification and read-only playback behavior.
 
 ## Task discussions
 
-Ordinary Task details provide Overview, Attachments and Discussion tabs, followed
+Ordinary Task details provide Overview, Subtasks, Attachments and Discussion tabs, followed
 by Session while its existence is being resolved or actual execution history is
 available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
@@ -1858,9 +1858,9 @@ done + cancelled while preserving each result count. External context does not
 affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
-copy icon immediately to its right. The ID and its copy control belong to Overview. Ordinary Task Overview mounts
-`OrdinaryTaskRelations`: the real direct parent appears in its parent slot, and
-authorized direct-child pages display all five states with fixed-parent creation.
+copy icon immediately to its right. The ID and its copy control belong to Overview. Ordinary Task details share `OrdinaryTaskRelations` across reading tabs: the real
+direct parent appears in Overview, while Subtasks displays authorized direct-child
+pages in all five states and offers fixed-parent creation.
 Ordinary parents use independent Task detail URLs and existing draft-aware browser
 navigation; Goal membership and dependency graphs retain their meanings. Missing
 ordinary-parent projection fields remain unknown, not an empty relation. Lifecycle
