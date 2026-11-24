@@ -25,7 +25,7 @@ test('module check shares compilation between full vet and coverage for its modu
   assert.match(coveredTests[0]!, /-race=true -vet=all -coverpkg=example\/api,example\/internal\/server /);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth .* -race=true/);
   assert.doesNotMatch(trace, /TestWebhookRunnerAbruptProcessRecovery|go build |--tags=startupshutdown/);
-  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts scripts\/command-timeout.test.mts scripts\/go-cov-capture.test.mts/);
+  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts scripts\/command-timeout.test.mts scripts\/go-cov-capture.test.mts scripts\/go-test-database-exec.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
 });
 
@@ -37,6 +37,21 @@ test('PR CI uses four Go package slots with race disabled and propagates coverag
   assert.match(trace, /go test .* -race=false/);
   assert.match(trace, /go-cov --race=false .* -race=false -p=4 -vet=all -coverpkg=/);
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
+});
+
+test('PR coverage alone receives the database launcher', async (t) => {
+  const { result, trace } = await runValidation(t, 'check', 'true', {
+    GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/42/merge',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(trace, /go-cov-capture.mts module-pr /);
+  const commands = trace.split('\n');
+  const coveredTests = commands.filter(line => line.startsWith('go test -exec='));
+  assert.equal(coveredTests.length, 1);
+  assert.match(coveredTests[0]!, /go-test-database-exec.sh.*-json /);
+  assert.doesNotMatch(coveredTests[0]!.split(' GOFLAGS=')[1]!, /-exec=/);
+  assert.doesNotMatch(trace, /^go vet /m);
+  assert.doesNotMatch(commands.find(line => line.startsWith('go test -count=1'))!, /-exec=/);
 });
 
 test('module check propagates fixture and covered test failures', async (t) => {

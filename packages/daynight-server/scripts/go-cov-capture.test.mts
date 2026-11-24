@@ -26,6 +26,18 @@ test('capture retains Test output followed only by package fail without changing
   assert.deepEqual(JSON.parse(await readFile(join(f.root, 'cov-args'), 'utf8')), ['--race=true', '--coverprofile=coverage.out']);
 });
 
+test('PR capture adds -exec only to the actual Go test arguments', async t => {
+  const f = await fixture(t);
+  const result = f.run('module-pr');
+  assert.equal(result.status, 0, result.stderr);
+  const trace = (await readFile(join(f.root, 'trace'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(trace[0].args, ['list', './...']);
+  assert.deepEqual(trace[1].args, ['test', `-exec='${join(f.root, 'scripts/go-test-database-exec.sh')}'`,
+    'example/pkg', '-json', '-timeout=10m', 'argument with spaces']);
+  assert.ok(trace.every(item => item.flags === f.env.GOFLAGS));
+  assert.equal((await f.runs()).length, 1);
+});
+
 test('each coverage owner keeps prior runs and requires a complete capture before success', async t => {
   const f = await fixture(t);
   for (const scope of ['module', 'module', 'startup-shutdown']) {
