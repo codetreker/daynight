@@ -1393,6 +1393,58 @@ describe("worker runtime configuration reporting", () => {
     }
   }, 20_000);
 
+  it("settles a timed-out original report after its output and journal close", async () => {
+    vi.useRealTimers();
+    const f = await fixture(), releaseOutput = deferred<void>();
+    const observed = deferred<{ resourceId: string; error: unknown; elapsed: number }>();
+    let firstStop: unknown, stopCount = 0;
+    mocks.createdReporter.mockImplementationOnce((reporter: ReturnType<typeof createWorkerReporter>) => {
+      const original = reporter.stop;
+      vi.spyOn(reporter, "stop").mockImplementation(async () => {
+        stopCount++;
+        try { await original(); }
+        catch (error) { firstStop ??= error; releaseOutput.resolve(); throw error; }
+      });
+    });
+    collect.mockImplementationOnce(async parent => {
+      const operation = createOperation({ signal: parent.signal, limits: { totalMs: 5000, requestMs: 5000 } });
+      const sink = currentOwnedCommandLifecycle()!;
+      let resourceId = "";
+      const started = performance.now();
+      try {
+        await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('probe')"], environment: process.env }, operation,
+          async event => { resourceId = event.resourceId; await sink(event); },
+          { cleanupWithinDeadline: true, onStdout: async () => { await releaseOutput.promise; } });
+        throw new Error("Expected the original output join to time out.");
+      } catch (error) {
+        observed.resolve({ resourceId, error, elapsed: performance.now() - started });
+        return { telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error }] };
+      } finally { operation.dispose(); }
+    });
+    const running = start(f);
+    try {
+      const { resourceId, error, elapsed } = await observed.promise;
+      expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+      expect(elapsed).toBeLessThan(5700);
+      const journal = path.join(f.paths.workerDirectory, "execution-resources", `${resourceId}.json`);
+      const unknown = JSON.parse(await readFile(journal, "utf8"));
+      expect(unknown).toMatchObject({ generation: "1", event: { resourceId, stage: "unknown", proof: expect.any(Object) } });
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+      f.signal.abort();
+      await running;
+      expect(firstStop).toBe(error);
+      expect(stopCount).toBe(2);
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
+      const stopped = JSON.parse(await readFile(journal, "utf8"));
+      expect(stopped).toMatchObject({ generation: unknown.generation, event: { resourceId, stage: "stopped", proof: unknown.event.proof } });
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" }));
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
+    } finally {
+      releaseOutput.resolve(); f.signal.abort(); await Promise.allSettled([running]);
+    }
+  }, 20_000);
+
   it("retains management storage and its lock when reporter cleanup has no original close proof", async () => {
     const f = await fixture();
     const acquire = instanceLocks.acquireWorkerInstanceLock;
@@ -1413,6 +1465,37 @@ describe("worker runtime configuration reporting", () => {
       f.signal.abort(); await Promise.allSettled([running]);
       // The fixture supplied an unresolvable synthetic responsibility. Only
       // its test owner releases the retained handles after the assertions.
+      store?.close(); await originalLock?.release(); acquired.mockRestore();
+    }
+  });
+
+  it.each([false, true])("preserves reporter stop failures with identical objects: %s", async same => {
+    const f = await fixture();
+    const first = new OwnedCommandCleanupError([new Error("unjoined original process")], undefined);
+    const second = same ? first : new Error("Reporter diagnostic close failed");
+    const acquire = instanceLocks.acquireWorkerInstanceLock;
+    let originalLock: Awaited<ReturnType<typeof acquire>> | undefined;
+    const acquired = vi.spyOn(instanceLocks, "acquireWorkerInstanceLock").mockImplementation(async paths => originalLock = await acquire(paths));
+    mocks.createdReporter.mockImplementationOnce((reporter: ReturnType<typeof createWorkerReporter>) => {
+      vi.spyOn(reporter, "stop").mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+    });
+    const running = start(f);
+    const result = running.then(() => undefined, error => error as unknown);
+    let store: WorkerCoordinatorOptions["store"] | undefined;
+    try {
+      await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      store = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store;
+      f.signal.abort();
+      const error = await result;
+      if (same) expect(error).toBe(first);
+      else {
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors).toHaveLength(2);
+        expect((error as AggregateError).errors).toEqual(expect.arrayContaining([first, second]));
+      }
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      f.signal.abort(); await Promise.allSettled([running]);
       store?.close(); await originalLock?.release(); acquired.mockRestore();
     }
   });

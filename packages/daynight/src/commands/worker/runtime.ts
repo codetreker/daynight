@@ -1262,14 +1262,21 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       await root.journal?.read();
       await stopReporter();
       if (reportFailure !== undefined) {
+        const retainReportFailure = (error: unknown): void => {
+          const destination = hasUnconfirmedOwnedCommandCleanup(error) ? managementFailures : failures;
+          if (!destination.includes(error)) destination.push(error);
+        };
         try {
           if (!hasOwnedCommandCleanupFailure(reportFailure)) throw reportFailure;
           // The original stop has joined the reporting loop. Re-observe its
           // retained failures after native owners reconcile their receipts;
           // stop never restarts collection or replaces a pending writer.
           await reporter?.stop();
-          failures.push(reportFailure);
-        } catch (error) { managementFailures.push(error); }
+          if (reporter?.isSettledCleanupFailure(reportFailure) !== true) retainReportFailure(reportFailure);
+        } catch (error) {
+          retainReportFailure(reportFailure);
+          if (error !== reportFailure) retainReportFailure(error);
+        }
       }
       observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
       try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }

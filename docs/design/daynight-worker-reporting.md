@@ -30,7 +30,11 @@ reporter 构造时立即触发，并设置独立 30 秒 interval。`running` 表
 
 runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending 并取消当前 Operation；coordinator 的同一根信号监听同步关闭调度并中止全部 job controller，包括终态清理 job。取消阶段不等待 reporter.stop()，因此慢报告不能延后 Task 取消，已取消的终态 job 不在报告 join 期间继续删除 worktree 或完成本机行。runtime 同时启动配置 beginDrain()，再 join reporter、初始化移除及其它完成结果生产者；stop() 等待原配置 job 和文件队列，之后进入执行资源 shutdown。shutdown 按当前归属分流：已确认失去归属的原 Web claim 复用立即终态清理；Web 状态不足时由本机资源适配器补定位原执行；仍归本 Worker 或归属未知时沿用原停止和保留责任。该分流由[Worker 设计](daynight-worker.md#结束清理与退出)拥有，reporter 不参与判定。五秒 drain 只限制继续调度写重试，不 detach 活动 read/write/rename，实例锁保留到实际 I/O 和执行资源结束。未保存结果仍失败；backend 与 stores 的最后事件结束后才 close 诊断 sink。未结 claim、worktree、原生 session ID 及 active/pending 行继续保留。报告失败由本轮采集和发送处理。遥测命令的收尾未确认时，原命令责任保留在[执行作用域](daynight-worker.md#管理根与执行作用域)，任务和其它采集字段继续运行。对应探测保持不可用，直至原边界关闭获得确认。显式停止时，探测进程收尾无法确认与诊断输出失败由 stop() 保留并传递，其他资源清理继续。
 
-reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发并 join 当前采集后，按原确认状态判断剩余责任。已确认的历史清理超时及 reporter 自身取消包装不再单独导致退出失败；混合 `AggregateError` 中仍未确认的清理、独立错误和诊断输出失败继续传播。已确认清理错误自身携带的原始命令失败仍属于历史上下文，不等同于聚合中独立的退出失败。此判断不清除历史错误分类，也不触发新探测；停止或取消的采集不会因晚到确认复活。
+原命令 owner 以结构化分类区分清理等待超时与终止、输出、持久化等独立失败；旧错误缺乏充分分类时保守传播，不解析错误文本。Worker 执行作用域管理的命令将确认绑定到原 `resourceId`、generation、process proof、输出及持久事件。正在进行的对账 join 原操作；有界重新观察沿原 owner 的规则执行，不刷新截止或重复发送命令。原 scope 和 journal 确认同一资源的进程边界、输出已关闭及事件已保存后，才能结算该资源的历史清理等待超时；直接 child runner 的确认边界见下文。
+
+reporter 保留原始错误，在 `stop()` 停止触发并 join 当前采集后，递归检查清理错误自身、`cause` 和 `AggregateError` 的成员。已确认的历史等待超时及 reporter 自身取消包装不再单独导致退出失败；未确认责任、终止失败、输出或保存失败及其他独立错误继续传播，包括已确认 `OwnedCommandCleanupError` 内部的独立错误。原命令的采样超时仍是采样失败，可以是已确认清理错误的历史上下文，不能与独立退出错误混淆。此判断保留历史诊断，不触发新探测；停止或取消的采集不会因晚到确认复活。
+
+`runtime.ts` 的 `stopReporter`／`finishManagement` 在首次 stop 已 join 后保留原错误，完成原 owner 的资源对账，再调用同一 reporter 的 `stop()` 重新判断剩余错误。只有二次 stop 成功且结构化分类证明首次错误除原采样失败上下文和 reporter 自身取消包装外，只含已结算的历史清理等待时，最终失败才排除该错误；二次失败保留两次错误，按对象身份去重。其他资源清理继续；未确认资源与实例锁按原合同保留，已确认关闭的资源不因独立历史错误继续占锁。采集五秒预算、退出预算与清洗诊断均不因对账或重试而延长或丢弃。
 
 可信配置报告响应之后，`accept` 使用同一 Operation 的 signal 作为等待者预算，将捕获及回执先交给 manager-owned 提交。取消/超时使调用者离开等待，不能取消该提交或清除其结果。周期调度仍单飞并合并触发；文件恢复按序发布后通过原唤醒机制产生新的尝试。该屏障不承担服务端权威版本策略，不把已知回执伪装成读取或远端未知结果。
 
@@ -137,7 +141,7 @@ jq -c --arg request "$REQUEST_ID" 'select(.configuration.requestId == $request)'
 
 ## 验证结构
 
-reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、GET 较低/null 恢复、同版本语义冲突拒绝、迟到低版本回执与未知-only 应用版本锚点、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
+reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join，并验证已确认清理错误内部的独立失败仍传播。runtime 验证同一 reporter 在原 owner 对账后的二次 stop、首次诊断保留、双重失败去重与锁释放；真实原资源证据须覆盖进程边界、输出和 journal，分别记录采样截止及后续对账时刻。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、GET 较低/null 恢复、同版本语义冲突拒绝、迟到低版本回执与未知-only 应用版本锚点、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
 
 collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
 

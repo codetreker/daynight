@@ -7,7 +7,8 @@ import { PassThrough } from "node:stream";
 import { performance } from "node:perf_hooks";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand, terminateOwnedProcess } from "../../../src/commands/worker/owned-command.js";
+import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand, terminateOwnedProcess } from "../../../src/commands/worker/owned-command.js";
 import type { OwnedSpawn } from "../../../src/commands/worker/owned-command.js";
 
 const operations: Operation[] = [];
@@ -146,6 +147,7 @@ describe("late prerequisite cleanup acknowledgement", () => {
     const wrapper = new Error("Probe unavailable", { cause: new AggregateError([error]) });
     const listeners = child.listenerCount("close");
     expect(hasUnconfirmedOwnedCommandCleanup(wrapper)).toBe(true);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
     child.emit("exit", 0, null);
     child.stdout.emit("close"); child.stderr.emit("close");
     new ChildProcess().emit("close", 0, null);
@@ -160,6 +162,8 @@ describe("late prerequisite cleanup acknowledgement", () => {
     expect(vi.getTimerCount()).toBe(0);
     child.emit("close", 0, null);
     expect(hasUnconfirmedOwnedCommandCleanup(wrapper)).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(true);
+    expect(isConfirmedOwnedCommandCleanupWait(wrapper)).toBe(false);
     expect(hasOwnedCommandCleanupFailure(wrapper)).toBe(true);
     expect(start).toHaveBeenCalledTimes(1);
     expect(child.listenerCount("close")).toBe(0);
@@ -177,6 +181,7 @@ describe("late prerequisite cleanup acknowledgement", () => {
     child.emit("close", 0, null);
     expect(error).toMatchObject({ errors: expect.arrayContaining([terminationError]) });
     expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
     expect(hasOwnedCommandCleanupFailure(error)).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -194,6 +199,57 @@ describe("late prerequisite cleanup acknowledgement", () => {
     expect(hasOwnedCommandCleanupFailure(mixed)).toBe(true);
     const legacy = new OwnedCommandCleanupError([new Error("Unowned cleanup")], undefined);
     expect(hasUnconfirmedOwnedCommandCleanup(new AggregateError([mixed, legacy]))).toBe(true);
+    expect(isConfirmedOwnedCommandCleanupWait(legacy)).toBe(false);
+  });
+
+  it("preserves independent and late errors even after the original close", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const { child, error } = await timedOutCommand();
+    child.emit("close", 0, null);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(true);
+    if (!(error instanceof OwnedCommandCleanupError)) throw new Error("Expected the original cleanup error.");
+    const late = new Error("Output persistence failed");
+    error.errors.push(late);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+    expect(error.errors).toContain(late);
+    error.errors.pop();
+    error.cause = late;
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+  });
+
+  it("retains root cancellation separately from the cleanup wait after closure", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const cancellation = new AbortController(), child = new ChildProcess();
+    const op = operation(100, cancellation.signal);
+    const pending = runOwnedCommand(command(""), op, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+    cancellation.abort(new Error("root cancelled"));
+    await vi.advanceTimersByTimeAsync(110);
+    const error = await pending;
+    expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+    expect((error as Error).cause).toBe(op.signal.reason);
+    expect(isConfirmedOwnedCommandCleanupWait(error, () => true)).toBe(false);
+    child.emit("close", 0, null);
+    expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(error, () => false)).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(error, () => { throw new Error("unknown cancellation"); })).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(error, cause => isWorkerCancellation(cause, cancellation.signal))).toBe(true);
+    if (!(error instanceof OwnedCommandCleanupError)) throw new Error("Expected the original cleanup error.");
+    error.errors.push(new Error("independent output failure"));
+    expect(isConfirmedOwnedCommandCleanupWait(error, cause => isWorkerCancellation(cause, cancellation.signal))).toBe(false);
+  });
+
+  it("handles cyclic error chains without confusing them with cleanup confirmation", () => {
+    const first = new Error("first"), second = new AggregateError([first], "second", { cause: first });
+    first.cause = second;
+    expect(hasOwnedCommandCleanupFailure(first)).toBe(false);
+    expect(hasUnconfirmedOwnedCommandCleanup(first)).toBe(false);
+    expect(isConfirmedOwnedCommandCleanupWait(first)).toBe(false);
+    second.errors.push(new OwnedCommandCleanupError([], undefined));
+    expect(hasOwnedCommandCleanupFailure(first)).toBe(true);
+    expect(hasUnconfirmedOwnedCommandCleanup(first)).toBe(true);
   });
 
   it("does not start another command after cancellation and late acknowledgement", async () => {

@@ -40,6 +40,13 @@ export class ControllerProcessIdentityConflictError extends Error {
     super("An original process has conflicting identity evidence; complete stop is unconfirmed.");
   }
 }
+/** An authenticated signal was sent, but the original group did not finish within the observation budget. */
+export class ControllerProcessWaitDeadlineError extends Error {
+  constructor(readonly phase: "term" | "kill") {
+    super("Controller process operation exceeded its deadline.");
+    this.name = "ControllerProcessWaitDeadlineError";
+  }
+}
 const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
   validPid(proof.pid);
   if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
@@ -102,11 +109,13 @@ const bounded = async <T>(deadline: number | undefined, action: () => Promise<T>
     throw cause;
   }
 };
-const groupMembers = async (group: number, deadline?: number): Promise<number[]> => {
+const groupMembers = async (group: number, deadline?: number, waitPhase?: "term" | "kill"): Promise<number[]> => {
+  if (waitPhase !== undefined && deadline !== undefined && Date.now() >= deadline) throw new ControllerProcessWaitDeadlineError(waitPhase);
   const rows = await bounded(deadline, () => run("ps", ["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="], remaining(deadline)));
-  remaining(deadline);
   const result: number[] = [];
   for (const row of rows.split("\n")) { if (row.trim() === "") continue; const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(row); if (match === null) throw new Error("Cannot interpret process group inventory."); if (Number(match[2]) === group && !match[3]!.startsWith("Z")) result.push(Number(match[1])); }
+  if (waitPhase !== undefined && deadline !== undefined && Date.now() >= deadline) throw new ControllerProcessWaitDeadlineError(waitPhase);
+  remaining(deadline);
   return result;
 };
 const confirmRetainedProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number): Promise<boolean> => {
@@ -173,14 +182,28 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   if (!await signal("SIGTERM")) return;
   const graceful = Math.min(deadline, Date.now() + 2000);
   while (Date.now() < graceful) {
-    const members = await groupMembers(controller.pid, deadline);
+    // Do not start a new ps process when its available time is shorter than
+    // the polling interval. The completed signal remains the last action.
+    if (deadline - Date.now() <= 25) {
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now())));
+      throw new ControllerProcessWaitDeadlineError("term");
+    }
+    const members = await groupMembers(controller.pid, deadline, "term");
     // A trusted command guardian remains alive solely to preserve the original
     // group identity. With no descendants left it needs no graceful interval;
     // signal() still authenticates the original proof before the final kill.
     if (members.length === 0 || options.guardian === true && members.length === 1 && members[0] === controller.pid) break;
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(25, graceful - Date.now()))));
   }
+  if (Date.now() >= deadline) throw new ControllerProcessWaitDeadlineError("term");
   if (!await signal("SIGKILL")) return;
-  while (Date.now() < deadline && (await groupMembers(controller.pid, deadline)).length > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
-  if ((await groupMembers(controller.pid, deadline)).length > 0) throw new Error("Original controller process group did not stop by its deadline.");
+  while (Date.now() < deadline) {
+    if (deadline - Date.now() <= 25) {
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now())));
+      throw new ControllerProcessWaitDeadlineError("kill");
+    }
+    if ((await groupMembers(controller.pid, deadline, "kill")).length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+  }
+  if (Date.now() >= deadline) throw new ControllerProcessWaitDeadlineError("kill");
 };

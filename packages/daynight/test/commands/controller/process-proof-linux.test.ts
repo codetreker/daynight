@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const io = vi.hoisted(() => ({ exec: vi.fn(), read: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: io.exec }));
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), readFile: io.read }));
-import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, confirmControllerProcessesStopped, ControllerProcessWaitDeadlineError, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const boot = "876b21c9-30d7-48c0-a2ab-287291e903a7";
@@ -58,6 +58,58 @@ it("retires an otherwise empty command guardian without waiting through the grac
   expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
   expect(process.kill).toHaveBeenCalledWith(-pid, "SIGKILL");
   expect(await confirmControllerProcessesStopped(proof, [])).toBe(true);
+});
+
+it.each([{ deadline: 100, phase: "term", killed: false }, { deadline: 2100, phase: "kill", killed: true }] as const)("classifies only a completed $phase signal followed by a group wait deadline", async ({ deadline, phase, killed }) => {
+  vi.useFakeTimers();
+  const proof = await captureProcessProof(pid);
+  vi.mocked(process.kill).mockReturnValue(true);
+  const pending = stopControllerProcesses(proof, [], Date.now() + deadline).catch(error => error);
+  await vi.advanceTimersByTimeAsync(deadline);
+  const error = await pending;
+  expect(error).toBeInstanceOf(ControllerProcessWaitDeadlineError);
+  expect(error.phase).toBe(phase);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(vi.mocked(process.kill).mock.calls.some(([target, signal]) => target === -pid && signal === "SIGKILL")).toBe(killed);
+});
+
+it("keeps signal failure independent from the wait deadline", async () => {
+  const proof = await captureProcessProof(pid), failure = new Error("signal denied");
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => { if (signal === "SIGTERM") throw failure; return true; });
+  const error = await stopControllerProcesses(proof, [], Date.now() + 1000).catch(cause => cause);
+  expect(error).toBe(failure);
+  expect(error).not.toBeInstanceOf(ControllerProcessWaitDeadlineError);
+});
+
+it("keeps KILL failure independent after TERM", async () => {
+  vi.useFakeTimers();
+  const proof = await captureProcessProof(pid), failure = new Error("kill denied");
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => { if (signal === "SIGKILL") throw failure; return true; });
+  const pending = stopControllerProcesses(proof, [], Date.now() + 5000).catch(cause => cause);
+  await vi.advanceTimersByTimeAsync(2100);
+  expect(await pending).toBe(failure);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGKILL");
+});
+
+it.each(["before", "at"] as const)("keeps a failed group observation independent $0 its deadline after TERM", async when => {
+  if (when === "at") vi.useFakeTimers();
+  const proof = await captureProcessProof(pid), failure = new Error("group inventory failed");
+  vi.mocked(process.kill).mockReturnValue(true);
+  const original = io.exec.getMockImplementation()!;
+  let inventories = 0; const deadline = Date.now() + 1000;
+  io.exec.mockImplementation((file: string, args: string[], options: unknown, callback: (error: Error | null, output: string) => void) => {
+    if (args.includes("-A") && ++inventories === 2) {
+      if (when === "at") vi.setSystemTime(deadline);
+      callback(failure, ""); return;
+    }
+    original(file, args, options, callback);
+  });
+  const error = await stopControllerProcesses(proof, [], deadline).catch(cause => cause);
+  if (when === "at") expect(error).toMatchObject({ cause: failure, errors: expect.arrayContaining([failure]) });
+  else expect(error).toBe(failure);
+  expect(error).not.toBeInstanceOf(ControllerProcessWaitDeadlineError);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
 });
 
 it("still authenticates the original guardian before an early final kill", async () => {
