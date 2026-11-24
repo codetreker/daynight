@@ -1,0 +1,71 @@
+import type { ReactNode } from "react";
+import { openDB } from "idb";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApiError, getTaskSync, pauseAuthRequests } from "../src/api/client";
+import type { TaskGraph, TaskSync } from "../src/api/types";
+import { useTaskGraph } from "../src/features/projects/useTaskGraph";
+import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { detailFixture, graphFixture } from "./helpers/taskDetail";
+import { taskSyncReadFixture, taskSyncFromGraph, taskSyncEpoch, TEST_VIEWER_ID } from "./helpers/taskSync";
+
+vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), getTaskSync: vi.fn() }));
+
+const projectId = "10000000-0000-4000-8000-000000000001";
+const otherProjectId = "10000000-0000-4000-8000-000000000002";
+const otherUserId = "00000000-0000-4000-8000-000000000202";
+const taskId = "20000000-0000-4000-8000-000000000001";
+const graph = () => graphFixture([detailFixture(projectId, taskId)]);
+const sync = (value: TaskGraph, version = 1n, epoch?: string) => taskSyncFromGraph(value, {
+  query: { epoch: taskSyncEpoch(value.project.id) }, versionForTask: () => version, ...(epoch === undefined ? {} : { epoch }),
+});
+const scopes: TaskCacheScope[] = [];
+class Channel {
+  static readonly channels = new Set<Channel>();
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+  constructor(readonly name: string) { Channel.channels.add(this); }
+  postMessage(value: unknown) {
+    for (const peer of Channel.channels) if (peer !== this && peer.name === this.name) queueMicrotask(() => peer.onmessage?.({ data: value } as MessageEvent<unknown>));
+  }
+  close() { Channel.channels.delete(this); }
+}
+const scope = (userId = TEST_VIEWER_ID) => {
+  const cache = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(cache); return cache;
+};
+const seed = async (value = graph()) => {
+  const cache = scope(); const signal = new AbortController().signal;
+  const ticket = await cache.beginSync(value.project.id, signal);
+  await cache.applySync(ticket, taskSyncFromGraph(value, { versionForTask: () => 1n }), signal);
+  cache.dispose();
+};
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+};
+const mount = (cache = scope(), id = projectId) => renderHook(({ projectId: currentId }) => useTaskGraph(currentId), {
+  initialProps: { projectId: id },
+  wrapper: ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={cache}>{children}</TaskCacheProvider>,
+});
+
+beforeEach(() => { vi.mocked(getTaskSync).mockReset(); vi.stubGlobal("BroadcastChannel", Channel); });
+afterEach(() => { scopes.splice(0).forEach((cache) => cache.dispose()); });
+
+it('fallback graph retries when a concurrent direct snapshot commits first', async () => {
+  const cache = scope(), pending = deferred<TaskSync>(), current = graph();
+  const snapshot = taskSyncFromGraph(current, { versionForTask: () => 1n });
+  vi.mocked(getTaskSync)
+    .mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise))
+    .mockImplementationOnce(async () => taskSyncReadFixture(snapshot))
+    .mockImplementationOnce(async () => taskSyncReadFixture(sync(current)));
+  const view = mount(cache);
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(1));
+  const fence = await cache.beginTaskRead(projectId, taskId, 1, 1, new AbortController().signal);
+  expect(cache.isTaskReadCurrent(fence)).toBe(true);
+  await act(async () => { pending.resolve(snapshot); });
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(view.result.current.snapshot?.index.nodes.has(taskId)).toBe(true));
+  expect(view.result.current.error).toBeNull();
+});

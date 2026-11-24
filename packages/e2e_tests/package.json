@@ -10,6 +10,7 @@
     "test:auth-interruption": "node --test tests/subtask-compat-auth-browser-check.ts tests/subtask-compat-auth-browser-success-check.ts",
     "test": "node src/run.ts",
     "test:subtask-compat": "node src/subtask-compat.ts",
+    "test:fallback-cache": "node src/subtask-compat-fallback-test.ts",
     "cleanup": "node src/ci-cleanup.ts",
     "test:recovery-registries": "node --test tests/subtask-compat-registry-real.ts"
   },

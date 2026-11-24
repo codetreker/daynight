@@ -1,0 +1,149 @@
+import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
+import * as fake from "fake-indexeddb";
+import { openDB, type IDBPDatabase } from "idb";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getTask, pauseAuthRequests } from "../src/api/client";
+import { parseTaskSummary } from "../src/api/task-sync";
+import type { Project, TaskSummary, TaskSync, WorkerClaim } from "../src/api/types";
+import { deriveTaskSyncBindings, eligibleTaskExecutionBinding, sameTaskExecutionBinding, taskExecutionBinding } from "../src/features/task-cache/execution-binding";
+import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema, type TaskIntrinsicDetail } from "../src/features/task-cache/database";
+import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
+import { detailFixture } from "./helpers/taskDetail";
+import { wireResponse } from "./helpers/wireJson";
+
+const userId = "10000000-0000-0000-0000-000000000001";
+const otherUser = "10000000-0000-0000-0000-000000000002";
+const projectId = "20000000-0000-0000-0000-000000000001";
+const otherProject = "20000000-0000-0000-0000-000000000002";
+const epoch = "30000000-0000-0000-0000-000000000001";
+const nextEpoch = "30000000-0000-0000-0000-000000000002";
+const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(12, "0")}`;
+const time = "2026-10-20T12:00:00.123456789Z";
+const later = "2026-10-20T12:00:01.000000001Z";
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, tags: [], title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, responseTaskAt: later, responseSessionAt: later, sessionPartial: false, taskObservations: {}, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
+  const blockedBy = task.dependsOn.filter(id => !tasks.some(candidate => candidate.id === id && (candidate.status === "done" || candidate.status === "cancelled")));
+  return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === "todo" && blockedBy.length === 0 }];
+})), ...changes });
+const signal = () => new AbortController().signal;
+const worker = (changes: Partial<WorkerClaim> = {}): WorkerClaim => ({
+  claimId: taskId(91), state: "active", userId, workerId: taskId(92), machine: { id: taskId(93), name: "test" },
+  platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: taskId(94), phase: "executing", herdr: null,
+  nativeSessionId: "native-session", claimedAt: time, ...changes,
+});
+const executing = (changes: Partial<TaskSummary> = {}, claimChanges: Partial<WorkerClaim> = {}): TaskSummary =>
+  task(1, { status: "in_progress", startedAt: time, properties: { worker: { ...worker(claimChanges) } }, ...changes });
+const scopes: TaskCacheScope[] = [];
+const connections: IDBPDatabase<TaskCacheSchema>[] = [];
+class Channel {
+  static channels = new Set<Channel>();
+  static hints: unknown[] = [];
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+  constructor(readonly name: string) { Channel.channels.add(this); }
+  postMessage(value: unknown) {
+    Channel.hints.push(value);
+    for (const channel of Channel.channels) if (channel !== this && channel.name === this.name) queueMicrotask(() => channel.onmessage?.({ data: value } as MessageEvent<unknown>));
+  }
+  close() { Channel.channels.delete(this); }
+}
+const scope = (identity = userId, onIdentityMismatch: () => void = vi.fn()) => {
+  const value = createTaskCacheScope({ userId: identity, onIdentityMismatch }); scopes.push(value); return value;
+};
+const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(database); return database; };
+const seed = async (cache: TaskCacheScope, tasks: readonly TaskSummary[] = [task(1)], ownerProject = project) => {
+  const ticket = await cache.beginSync(ownerProject.id, signal());
+  return cache.applySync(ticket, response(tasks, { mode: "snapshot", project: ownerProject }), signal());
+};
+const delta = async (cache: TaskCacheScope, tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}) => {
+  const ticket = await cache.beginSync(projectId, signal());
+  return cache.applySync(ticket, response(tasks, changes), signal());
+};
+const putCounts = () => {
+  const counts = new Map<string, number>(); const put = fake.IDBObjectStore.prototype.put;
+  vi.spyOn(fake.IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    counts.set(this.name, (counts.get(this.name) ?? 0) + 1); return put.apply(this, args);
+  });
+  return counts;
+};
+beforeEach(() => {
+  for (const [name, value] of Object.entries(fake)) if (name !== "default" && name !== "indexedDB") vi.stubGlobal(name, value);
+  vi.stubGlobal("indexedDB", new fake.IDBFactory()); vi.stubGlobal("BroadcastChannel", Channel);
+  Channel.channels.clear(); Channel.hints = [];
+});
+afterEach(() => {
+  for (const cache of scopes.splice(0)) cache.dispose();
+  for (const database of connections.splice(0)) database.close();
+});
+
+it("fallback requires a new complete snapshot for each scope and isolates the newer database", async () => {
+  const upgraded = await openDB("daynight-task-cache", 14, { upgrade(database) { database.createObjectStore("keep"); } });
+  await upgraded.put("keep", "untouched", "sentinel");
+  const first = scope(); await seed(first, [task(1)]); first.dispose();
+  const anotherAccount = scope(otherUser); await seed(anotherAccount, [task(3)]); anotherAccount.dispose();
+  const anotherProject = scope(); await seed(anotherProject, [task(4)], { ...project, id: otherProject }); anotherProject.dispose();
+  const database = await inspect();
+  const unrelated = [[otherUser, projectId, taskId(3)], [userId, otherProject, taskId(4)]] as const;
+  for (const [owner, projectKey, item] of unrelated) {
+    await database.put("details", { userId: owner, projectId: projectKey, taskId: item, sentinel: "detail" } as never);
+    await database.put("sessionHistory", { userId: owner, projectId: projectKey, taskId: item, sentinel: "history" } as never);
+    await database.put("profiles", { userId: owner, projectId: projectKey, profileUserId: item, sentinel: "profile" } as never);
+  }
+  const otherRows = async () => await Promise.all(unrelated.map(async ([owner, projectKey]) => ({
+    owner: await database.get("userScopes", owner), project: await database.get("projects", [owner, projectKey]),
+    summaries: await database.getAllFromIndex("summaries", "by-project", [owner, projectKey]),
+    details: await database.getAllFromIndex("details", "by-project", [owner, projectKey]),
+    histories: await database.getAllFromIndex("sessionHistory", "by-project", [owner, projectKey]),
+    profiles: await database.getAllFromIndex("profiles", "by-project", [owner, projectKey]),
+  })));
+  const before = await otherRows();
+  expect(before.every(rows => rows.project && rows.summaries.length === 1 && rows.details.length === 1 && rows.histories.length === 1 && rows.profiles.length === 1)).toBe(true);
+  const reopened = scope();
+  const ticket = await reopened.beginSync(projectId, signal());
+  expect(ticket.epoch).toBeNull(); expect(ticket.maxUpdatedAt).toBeNull();
+  expect(reopened.canPreviewProject(projectId)).toBe(false);
+  expect(await reopened.readProject(projectId, signal())).toBeNull();
+  await expect(reopened.detailTransaction(ticket, signal(), async () => true)).rejects.toMatchObject({ name: "AbortError" });
+  await expect(reopened.sessionHistoryTransaction(ticket, signal(), async () => true)).rejects.toMatchObject({ name: "AbortError" });
+  await expect(reopened.applySync(ticket, response([task(1)]), signal())).rejects.toMatchObject({ kind: "protocol" });
+  const result = await reopened.applySync(ticket, response([task(2)], { mode: "snapshot", epoch: nextEpoch }), signal());
+  expect(result.project.manifest.epoch).toBe(nextEpoch);
+  expect([...result.project.summaries.keys()]).toEqual([taskId(2)]);
+  expect(reopened.canPreviewProject(projectId)).toBe(true);
+  expect(await otherRows()).toEqual(before);
+  expect(await upgraded.get("keep", "sentinel")).toBe("untouched");
+  upgraded.close();
+});
+
+it("fallback withdraws a live admission on failure and requires another full snapshot", async () => {
+  const live = scope(); await seed(live, [task(1)]);
+  const before = await live.beginSync(projectId, signal());
+  const direct = await live.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const events: unknown[] = []; live.subscribe(event => events.push(event));
+  live.withdrawRecoveryProject(projectId, new Error("offline"));
+  expect(live.getAuthorizedProject(projectId)).toBeNull();
+  expect(live.canPreviewProject(projectId)).toBe(false);
+  expect(live.isTaskReadCurrent(direct)).toBe(false);
+  expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, directAccessUncertain: true }));
+  await expect(live.detailTransaction(before, signal(), async () => true)).rejects.toMatchObject({ name: "AbortError" });
+  const fresh = await live.beginSync(projectId, signal()); expect(fresh.epoch).toBeNull();
+  await live.applySync(fresh, response([task(2)], { mode: "snapshot", epoch: nextEpoch }), signal());
+  await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRestored: true, directAccessRecheck: true })));
+  expect(live.getAuthorizedProject(projectId)?.summaries.has(taskId(1))).toBe(false);
+});
+
+it("fallback direct admission retries when a concurrent graph snapshot replaces its generation", async () => {
+  const live = scope();
+  const held = Promise.withResolvers<Response>();
+  const fetcher = vi.fn(() => held.promise); vi.stubGlobal("fetch", fetcher);
+  const direct = live.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  const graphTicket = await live.beginSync(projectId, signal());
+  await live.applySync(graphTicket, response([task(1)], { mode: "snapshot" }), signal());
+  const sync = response([task(1)], { mode: "snapshot", actorAccess: directAccessFixture(projectId, userId) });
+  held.resolve(wireResponse({ ...sync, tasks: sync.tasks.map(value => ({ ...value, version: value.version.toString() })), dependencyStates: Object.fromEntries(Object.entries(sync.dependencyStates).map(([id, value]) => [id, { ...value, taskVersion: value.taskVersion.toString() }])) }, { headers: viewerHeaders(userId) }));
+  const fence = await direct;
+  expect(live.isTaskReadCurrent(fence)).toBe(true);
+  expect(live.getAuthorizedProject(projectId)?.summaries.has(taskId(1))).toBe(true);
+});
