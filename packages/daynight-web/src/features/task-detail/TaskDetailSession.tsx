@@ -173,12 +173,30 @@ export class TaskDetailSessions {
         }
         if (event.baselineRebuilt) {
           const opening = entry.openingGeneration;
-          void this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal).then(qualification => {
+          void this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal).then(async qualification => {
             if (this.disposed || opening !== entry.openingGeneration || entry.state.status === "deleted") return;
             if (qualification.removed) {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
+            } else if (qualification.inBaseline && entry.source === "direct" && entry.receipt === null && entry.read !== null) {
+              // The in-flight response owns a fence; check that fence when the
+              // response arrives before deciding whether another read is needed.
+              return;
             } else if (!qualification.inBaseline) this.requireResourceRecheck(entry);
+            else if (entry.source === "direct" && qualification.rebuildRevision !== null) {
+              const receipt = entry.receipt;
+              const valid = receipt !== null && await this.scope.verifyTaskRead(receipt.fence, this.scope.signal);
+              if (this.disposed || opening !== entry.openingGeneration || entry.receipt !== receipt || valid) return;
+              const current = await this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal);
+              if (this.disposed || opening !== entry.openingGeneration || entry.receipt !== receipt) return;
+              if (current.removed) {
+                const generation = this.entryGeneration(entry);
+                if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
+              } else {
+                const retain = receipt !== null && current.inBaseline && current.epoch === receipt.epoch && this.scope.isTaskHistoryConfirmedCurrent(receipt.fence);
+                this.requireResourceRecheck(entry, retain);
+              }
+            }
           }).catch(error => {
             if (!this.disposed && opening === entry.openingGeneration && !isAbortError(error)) this.failRead(entry, error, false);
           });
@@ -240,12 +258,13 @@ export class TaskDetailSessions {
     });
     scope.signal.addEventListener("abort", this.onScopeRetired, { once: true });
   }
-  private requireResourceRecheck(entry: Entry): void {
+  private requireResourceRecheck(entry: Entry, retainReading = false): void {
     if (entry.state.status === "deleted") return;
     this.retireMutation(entry, true);
     this.cancelRead(entry.projectId, entry.taskId);
     entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.pending = null;
-    this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "loading", requiresFreshRead: true, refreshing: false });
+    const detail = retainReading ? entry.state.detail : null;
+    this.publish(entry, { ...entry.state, detail, loadedRevision: null, status: detail === null ? "loading" : "ready", requiresFreshRead: true, refreshing: false });
     if (entry.listeners.size > 0) queueMicrotask(() => {
       if (!this.disposed && entry.listeners.size > 0 && entry.state.status !== "deleted")
         void this.read(entry.projectId, entry.taskId, entry.state.revision, false, true);
@@ -767,7 +786,17 @@ export class TaskDetailSessions {
       await this.scope.ready(signal);
       if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration || !this.scope.isTaskReadCurrent(fence)) return;
       if (await this.scope.observeHistory(fence, observation.epoch, signal) !== "current") return;
-      if (signal.aborted || generation !== entry.generation || opening !== entry.openingGeneration || !await this.scope.verifyTaskRead(fence, signal)) return;
+      if (signal.aborted || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      const admitted = await this.scope.verifyTaskRead(fence, signal);
+      if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      if (!admitted) {
+        if (!this.scope.isTaskReadCurrent(fence)) return;
+        if (!entry.historyRetry) {
+          entry.historyRetry = true;
+          queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
+        } else { entry.directParentReadFailed = true; this.failRead(entry, new ApiError("protocol"), reconciliation); }
+        return;
+      }
       const floor = this.taskVersionFloor(entry);
       if (floor !== null && observation.detail.version < floor) {
         throw new ApiError("protocol");

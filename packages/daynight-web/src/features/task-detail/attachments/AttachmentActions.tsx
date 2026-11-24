@@ -1,5 +1,5 @@
 import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
-import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { ApiError } from '../../../api/client';
 import { isTopOverlay, OverlayOwnerContext } from '../../../app/overlay';
 import { useI18n } from '../../../i18n/LocaleProvider';
@@ -66,6 +66,7 @@ type AttachmentDeleteProps = {
   readonly busy: boolean;
   readonly paused?: boolean;
   readonly error: unknown;
+  readonly notice?: ReactNode;
   readonly onRestoreFocus: () => void;
   readonly onConfirm: () => void;
   readonly onDismiss: () => void;
@@ -84,7 +85,7 @@ export const AttachmentDeleteDialog = (props: AttachmentDeleteProps) => {
   }} /> : null;
 };
 
-const DeleteDialog = ({ target, busy, paused, error, onRestoreFocus, onConfirm, onDismiss }: AttachmentDeleteProps) => {
+const DeleteDialog = ({ target, busy, paused, error, notice, onRestoreFocus, onConfirm, onDismiss }: AttachmentDeleteProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const id = useId();
@@ -132,7 +133,8 @@ const DeleteDialog = ({ target, busy, paused, error, onRestoreFocus, onConfirm, 
     <div className="dialog-body attachment-delete-body" tabIndex={0} role="group" aria-labelledby={`${id}-title`}>
       <p id={`${id}-copy`}>{m.deleteConfirmation}</p>
       <p id={`${id}-path`} className="attachment-delete-path">{target.path}</p>
-      {busy && <p role="status">{m.deleting}</p>}
+      {busy && notice == null && <p role="status">{m.deleting}</p>}
+      {notice}
       {attempted && !busy && error !== null && <div className="attachment-error" role="alert"><p>{m.writeError}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{messages.common.requestId}{' '}<code>{error.requestId}</code></p>}</div>}
     </div>
     <footer className="dialog-footer"><button className="button" ref={cancel} type="button" disabled={busy} onClick={onDismiss}>{m.cancelDelete}</button><button className="button danger" type="button" disabled={busy || paused} onClick={() => { setAttempted(true); onConfirm(); }}>{busy ? m.deleting : m.confirmDelete}</button></footer>

@@ -1,12 +1,14 @@
 import type { TaskSummary } from '../../api/types';
 
 export type TaskQualification = {
+  readonly baselineState: "absent" | "active" | "user" | "access" | "corrupt";
   readonly epoch: string | null;
   readonly cacheGeneration: string | null;
   readonly syncRevision: string | null;
   readonly rebuildRevision: string | null;
   readonly removed: boolean;
   readonly inBaseline: boolean;
+  readonly summaryVersion: bigint | null;
 };
 
 export const taskResourceKey = (projectId: string, taskId: string): string => `${projectId}/${taskId}`;
@@ -52,7 +54,8 @@ export class TaskReadAdmission {
 }
 
 export const survivesBaselineChange = (before: Pick<TaskQualification, 'cacheGeneration' | 'rebuildRevision'>, after: TaskQualification): boolean =>
-  !after.removed && (before.cacheGeneration === after.cacheGeneration && before.rebuildRevision === after.rebuildRevision || after.inBaseline);
+  !after.removed && before.rebuildRevision === after.rebuildRevision &&
+  (before.cacheGeneration === after.cacheGeneration || after.inBaseline);
 
 export const deletionCandidates = (taskId: string, summaries: ReadonlyMap<string, TaskSummary>, observedIds: readonly string[]): readonly string[] => {
   const root = summaries.get(taskId);

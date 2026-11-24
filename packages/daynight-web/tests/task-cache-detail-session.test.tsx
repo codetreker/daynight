@@ -658,3 +658,24 @@ it('withdraws a detail through scope suspension and reopening, and fences a late
   expect(latest.current?.detail?.description).toBe(detail.description);
   view.unmount();
 });
+
+it('retains a surviving direct detail while a same-history rebuild revalidates it, including a failed read and retry', async () => {
+  const first = body({ description: 'Original detail' }), next = { ...first, version: 6n, description: 'Updated detail', updatedAt: '2026-10-23T00:00:00Z' };
+  const scope = await seed([first]), held = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(first, TEST_VIEWER_ID)).mockReturnValueOnce(held.promise).mockResolvedValueOnce(resourceResponse(next, TEST_VIEWER_ID));
+  vi.stubGlobal('fetch', fetch);
+  const view = renderHook(() => useTaskDetail(projectId, taskId, { kind: 'direct' }), { wrapper: wrapper(scope) });
+  try {
+    await waitFor(() => expect(view.result.current.canSetStatus).toBe(true));
+    const ticket = await scope.beginSync(projectId, signal());
+    const snapshot = taskSyncFromGraph(graphFixture([next]), { epoch: ticket.epoch!, query: {}, versionForTask: () => next.version, propertiesForTask: () => next.properties });
+    await act(async () => { await scope.applySync(ticket, snapshot, signal(), true, { rebuild: true }); });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(view.result.current).toMatchObject({ detail: { description: 'Original detail' }, status: 'ready', requiresFreshRead: true, canSetStatus: false });
+    await act(async () => held.reject(new Error('offline')));
+    await waitFor(() => expect(view.result.current.error).not.toBeNull());
+    expect(view.result.current).toMatchObject({ detail: { description: 'Original detail' }, status: 'ready', requiresFreshRead: true, canSetStatus: false });
+    act(() => view.result.current.retry());
+    await waitFor(() => expect(view.result.current).toMatchObject({ detail: { description: 'Updated detail' }, canSetStatus: true, error: null }));
+  } finally { view.unmount(); }
+});

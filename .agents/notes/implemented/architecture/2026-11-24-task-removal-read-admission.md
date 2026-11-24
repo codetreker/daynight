@@ -37,16 +37,19 @@ valid filters, navigation and unrelated content remain.
 
 Every complete snapshot, including the initial baseline, establishes a rebuild
 revision and emits a baseline-rebuilt event after commit. Subsequent same-history
-deltas retain that marker, so direct readers or peer projections with no prior
-local manifest can detect the completed baseline. Same-history replacement keeps
-removal identities; a real new history also applies the existing generation and
-history fences. An active resource missing from the new authorized complete baseline
-loses its old qualification and must follow its existing GET or pagination
-protocol to revalidate. An unknown resource's absence is not a permanent
-removal; only the difference from the prior authorized complete summary set
-creates durable removal identities. Real epoch replacement and access or
-identity loss retain their existing stronger retirement rules. An old-history
-DELETE or Gone response cannot withdraw resources in a replacement history.
+deltas retain that marker for peer notification. A separate manual rebuild
+revision qualifies direct readers and peer projections across explicit rebuilds.
+An ordinary initial snapshot retains independently authorized reads for resources
+in its baseline and rechecks absent active resources. Same-history replacement
+keeps removal identities; a real new history also applies the existing generation
+and history fences. An active resource missing from an authorized complete
+baseline loses its old qualification and must follow its existing GET or
+pagination protocol to revalidate. An unknown
+resource's absence is not a permanent removal; only the difference from the prior
+authorized complete summary set creates durable removal identities. Real epoch
+replacement and access or identity loss retain their existing stronger retirement
+rules. An old-history DELETE or Gone response cannot withdraw resources in a
+replacement history.
 
 This supersedes deletion-driven project retirement in the
 [ordinary-subtree lifecycle decision](2026-11-24-web-subtask-lifecycle-retirement.md)

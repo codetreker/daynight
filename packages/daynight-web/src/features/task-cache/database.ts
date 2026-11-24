@@ -15,6 +15,7 @@ export type ProjectRecord = {
   readonly epoch: string | null; readonly project: Project | null;
   readonly coverageUpdatedAt: string | null; readonly syncRevision: string;
   readonly rebuildRevision?: string;
+  readonly manualRebuildRevision?: string;
   readonly taskCount: number; readonly edgeCount: number;
 };
 export type TaskRemovalRecord = {

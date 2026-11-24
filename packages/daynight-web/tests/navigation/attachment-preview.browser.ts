@@ -1560,3 +1560,43 @@ for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 
     await cancel.click(); await expect(dialog).toHaveCount(0); expect(state.writes).toEqual([]);
   });
 }
+
+test('manual rebuild restarts a retained Task attachment inventory after its version changes', async ({ page, context }) => {
+  await install(page);
+  const settings = await context.newPage(); await install(settings);
+  const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n });
+  const changed = { ...task, title: 'Attachment reading updated', version: 6n, updatedAt: '2026-10-23T00:00:00Z' };
+  const epoch = taskSyncEpoch(projectId);
+  let updated = false, listReads = 0;
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
+  await settings.route(`**/api/v1/projects/${projectId}/task-sync**`, route => {
+    const current = updated ? changed : task, url = new URL(route.request().url());
+    const sync = taskSyncFixture(graphFixture([current]), { epoch, query: taskSyncQuery(url), actorAccess: directAccessFixture(projectId), versionForTask: () => current.version, propertiesForTask: () => current.properties });
+    return route.fulfill({ status: 200, body: stringifyWireJson(sync), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.route(url => url.pathname === root, route => route.fulfill({ status: 200, body: stringifyWireJson(updated ? changed : task), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': epoch } }));
+  await page.route(url => url.pathname === `${root}/attachments`, async route => {
+    listReads++;
+    if (listReads === 1) {
+      started.resolve(); await finish.promise;
+      try { await route.fulfill({ status: 200, body: stringifyWireJson({ items: [], nextCursor: null }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }); } finally { finished.resolve(); }
+      return;
+    }
+    await route.fulfill({ status: 200, body: stringifyWireJson({ items: [files[1]], nextCursor: null }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  try {
+    await settings.goto(`/projects/${projectId}/settings?tab=management`);
+    const card = settings.getByRole('region', { name: 'Task sync' }), button = card.locator('button');
+    await expect(button).toBeEnabled(); await button.click();
+    await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+    await started.promise;
+    updated = true;
+    await button.click(); await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    const attachments = page.locator('.task-attachments');
+    await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
+    await expect(attachments.getByRole('button', { name: /^reading\.txt/ })).toBeVisible();
+    finish.resolve(); await finished.promise; await page.waitForLoadState('networkidle');
+    await expect(attachments.getByRole('button', { name: /^reading\.txt/ })).toBeVisible();
+  } finally { finish.resolve(); await settings.close(); }
+});

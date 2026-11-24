@@ -1,14 +1,16 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { taskSyncEpoch, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
+import { detailFixture, graphFixture } from '../helpers/taskDetail';
 
 const projectId = '00000000-0000-4000-8000-000000000101';
 const actorId = '00000000-0000-4000-8000-000000000001';
 const teamId = '00000000-0000-4000-8000-000000000011';
 const time = '2026-10-20T09:00:00Z';
 const base = `/projects/${projectId}/settings`;
-const team = { id: teamId, kind: 'personal', name: null };
+const team = { id: teamId, kind: 'personal' as const, name: null };
 const project = { id: projectId, name: 'Example project', repoUrl: 'https://github.com/example/project', ownership: { teamId, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const access = { projectId, ownerTeam: team, ownership: { teamId, version: 1n }, effectiveRole: 'admin', teamRole: 'admin', canTransfer: true, directGrant: { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } };
+const access = { projectId, ownerTeam: team, ownership: { teamId, version: 1n }, effectiveRole: 'admin' as const, teamRole: 'admin' as const, canTransfer: true, directGrant: { projectId, userId: actorId, role: 'admin' as const, version: 1n, createdAt: time, updatedAt: time } };
 
 const install = async (page: Page, name = 'Example project') => {
   const shownProject = { ...project, name };
@@ -460,4 +462,188 @@ test('project prompt purposes save and clear independently while preserving hidd
   await expect(reviewer).toHaveAttribute('aria-pressed', 'true');
   await expect(input).toHaveValue('Hidden project draft');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+
+test('project settings resync sends one unparameterized request and allows retry', async ({ page }) => {
+  const writes = await install(page);
+  const memberAccess = { ...access, effectiveRole: 'member' as const, teamRole: null, canTransfer: false, directGrant: { ...access.directGrant, role: 'member' as const } };
+  await page.route(`**/api/v1/projects/${projectId}/access`, route => route.fulfill({ status: 200, body: stringifyWireJson(memberAccess), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }));
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const requests: string[] = [];
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, async route => {
+    requests.push(new URL(route.request().url()).search);
+    if (requests.length === 1) {
+      started.resolve(); await finish.promise;
+      return route.fulfill({ status: 503, body: JSON.stringify({ error: { code: 'unavailable', message: 'unavailable', requestId: 'test' } }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+    }
+    const graph = { project, observedAt: time, tasks: [], summary: { total: 0, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
+    return route.fulfill({ status: 200, body: stringifyWireJson(taskSyncFixture(graph, { actorAccess: memberAccess, versionForTask: () => 1n })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await page.setViewportSize({ width: 390, height: 720 });
+  await page.goto(`${base}?tab=management`);
+  const card = page.getByRole('region', { name: 'Task sync' });
+  const action = card.locator('button');
+  await expect(action).toBeEnabled(); expect(requests).toEqual([]);
+  await action.click();
+  try {
+    await started.promise;
+    await expect(action).toHaveAttribute('aria-busy', 'true');
+    await action.dispatchEvent('click'); expect(requests).toEqual(['']);
+  } finally { finish.resolve(); }
+  await expect(card.getByRole('alert')).toContainText('Task sync failed');
+  await card.getByRole('button', { name: 'Retry' }).click();
+  await expect(card.getByText('Tasks synced. This project has no tasks.')).toBeVisible();
+  expect(requests).toEqual(['', '']); expect(writes).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('project settings reports a denied task read and retries after access is restored', async ({ page }) => {
+  await install(page); let requests = 0;
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => {
+    requests++;
+    if (requests === 1) return route.fulfill({ status: 403, body: JSON.stringify({ error: { code: 'forbidden', message: 'forbidden', requestId: 'test' } }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+    const graph = { project, observedAt: time, tasks: [], summary: { total: 0, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
+    return route.fulfill({ status: 200, body: stringifyWireJson(taskSyncFixture(graph, { actorAccess: access, versionForTask: () => 1n })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await page.goto(`${base}?tab=management`);
+  const card = page.getByRole('region', { name: 'Task sync' });
+  const action = card.locator('button');
+  await expect(action).toBeEnabled(); await action.click();
+  await expect(card.getByText('You do not have permission to read tasks in this project.')).toBeVisible();
+  await expect(action).toBeEnabled(); expect(requests).toBe(1);
+  await action.click();
+  await expect(card.getByText('Tasks synced. This project has no tasks.')).toBeVisible();
+  expect(requests).toBe(2);
+});
+
+
+test('manual resync withdraws peer details and an unsummarized attachment while fencing a late read', async ({ page, context }) => {
+  const writes = await install(page);
+  const firstId = '00000000-0000-4000-8000-000000000221';
+  const lateId = '00000000-0000-4000-8000-000000000222';
+  const fileId = '00000000-0000-4000-8000-000000000223';
+  const first = detailFixture(projectId, firstId, { title: 'Removed direct detail' });
+  const late = detailFixture(projectId, lateId, { title: 'Late removed detail' });
+  const file = detailFixture(projectId, fileId, { title: 'Unsummarized attachment owner' });
+  const epoch = taskSyncEpoch(projectId);
+  let deleted = false;
+  const rechecked: string[] = [];
+  const requests: string[] = [];
+  const oldGraph = { ...graphFixture([first, late]), project };
+  const emptyGraph = { ...oldGraph, tasks: [], summary: { total: 0, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
+  await context.route(`**/api/v1/projects/${projectId}/task-sync**`, route => {
+    const url = new URL(route.request().url()); requests.push(url.search);
+    const graph = deleted ? emptyGraph : oldGraph;
+    return route.fulfill({ status: 200, body: stringifyWireJson(taskSyncFixture(graph, { epoch, query: taskSyncQuery(url), actorAccess: access, ...(deleted ? { coverageUpdatedAt: first.updatedAt } : {}), versionForTask: () => 1n })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await context.route(`**/api/v1/projects/${projectId}/tasks/**`, route => {
+    const url = new URL(route.request().url()), parts = url.pathname.split('/'), taskId = parts[6];
+    const detail = [first, late, file].find(item => item.id === taskId);
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId, 'Daynight-Task-Epoch': epoch } });
+    if (!detail || deleted) { if (detail && parts.length === 7) rechecked.push(detail.id); return send({ error: { code: 'task_deleted', message: 'deleted', requestId: 'deleted' } }, 410); }
+    if (parts.length === 7) return send(detail);
+    if (parts[7] === 'sessions') return send({ items: [], nextCursor: null });
+    if (parts[7] === 'attachments' && parts.length === 8) return send({ items: [{ path: 'interactive.html', contentType: 'text/html', sizeBytes: 27, createdAt: time, updatedAt: time }], nextCursor: null });
+    if (parts[7] === 'preview') return route.fulfill({ contentType: 'text/html', body: '<p>Private file content</p>', headers: { 'Daynight-User-ID': actorId } });
+    return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
+  });
+  await page.goto(`${base}?tab=management`);
+  const sync = page.getByRole('region', { name: 'Task sync' }).locator('button');
+  await expect(sync).toBeEnabled(); await sync.click();
+  await expect(page.getByText('Tasks synced.', { exact: true })).toBeVisible();
+  const peer = await context.newPage(), attachment = await context.newPage(), delayed = await context.newPage();
+  const begun = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
+  await delayed.route(`**/api/v1/projects/${projectId}/tasks/${lateId}`, async route => {
+    begun.resolve(); await finish.promise;
+    try { await route.fulfill({ status: 200, body: stringifyWireJson(late), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId, 'Daynight-Task-Epoch': epoch } }); } finally { finished.resolve(); }
+  });
+  try {
+    await peer.goto(`/projects/${projectId}/tasks/${firstId}`);
+    await expect(peer.getByText(first.title, { exact: true }).first()).toBeVisible();
+    await attachment.goto(`/projects/${projectId}/tasks/${fileId}/attachments/interactive.html`);
+    const frame = attachment.locator('.task-attachments iframe');
+    await expect(frame.contentFrame().getByText('Private file content')).toBeVisible();
+    const hasSummary = await attachment.evaluate(({ actorId, projectId, fileId }) => new Promise<boolean>((resolve, reject) => {
+      const open = indexedDB.open('daynight-task-cache'); open.onerror = () => reject(open.error);
+      open.onsuccess = () => { const db = open.result, tx = db.transaction('summaries'), get = tx.objectStore('summaries').get([actorId, projectId, fileId]); tx.oncomplete = () => { resolve(get.result !== undefined); db.close(); }; tx.onerror = () => reject(tx.error); };
+    }), { actorId, projectId, fileId });
+    expect(hasSummary).toBe(false);
+    await delayed.goto(`/projects/${projectId}/tasks/${lateId}`);
+    await begun.promise;
+    deleted = true;
+    await sync.click();
+    await expect(page.getByText('Tasks synced. This project has no tasks.')).toBeVisible();
+    await expect(peer.getByText(first.title, { exact: true })).toHaveCount(0);
+    await expect(frame).toHaveCount(0);
+    await expect.poll(() => rechecked.includes(fileId)).toBe(true);
+    finish.resolve(); await finished.promise;
+    await delayed.waitForLoadState('networkidle');
+    await expect(delayed.getByText(late.title, { exact: true })).toHaveCount(0);
+    expect(requests.filter(query => query === '')).toEqual(['', '']); expect(writes).toEqual([]);
+  } finally { finish.resolve(); await peer.close(); await attachment.close(); await delayed.close(); }
+});
+
+test('same-history rebuild retains the standalone attachment workspace during Task revalidation', async ({ page, context }) => {
+  await install(page);
+  const taskId = '00000000-0000-4000-8000-000000000224';
+  const first = detailFixture(projectId, taskId, { title: 'Original task', version: 1n });
+  const updated = { ...first, title: 'Updated task', version: 2n, updatedAt: '2026-10-23T00:00:00Z' };
+  const epoch = taskSyncEpoch(projectId), taskRoot = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+  let changed = false;
+  const detailStarted = Promise.withResolvers<void>(), finishDetail = Promise.withResolvers<void>();
+  const writeStarted = Promise.withResolvers<void>(), finishWrite = Promise.withResolvers<void>();
+  const attachment = { path: 'interactive.html', contentType: 'text/html', sizeBytes: 27, createdAt: time, updatedAt: time };
+  await context.route(`**/api/v1/projects/${projectId}/task-sync**`, route => {
+    const current = changed ? updated : first;
+    const graph = { ...graphFixture([current]), project };
+    return route.fulfill({ status: 200, body: stringifyWireJson(taskSyncFixture(graph, { epoch, query: taskSyncQuery(new URL(route.request().url())), actorAccess: access, versionForTask: () => current.version, propertiesForTask: () => current.properties })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await context.route(`**/api/v1/projects/${projectId}/tasks/${taskId}/**`, async route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+    if (path === `${taskRoot}/attachments`) return send({ items: [attachment], nextCursor: null });
+    if (path === `${taskRoot}/sessions`) return send({ items: [], nextCursor: null });
+    if (path === `${taskRoot}/preview/interactive.html`) return route.fulfill({ contentType: 'text/html', body: '<p>Retained preview</p>', headers: { 'Daynight-User-ID': actorId } });
+    if (path === `${taskRoot}/attachments/files/draft.txt` && request.method() === 'PUT') {
+      writeStarted.resolve(); await finishWrite.promise;
+      return send({ path: 'draft.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }, 201);
+    }
+    return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
+  });
+  const peer = await context.newPage();
+  await peer.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, async route => {
+    if (changed) { detailStarted.resolve(); await finishDetail.promise; }
+    return route.fulfill({ status: 200, body: stringifyWireJson(changed ? updated : first), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId, 'Daynight-Task-Epoch': epoch } });
+  });
+  try {
+    await page.goto(`${base}?tab=management`);
+    const card = page.getByRole('region', { name: 'Task sync' }), sync = card.locator('button');
+    await expect(sync).toBeEnabled(); await sync.click(); await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    await peer.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+    const panel = peer.locator('.task-attachments');
+    await panel.getByRole('button', { name: /^interactive\.html/ }).click();
+    const frame = panel.locator('iframe'); await expect(frame.contentFrame().getByText('Retained preview')).toBeVisible();
+    await panel.locator('.attachment-upload-disclosure summary').click();
+    const input = panel.locator('input[type=file]');
+    await input.setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+    await panel.getByRole('button', { name: 'Upload file', exact: true }).click(); await writeStarted.promise;
+    const panelHandle = await panel.elementHandle(), inputHandle = await input.elementHandle(), frameHandle = await frame.elementHandle();
+    changed = true; await sync.click(); await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    await detailStarted.promise;
+    expect(await panelHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await inputHandle!.evaluate(element => element.isConnected && (element as HTMLInputElement).files?.[0]?.name === 'draft.txt')).toBe(true);
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await frame.elementHandle()).not.toBeNull();
+    await expect(panel.getByRole('button', { name: 'Uploading…' })).toBeDisabled();
+    await expect(frame.contentFrame().getByText('Retained preview')).toBeVisible();
+    finishDetail.resolve();
+    await expect(peer.getByRole('heading', { name: 'Updated task' })).toBeVisible();
+    expect(await panelHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+    finishWrite.resolve();
+    await expect(panel.getByText('The attachment operation succeeded. Refresh the attachment list to see the current result.')).toBeVisible();
+    await expect(panel.getByLabel('Target relative path')).toHaveValue('');
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+  } finally { finishDetail.resolve(); finishWrite.resolve(); await peer.close(); }
 });

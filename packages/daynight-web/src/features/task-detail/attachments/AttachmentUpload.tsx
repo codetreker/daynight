@@ -9,6 +9,7 @@ import type { AttachmentController } from './useAttachments';
 
 type AttachmentUploadProps = {
   readonly attachments: AttachmentController;
+  readonly scope: string;
   readonly compact: boolean;
   readonly open: boolean;
   readonly active: boolean;
@@ -18,7 +19,7 @@ type AttachmentUploadProps = {
   readonly onUploaded: (path: string) => void;
 };
 
-export const AttachmentUpload = ({ attachments, compact, open, active, error, onOpenChange, onInteract, onUploaded }: AttachmentUploadProps) => {
+export const AttachmentUpload = ({ attachments, scope, compact, open, active, error, onOpenChange, onInteract, onUploaded }: AttachmentUploadProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const owner = useContext(OverlayOwnerContext);
@@ -33,6 +34,8 @@ export const AttachmentUpload = ({ attachments, compact, open, active, error, on
   const [path, setPath] = useState('');
   const [pathError, setPathError] = useState(false);
   const draftRevision = useRef(0);
+  const currentScope = useRef(scope); currentScope.current = scope;
+  const confirmed = useRef<{ scope: string; draft: number; path: string; published: boolean; pauseRevision: number; owns: () => boolean } | null>(null);
   const previous = useRef({ compact, open });
   const restoreOpener = useRef(false);
   const busy = attachments.write.status !== 'idle';
@@ -69,6 +72,15 @@ export const AttachmentUpload = ({ attachments, compact, open, active, error, on
     root.addEventListener('keydown', escape);
     return () => root.removeEventListener('keydown', escape);
   }, [active, decision, onOpenChange, open, owner]);
+  const settleConfirmed = () => {
+    const result = confirmed.current;
+    if (result === null || authRequestsPaused()) return;
+    confirmed.current = null;
+    if (!result.owns() || result.scope !== currentScope.current || result.draft !== draftRevision.current || fileInput.current === null) return;
+    setFile(null); setPath(''); setPathError(false); fileInput.current.value = '';
+    if (result.published && result.pauseRevision === authRequestsPauseRevision()) onUploaded(result.path);
+  };
+  useEffect(() => { if (!attachments.paused) settleConfirmed(); }, [attachments.paused, scope]);
   const upload = async (event: FormEvent) => {
     event.preventDefault();
     if (file === null || authRequestsPaused()) return;
@@ -76,12 +88,12 @@ export const AttachmentUpload = ({ attachments, compact, open, active, error, on
     onInteract?.();
     const pauseRevision = authRequestsPauseRevision();
     const submittedDraft = draftRevision.current;
-    if (await attachments.put(path, file) && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && submittedDraft === draftRevision.current) {
-      setFile(null);
-      setPath('');
-      setPathError(false);
-      fileInput.current!.value = '';
-      onUploaded(path);
+    const pending = attachments.put(path, file);
+    const owner = attachments.captureWriteOwner();
+    const result = await pending;
+    if (result === 'published' || result === 'confirmed') {
+      confirmed.current = { scope, draft: submittedDraft, path, published: result === 'published', pauseRevision, owns: () => attachments.isWriteOwner(owner) };
+      settleConfirmed();
     }
   };
   return <div ref={slot} className="attachment-upload-slot">

@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
@@ -140,11 +140,27 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
     if (restoreFocus) action!.trigger.focus();
     setAction(null);
   };
+  const currentDelete = useRef({ scope, action, onRemove }); currentDelete.current = { scope, action, onRemove };
+  const confirmedDelete = useRef<{ scope: string; path: string; target: typeof action; published: boolean; revision: number; owns: () => boolean } | null>(null);
+  const settleDelete = () => {
+    const result = confirmedDelete.current;
+    if (result === null || authRequestsPaused()) return;
+    confirmedDelete.current = null;
+    const current = currentDelete.current;
+    if (!result.owns() || result.scope !== current.scope || current.action !== result.target) return;
+    if (result.published && result.revision === authRequestsPauseRevision()) current.onRemove?.(result.path);
+    setAction(null);
+  };
+  useEffect(() => { if (!paused) settleDelete(); }, [paused, scope, action]);
   const confirmDelete = async () => {
     if (action === null || action.scope !== scope || authRequestsPaused()) return;
     onInteract?.();
     const revision = authRequestsPauseRevision();
-    if (await attachments.remove(action.path) && !authRequestsPaused() && revision === authRequestsPauseRevision()) { onRemove?.(action.path); setAction(null); }
+    const path = action.path;
+    const pending = attachments.remove(path);
+    const owner = attachments.captureWriteOwner();
+    const result = await pending;
+    if (result === 'published' || result === 'confirmed') { confirmedDelete.current = { scope, path, target: action, published: result === 'published', revision, owns: () => attachments.isWriteOwner(owner) }; settleDelete(); }
   };
   useLayoutEffect(() => {
     if (navigation !== undefined && navigation !== null) previewPane.current!.focus();
@@ -221,6 +237,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
     setUploadOpen(false);
     setUploadedPath(path);
   };
+  const pendingNotice = attachments.confirmationPending ? <div className="attachment-state" role="status"><p>{m.confirmationPending}</p><button className="button" type="button" disabled={paused || attachments.confirmationChecking} onClick={() => { void attachments.checkConfirmation(); }}>{attachments.confirmationChecking ? m.checkingConfirmation : m.checkConfirmation}</button></div> : null;
   const writeError = attachments.write.error !== null && action?.kind !== 'confirm' ? <div className="attachment-error attachment-state" role="alert"><ErrorMessage error={attachments.write.error} message={m.writeError} /></div> : null;
 
   return (
@@ -234,6 +251,8 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
             <button className="button" type="button" disabled={attachments.loading || busy || paused} onClick={attachments.reload}>{m.refresh}</button>
           </div>
           {!uploadOpen && writeError}
+          {!uploadOpen && action?.kind !== 'confirm' && pendingNotice}
+          {!uploadOpen && attachments.confirmedUnpublished && <p className="attachment-state" role="status">{m.confirmedUnpublished}</p>}
           {attachments.loading && <p className="attachment-state" role="status">{m.loading}</p>}
           {attachments.error !== null && (
             <div className="attachment-state attachment-error" role="alert">
@@ -244,7 +263,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
           {attachments.complete && attachments.items.length === 0 && <p className="attachment-state">{m.empty}</p>}
           {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} depth={0} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy || paused} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
           </div>
-          <AttachmentUpload attachments={attachments} compact={compact} open={uploadOpen} active={active} error={writeError} onOpenChange={setUploadOpen} onInteract={onInteract} onUploaded={uploaded} />
+          <AttachmentUpload attachments={attachments} scope={scope} compact={compact} open={uploadOpen} active={active} error={<>{writeError}{uploadOpen && pendingNotice}{uploadOpen && attachments.confirmedUnpublished && <p className="attachment-state" role="status">{m.confirmedUnpublished}</p>}</>} onOpenChange={setUploadOpen} onInteract={onInteract} onUploaded={uploaded} />
         </aside>
         <div className="attachment-preview-pane" inert={uploadFullscreen} aria-hidden={uploadFullscreen || undefined} ref={previewPane} tabIndex={-1} role="group" aria-label={m.preview}>
           <div className="attachment-file-preview" hidden={records?.preview != null} inert={records?.preview != null}>
@@ -279,7 +298,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
         </div>
       </div>
       {active && action?.scope === scope && action.kind === 'menu' && !busy && !uploadFullscreen && <AttachmentActionMenu target={action} menu={actionMenu} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
-      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} onRestoreFocus={() => restoreDeleteFocus(action)} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
+      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} notice={pendingNotice} onRestoreFocus={() => restoreDeleteFocus(action)} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
     </section>
   );
 };
