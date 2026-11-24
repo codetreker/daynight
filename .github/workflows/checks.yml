@@ -365,8 +365,16 @@ jobs:
         id: server-validation
         env:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
-        run: bash scripts/check.sh --coverage
+        run: |
+          rm -rf .tmp/go-test-evidence/module
+          bash scripts/check.sh --coverage
+      - name: Validate Azure tests in the covered invocation
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          node --test scripts/azure-evidence.test.mts
+          node scripts/azure-evidence.mts .tmp/go-test-evidence/module
       - name: Validate Azure storage and startup
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           go test -count=1 -timeout=5m -run '^TestAzurite(ArchiveStaging)?$' ./internal/core/filestorage/azure
           GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
