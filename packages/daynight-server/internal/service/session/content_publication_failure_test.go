@@ -19,6 +19,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -46,9 +47,9 @@ func (w capacityOutcomeWriter) WriteSession(ctx context.Context, work func(store
 	return completion, err
 }
 
-func serviceCapacityFixture(t *testing.T, mode string) (serviceFixture, *Service, *local.Storage) {
+func serviceCapacityFixture(t *testing.T, db *postgres.Store, mode string) (serviceFixture, *Service, *local.Storage) {
 	t.Helper()
-	f := newServiceFixture(t)
+	f := newServiceFixtureWithStore(t, db)
 	files, err := local.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -90,9 +91,10 @@ func seedFullSessionResource(t *testing.T, f serviceFixture, id string) {
 }
 
 func TestServiceArchiveCapacityFailureRetainsTransactionEvidence(t *testing.T) {
+	db := newServiceStore(t)
 	for _, mode := range []string{"rollback", "unknown", "cleanup"} {
-		t.Run(mode, func(t *testing.T) {
-			f, service, _ := serviceCapacityFixture(t, mode)
+		if !t.Run(mode, func(t *testing.T) {
+			f, service, _ := serviceCapacityFixture(t, db, mode)
 			f.service = service
 			v := f.registerWeb(t)
 			if _, err := f.db.Pool.Exec(t.Context(), `UPDATE tasks SET status='done' WHERE id=$1`, f.task); err != nil {
@@ -135,14 +137,18 @@ func TestServiceArchiveCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 			} else if receipt.State != "receiving" || receipt.Error != nil {
 				t.Fatalf("uncertain failure became terminal: %+v", receipt)
 			}
-		})
+		}) {
+			t.FailNow()
+		}
+		requireNoServiceLeases(t, db)
 	}
 }
 
 func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
+	db := newServiceStore(t)
 	for _, mode := range []string{"rollback", "unknown", "cleanup"} {
-		t.Run(mode, func(t *testing.T) {
-			f, service, files := serviceCapacityFixture(t, mode)
+		if !t.Run(mode, func(t *testing.T) {
+			f, service, files := serviceCapacityFixture(t, db, mode)
 			f.service = service
 			v := f.registerWeb(t)
 			grant, err := service.Grant(t.Context(), f.owner, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
@@ -265,6 +271,9 @@ func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 			} else if row.Receipt.State != "verifying" || row.Receipt.Resource != nil {
 				t.Fatalf("uncertain failure became terminal: %+v", row.Receipt)
 			}
-		})
+		}) {
+			t.FailNow()
+		}
+		requireNoServiceLeases(t, db)
 	}
 }

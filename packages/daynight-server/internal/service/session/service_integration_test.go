@@ -34,6 +34,14 @@ func newServiceStore(t *testing.T) *postgres.Store {
 	return db
 }
 
+func requireNoServiceLeases(t *testing.T, db *postgres.Store) {
+	t.Helper()
+	var remaining int
+	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM session_resource_leases`).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("leases remain before fixture reuse: %d %v", remaining, err)
+	}
+}
+
 func newServiceFixture(t *testing.T) serviceFixture {
 	t.Helper()
 	return newServiceFixtureWithStore(t, newServiceStore(t))

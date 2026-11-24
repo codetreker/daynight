@@ -63,18 +63,28 @@ func (s *archiveCount) Put(ctx context.Context, bucket, path string, body io.Rea
 	return s.Storage.Put(ctx, bucket, path, body)
 }
 
-func archiveFixture(t *testing.T) (*postgres.Store, model.Principal, string, string, sp.Registration) {
+func newArchiveStore(t *testing.T) *postgres.Store {
 	t.Helper()
-	ctx := context.Background()
-	db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	db, err := postgres.Open(context.Background(), testsupport.ServiceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
+	return db
+}
+
+func archiveFixture(t *testing.T) (*postgres.Store, model.Principal, string, string, sp.Registration) {
+	t.Helper()
+	return archiveFixtureWithStore(t, newArchiveStore(t))
+}
+
+func archiveFixtureWithStore(t *testing.T, db *postgres.Store) (*postgres.Store, model.Principal, string, string, sp.Registration) {
+	t.Helper()
+	ctx := context.Background()
 	user := testsupport.ServicePrincipal(t, db)
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'archive test',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'archive test',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	owner := model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: pat}
