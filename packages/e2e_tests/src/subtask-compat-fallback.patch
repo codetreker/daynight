@@ -161,15 +161,19 @@ index 2045476af..d90518ad9 100644
 -      if (!negative) { try { await this.scope.ready(signal); } catch { return; } }
 +      if (!negative) { try { await this.scope.ready(signal); } catch (cause) { this.scope.withdrawRecoveryProject(projectId, cause); return; } }
 diff --git a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
-index ab7906fdc..babb5b268 100644
+index ab7906fdc..d72189301 100644
 --- a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
 +++ b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
-@@ -2 +2 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type
--import { authRequestsPaused } from '../../api/client';
-+import { authRequestsPaused, isAbortError } from '../../api/client';
-@@ -7,0 +8 @@ import { createThreadController } from './controller';
-+import { getThreadPage, postThreadMessage } from './api';
-@@ -25 +26,2 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
+@@ -25 +25,2 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
 -  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch, captureNavigation: () => {
 +  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch,
-+    api: { list: async (...args) => { try { return await getThreadPage(...args); } catch (error) { if (!isAbortError(error)) cacheScope.withdrawRecoveryProject(projectId, error); throw error; } }, post: postThreadMessage }, captureNavigation: () => {
++    onReadFailure: (error) => cacheScope.withdrawRecoveryProject(projectId, error), captureNavigation: () => {
+diff --git a/packages/daynight-web/src/features/task-thread/controller.ts b/packages/daynight-web/src/features/task-thread/controller.ts
+index 10949ff4c..d83f02a37 100644
+--- a/packages/daynight-web/src/features/task-thread/controller.ts
++++ b/packages/daynight-web/src/features/task-thread/controller.ts
+@@ -55,0 +56 @@ export type ThreadControllerOptions = {
++  readonly onReadFailure?: (error: unknown) => void;
+@@ -252,0 +254,2 @@ export class ThreadController {
++    if (kind !== 'post') this.options.onReadFailure?.(error);
++    if (this.retired) return;

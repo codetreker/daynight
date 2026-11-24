@@ -45,3 +45,55 @@ it.each(['denied', 'offline'])('fallback withdraws live discussion and project a
     view.unmount();
   } finally { scope.dispose(); }
 });
+
+it('withdraws after a restored history invalidates a successful reference lookup', async () => {
+  const { createThreadController } = await import('../src/features/task-thread/controller');
+  const { ApiError } = await import('../src/api/client');
+  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const events: unknown[] = []; let controller: ReturnType<typeof createThreadController>;
+  cache.subscribe(event => { events.push(event); if (event.accessRevoked) controller.retire(); });
+  const before = Promise.withResolvers<import('../src/features/task-thread/contract').ThreadPage>();
+  const after = Promise.withResolvers<import('../src/features/task-thread/contract').ThreadPage>();
+  const list = vi.fn().mockResolvedValueOnce({ items: [message(10, 'Prior history')], hasMoreBefore: false, hasMoreAfter: false })
+    .mockReturnValueOnce(before.promise).mockReturnValueOnce(after.promise);
+  controller = createThreadController({ scope: { userId: TEST_VIEWER_ID, projectId, taskId }, lifetime: cache.signal,
+    ready: async () => {}, principalMismatch: cache.principalMismatch, onReadFailure: error => cache.withdrawRecoveryProject(projectId, error),
+    api: { list, post: vi.fn() } });
+  try {
+    controller.setActive(true); await controller.refresh();
+    expect(controller.snapshot().visible).toHaveLength(1);
+    const reference = controller.showReference(id(20));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(list.mock.calls[1]![1]).toEqual({ beforeId: id(20), count: 1 });
+    before.resolve({ items: [], hasMoreBefore: false, hasMoreAfter: false });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+    expect(list.mock.calls[2]![1]).toEqual({ fromBeginning: true, count: 1 });
+    // Restored history returns a different first message despite both requests succeeding.
+    after.resolve({ items: [message(30, 'Restored history')], hasMoreBefore: false, hasMoreAfter: false });
+    await reference;
+    expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, error: expect.any(ApiError) }));
+    expect(controller.snapshot()).toMatchObject({ retired: true, visible: [] });
+  } finally { controller.retire(); cache.dispose(); }
+});
+
+it.each(['failure', 'success', 'retired'])('does not withdraw for a stale reference %s', async mode => {
+  const { createThreadController } = await import('../src/features/task-thread/controller');
+  const { ApiError } = await import('../src/api/client');
+  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const events: unknown[] = []; cache.subscribe(event => events.push(event));
+  const pending = Promise.withResolvers<import('../src/features/task-thread/contract').ThreadPage>();
+  const list = vi.fn().mockResolvedValueOnce({ items: [message(10, 'Prior history')], hasMoreBefore: false, hasMoreAfter: false }).mockReturnValueOnce(pending.promise);
+  const controller = createThreadController({ scope: { userId: TEST_VIEWER_ID, projectId, taskId }, lifetime: cache.signal,
+    ready: async () => {}, principalMismatch: cache.principalMismatch, onReadFailure: error => cache.withdrawRecoveryProject(projectId, error),
+    api: { list, post: vi.fn() } });
+  try {
+    controller.setActive(true); await controller.refresh();
+    const reference = controller.showReference(id(20)); await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    if (mode === 'retired') controller.retire(); else controller.setActive(false);
+    if (mode === 'failure') pending.reject(new ApiError('network'));
+    else pending.resolve({ items: [message(30, 'Late history')], hasMoreBefore: false, hasMoreAfter: false });
+    await reference;
+    expect(events).not.toContainEqual(expect.objectContaining({ accessRevoked: true }));
+    expect(controller.snapshot().visible.some(value => value.body === 'Late history')).toBe(false);
+  } finally { controller.retire(); cache.dispose(); }
+});
