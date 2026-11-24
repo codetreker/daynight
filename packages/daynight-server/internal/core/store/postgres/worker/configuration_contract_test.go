@@ -40,6 +40,40 @@ func typedConfigurationResource(t *testing.T, got model.WorkerConfigurationResou
 	return got
 }
 
+func TestWorkerConfigurationDatabaseConstraints(t *testing.T) {
+	database := workerStorage(t)
+	ctx := t.Context()
+	userID, workerID := testutil.QueryID(1), testutil.QueryID(2)
+	testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
+
+	var archives bool
+	if err := database.Pool.QueryRow(ctx, `SELECT archive_sessions FROM workers WHERE user_id=$1 AND worker_id=$2`,
+		userID, workerID).Scan(&archives); err != nil || !archives {
+		t.Fatalf("new worker archive default: archive_sessions=%v, error=%v", archives, err)
+	}
+	for _, test := range []struct {
+		update, constraint string
+	}{
+		{"configuration_revision=1", "worker_configuration_complete"},
+		{"configuration_revision=1,configuration_updated_at=statement_timestamp()", "worker_configuration_complete"},
+		{"configuration_revision=0,configuration_updated_at=statement_timestamp(),desired_configuration='{}'", "worker_configuration_revision_positive"},
+		{"configuration_observation_revision=-1", "worker_configuration_observation_revision_nonnegative"},
+		{"configuration_observation='[]'", "worker_configuration_observation_object"},
+	} {
+		_, err := database.Pool.Exec(ctx, "UPDATE workers SET "+test.update+" WHERE user_id=$1 AND worker_id=$2", userID, workerID)
+		var cause *pgconn.PgError
+		if !errors.As(err, &cause) || cause.Code != "23514" || cause.ConstraintName != test.constraint {
+			t.Errorf("%s should fail %s: %v", test.update, test.constraint, err)
+		}
+	}
+
+	_, err := database.Pool.Exec(ctx, `UPDATE workers SET archive_sessions=NULL WHERE user_id=$1 AND worker_id=$2`, userID, workerID)
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "23502" || cause.ColumnName != "archive_sessions" {
+		t.Fatalf("explicit NULL should fail the archive_sessions constraint: %v", err)
+	}
+}
+
 func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	database := workerStorage(t)
 	owner, foreign, project := testutil.ProjectMembershipFixture(t, database)

@@ -13,12 +13,25 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type loginAdmissionResult struct {
 	code  string
 	stamp time.Time
 	err   error
+}
+
+func TestLoginTransactionRequiresScopeHash(t *testing.T) {
+	database := isolatedStore(t)
+	_, err := database.Pool.Exec(t.Context(), `INSERT INTO login_transactions
+        (id,state_hash,browser_binding_hash,provider,return_path,expires_at)
+        VALUES ($1,$2,$3,'github','/',clock_timestamp()+interval '10 minutes')`,
+		uuid.NewString(), testutil.DeviceHash("missing-scope-state"), testutil.DeviceHash("missing-scope-binding"))
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "23502" || cause.ColumnName != "scope_hash" {
+		t.Fatalf("unscoped login transaction should fail the scope_hash constraint: %v", err)
+	}
 }
 
 func TestLoginConsumeChecksExpiryAfterRowLockWait(t *testing.T) {
