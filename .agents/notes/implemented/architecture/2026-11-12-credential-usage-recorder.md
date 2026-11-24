@@ -24,7 +24,9 @@ owns the lifecycle and diagnostic contract. The
 and capacity, and the [persistence decision](2026-11-12-credential-usage-persistence.md)
 owns transaction outcomes and driver cleanup. The
 [retry decision](2026-11-23-credential-usage-lock-recovery.md) owns the
-lock-conflict exception and unknown-outcome handling.
+lock-conflict exception and unknown-outcome handling. The
+[diagnostic decision](../bug-fix/2026-11-24-credential-usage-lock-diagnostics.md)
+owns silent intermediate contention and per-sample final diagnostics.
 
 The production App constructs the recorder from its existing persistence backend
 and explicitly starts that single instance. Root cancellation leaves admitted

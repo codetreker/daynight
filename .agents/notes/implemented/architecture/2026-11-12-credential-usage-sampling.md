@@ -23,6 +23,8 @@ describes the bounds and state transitions. The separate
 ordered transactional writer and its database failure semantics. The
 [retry decision](2026-11-23-credential-usage-lock-recovery.md) explains the
 unknown-outcome and lock-conflict treatment.
+The [diagnostic decision](../bug-fix/2026-11-24-credential-usage-lock-diagnostics.md)
+owns silent intermediate contention and per-sample final diagnostics.
 
 ## Alternatives
 

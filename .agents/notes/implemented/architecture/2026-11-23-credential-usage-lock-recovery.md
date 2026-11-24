@@ -12,10 +12,13 @@ and must not be replayed as though it had failed to commit.
 
 ## Decision
 
-A confirmed uncommitted `55P03` failure retains its diagnostic but becomes a
-drain cause only if the existing three-attempt budget is exhausted. Cancellation,
-deadlines, cleanup failures, other database failures and committed cleanup
-errors retain their existing drain semantics. Unknown outcomes are abandoned
+A pure confirmed uncommitted `55P03` failure becomes a diagnostic and a drain
+cause only when the individual sample exhausts the existing three-attempt budget.
+The original recovery decision retained intermediate diagnostics; the
+[diagnostic decision](../bug-fix/2026-11-24-credential-usage-lock-diagnostics.md)
+makes still-retryable contention silent while preserving final loss evidence.
+Cancellation, deadlines, cleanup failures, other database failures and
+committed cleanup errors retain their existing drain semantics. Unknown outcomes are abandoned
 without replay; a newer event already admitted during the write remains a separate
 candidate. The [recorder](2026-11-12-credential-usage-recorder.md) and
 [sampler](2026-11-12-credential-usage-sampling.md) decisions retain their lifecycle

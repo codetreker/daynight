@@ -650,6 +650,9 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 					if calls != i {
 						t.Fatalf("calls before retry %d: %d", i, calls)
 					}
+					if len(h.records) != 0 || r.Snapshot().Dirty != 0 {
+						t.Fatalf("intermediate retry produced diagnostics: %+v", r.Snapshot())
+					}
 					clock.advance(usage.RetryInterval)
 					notify(r.wake)
 					synctest.Wait()
@@ -678,10 +681,17 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 						t.Fatalf("event: %+v, want %+v", got, want)
 					}
 				}
-				found := false
+				wantLogs := 0
+				if tc.failures == usage.MaxAttempts {
+					wantLogs = 1
+				}
+				if len(h.records) != wantLogs {
+					t.Fatalf("diagnostics: %d, want %d", len(h.records), wantLogs)
+				}
 				for len(h.records) > 0 {
 					rec := <-h.records
 					var state, code string
+					var count uint64
 					rec.Attrs(func(a slog.Attr) bool {
 						if a.Key == "sqlstate" {
 							state = a.Value.String()
@@ -689,14 +699,14 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 						if a.Key == "error_code" {
 							code = a.Value.String()
 						}
+						if a.Key == "count" {
+							count = a.Value.Uint64()
+						}
 						return true
 					})
-					if state == "55P03" && code == usage.CodeWriteFailed.String() {
-						found = true
+					if state != "55P03" || code != usage.CodeWriteFailed.String() || count != 1 {
+						t.Fatalf("final diagnostic: state %q, code %q, count %d", state, code, count)
 					}
-				}
-				if !found {
-					t.Fatal("missing lock conflict diagnostic")
 				}
 			})
 		})
@@ -705,13 +715,17 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 
 func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		cause error
+		name    string
+		cause   error
+		outcome store.TransactionOutcome
 	}{
-		{"cancelled", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.Canceled)},
-		{"deadline", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.DeadlineExceeded)},
-		{"mixed failure", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, errors.New("batch close failed"))},
-		{"cleanup", &store.TransactionError{Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}},
+		{"cancelled", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.Canceled), store.TransactionNotCommitted},
+		{"deadline", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, context.DeadlineExceeded), store.TransactionNotCommitted},
+		{"mixed failure", errors.Join(&store.Error{DatabaseFailure: true, SQLState: "55P03"}, errors.New("batch close failed")), store.TransactionNotCommitted},
+		{"cleanup", &store.TransactionError{Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}, store.TransactionNotCommitted},
+		{"nested cleanup", &store.TransactionError{Outcome: store.TransactionNotCommitted, Cause: &store.TransactionError{Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}}, store.TransactionNotCommitted},
+		{"joined cleanup", errors.Join(&store.TransactionError{Outcome: store.TransactionNotCommitted, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}, &store.TransactionError{Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: &store.Error{DatabaseFailure: true, SQLState: "55P03"}}), store.TransactionNotCommitted},
+		{"unknown", &store.Error{DatabaseFailure: true, SQLState: "55P03"}, store.TransactionUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -719,11 +733,12 @@ func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
 				w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
 					calls := writes.record(events)
 					if calls == 1 {
-						return store.Completion{Outcome: store.TransactionNotCommitted}, tc.cause
+						return store.Completion{Outcome: tc.outcome}, tc.cause
 					}
 					return store.Completion{Outcome: store.TransactionCommitted}, nil
 				})
-				r, err := New(w, logger(), nil)
+				h := &captureHandler{records: make(chan slog.Record, 8)}
+				r, err := New(w, slog.New(h), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -738,8 +753,35 @@ func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
 				defer cancel()
 				err = r.Drain(ctx)
 				calls, _ := writes.snapshot()
-				if !errors.Is(err, tc.cause) || calls != 2 {
+				wantCalls := 2
+				if tc.outcome == store.TransactionUnknown {
+					wantCalls = 1
+				}
+				if !errors.Is(err, tc.cause) || calls != wantCalls {
 					t.Fatalf("drain: %v, calls: %d", err, calls)
+				}
+				if len(h.records) != 1 {
+					t.Fatalf("fault diagnostics: %d, want 1", len(h.records))
+				}
+				rec := <-h.records
+				var state, code string
+				rec.Attrs(func(a slog.Attr) bool {
+					if a.Key == "sqlstate" {
+						state = a.Value.String()
+					}
+					if a.Key == "error_code" {
+						code = a.Value.String()
+					}
+					return true
+				})
+				wantCode := usage.CodeWriteFailed
+				if tc.outcome == store.TransactionUnknown {
+					wantCode = usage.CodeWriteOutcomeUnknown
+				} else if errors.Is(tc.cause, context.DeadlineExceeded) {
+					wantCode = usage.CodeWriteTimeout
+				}
+				if state != "55P03" || code != wantCode.String() {
+					t.Fatalf("diagnostic: state %q, code %q; want %q", state, code, wantCode)
 				}
 			})
 		})
