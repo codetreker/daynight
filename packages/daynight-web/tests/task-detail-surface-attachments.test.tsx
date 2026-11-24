@@ -224,11 +224,19 @@ describe('full-detail attachment surface', () => {
   it('shows an initial service failure separately from preview errors and retries each owner', async () => {
     const api = fixture([file('docs/readme.md')]);
     vi.mocked(api.list).mockRejectedValueOnce(new Error('private inventory error'));
-    vi.mocked(api.readText).mockRejectedValueOnce(new ApiError('server', 500, 'server_error', 'preview-7'));
+    const previewResponse = deferred<string>();
+    const previewRequested = deferred<void>();
+    vi.mocked(api.readText).mockImplementationOnce(() => { previewRequested.resolve(); return previewResponse.promise; });
     render(page(api));
     expect(await (await readyPreview()).findByRole('alert')).toHaveTextContent('附件列表加载失败');
     expect(preview().getByRole('alert')).not.toHaveTextContent('private');
     fireEvent.click(preview().getByRole('button', { name: '重试附件' }));
+    await previewRequested.promise;
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(api.readText).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'docs/readme.md', expect.any(AbortSignal));
+    expect(preview().getByRole('status')).toHaveTextContent('正在加载预览');
+    expect(screen.queryByRole('button', { name: '重试预览' })).toBeNull();
+    await act(async () => { previewResponse.reject(new ApiError('server', 500, 'server_error', 'preview-7')); });
     await screen.findByRole('button', { name: '重试预览' });
     expect(preview().getByRole('alert')).toHaveTextContent('无法读取文件预览');
     expect(preview().getByRole('alert')).toHaveTextContent('preview-7');
