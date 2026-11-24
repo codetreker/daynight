@@ -303,7 +303,7 @@ describe('standalone full task details', () => {
     expect(screen.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
     await moveHistory('back');
     expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('方案正文')).toBeVisible();
+    expect(await screen.findByText('方案正文')).toBeVisible();
     expect(screen.queryByText('此附件引用无效或超出了任务附件根目录。')).toBeNull();
     expect(screen.getByRole('button', { name: /^guide\.md/ })).toHaveAttribute('aria-pressed', 'true');
     await moveHistory('forward');
