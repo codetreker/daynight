@@ -90,7 +90,7 @@ worker 将冻结配置、managed prompt、初始 operationId、原生目录和 I
 
 受管 Task 换代后恢复未派发的首次输入时，Controller 在原生输入队列内重新核验当前 claim、就绪状态、冻结 ticket 与 journal 的当前快照和相邻前代停证。原 operation 缺失时创建原 ID，或在单写者事务中将正文、hash 和 kind 精确匹配且仍为 `accepted` 的记录绑定当前 generation；随后沿既有路径先持久化 `dispatching`，再调用 Provider。已进入派发、未知或终态的记录不能重新变为 `accepted`。重复 IPC 共享原操作，不能产生第二次可能的 native dispatch；journal 证据不完整或冲突时保留责任并拒绝发送。Worker 的工作树和恢复入口规则见 [Worker 设计](daynight-worker.md#web-backend-与执行证据)。
 
-Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取 journal 的单次只读快照：空来源继续按 writer 未提交处理，已交付 v16–v19 或当前 v20 必须通过实际 schema 验证，再核对完整执行身份、generation、ticket 绑定和原进程证明。观察不迁移或改写 journal；不支持的非空格式和身份冲突明确失败。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
+Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取 journal 的单次只读快照：空来源继续按 writer 未提交处理，已交付 v16–v20 或当前 v21 必须通过实际 schema 验证，再核对完整执行身份、generation、ticket 绑定和原进程证明。观察不迁移或改写 journal；不支持的非空格式和身份冲突明确失败。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
 
 对于既有出生 proof，同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。新格式 Linux Controller 的标记冲突按[启动身份规则](#linux-controller-启动身份)处理。
 
@@ -136,7 +136,7 @@ Task/Bot 活跃恢复、停止及 Task 退役清理先读取原 ticket 的未放
 
 实时观察按 NUL 拆分 `/proc/<pid>/cmdline` 并核对固定 bootstrap 布局中的唯一完整 `--launch-id <uuid>`，以内核状态和组归属判断退出；信号前再次核对标记与组。明确 ESRCH 或 zombie 只确认该 PID 不再存活；内核显示退出中则使用原观察期限被动等待。存活但标记不同、为空、格式异常，或读取失败且未独立确认退出，均保持身份未知，不向该 PID 发信号。已独立证明的 native 组成员仍按既有规则处理。没有可归属的存活组成员时，在原期限内被动等待；标记可被复制或修改，核验与信号之间仍有竞态。
 
-`recordStoppedControllerGeneration` 在监督方确认 Controller、已记录 native 进程及原进程组全部停止后，在现有事务中清除 writer 并按原 ticket hash 写入 `stopped_generations`。新格式行只能由该外部完整停止核验产生；Controller 自报 `nativeStopped`、普通 stopped 快照和换代时复制快照均不能生成停证。重复 stop、Test resume、Task/Bot 后继代及退役清理优先读取并核对 ticket、execution、generation、Controller 身份与已保存 native 记录。有效停证结算原代，不再要求当下 PID 或 PGID 为空；缺失时实时核验，冲突保留错误。当前执行的资源、服务端围栏、Session、claim 与 resume lease 仍独立核验。
+`recordStoppedControllerGeneration` 在监督方确认 Controller、已记录 native 进程及原进程组全部停止后，在现有事务中清除 writer 并按原 ticket hash 写入 `stopped_generations`。新格式行只能由该外部完整停止核验产生；Controller 自报 `nativeStopped`、普通 stopped 快照和换代时复制快照均不能生成停证。重复 stop、Test resume、Task/Bot 后继代及退役清理优先读取并核对 ticket、execution、generation、Controller 身份与已保存 native 记录。同代当前行必须与停证一致且无 writer；后续当前行必须属于同一 execution、Session 和 claim，且代次更高。有效停证结算原代，不再要求当下 PID 或 PGID 为空；缺失时实时核验，冲突保留错误。当前执行的资源、服务端围栏、Session、claim 与 resume lease 仍独立核验。
 
 新版本按保存记录种类选择观测器，旧 Linux Controller 和 Provider proof 保持原值及旧算法；新 Worker 可接管运行中的旧 Controller，旧代确认停止后新代自然采用新格式。新版 bootstrap 接受旧位置参数和新显式标记，Controller 按实际内核 argv 选择记录类型：旧 Worker 位置参数及旧 Test 直接启动 main 均保持旧格式，即使安装已被替换。旧版本无法解析新记录；回退前须用新版停止并清理相应执行，仍被旧版扫描的历史记录继续交给新版或恢复升级前的隔离状态。诊断区分标记冲突、读取失败、未放行、未知和存活组，记录可用的阶段、PID、launchId、generation，不输出完整 cmdline 或凭据。取舍和范围由[启动身份决策](../../.agents/notes/implemented/bug-fix/2026-11-24-linux-controller-launch-identity.md)记录。
 

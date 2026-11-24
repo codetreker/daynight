@@ -4,7 +4,7 @@ import { restoreControllerJournalVersion } from "../../helpers/controller-journa
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
 import { reconcileSubmittedControllerLaunch, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure } from "../../../src/commands/controller/launch-observation.js";
 import { prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
@@ -48,6 +48,62 @@ const stoppedJournalFixture = async (version: 16 | 17 = 16) => {
   return { ...f, signal, ticket, original, snapshot, manager, reconcile, leases };
 };
 
+test.skipIf(process.platform !== "linux").each([
+  { action: "shutdown", conflict: "snapshot" }, { action: "shutdown", conflict: "owner" },
+  { action: "advance", conflict: "snapshot" }, { action: "advance", conflict: "owner" },
+] as const)("blocks Bot $action when the same-generation $conflict conflicts with its historical stop", async ({ action, conflict }) => {
+  const f = fixture(), signal = new AbortController().signal;
+  const stopBootstrap = vi.fn(async () => { throw new Error("Unexpected bootstrap signal"); });
+  const stopProcesses = vi.fn(async () => { throw new Error("Unexpected process signal"); });
+  const request = vi.fn(async () => { throw new Error("Unexpected Controller request"); });
+  const reconcileLaunch = vi.fn(async () => { throw new Error("Unexpected Controller reconciliation"); });
+  const leases = { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: vi.fn(async () => {}),
+    adopt: () => { throw new Error("Unexpected native launch ownership"); }, retain: vi.fn(async () => undefined),
+    get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const manager = f.createProcess({ stopBootstrap, stopProcesses, request, reconcileLaunch }, 3, leases);
+  f.launch.mockImplementationOnce(async options => {
+    const proof = { kind: "linux-controller-launch" as const, pid: 123, launchId: options.ticket.launchId };
+    await options.onSubmitting(); await options.onSpawned(proof);
+    const snapshot = { ...await f.observe(options.ticket), controllerProcess: proof };
+    await options.onObserved(snapshot); return snapshot;
+  });
+  await manager.advance(f.current(), signal);
+  const ticket = await manager.readTicket(f.current()), original = f.current().intent!;
+  const launch = f.executions.get(f.current())!.controllerProcess!;
+  const journal = openControllerLifecycleStore(original.journalPath, ticket, { controllerProcess: launch });
+  journal.patchSnapshot({ nativeSessionId: id(9) }); journal.close();
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const stopped = await recordStoppedControllerGeneration(original.journalPath, ticket, {});
+  f.executions.update(f.current(), { snapshot: stopped });
+  expect(confirm).toHaveBeenCalledOnce();
+  confirm.mockClear();
+
+  const db = new Database(sqliteFilename(original.journalPath));
+  try {
+    if (conflict === "snapshot") db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...stopped, error: "changed after stop" }));
+    else db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+    const execution = db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get();
+    const receipt = db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(ticket));
+    expect(receipt).toEqual({ ticket_hash: controllerPayloadHash(ticket), snapshot: JSON.stringify(stopped) });
+
+    await expect(manager[action](f.current(), signal)).rejects.toThrow(/conflict/i);
+    expect(f.current().intent).toEqual(original);
+    expect(f.executions.get(f.current())!.snapshot).toEqual(stopped);
+    expect(db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get()).toEqual(execution);
+    expect(db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(ticket))).toEqual(receipt);
+    expect(f.release).not.toHaveBeenCalled();
+    expect(leases.release).not.toHaveBeenCalled();
+    expect(stopBootstrap).not.toHaveBeenCalled();
+    expect(stopProcesses).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(reconcileLaunch).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(f.launch).toHaveBeenCalledOnce();
+    expect(f.grant).toHaveBeenCalledOnce();
+    await expect(manager.close()).rejects.toThrow(/cleanup remains unconfirmed/);
+  } finally { db.close(); }
+});
+
 test.each(["recovery", "shutdown"] as const)("reconciles an exited ordinary v16 Bot before %s migrates its journal", async action => {
   const f = await stoppedJournalFixture();
   expect(() => readCurrentControllerSnapshot(f.original.journalPath, f.ticket)).toThrow(/current journal format/);
@@ -63,7 +119,7 @@ test.each(["recovery", "shutdown"] as const)("reconciles an exited ordinary v16 
   }
   expect(f.reconcile).toHaveBeenCalledOnce();
   const db = new Database(sqliteFilename(f.original.journalPath), { readonly: true });
-  try { expect(db.pragma("user_version", { simple: true })).toBe(20); }
+  try { expect(db.pragma("user_version", { simple: true })).toBe(21); }
   finally { db.close(); }
   expect(f.leases.release).toHaveBeenCalledWith(f.ticket.launchId);
 });

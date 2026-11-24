@@ -62,7 +62,8 @@ it('rejects late Task versions and omissions without restoring an old claim', as
   const old = await read(task(), sample({ state: 'notice' }));
   const newer = task({ version: 2n, updatedAt: '2026-10-22T10:00:01Z' });
   await publish(await read(newer, sample({ taskVersion: 2n, state: 'pending' })));
-  await publish(old, 1);
+  await expect(scope.applySync(old.ticket, old.sync, new AbortController().signal)).rejects.toMatchObject({ name: 'AbortError' });
+  store.replace({ project: scope.getAuthorizedProject(projectId)!, observedBindings: deriveTaskSyncBindings(old.ticket, old.sync), observedVersions: deriveTaskSyncVersions(old.ticket, old.sync), sync: old.sync, receivedMonotonic: 1 });
   expect(store.snapshot().get(taskId)?.state).toBe('pending');
   const missing = await read(newer, null); await publish(missing, 2);
   expect(observationFor(store.snapshot(), newer)?.state).toBe('unobserved');

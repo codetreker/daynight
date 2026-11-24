@@ -32,7 +32,7 @@ it("stores only intrinsic complete content and exact bigint, without advancing t
   expect(saved.detail).not.toHaveProperty("ready"); expect(saved.detail).not.toHaveProperty("blockedBy");
   expect(saved.detail.version).toBe(detail.version); expect(saved.detail.description).toBe(detail.description);
   expect(saved.byteSize).toBe(detailByteSize(saved.detail));
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt);
   expect(materializeDetail(saved.detail, { ...scope.getAuthorizedProject(projectId)!.index.nodes.get(detail.id)!, ready: false, blockedBy: [taskId(2)] })).toMatchObject({ ready: false, blockedBy: [taskId(2)] });
 });
 
@@ -47,7 +47,7 @@ it("admits and rereads Goal details without replacing synchronized acceptance ed
   expect(await readCachedDetail(scope, current, detail.id, signal())).toMatchObject({ dependsOn: [] });
   expect(scope.getAuthorizedProject(projectId)!.summaries.get(detail.id)?.dependsOn).toEqual([taskId(2)]);
   await expect(saveDetail(scope, current, { ...detail, title: "Contradictory" }, signal())).rejects.toMatchObject({ kind: "protocol" });
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(current.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(current.coverageUpdatedAt);
 });
 
 it("does not rewrite matching repeated content and touches LRU only on an explicit cached read", async () => {
@@ -98,7 +98,7 @@ it("rejects old/newer and contradictory same-version bodies without changing sum
   await saveDetail(scope, ticket, detail, signal());
   await expect(saveDetail(scope, ticket, { ...detail, description: "Other" }, signal())).rejects.toMatchObject({ kind: "protocol" });
   expect((await record())!.detail.description).toBe(detail.description);
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt);
 });
 
 it("evicts the least recently used row at 32, preserving explicitly reopened content", async () => {
@@ -165,7 +165,7 @@ it("rolls LRU eviction back on quota failure and preserves summaries and waterma
   });
   await expect(saveDetail(scope, ticket, details[32]!, signal())).rejects.toMatchObject({ category: "storage", cause: { name: "QuotaExceededError" } });
   expect(await record(1)).toBeDefined(); expect(await record(33)).toBeUndefined();
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt);
   fault.mockRestore(); await saveDetail(scope, ticket, details[32]!, signal()); expect(await record(33)).toBeDefined();
 });
 
@@ -196,7 +196,7 @@ it("checks same-version detail properties against complete summaries while accep
   const saved = (await record())!;
   await expect(saveDetail(scope, ticket, { ...detail, properties: {} }, signal())).rejects.toMatchObject({ kind: "protocol" });
   expect(await record()).toEqual(saved);
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt);
 });
 
 it('uses fresh Parent evidence without trusting shared cached detail fields', async () => {

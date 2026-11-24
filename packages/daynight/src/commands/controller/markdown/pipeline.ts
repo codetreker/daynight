@@ -10,7 +10,7 @@ type ProjectionStore = {
   put(kind: MarkdownSourceStoreKind, id: string, value: unknown): void;
   listIds(kind: MarkdownSourceStoreKind, page: { after?: string; limit: number }): string[];
 };
-type Journal = { markdownStore: ProjectionStore; getHistoryContentPolicy?(): string; getTimelineEntry?(entryId: string): ProviderEntry | undefined; publishMarkdownProjection(state: MarkdownProjectionState, entry: ProviderEntry): unknown; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
+type Journal = { markdownStore: ProjectionStore; getHistoryContentPolicy?(): string; getTimelineEntry?(entryId: string): ProviderEntry | undefined; shouldProjectBotMarkdown?(entry: ProviderEntry): boolean; botPreviewTruncated?(entryId: string): boolean; publishMarkdownProjection(state: MarkdownProjectionState, entry: ProviderEntry): unknown; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
 type CaptureHooks<Context> = {
   contextKey(): string;
   contextFor(occurrence: ImageOccurrence): Context;
@@ -82,6 +82,10 @@ export function createMarkdownTimelinePipeline<Context>(options: {
   };
   const accept = (entry: ProviderEntry, metadata?: MarkdownPipelineMetadata): boolean => {
     if (stopped || broken) return false;
+    if (journal.shouldProjectBotMarkdown?.(entry) === false) {
+      try { journal.projectTimeline(entry); return true; }
+      catch { report(); return false; }
+    }
     // Authoritative identities and interactions keep the existing fatal protocol
     // failure; they are not Markdown parse failures or private cache identities.
     if (journal.getHistoryContentPolicy?.() === "task_body") parseStoredTimelineEntry({ ...entry, entrySeq: "1" });
@@ -120,7 +124,7 @@ export function createMarkdownTimelinePipeline<Context>(options: {
       }
       // Only a trusted complete-body descriptor can start a new projection.
       // Native image-only patches have no authority to infer Markdown sources.
-      return metadata ? accept(entry, metadata) : true;
+      return metadata && !(metadata.truncated && journal.botPreviewTruncated?.(entry.entryId)) ? accept(entry, metadata) : true;
     } catch { report(); return false; }
   };
   const tick = async (): Promise<void> => {

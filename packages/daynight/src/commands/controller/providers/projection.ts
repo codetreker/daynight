@@ -1,6 +1,6 @@
 import { nativeEntryId } from "../native-identity.js";
 export { nativeEntryId } from "../native-identity.js";
-import { record, string } from "./native-rpc.js";
+import { record, string, type NativeObject } from "./native-rpc.js";
 import type { MarkdownTimelineMetadata, ProviderEntry } from "./types.js";
 import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
 import type { CodexImageProjection } from "./codex-image-projection.js";
@@ -13,6 +13,29 @@ export const limited = (value: string): string => {
   return value.slice(0, end) + "\n[Output truncated at 200000 characters]";
 };
 export const markdownTimelineMetadata = (text: string, complete: boolean, format: "markdown" | "plain" = "markdown"): MarkdownTimelineMetadata => ({ complete, format, truncated: text.length > 200_000 });
+type CommandText = { text: string; truncated: boolean };
+type CommandMetadata = { command: CommandText | undefined; cwd: CommandText | undefined; exitCode: number | undefined };
+type ToolEntry = Extract<ProviderEntry, { kind: "tool_call" }>;
+
+const commandText = (value: string, budget: number): CommandText => {
+  const text = value.slice(0, budget).toWellFormed().replaceAll("\0", "\uFFFD");
+  if (value.length <= budget && Buffer.byteLength(JSON.stringify(text)) <= budget) return { text, truncated: false };
+  let bytes = Buffer.byteLength('"…"'), end = 0;
+  for (const character of text) {
+    bytes += Buffer.byteLength(JSON.stringify(character)) - 2;
+    if (bytes > budget) break;
+    end += character.length;
+  }
+  return { text: text.slice(0, end) + "…", truncated: true };
+};
+
+const commandMetadata = (item: NativeObject, previous?: CommandMetadata): CommandMetadata => ({
+  command: typeof item.command === "string" ? commandText(item.command, 8192) : previous?.command,
+  cwd: typeof item.cwd === "string" && item.cwd !== "" ? commandText(item.cwd, 4096) : previous?.cwd,
+  exitCode: typeof item.exitCode === "number" && Number.isInteger(item.exitCode) && item.exitCode >= -2147483648 && item.exitCode <= 2147483647
+    ? item.exitCode : previous?.exitCode,
+});
+
 export type ProviderArguments = { sandbox?: "read-only" | "workspace-write"; approvalPolicy?: "untrusted" | "on-request" | "never"; effort?: string; permissionMode?: "default" | "acceptEdits" | "plan"; additionalDirectories?: string[] };
 /** Dynamic effort text is accepted only when the caller validates the native model selection. */
 export const parseProviderArguments = (provider: "codex" | "claude" | "copilot", args: readonly string[], validateNativeSelection = false): ProviderArguments => {
@@ -31,8 +54,8 @@ export const parseProviderArguments = (provider: "codex" | "claude" | "copilot",
 };
 export class CodexProjection {
   private readonly content = new Map<string, string>();
-  private readonly tools = new Map<string, Extract<ProviderEntry, {kind: "tool_call"}>>();
-  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry, metadata?: MarkdownTimelineMetadata) => void, private readonly images?: CodexImageProjection) {}
+  private readonly tools = new Map<string, { entry: ToolEntry; command?: CommandMetadata }>();
+  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry, metadata?: MarkdownTimelineMetadata) => void, private readonly images?: CodexImageProjection, private readonly botHistoryWindow = false) {}
   private base(id: string) { return { entryId: nativeEntryId(this.sessionId, id), revision: "1" }; }
   delta(id: string, delta: string, kind: "assistant_message" | "reasoning"): void {
     const value = (this.content.get(id) ?? "") + delta; this.content.set(id, value);
@@ -42,10 +65,10 @@ export class CodexProjection {
   toolDelta(id: string, delta: string): void {
     if (this.images?.toolDelta(id, delta)) return;
     const old = this.tools.get(id); if (!old) return;
-    const prior = old.output.map(part => part.type === "text" ? part.text : "").join("");
+    const prior = old.entry.output.map(part => part.type === "text" ? part.text : "").join("");
     const output = prior + delta;
-    const entry = { ...old, output: [{ type: "text" as const, text: limited(output) }], truncated: old.truncated || output.length > 200_000 };
-    this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, false, "plain"));
+    const entry = { ...old.entry, output: [{ type: "text" as const, text: limited(output) }], truncated: old.entry.truncated || output.length > 200_000 };
+    this.tools.set(id, { ...old, entry }); this.emit(entry, markdownTimelineMetadata(output, false, "plain"));
   }
   item(value: unknown, completed: boolean, turnId = "", userEntryId?: string): void {
     const item = record(value), id = string(item.id), type = string(item.type); if (!id) return;
@@ -81,8 +104,11 @@ export class CodexProjection {
     }
     else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView", "collabAgentToolCall"].includes(type)) {
       const output = readable(item.aggregatedOutput ?? item.result ?? item.error ?? item.changes ?? "");
-      const entry: Extract<ProviderEntry, { kind: "tool_call" }> = { ...base, kind: "tool_call", callId: id, name: string(item.tool) || type, input: limited(readable(item.command ?? item.arguments ?? item.query ?? item.changes ?? item)), output: [{ type: "text", text: limited(output) }], status: ["failed", "declined"].includes(string(item.status)) || item.error ? "failed" : completed ? "completed" : "running", truncated: output.length > 200_000 };
-      this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, completed, "plain"));
+      const command = type === "commandExecution" && this.botHistoryWindow ? commandMetadata(item, this.tools.get(id)?.command) : undefined;
+      const input = command ? JSON.stringify({ command: command.command?.text, cwd: command.cwd?.text, exitCode: command.exitCode })
+        : limited(readable(item.command ?? item.arguments ?? item.query ?? item.changes ?? item));
+      const entry: ToolEntry = { ...base, kind: "tool_call", callId: id, name: string(item.tool) || type, input, output: [{ type: "text", text: limited(output) }], status: ["failed", "declined"].includes(string(item.status)) || item.error ? "failed" : completed ? "completed" : "running", truncated: output.length > 200_000 || command?.command?.truncated === true || command?.cwd?.truncated === true };
+      this.tools.set(id, { entry, ...(command ? { command } : {}) }); this.emit(entry, markdownTimelineMetadata(output, completed, "plain"));
     } else if (type === "contextCompaction") this.emit({ ...base, kind: "compaction", summary: "Native conversation context compacted." });
     else if (type === "plan") this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(string(item.text) || readable(item)) }] }, markdownTimelineMetadata(string(item.text) || readable(item), completed, typeof item.text === "string" ? "markdown" : "plain"));
     else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}.` });

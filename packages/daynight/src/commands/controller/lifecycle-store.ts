@@ -23,6 +23,9 @@ import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { openSessionContent, type SessionContent, type SessionHistoryContentPolicy } from "./content/session-content.js";
 import type { TimelineContentPolicy } from "./content/timeline-store.js";
+import { openBotHistoryCache, type BotHistoryCacheBudget } from "./content/bot-history-cache.js";
+import { fitsBotMarkdown, isBotDisplayEntry } from "./content/bot-history-display.js";
+import { queueBotResourceRetirement, retireBotResources } from "./content/bot-resource-retirement.js";
 import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
@@ -35,7 +38,7 @@ import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
-import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, MAX_TICKET_BYTES, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerPayloadHash, controllerTicketPath, isBotHistoryTicket, readLaunchTicket, MAX_TICKET_BYTES, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ControllerProcessProof, type ProcessProof } from "./process-proof.js";
 import { isLinuxControllerLaunch } from "./linux-controller-launch.js";
@@ -78,7 +81,7 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file also identifies its Session-bound resource files. */
-type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ControllerProcessProof };
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; botHistoryBudget?: BotHistoryCacheBudget; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ControllerProcessProof };
 const hasLinuxLaunchKind = (value: unknown): boolean => value !== null && typeof value === "object" && "kind" in value && value.kind === "linux-controller-launch";
 const validateLaunchIdentity = (value: unknown, ticket: ControllerLaunchTicket): void => {
   if (hasLinuxLaunchKind(value) && (!isLinuxControllerLaunch(value) || value.launchId !== ticket.launchId)) throw new Error("Linux Controller launch identity conflicts with its original ticket.");
@@ -93,6 +96,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   if (options.historyPolicy === "task_body" && (ticket.claimId === undefined || !options.contentOwnedLocally)) throw new Error("Task body history requires a locally owned Task Session.");
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let sessionContent!: SessionContent;
+  let botHistory: ReturnType<typeof openBotHistoryCache> | null = null;
   let db!: Database.Database;
   let quarantined = false, outboxWritesDisabled = false, writeDepth = 0;
   const assertUsable = (): void => { if (quarantined) throw new Error("Controller journal has an unresolved transaction; independent recovery is required."); };
@@ -171,6 +175,11 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
       sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite }, options.maxOnlineBytes === undefined ? {} : { maxOnlineBytes: options.maxOnlineBytes });
       if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
+      if (isBotHistoryTicket(ticket)) {
+        botHistory = openBotHistoryCache(db, sessionContent.timeline, options.botHistoryBudget);
+        writeDepth++;
+        try { botHistory.initialize(); } finally { writeDepth--; }
+      } else if (db.prepare("SELECT 1 FROM bot_history_state").get() !== undefined) throw new Error("A bounded Bot journal requires its original Bot identity.");
     });
     initializationOutcome = "committed";
   const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(); } });
@@ -233,27 +242,41 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   // Identity and online publication belong to the caller. Excluded history must
   // not allocate source sequences or acknowledge operations on its behalf.
   const saveTimelineHistory = (entry: TimelineEntry, policy: TimelineContentPolicy) => atomic(() => {
+    if (botHistory !== null) throw new Error("Bounded Bot history requires its original cache publication.");
     if (sessionContent.contentPolicy === "task_body" && policy !== "task_body") throw new Error("Task history cannot adopt a different content policy.");
     return sessionContent.timeline.save(preserveTimelineAssociations(entry), policy);
   });
-  const projectTimeline = (input: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+  const botDisplayRetired = (entry: SourceTimelineEntry): boolean => {
+    if (!botHistory || !isBotDisplayEntry(entry)) return false;
+    const identity = botHistory.identity(entry.entryId);
+    return identity !== undefined && (identity.preview === null || identity.summarized === 1);
+  };
+  const markdownKey = (id: string): string => `markdown:projection:${id}`;
+  const projectTimeline = (input: SourceTimelineEntry, preserveBotPreview = false): ControllerOutboxEvent | null => atomic(() => {
+    if (botDisplayRetired(input)) return null;
+    if (botHistory && !fitsBotMarkdown(input)) db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(markdownKey(input.entryId));
     const entry = preserveTimelineAssociations(input);
     const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
     void ignored; void ignoredSequence;
     const contentHash = controllerPayloadHash(content);
     const previous = sessionContent.onlineTimeline.get(entry.entryId);
     const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
-    if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
-    const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-    const entrySeq = previous?.entrySeq ?? sessionContent.onlineTimeline.nextSequence();
+    const known = botHistory?.identity(entry.entryId);
+    if (botHistory ? known?.source_hash === contentHash : previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
+    const previousSource = botHistory && known ? db.prepare("SELECT CAST(revision AS TEXT) AS revision FROM timeline_source_revisions WHERE entry_id=?").get(entry.entryId) as { revision: string } | undefined : undefined;
+    const revisions = [previous?.revision, previousSource?.revision, known?.preview ? (JSON.parse(known.preview) as { revision: string }).revision : undefined];
+    const revision = String(revisions.reduce<bigint>((maximum, value) => value !== undefined && BigInt(value) > maximum ? BigInt(value) : maximum, 0n) + 1n);
+    const entrySeq = previous?.entrySeq ?? known?.entry_seq ?? botHistory?.nextSequence() ?? sessionContent.onlineTimeline.nextSequence();
     const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
     const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
-    parseStoredTimelineEntry(durableEntry);
-    const display = options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload;
+    const retained = botHistory?.save(durableEntry, contentHash, preserveBotPreview) ?? parseStoredTimelineEntry(durableEntry);
+    const { entrySeq: _storedSequence, ...storedPayload } = retained;
+    const outgoing = botHistory ? { ...storedPayload, entrySeq } : payload;
+    const display = options.contentOwnedLocally || botHistory !== null ? sessionDisplayEntry(outgoing) : outgoing;
     parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: display });
     // Online details and source replay commit together; ACK never removes the
     // original content needed by a reconnect or an outstanding approval.
-    sessionContent.onlineTimeline.save(durableEntry);
+    if (botHistory === null) sessionContent.onlineTimeline.save(durableEntry);
     const event = appendEvent({ kind: "timeline_upsert", payload: display });
     db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, revision, event.sequence, display.kind === payload.kind ? 1 : 0);
     return event;
@@ -279,7 +302,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (!existing) {
       db.prepare("INSERT INTO input_message_origins VALUES(?,?,?)").run(entryId, operationId, origin);
     }
-    if (current) projectTimeline(current);
+    if (current) projectTimeline(current, true);
     return entryId;
   });
   const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
@@ -293,23 +316,48 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, entry.revision, event.sequence, display.kind === payload.kind ? 1 : 0);
     return event;
   });
+  const botRetiredImagePosition = (entryId: string): { entrySeq: string; revision: string; sourceSequence: string } | null => {
+    const known = botHistory?.identity(entryId);
+    if (!known || known.preview !== null && known.summarized === 0) return null;
+    const source = db.prepare("SELECT CAST(revision AS TEXT) AS revision,CAST(source_sequence AS TEXT) AS sourceSequence FROM timeline_source_revisions WHERE entry_id=?").get(entryId) as { revision: string; sourceSequence: string } | undefined;
+    return source ? { entrySeq: known.entry_seq, ...source } : null;
+  };
+  const retiredNativeSlot = (occurrence: ImageOccurrence, nativeSource: NativeImageSource | null): NativeImageProjectionState | null => {
+    if (!nativeSource || occurrence.partId !== null || !botRetiredImagePosition(occurrence.entryId)) return null;
+    const key = `native_provider:image-slot:${nativeEntryId(nativeSource.nativeSessionId, occurrence.sourceKey)}`;
+    const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
+    if (!row) return null;
+    const state = JSON.parse(row.value) as NativeImageProjectionState;
+    if (!Number.isSafeInteger(state.index) || state.index < 0 || state.index >= 1000 || state.part.imageId !== occurrence.imageId
+      || canonicalImageJson(state.request.occurrence) !== canonicalImageJson(occurrence) || canonicalImageJson(state.request.nativeSource) !== canonicalImageJson(nativeSource)
+      || canonicalImageJson([1, nativeSource, occurrence.entryId, occurrence.container, occurrence.callId, state.index]) !== occurrence.sourceKey) throw new Error("Native image evidence differs from its original position.");
+    return state;
+  };
   const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
     if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
     const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
-    if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
+    const retired = botRetiredImagePosition(occurrence.entryId);
+    const nativeSlot = retired === null ? null : retiredNativeSlot(occurrence, nativeSource);
+    const livePosition = entry && (!retired || occurrence.partId !== null) && (occurrence.container === "tool_output" ? entry.kind === "tool_call" && entry.callId === occurrence.callId : occurrence.container === "reasoning" ? entry.kind === "reasoning" : entry.kind === "user_message" || entry.kind === "assistant_message");
     const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
     const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
     if (previous) {
       if (previous.occurrence !== value || previous.native_source !== source) throw new Error("Image occurrence cannot move from its original source.");
+      if (!livePosition && !retired) throw new Error("Image occurrence has no durable original position.");
       return { occurrence, sourceSequence: previous.source_sequence, acknowledged: previous.acknowledged === 1 };
     }
-    const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
+    if (!livePosition && !nativeSlot) {
+      if (retired && nativeSource === null) return { occurrence, sourceSequence: retired.sourceSequence, acknowledged: false };
+      throw new Error("Image occurrence has no durable original position.");
+    }
+    const sequence = retired?.sourceSequence ?? (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const acknowledged = BigInt(ack) >= BigInt(sequence);
-    const parts = entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : entry.kind === "tool_call" ? entry.output : [];
-    const partIndex = occurrence.partId === null ? parts.findIndex(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId) : -1;
+    const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : [];
+    const partIndex = nativeSlot?.index ?? (occurrence.partId === null ? parts.findIndex(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId) : -1);
     db.prepare("INSERT INTO image_occurrences(image_id,occurrence,native_source,source_sequence,acknowledged,part_index) VALUES(?,?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0, partIndex < 0 ? null : partIndex);
+    botHistory?.reviseOccurrence(occurrence);
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
   const getOnlineImageOccurrences = (): ImageOccurrence[] => read(() => {
@@ -325,29 +373,45 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     return result;
   });
-  const patchNativeImagePart = (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
+  const patchNativeImagePart = (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry | null => atomic(() => {
     const occurrence = parseImageOccurrence(input);
-    const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
+    const row = db.prepare("SELECT occurrence,native_source FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null } | undefined;
     if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
+    const retired = retiredNativeSlot(occurrence, row.native_source === null ? null : parseNativeImageSource(JSON.parse(row.native_source)));
+    if (retired) {
+      if (canonicalImageJson(part) !== canonicalImageJson(retired.part)) throw new Error("Native image patch differs from its saved capture result.");
+      if (part.type === "image") {
+        const original = db.prepare("SELECT resource_id FROM native_input_publication_images WHERE image_id=?").get(occurrence.imageId) as { resource_id: string } | undefined;
+        if (original && original.resource_id !== part.resourceId) throw new Error("Native image patch changed its original resource.");
+        queueBotResourceRetirement(db, [part.resourceId]);
+      }
+      return null;
+    }
     const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
     const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
     if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
     const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
-    projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
-    return sessionContent.onlineTimeline.get(entry.entryId)!;
+    projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry, true);
+    return sessionContent.onlineTimeline.get(entry.entryId) ?? null;
   });
   return {
     usage,
     markdownStore,
     publishMarkdownProjection: (state: MarkdownProjectionState, entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
       if (state.entryId !== entry.entryId || state.input.entryId !== entry.entryId || state.input.kind !== entry.kind) throw new Error("Markdown publication changed its entry identity.");
+      if (botDisplayRetired(entry)) return null;
       markdownStore.put("projection", state.entryId, state);
       return projectTimeline(entry);
     }),
-    ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence }),
+    shouldProjectBotMarkdown: (entry: SourceTimelineEntry): boolean => read(() => botHistory === null || (!botDisplayRetired(entry) && fitsBotMarkdown(entry))),
+    botPreviewTruncated: (entryId: string): boolean => read(() => {
+      const preview = botHistory?.identity(entryId)?.preview;
+      return preview ? (JSON.parse(preview) as { truncated: boolean }).truncated : false;
+    }),
+    ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, retiredPosition: botRetiredImagePosition }),
     ...createNativeImageState(db, { read, write: atomic }),
-    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, { contentPolicy: () => sessionContent.contentPolicy, onlineImageOccurrences: getOnlineImageOccurrences }),
-    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, () => sessionContent.onlineTimeline),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, { contentPolicy: () => sessionContent.contentPolicy, onlineImageOccurrences: getOnlineImageOccurrences, bounded: botHistory !== null }),
+    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, () => sessionContent.onlineTimeline, receipt => { botHistory?.observeCaptureReceipt(receipt); }),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
@@ -368,14 +432,14 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       const current = sessionContent.onlineTimeline.get(occurrence.entryId);
       const parts = current?.kind === "user_message" || current?.kind === "assistant_message" ? current.content : current?.kind === "tool_call" ? current.output : null;
       const existing = parts?.[state.index];
-      if (!existing || (existing.type !== "image" && existing.type !== "image_unavailable") || existing.imageId !== occurrence.imageId) throw new Error("Native image receipt lost its original slot.");
+      if (!retiredNativeSlot(occurrence, source) && (!existing || (existing.type !== "image" && existing.type !== "image_unavailable") || existing.imageId !== occurrence.imageId)) throw new Error("Native image receipt lost its original slot.");
       if (receipt.state !== "committed" && receipt.state !== "failed") throw new Error("Native image receipt is not settled.");
       const label = state.part.label;
       const part: ImagePart | ImageUnavailablePart = receipt.state === "committed" && receipt.resourceId ? { type: "image", imageId: occurrence.imageId, resourceId: receipt.resourceId, label } : receipt.state === "failed" && receipt.error ? { type: "image_unavailable", imageId: occurrence.imageId, label, error: receipt.error } : (() => { throw new Error("Native image receipt has no terminal result."); })();
       const updated: NativeImageProjectionState = { ...state, attemptId: receipt.attemptId, phase: "settled", part, submission: null };
       delete updated.resumeReserved; delete updated.submissionRefusal;
-      patchNativeImagePart(occurrence, part);
       db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(JSON.stringify(updated), key);
+      patchNativeImagePart(occurrence, part);
     }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
@@ -454,7 +518,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (row.online_mode === null) db.prepare("UPDATE execution SET online_mode=? WHERE id=1").run(mode);
     }),
     getOnlineImageOccurrences,
-    hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.onlineTimeline.has(entryId)),
+    hasTimelineEntry: (entryId: string): boolean => read(() => botHistory?.identity(entryId) !== undefined || sessionContent.onlineTimeline.has(entryId)),
+    getBotHistoryWindowRevision: (): string | null => read(() => botHistory?.revision() ?? null),
+    readBotHistoryWindow: () => read(() => botHistory?.snapshot() ?? null),
+    retireBotHistoryResources: (verifiedReferences?: ReadonlySet<string>): void => { if (botHistory !== null) retireBotResources(db, sessionContent, atomic, verifiedReferences); },
     getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.onlineTimeline.get(entryId)),
     projectTimeline,
     saveTimelineHistory,
@@ -592,7 +659,22 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
     if (historicalTicketHash !== undefined) {
       if (!historyAvailable) return null;
       const historical = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(historicalTicketHash) as { snapshot: string; ticket_hash: string } | undefined;
-      return historical === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(historical.snapshot)), rawSnapshot: historical.snapshot, ticketHash: historical.ticket_hash, ownerPid: null };
+      if (historical === undefined) return null;
+      const snapshot = checkedSnapshot(json<ControllerSnapshot>(historical.snapshot));
+      if (isLinuxControllerLaunch(snapshot.controllerProcess)) {
+        // A ticket-bound complete stop is immutable. A current row for the
+        // same generation must still be that settled state; a later writer
+        // may coexist with the receipt only in the same execution lineage.
+        const current = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
+        if (current === undefined) throw new Error("Controller stopped history has no current execution evidence.");
+        const value = checkedSnapshot(json<ControllerSnapshot>(current.snapshot));
+        if (current.ticket_hash === historical.ticket_hash) {
+          if (current.owner_pid !== null || controllerPayloadHash(value) !== controllerPayloadHash(snapshot)) throw new Error("Controller stopped history conflicts with its current generation.");
+        } else if (value.executionId !== snapshot.executionId || value.sessionId !== snapshot.sessionId || value.claimId !== snapshot.claimId || value.testExecutionId !== snapshot.testExecutionId
+          || typeof value.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(value.executionGeneration)
+          || BigInt(value.executionGeneration) <= BigInt(snapshot.executionGeneration)) throw new Error("Controller stopped history conflicts with its current execution lineage.");
+      }
+      return { snapshot, rawSnapshot: historical.snapshot, ticketHash: historical.ticket_hash, ownerPid: null };
     }
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
     return row === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), rawSnapshot: row.snapshot, ticketHash: row.ticket_hash, ownerPid: row.owner_pid };

@@ -45,6 +45,10 @@ const deferred = <T,>() => {
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
   return { promise, resolve, reject };
 };
+const readForQuery = async (pending: TaskSync | Promise<TaskSync>, query: { readonly epoch?: string }) => {
+  const response = await pending;
+  return taskSyncReadFixture({ ...response, mode: query.epoch === response.epoch ? 'delta' : 'snapshot' });
+};
 const mount = (cache = scope(), id = projectId) => renderHook(({ projectId: currentId }) => useTaskGraph(currentId), {
   initialProps: { projectId: id },
   wrapper: ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={cache}>{children}</TaskCacheProvider>,
@@ -121,7 +125,7 @@ it("automatically confirms a peer's real replacement before restoring the projec
   const replacementEpoch = "30000000-0000-4000-8000-000000000002";
   const replacement = graphFixture([detailFixture(projectId, taskId, { title: "Replacement history", version: 2n })]);
   const confirmation = deferred<TaskSync>(); const finalRead = deferred<TaskSync>();
-  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await confirmation.promise)).mockImplementationOnce(async () => taskSyncReadFixture(await finalRead.promise));
+  vi.mocked(getTaskSync).mockImplementationOnce((_project, query) => readForQuery(confirmation.promise, query)).mockImplementationOnce((_project, query) => readForQuery(finalRead.promise, query));
   const peer = scope(); const signal = new AbortController().signal;
   const ticket = await peer.beginSync(projectId, signal);
   expect(await peer.observeHistory(ticket, replacementEpoch, signal)).toBe("confirm");
@@ -167,7 +171,7 @@ it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), 
   await waitFor(() => expect(result.current.error).toBe(failure));
   expect(result.current.status).toBe("ready"); expect(result.current.snapshot!.graph).toBe(data);
   expect(result.current.snapshot!.receivedAt).toBeNull();
-  expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.maxUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
+  expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.coverageUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
   const retried = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await retried.promise));
   act(() => { result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
@@ -348,8 +352,8 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await act(async () => { automatic.reject(failure); });
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: failure }));
 
-  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await recovery.promise))
-    .mockImplementation(async () => taskSyncReadFixture(taskSyncFromGraph(replacement, { query: { epoch: replacementEpoch }, epoch: replacementEpoch, versionForTask: () => 2n })));
+  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce((_project, query) => readForQuery(recovery.promise, query))
+    .mockImplementation((_project, query) => readForQuery(taskSyncFromGraph(replacement, { query, epoch: replacementEpoch, versionForTask: () => 2n }), query));
   act(() => { view.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(4));
   expect(view.result.current.snapshot).toBeNull();
@@ -384,7 +388,7 @@ it("keeps withdrawal knowledge across same-scope remount and project navigation 
   await waitFor(() => expect(independent.result.current.snapshot?.revision).toBe(0));
   expect(independent.result.current.snapshot!.graph.project.id).toBe(projectId);
   independent.unmount();
-  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await recovery.promise)).mockImplementation(async () => taskSyncReadFixture({ ...replacement, mode: "delta" }));
+  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce((_project, query) => readForQuery(recovery.promise, query)).mockImplementation((_project, query) => readForQuery(replacement, query));
   act(() => { reopened.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(6));
   await act(async () => { recovery.resolve({ ...replacement, mode: "delta" }); });

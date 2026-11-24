@@ -165,6 +165,7 @@ export const createBotProcess = (options: {
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
     const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
+    if (ticket.botId !== undefined && ticket.botId !== record.botId) throw new Error("Controller ticket belongs to another Bot.");
     if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
       || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
     if (ticket.claudeBotRecovery !== undefined && (ticket.claudeBotRecovery.botId !== record.botId
@@ -424,7 +425,7 @@ export const createBotProcess = (options: {
           : prepared.environment.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
         ticket = { schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
-          executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId,
+          executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, botId: record.botId,
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
             ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },

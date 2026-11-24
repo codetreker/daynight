@@ -19,6 +19,7 @@ import * as controllerRequests from "../../../src/commands/controller/local-clie
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
+import { parseBotHistoryCheckpoint } from "../../../src/session/bot-history-window.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import type { BotDefinition, BotLaunchIntent } from "../../../src/commands/worker/bots/types.js";
 import type { BotRecoveryResult } from "../../../src/commands/worker/bots/recovery-protocol.js";
@@ -72,11 +73,12 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   let bot: BotDefinition = { id: botId, workerId: owner.workerId, ownerUserId: owner.ownerUserId, version: "1", name: "Recoverable", creationOrder: "1",
     requestedOverrides: {}, resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: [] }, roleConfiguration: null,
     sessionId: null, testExecutionId: null, startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const historyEpoch = randomUUID();
   const snapshot = (): SessionSnapshot => ({ protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1,
     sessionId: bot.sessionId!, testExecutionId: bot.testExecutionId!, executionGeneration: "1", connectionEpoch: String(Math.max(epoch, 1)),
     identity: { ownerUserId: owner.ownerUserId, provider: "codex", agentControlMode: "web", controllerId: intent!.registration.controllerId,
       controllerInstanceId: intent!.controllerInstanceId, nativeSessionId: observedNative }, initialInputState: "not_required",
-    sessionRevision: "1", historyEpoch: "fixture-history", lastEventSeq: "0", lastTimelineSeq: "0", lifecycle: "active", connectionState: synchronized ? "connected" : "disconnected",
+    sessionRevision: "1", historyEpoch, lastEventSeq: "0", lastTimelineSeq: "0", lifecycle: "active", connectionState: synchronized ? "connected" : "disconnected",
     synchronized, activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false },
     operations: { canSend: synchronized, canCancel: false, canRespond: false } });
   const sockets = new Set<WebSocket>();
@@ -88,7 +90,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString()));
         const fence = { protocol: SESSION_PROTOCOL, sessionId: bot.sessionId!, testExecutionId: bot.testExecutionId!, executionGeneration: "1", connectionEpoch };
-        if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: SESSION_PROTOCOL, connectionEpoch, session: snapshot(), lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true }));
+        if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: SESSION_PROTOCOL, connectionEpoch, session: snapshot(), lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true, ...(message.botHistoryWindowVersion === 1 ? { botHistoryWindowVersion: 1 } : {}) }));
         else if (message.type === "reconcile") socket.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
         else if (message.type === "events") {
           for (const event of message.events) if (event.kind === "state") observedNative = event.payload.nativeSessionId;
@@ -109,6 +111,14 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null;
       calls.push(`${req.method} ${route}`);
       const send = (value: unknown) => res.end(JSON.stringify(value));
+      if (req.method === "PUT" && route === `/api/v1/test-sessions/${bot.sessionId}/bot-history-window/checkpoint`) {
+        if (req.headers.authorization !== `Bearer ${selectedToken}`) { res.statusCode = 401; return send({}); }
+        const { entries: _entries, ...receipt } = parseBotHistoryCheckpoint(body);
+        expect(receipt.sessionId).toBe(bot.sessionId);
+        expect(receipt.historyEpoch).toBe(historyEpoch);
+        res.setHeader("Daynight-Bot-History-Window-Version", "1");
+        return send({ ...receipt, cleanupPending: false });
+      }
       if (route === "/api/usage/v1/capabilities") { res.statusCode = 503; return send({ error: { code: "capability_error", message: "Usage is outside this fixture", requestId: randomUUID() } }); }
       if (req.method === "GET" && route.endsWith("/bots")) return send({ items: [], nextCursor: null });
       if (req.method === "GET" && route === `/api/v1/me/bots/${botId}`) return send(bot);

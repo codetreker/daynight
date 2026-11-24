@@ -20,6 +20,8 @@ const syncTimestamp = (value: unknown): string => {
   return result;
 };
 
+const timestampOrder = (value: string): string => `${value.slice(0, 19)}.${value[19] === "." ? value.slice(20, -1).padEnd(9, "0") : "000000000"}`;
+
 const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSessionState>> => {
   const data = record(value);
   if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
@@ -126,6 +128,8 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     }),
     actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
+    coverageUpdatedAt: data.coverageUpdatedAt === null ? null : syncTimestamp(data.coverageUpdatedAt),
+    deletedTaskIds: ids(data.deletedTaskIds),
     observedAt: timestamp(data.observedAt), responseTaskAt: syncTimestamp(data.responseTaskAt),
     responseSessionAt: syncTimestamp(data.responseSessionAt), sessionPartial: boolean(data.sessionPartial),
     taskObservations: parseTaskObservations(data.taskObservations), tasks: array(data.tasks, parseTaskSummary),
@@ -136,8 +140,12 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
     result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
     result.actorAccess.ownership.version !== result.project.ownership.version ||
-    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length) return malformed();
+    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length ||
+    result.mode === "snapshot" && result.deletedTaskIds.length !== 0) return malformed();
+  const deletedIds = new Set(result.deletedTaskIds);
   for (const task of result.tasks) {
+    if (deletedIds.has(task.id) || result.coverageUpdatedAt === null ||
+      timestampOrder(task.updatedAt) > timestampOrder(result.coverageUpdatedAt)) return malformed();
     const state = result.dependencyStates[task.id];
     if (task.type === "goal") {
       if (state !== undefined) return malformed();
@@ -146,6 +154,10 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
       validateDependencyState(task, state);
     }
   }
+  if (result.deletedTaskIds.length !== 0 && result.coverageUpdatedAt === null ||
+    Object.keys(result.dependencyStates).some((taskId) => deletedIds.has(taskId)) ||
+    Object.keys(result.sessions).some((taskId) => deletedIds.has(taskId)) ||
+    Object.keys(result.taskObservations).some((taskId) => deletedIds.has(taskId))) return malformed();
   if (result.mode === "snapshot" && Object.keys(result.dependencyStates).length !== result.tasks.filter((task) => task.type === "task").length) return malformed();
   return result;
 };

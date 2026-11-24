@@ -10,6 +10,7 @@ import { assertControllerStoragePermit, type ControllerStoragePermit } from "../
 /** Pending upload source, not a second permanent native session history. */
 export type PendingResource = { resource: SessionResource; data: string | null };
 export type ControlledResourceLease = { readonly path: string; readonly resource: SessionResource; read(offset: string, limit: number): Buffer; close(): void };
+export class ResourceRetainedError extends Error {}
 const MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 // Archive validation can reopen the same files while an earlier immutable
@@ -259,7 +260,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const unpinResource = (id: string, reference: string): void => { assertWritable(); pins[id] = (pins[id] ?? []).filter(value => value !== reference); writeDurableJson(pinsPath, pins); };
   const assertResourceReleasable = (id: string): void => {
     assertWritable();
-    if ((activeLeases.get(leaseKey(id)) ?? 0) > 0 || (pins[id]?.length ?? 0) > 0) throw new Error("Resource has an active lease or reference.");
+    if ((activeLeases.get(leaseKey(id)) ?? 0) > 0 || (pins[id]?.length ?? 0) > 0) throw new ResourceRetainedError("Resource has an active lease or reference.");
   };
   const releaseResource = (id: string): void => {
     assertResourceReleasable(id);

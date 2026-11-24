@@ -1,13 +1,12 @@
 import { useProjectAccessSession, type ProjectAccessSession } from "./ProjectAccess";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ApiError, authRequestsPauseRevision, getTaskSync, isAbortError } from "../../api/client";
+import { ApiError, authRequestsPauseRevision, isAbortError } from "../../api/client";
 import { pollingInterval } from "../../app/polling";
 import type { TaskGraph, TaskSummary, WorkerMachine } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
-import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
-import type { CachedProject, TaskSyncTicket, TaskCacheScope } from "../task-cache/project-cache";
-import { deriveTaskSyncBindings, deriveTaskSyncVersions, validateTaskSyncObservationBindings } from "../task-cache/execution-binding";
+import { isRetryableTaskCacheLifecycleChange, TaskCacheLifecycleChanged, type CachedProject, type TaskSyncTicket, type TaskCacheScope } from "../task-cache/project-cache";
+import { executeTaskSync } from "../task-cache/task-sync-execution";
 import { TaskSessionSummaryStore } from "../task-session-summary/store";
 import { ProjectTaskObservationsStore } from "../task-session-summary/project-observations";
 import { useOptionalTaskDetailSessions } from '../task-detail/TaskDetailSession';
@@ -80,7 +79,6 @@ export const useTaskGraph = (projectId: string) => {
     active.current = controller;
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     const revision = ++generation.current;
-    const cycleId = crypto.randomUUID();
     setState((previous) => {
       const current = previous.projectId === projectId && previous.scope === scope && previous.access === access;
       const snapshot = current ? previous.snapshot : null;
@@ -108,46 +106,42 @@ export const useTaskGraph = (projectId: string) => {
           });
         }
       }
-      const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null || ticket.parentTaskFullSync ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
       const accessTicket = access?.beginObservation();
       projectReadRevision = scope.getProjectReadRevision(projectId);
       const sessionAdmission = authRequestsPauseRevision();
-      const { sync: response, receivedMonotonic } = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
+      const execution = await executeTaskSync({ scope, projectId, signal, ticket, trigger: mode === 'automatic' ? 'automatic' : 'refresh',
+        observingHistory: (observing) => { observingHistory.current = observing; } });
       const receivedAt = Date.now();
       if (signal.aborted || revision !== generation.current) return;
-      observingHistory.current = true;
-      let history: "current" | "retired" | "confirm";
-      try { history = await scope.observeHistory(ticket, response.epoch, signal); }
-      finally { observingHistory.current = false; }
-      if (history === "confirm") {
+      if (execution.history === "confirm") {
         if (!confirmationRetry) { void request("reconcile", historyRetry, true); return; }
         throw new ApiError("protocol");
       }
-      if (history === "retired") {
+      if (execution.history === "retired") {
         if (!historyRetry) { void request("reconcile", true, confirmationRetry); return; }
         throw new ApiError("protocol");
       }
-      const observedBindings = deriveTaskSyncBindings(ticket, response);
-      const observedVersions = deriveTaskSyncVersions(ticket, response);
-      validateTaskSyncObservationBindings(response, observedBindings, observedVersions);
-      const applyStarted = performance.now();
-      const result = await scope.applySync(ticket, response, signal, !("since" in query));
-      console.debug("Task sync", { cycle_id: cycleId, project_id: projectId, received: response.tasks.length,
-        changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
-        cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
+      const { sync: response, receivedMonotonic, observedBindings, observedVersions } = execution;
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
+      if (!await scope.isSyncCommitCurrent(execution.project.manifest, signal)) throw new TaskCacheLifecycleChanged();
+      if (signal.aborted || revision !== generation.current) return;
       if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess, mode !== "manual");
       scope.notifyTagColors(projectId);
       if (sessionAdmission === authRequestsPauseRevision()) {
-        sessionStore.replace({ project: result.project, observedBindings, sessions: response.sessions, receivedMonotonic });
-        observationStore.replace({ project: result.project, observedBindings, observedVersions, sync: response, receivedMonotonic });
+        sessionStore.replace({ project: execution.project, observedBindings, sessions: response.sessions, receivedMonotonic });
+        observationStore.replace({ project: execution.project, observedBindings, observedVersions, sync: response, receivedMonotonic });
       }
       liveAccess.current = true;
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
-      publish(result.project, true);
+      publish(execution.project, true);
     } catch (error) {
-      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch || isAbortError(error)) return;
-      console.warn("Task sync failed", { cycle_id: cycleId, project_id: projectId, ...taskCacheFailureDiagnostic(error) });
+      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
+      if (isRetryableTaskCacheLifecycleChange(error)) {
+        if (!confirmationRetry) void request("reconcile", historyRetry, true);
+        else setState(previous => previous.projectId === projectId && previous.scope === scope && previous.access === access ? { ...previous, refreshing: false } : previous);
+        return;
+      }
+      if (isAbortError(error)) return;
       const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
       if (missing) {
         if (ticket !== null && !scope.canRevokeProjectRead(ticket, projectReadRevision)) {
@@ -202,10 +196,12 @@ export const useTaskGraph = (projectId: string) => {
         setState((previous) => ({ ...previous, error: event.error, refreshing: false }));
         return;
       }
-      void scope.ready(lifetime.signal).then(() => {
+      void scope.ready(lifetime.signal).then(async () => {
         if (lifetime.signal.aborted || !liveAccess.current) return;
         const project = scope.getAuthorizedProject(projectId);
-        if (project !== null) publish(project);
+        if (project !== null) {
+          if (await scope.isSyncCommitCurrent(project.manifest, lifetime.signal) && !lifetime.signal.aborted && liveAccess.current) publish(project);
+        }
         else {
           liveAccess.current = false; receipt.current = null;
           setState({ projectId, scope, access, snapshot: null, displaySnapshot: null, status: "error", refreshing: false, error: new ApiError("server", 404, "not_found") });

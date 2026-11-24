@@ -15,6 +15,8 @@ import { nativeEntryId } from "../native-identity.js";
 import { restoreCanonicalInputIntent } from "./input-intent.js";
 import type { CommittedImageProjectionSlot, NativeImageProjectionState, NativeInputPublicationIdentity, NativeInputPublicationQuery, NativeInputPublicationReceipt, NativeInputPublicationRequest, NativeInputPublicationResult, NativePublicationEntry } from "./native-publication-types.js";
 
+type RetiredPosition = { entrySeq: string; revision: string; sourceSequence: string };
+
 type Context = {
   db: Database.Database;
   ticket: ControllerLaunchTicket;
@@ -25,8 +27,9 @@ type Context = {
   getSnapshot(): ControllerSnapshot;
   getOperation(operationId: string): ControllerOperation | null;
   associateInputMessage(operationId: string, nativeSessionId: string, entryId: string): string;
-  projectTimeline(entry: SourceTimelineEntry): ControllerOutboxEvent | null;
+  projectTimeline(entry: SourceTimelineEntry, preserveBotPreview?: boolean): ControllerOutboxEvent | null;
   publishTimelineSnapshot(entry: TimelineEntry): ControllerOutboxEvent;
+  retiredPosition(entryId: string): RetiredPosition | null;
   registerImageOccurrence(occurrence: ImageOccurrence, source: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean };
 };
 
@@ -79,14 +82,24 @@ export const createNativeInputPublication = (context: Context) => {
   };
   const committed = (saved: Saved, identity: NativeInputPublicationIdentity): Extract<NativeInputPublicationResult, { state: "committed" }> => {
     if (!same(saved.receipt.identity, identity)) conflict("Native publication identity conflicts with the original operation.");
-    const entry = sessionContent.timeline.get(identity.entryId);
-    if (!entry || entry.kind !== "user_message" || BigInt(entry.revision) < BigInt(saved.receipt.publicationRevision)) throw new Error("Native publication has no current committed entry.");
+    let entry = sessionContent.timeline.get(identity.entryId);
+    const retired = entry === undefined ? context.retiredPosition(identity.entryId) : null;
     const slots = saved.slots.map(loadSlot);
+    if (retired) {
+      const positions = new Map<number, MessagePart>();
+      for (const { state } of slots) {
+        if (state.index >= 1000 || positions.has(state.index) || state.request.occurrence.entryId !== identity.entryId) throw new Error("Native publication retired position is corrupt.");
+        positions.set(state.index, state.part);
+      }
+      const content = Array.from({ length: Math.max(-1, ...positions.keys()) + 1 }, (_, index): MessagePart => positions.get(index) ?? { type: "text", text: "" });
+      entry = { kind: "user_message", entryId: identity.entryId, entrySeq: retired.entrySeq, revision: saved.receipt.publicationRevision, content, imageProjectionError: null };
+    }
+    if (!entry || entry.kind !== "user_message" || BigInt(entry.revision) < BigInt(saved.receipt.publicationRevision)) throw new Error("Native publication has no current committed entry.");
     for (const slot of slots) {
       const part = entry.content[slot.state.index];
       if (!imagePart(part) || part.imageId !== slot.state.request.occurrence.imageId) throw new Error("Native publication lost its committed image position.");
     }
-    return { state: "committed", receipt: saved.receipt, view: { entry: entry as NativePublicationEntry, slots } };
+    return { state: "committed", receipt: saved.receipt, view: { entry: entry as NativePublicationEntry, slots, ...(retired ? { retired: true } : {}) } };
   };
   const validateEvidence = (request: NativeInputPublicationRequest): void => {
     const observation = observationOf(request.identity), operation = context.getOperation(observation.operationId);
@@ -164,22 +177,30 @@ export const createNativeInputPublication = (context: Context) => {
           if (context.associateInputMessage(request.identity.operationId, request.identity.nativeSessionId, request.identity.entryId) !== request.identity.entryId) conflict("Native publication conflicts with its original message owner.");
           const current = sessionContent.timeline.get(request.identity.entryId);
           if (current && current.kind !== "user_message") conflict("Native publication cannot replace another entry kind.");
+          const retired = current === undefined ? context.retiredPosition(request.identity.entryId) : null;
+          const priorView = current !== undefined || retired !== null;
           const content = [...(current?.kind === "user_message" ? current.content : request.seed.entry.content)];
+          if (retired) for (const { index, nativeSource } of request.seed.nativeSlots) {
+            const sourceKey = canonicalImageJson([1, nativeSource, request.identity.entryId, "content", null, index]);
+            const key = `native_provider:image-slot:${nativeEntryId(request.identity.nativeSessionId, sourceKey)}`;
+            const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
+            if (row) content[index] = parseCaptureState(JSON.parse(row.value)).part;
+          }
           const slots: CommittedImageProjectionSlot[] = [];
-          const positions = request.originals.map(original => current ? content.findIndex(part => imagePart(part) && part.imageId === original.imageId) : -1);
+          const positions = request.originals.map(original => priorView ? content.findIndex(part => imagePart(part) && part.imageId === original.imageId) : -1);
           const reuse = positions.some(index => index !== -1);
           if (reuse && (positions.some(index => index === -1) || positions.some((index, ordinal) => ordinal > 0 && index <= positions[ordinal - 1]!))) conflict("Native publication changed the original image group or order.");
           const inPlace = reuse && request.originals.every((original, ordinal) => original.nativeSlotIndex === positions[ordinal]);
           if (reuse && !inPlace && positions.some(index => request.seed.nativeSlots.some(native => native.index === index))) conflict("Native publication mixed original and native image positions.");
-          if (current) for (const native of request.seed.nativeSlots) {
+          if (priorView) for (const native of request.seed.nativeSlots) {
             if (inPlace) continue;
             const part = content[native.index];
             if (!imagePart(part)) conflict("Native publication lost an original native image position.");
             slots.push(slot(request.identity, native.index, native.nativeSource, part));
           }
           for (const [ordinal, original] of request.originals.entries()) {
-            const index = reuse ? positions[ordinal]! : current ? content.length : original.nativeSlotIndex;
-            const source = current && !inPlace ? original.appendNativeSource : request.seed.nativeSlots.find(native => native.index === index)!.nativeSource;
+            const index = reuse ? positions[ordinal]! : priorView ? content.length : original.nativeSlotIndex;
+            const source = priorView && !inPlace ? original.appendNativeSource : request.seed.nativeSlots.find(native => native.index === index)!.nativeSource;
             const part = reuse ? content[index] : { type: "image" as const, imageId: original.imageId, resourceId: original.resourceId, label: "Original uploaded image" };
             if (!imagePart(part) || part.type === "image" && part.resourceId !== original.resourceId) conflict("Native publication original resource changed at its existing position.");
             content[index] = part; slots.push(slot(request.identity, index, source, part, { imageId: original.imageId, resourceId: original.resourceId }, reuse));
@@ -189,12 +210,17 @@ export const createNativeInputPublication = (context: Context) => {
           for (const item of slots) content[item.state.index] = item.state.part;
           if (content.some((part, index) => imagePart(part) && !slots.some(item => item.state.index === index))) conflict("Native publication has an image without its durable source.");
           const entry = { ...(current ?? request.seed.entry), imageProjectionError: current?.imageProjectionError ?? request.seed.entry.imageProjectionError ?? null, revision: current?.revision ?? "1", content } as SourceTimelineEntry;
-          const changed = context.projectTimeline(entry);
+          parseTimelineEntry({ ...entry, entrySeq: current?.entrySeq ?? retired?.entrySeq ?? "1" });
+          const changed = retired === null ? context.projectTimeline(entry, current !== undefined) : null;
           const published = sessionContent.timeline.get(request.identity.entryId);
-          if (!published || published.kind !== "user_message") throw new Error("Native publication has no staged SQL entry.");
-          const event = changed ?? context.publishTimelineSnapshot(published);
+          let position = retired;
+          if (published?.kind === "user_message") {
+            const event = changed ?? context.publishTimelineSnapshot(published);
+            position = { entrySeq: published.entrySeq, revision: published.revision, sourceSequence: event.sequence };
+          } else if (position === null) position = context.retiredPosition(request.identity.entryId);
+          if (!position || position.sourceSequence === "0") throw new Error("Native publication has no original SQL position.");
           for (const item of slots) context.registerImageOccurrence(item.state.request.occurrence, item.state.request.nativeSource);
-          const receipt: NativeInputPublicationReceipt = { identity: request.identity, requestSha256: hash, publicationRevision: published.revision, sourceSequence: event.sequence, originalSlots: slots.flatMap(item => item.original ? [{ ...item.original, index: item.state.index }] : []) };
+          const receipt: NativeInputPublicationReceipt = { identity: request.identity, requestSha256: hash, publicationRevision: position.revision, sourceSequence: position.sourceSequence, originalSlots: slots.flatMap(item => item.original ? [{ ...item.original, index: item.state.index }] : []) };
           const saved: Saved = { receipt, slots }, encoded = JSON.stringify(saved);
           db.prepare("INSERT INTO native_input_publications VALUES(?,?,?,?,?,?)").run(request.identity.operationId, request.identity.provider, request.identity.nativeSessionId, request.identity.nativeMessageId, hash, encoded);
           for (const original of receipt.originalSlots) db.prepare("INSERT INTO native_input_publication_images VALUES(?,?,?,?)").run(request.identity.operationId, original.imageId, original.resourceId, original.index);

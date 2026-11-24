@@ -37,6 +37,15 @@ describe('task-sync test fixtures', () => {
     expect(sync.tasks.map((task) => task.id)).toEqual(['00000000-0000-4000-8000-000000000002']);
   });
 
+  it('takes coverage from the complete physical fixture rather than the selected delta rows', () => {
+    const graph = graphFixture([detailFixture(projectId, taskId, { updatedAt: '2026-10-22T10:00:10.000000001Z' })]);
+    const sync = taskSyncFixture(graph, { query: { epoch: taskSyncEpoch(projectId), since: '2026-10-22T10:00:30Z' }, versionForTask: () => 1n });
+    expect(sync).toMatchObject({ tasks: [], coverageUpdatedAt: '2026-10-22T10:00:10.000000001Z', deletedTaskIds: [] });
+    const removed = taskSyncFixture({ ...graph, tasks: [] }, { query: { epoch: taskSyncEpoch(projectId) }, coverageUpdatedAt: '2026-10-22T10:00:40Z', deletedTaskIds: [taskId], versionForTask: () => 1n });
+    expect(removed).toMatchObject({ mode: 'delta', tasks: [], coverageUpdatedAt: '2026-10-22T10:00:40Z', deletedTaskIds: [taskId] });
+    expect(taskSyncFixture({ ...graph, tasks: [] }, { coverageUpdatedAt: '2026-10-22T10:00:40Z', deletedTaskIds: [taskId], versionForTask: () => 1n }).deletedTaskIds).toEqual([]);
+  });
+
   it('tracks simulated task content versions while keeping derived state outside business content', () => {
     const graph = graphFixture([detailFixture(projectId, taskId)]);
     const fixture = createGraphSyncFixture();
@@ -49,6 +58,32 @@ describe('task-sync test fixtures', () => {
     expect(fixture.toSync(graph).tasks[0]!.version).toBe(3n);
     fixture.reset();
     expect(fixture.toSync(graph).epoch).not.toBe(first.epoch);
+  });
+
+  it('retains same-history deletion facts and physical coverage across repeated empty deltas', () => {
+    const graph = graphFixture([detailFixture(projectId, taskId, { updatedAt: '2026-10-22T10:00:10Z' })]);
+    const fixture = createGraphSyncFixture();
+    const first = fixture.toSync(graph);
+    const removed = fixture.toSync({ ...graph, tasks: [], observedAt: '2026-10-22T10:00:30Z' }, { epoch: first.epoch, since: '2026-10-22T10:00:10Z' });
+    expect(removed).toMatchObject({ mode: 'delta', epoch: first.epoch, deletedTaskIds: [taskId], coverageUpdatedAt: '2026-10-22T10:00:30Z', tasks: [] });
+    const duplicate = fixture.toSync({ ...graph, tasks: [] }, { epoch: first.epoch, since: removed.coverageUpdatedAt! });
+    expect(duplicate).toMatchObject({ mode: 'delta', deletedTaskIds: [taskId], coverageUpdatedAt: removed.coverageUpdatedAt });
+    expect(fixture.toSync({ ...graph, tasks: [] }, { epoch: first.epoch, since: '2026-10-22T10:01:00Z' })).toMatchObject({ deletedTaskIds: [], coverageUpdatedAt: removed.coverageUpdatedAt });
+    expect(fixture.toSync({ ...graph, tasks: [] }, { epoch: first.epoch }).deletedTaskIds).toEqual([taskId]);
+  });
+
+  it('starts a distinct history when a deleted synthetic task reappears or an explicit epoch replaces it', () => {
+    const graph = graphFixture([detailFixture(projectId, taskId)]);
+    const fixture = createGraphSyncFixture();
+    const first = fixture.toSync(graph);
+    fixture.toSync({ ...graph, tasks: [] }, { epoch: first.epoch });
+    const restored = fixture.toSync(graph, { epoch: first.epoch });
+    expect(restored.mode).toBe('snapshot');
+    expect(restored.epoch).not.toBe(first.epoch);
+    expect(restored.deletedTaskIds).toEqual([]);
+    const empty = fixture.toSync({ ...graph, tasks: [] }, { epoch: restored.epoch }, taskSyncEpoch('replacement'));
+    expect(empty).toMatchObject({ mode: 'snapshot', deletedTaskIds: [], coverageUpdatedAt: null });
+    expect(fixture.toSync({ ...graph, tasks: [] }, { epoch: empty.epoch }).deletedTaskIds).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { sessionArchiveReferences } from "../../../session/archive.js";
-import { openResourceFiles, type ResourceFiles } from "./resource-files.js";
+import { openResourceFiles, ResourceRetainedError, type ResourceFiles } from "./resource-files.js";
 import { openTimelineStore, openOnlineTimelineStore, type TimelineStore, type TimelineWriteContext } from "./timeline-store.js";
 import type { TimelineEntry } from "../../../session/protocol.js";
 import { readFileSync } from "node:fs";
@@ -21,6 +21,7 @@ const combineTimeline = (db: Database.Database, history: TimelineStore, details:
   const get = (id: string): TimelineEntry | undefined => history.get(id) ?? details.get(id);
   return {
     get,
+    remove: id => { history.remove(id); details.remove(id); },
     has: id => history.has(id) || details.has(id),
     nextSequence: () => {
       const body = BigInt(history.nextSequence()), online = BigInt(details.nextSequence());
@@ -66,10 +67,10 @@ export const openSessionContent = (journal: string, sessionId: string, db: Datab
   const assertReferences = (id: string): void => {
     if (!db.inTransaction) throw new Error("Resource reference validation requires the original journal read transaction.");
     files.assertResourceReleasable(id);
-    if (db.prepare("SELECT 1 FROM native_input_publication_images WHERE resource_id=? LIMIT 1").get(id) !== undefined) throw new Error("Resource is referenced by session history.");
+    if (db.prepare("SELECT 1 FROM native_input_publication_images WHERE resource_id=? LIMIT 1").get(id) !== undefined) throw new ResourceRetainedError("Resource is referenced by session history.");
     let referenced = false;
     onlineTimeline.iterate(entry => { if (sessionArchiveReferences([entry], false).resources.has(id)) referenced = true; });
-    if (referenced) throw new Error("Resource is referenced by session history.");
+    if (referenced) throw new ResourceRetainedError("Resource is referenced by session history.");
   };
   const assertResourceReleasable = (id: string): void => context.read(() => assertReferences(id));
   const releaseResource = (id: string): void => context.read(() => {

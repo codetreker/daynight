@@ -63,10 +63,10 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
 
 export const controllerJournalFormat = controllerJournalFormatForMigration(() => { throw new Error("Controller journal migration requires its original storage permit."); });
 
-/** Protected copies, retained inventories and exited-launch observations can read shipped v16–v19 data without mutation. */
+/** Protected copies, retained inventories and exited-launch observations can read shipped journal formats without mutation. */
 export const inspectReadCompatibleControllerJournal = (db: Database.Database): SqliteSource => {
   const source = inspectSqlite(db, controllerJournalFormat);
-  if (source.kind !== "current" && !(source.kind === "outdated" && source.version >= 16 && source.version <= 19)) throw new Error("Controller journal is not a supported read-only format.");
+  if (source.kind !== "current" && !(source.kind === "outdated" && source.version >= 16 && source.version <= 20)) throw new Error("Controller journal is not a supported read-only format.");
   return source;
 };
 

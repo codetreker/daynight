@@ -101,6 +101,13 @@ const openSqlTimelineStore = (db: Database.Database, context: TimelineWriteConte
   };
   return {
     get,
+    remove: (id: string): void => {
+      context.assertWrite();
+      const row = getRow(db, tables, id);
+      if (!row) return;
+      db.prepare(`DELETE FROM ${tables.entries} WHERE id=?`).run(id);
+      db.prepare(`UPDATE ${tables.totals} SET entry_count=entry_count-1,byte_length=byte_length-? WHERE id=1`).run(row.byte_length);
+    },
     has: (id: string): boolean => get(id) !== undefined,
     nextSequence: (): string => {
       const row = db.prepare(`SELECT CAST(COALESCE(MAX(entry_seq),0) AS TEXT) AS sequence FROM ${tables.entries}`).get() as { sequence: string };

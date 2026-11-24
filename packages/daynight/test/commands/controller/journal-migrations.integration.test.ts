@@ -17,7 +17,7 @@ import { openResourceFiles } from "../../../src/commands/controller/content/reso
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
-const journalVersion = 20;
+const journalVersion = 21;
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
@@ -84,7 +84,7 @@ test.skipIf(process.platform !== "linux")("rejects Linux launch identities that 
   const db = new Database(f.file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
   db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...JSON.parse(row.snapshot), controllerProcess: { ...f.launch, launchId: randomUUID() } })); db.close();
   expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/conflicts/);
-  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/conflicts/);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/current journal conflicts/);
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
@@ -107,9 +107,53 @@ test.skipIf(process.platform !== "linux")("rejects a conflicting Linux stopped r
   const db = new Database(f.file);
   db.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify({ ...stopped, nativeSessionId: randomUUID() }), controllerPayloadHash(f.ticket)); db.close();
   proof.stopped.mockClear();
-  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/receipt conflicts/);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/stopped history conflicts/);
   expect(() => openControllerLifecycleStore(f.file, f.next)).toThrow(/receipt/);
   expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux").each(["snapshot", "owner"] as const)("rejects a Linux historical stop when its same-generation execution %s conflicts", async conflict => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const db = new Database(f.file);
+  try {
+    if (conflict === "snapshot") db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...stopped, error: "changed after stop" }));
+    else db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+    const execution = db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get();
+    const receipt = db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket));
+    proof.stopped.mockClear();
+
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow();
+    expect(db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get()).toEqual(execution);
+    expect(db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual(receipt);
+    expect(proof.stopped).not.toHaveBeenCalled();
+  } finally { db.close(); }
+});
+
+test.skipIf(process.platform !== "linux")("reads a Linux historical stop after a newer generation owns the journal", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const next = openControllerLifecycleStore(f.file, f.next, { controllerProcess: { kind: "linux-controller-launch", pid: 456, launchId: f.next.launchId } });
+  try {
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.prepare("SELECT ticket_hash,owner_pid FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(f.next), owner_pid: process.pid });
+      proof.stopped.mockClear();
+      expect(readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+      expect(db.prepare("SELECT ticket_hash,owner_pid FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(f.next), owner_pid: process.pid });
+      expect(proof.stopped).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  } finally { next.close(); }
+});
+
+test.skipIf(process.platform !== "linux")("rejects a historical stop beside a different execution lineage", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const db = new Database(f.file);
+  try {
+    db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(f.next), JSON.stringify({ ...stopped, executionId: randomUUID(), executionGeneration: f.next.executionGeneration }));
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow(/execution lineage/);
+  } finally { db.close(); }
 });
 
 test.each(fixturePlatforms)("does not write stopped if complete proof consumes the stop deadline (%s)", async mode => {
@@ -202,7 +246,7 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
-test.each([17, 18, 19] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v20", async version => {
+test.each([17, 18, 19, 20] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to the current format", async version => {
   const f = await windowsStopFixture();
   const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
   const old = new Database(f.file); restoreControllerJournalVersion(old, version);
@@ -441,11 +485,11 @@ test("reads a live shipped v19 journal without mutation, blocks its upgrade and 
     await once(owner.stdout, "data", { signal: AbortSignal.timeout(5000) });
     if (owner.pid === undefined) throw new Error("Journal owner fixture has no PID.");
     const db = new Database(f.file);
-    const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
+    const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as { name: string }[];
     try {
       restoreControllerJournalVersion(db, 19);
       db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(owner.pid);
-      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name != 'worker_lifecycle_bindings' ORDER BY name").all()).toEqual(ddl);
+      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name != 'worker_lifecycle_bindings' ORDER BY name").all()).toEqual(ddl.filter(row => !row.name.startsWith("bot_history_") && row.name !== "bot_resource_retirement"));
     } finally { db.close(); }
     const original = await readFile(f.file);
     expect(readCompatibleControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);

@@ -131,6 +131,9 @@ test.each(["publishNativeInputAssociation", "queryNativeInputAssociation"])("%s 
     f.options.imageRuntime[method]({}); expect(f.adopt).toHaveBeenCalledWith(providerEntry, { complete: false, format: "markdown", truncated: true });
     f.adopt.mockClear(); f.publication.mockReturnValue({ state: "unknown" }); f.query.mockReturnValue({ state: "unknown" });
     expect(f.options.imageRuntime[method]({})).toEqual({ state: "unknown" }); expect(f.adopt).not.toHaveBeenCalled();
+    const retired = { ...committed, view: { ...committed.view, retired: true } };
+    f.publication.mockReturnValue(retired); f.query.mockReturnValue(retired); f.current.mockReturnValue(undefined);
+    expect(f.options.imageRuntime[method]({})).toEqual(retired); expect(f.adopt).not.toHaveBeenCalled();
   } finally { c.stop(); await c.running; }
 });
 
@@ -141,5 +144,8 @@ test("native image patches synchronize the pipeline from their committed result"
     expect(f.options.imageRuntime.patchNativeImagePart(occurrence, part)).toBe(entry);
     expect(f.patch).toHaveBeenCalledWith(occurrence, part);
     const { entrySeq: _entrySeq, ...providerEntry } = entry; expect(f.adopt).toHaveBeenCalledWith(providerEntry);
+    f.adopt.mockClear(); f.patch.mockReturnValue(null);
+    expect(f.options.imageRuntime.patchNativeImagePart(occurrence, part)).toBeNull();
+    expect(f.adopt).not.toHaveBeenCalled();
   } finally { c.stop(); await c.running; }
 });

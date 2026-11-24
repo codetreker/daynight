@@ -24,7 +24,7 @@ const admission = { userId, onPrincipalMismatch: vi.fn() };
 const signal = () => new AbortController().signal;
 const reads = [
   { body: (tags: unknown) => ({ ...detail, tags }), read: () => getTask(projectId, taskId, signal(), admission).then((value) => value.tags) },
-  { body: (tags: unknown) => ({ mode: "snapshot", epoch, project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [{ ...summary, tags }],
+  { body: (tags: unknown) => ({ mode: "snapshot", epoch, coverageUpdatedAt: time, deletedTaskIds: [], project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [{ ...summary, tags }],
     dependencyStates: { [taskId]: { taskVersion: "1", blockedBy: [], ready: true } }, sessions: {}, actorAccess: directAccessFixture(projectId, userId), assigneeVersions: [] }),
   read: () => getTaskSync(projectId, {}, userId, signal()).then((value) => value.sync.tasks[0]!.tags) },
   { body: (tags: unknown) => ({ projectId, total: 1, items: [{ ...searchItem, tags }], nextCursor: null }),

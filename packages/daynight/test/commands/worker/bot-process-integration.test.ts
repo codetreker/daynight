@@ -1,7 +1,7 @@
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import Database from "better-sqlite3";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
@@ -41,6 +41,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
+import { parseBotHistoryCheckpoint } from "../../../src/session/bot-history-window.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
 
@@ -274,7 +275,7 @@ test.skipIf(process.platform !== "darwin")("waits through a real same-birth comm
   await waiting;
 }, 20_000);
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; localRecovery?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; localRecovery?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -309,11 +310,9 @@ appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, 
 const { runController } = await import(${JSON.stringify(runtimeURL)});
 await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5], storageStateDirectory: process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR });
 `);
-  const http = options.hosted ? createServer() : null;
-  const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
-  if (http === null) await once(relay, "listening");
-  else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
-  const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
+  const http = createServer(), relay = new WebSocketServer({ server: http });
+  http.listen(0, "127.0.0.1"); await once(http, "listening");
+  const address = http.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
   const workerPaths = resolveWorkerPaths(home), databaseFile = options.localRecovery ? workerPaths.databaseFile : path.join(home, "worker.sqlite");
   if (options.localRecovery) {
@@ -327,11 +326,12 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.observe(owner, bot, Date.now());
   const current = () => store.get(owner, bot.id)!;
+  const historyEpoch = randomUUID();
   const snapshot = (record: BotRecord): SessionSnapshot => {
     const { claimId: _claim, identity: _identity, ...baseSnapshot } = snapshotFixture;
     return { ...baseSnapshot, protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, testExecutionId: record.intent!.executionId, sessionId: bot.sessionId!, executionGeneration: record.intent!.executionGeneration, connectionEpoch: "1",
       identity: { ownerUserId: owner.ownerUserId, controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.controllerInstanceId, provider: "codex", agentControlMode: "web", nativeSessionId: nativeId },
-      initialInputState: "not_required", historyEpoch: "bot-fixture-history", lastEventSeq: "0", lastTimelineSeq: "0", lifecycle: "active", connectionState: "connected", synchronized: true, activity: "idle" };
+      initialInputState: "not_required", historyEpoch, lastEventSeq: "0", lastTimelineSeq: "0", lifecycle: "active", connectionState: "connected", synchronized: true, activity: "idle" };
   };
   const register = vi.fn(async (record: BotRecord) => {
     expect(record.intent?.roleConfiguration).not.toBeNull();
@@ -415,6 +415,26 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
   let browserConnections = 0, deleted = false;
+  let hostedRequests: RequestListener | undefined;
+  const onRequest = (handler: RequestListener) => { hostedRequests = handler; };
+  http.on("request", (request, response) => {
+    if (request.method !== "PUT" || request.url !== `/api/v1/test-sessions/${bot.sessionId}/bot-history-window/checkpoint`) {
+      if (hostedRequests) hostedRequests(request, response);
+      else { response.statusCode = 404; response.end(); }
+      return;
+    }
+    void (async () => {
+      if (deleted || request.headers.authorization !== `Bearer ${options.relayToken?.() ?? "controlled-relay-grant"}`) {
+        response.statusCode = 401; response.end(); return;
+      }
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const { entries: _entries, ...receipt } = parseBotHistoryCheckpoint(JSON.parse(Buffer.concat(chunks).toString()));
+      expect(receipt.sessionId).toBe(bot.sessionId);
+      expect(receipt.historyEpoch).toBe(historyEpoch);
+      response.writeHead(200, { "Content-Type": "application/json", "Daynight-Bot-History-Window-Version": "1" });
+      response.end(JSON.stringify({ ...receipt, cleanupPending: false }));
+    })().catch(error => { relayErrors.push(error); response.destroy(); });
+  });
   const controllers = new Set<WebSocket>();
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
@@ -425,7 +445,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString())); frames.push(message);
         const fence = { protocol: SESSION_PROTOCOL, sessionId: bot.sessionId!, testExecutionId: current().intent!.executionId, executionGeneration: current().intent!.executionGeneration, connectionEpoch: "1" };
-        if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: SESSION_PROTOCOL, connectionEpoch: "1", session: snapshot(current()), lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true }));
+        if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: SESSION_PROTOCOL, connectionEpoch: "1", session: snapshot(current()), lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true, ...(message.botHistoryWindowVersion === 1 ? { botHistoryWindowVersion: 1 } : {}) }));
         else if (message.type === "reconcile") socket.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
         else if (message.type === "events") socket.send(JSON.stringify({ ...fence, type: "events_ack", sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events.at(-1)!.sourceSeq, lastEventSeq: message.events.at(-1)!.sourceSeq }));
         else if (message.type === "sync_state") socket.send(JSON.stringify({ ...fence, type: "sync_ack" }));
@@ -506,7 +526,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       observerJobs.clear();
       for (const socket of relay.clients) socket.terminate();
       try { await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve())); } catch (error) { failures.push(error); }
-      try { if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); }); } catch (error) { failures.push(error); }
+      try { await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); }); } catch (error) { failures.push(error); }
       try { await tools?.close(); } catch (error) { failures.push(error); }
       try { executions.close(); } catch (error) { failures.push(error); }
       try { store.close(); } catch (error) { failures.push(error); }
@@ -528,7 +548,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
     await vi.waitFor(() => expect(readControllerOperation(intent.journalPath, operationId)?.state).toBe("confirmed"), { timeout: 10_000 });
     return operationId;
   };
-  return { home, cwd, packageDirectory, prepareEnvironment, selectToolLaunch, tools, toolEntries, receipts, probeEnvironment, send, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, observerFor, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  return { home, cwd, packageDirectory, prepareEnvironment, selectToolLaunch, tools, toolEntries, receipts, probeEnvironment, send, onRequest, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, observerFor, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -734,11 +754,11 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
 
 test("registers an unregistered stopped Bot at its retained service generation before granting the prepared successor", async () => {
   let relayToken = "controlled-relay-grant";
-  const f = await fixture({ hosted: true, dedicatedStorage: true, relayToken: () => relayToken });
+  const f = await fixture({ dedicatedStorage: true, relayToken: () => relayToken });
   const signal = AbortSignal.timeout(90_000), parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
   const errors: string[] = [], calls: string[] = [], receipts: BotRecoveryResult[] = [];
   let registered = false, serverGeneration = "1", serverInstance: string | null = null, stoppedAt: string | null = null;
-  f.http!.on("request", (request, response) => {
+  f.onRequest((request, response) => {
     void (async () => {
       response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
       const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
@@ -901,7 +921,7 @@ test("deletes every private generation after real Controller stop while preservi
 
 
 test("explicit recovery stops a real journal-bound Controller after its Bot execution index is lost", async () => {
-  const f = await fixture({ hosted: true, localRecovery: true }), signal = new AbortController().signal;
+  const f = await fixture({ localRecovery: true }), signal = new AbortController().signal;
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current()), original = f.journal()!;
   expect(original.controllerProcess).not.toBeNull(); expect(original.nativeStopped).toBe(false);
@@ -921,7 +941,7 @@ test("explicit recovery stops a real journal-bound Controller after its Bot exec
     deletion: { deletionId: randomUUID(), requestedVersion: bot.version, workerCleanup, serverCleanup } };
   f.store.observe(f.owner, deleted, Date.now());
   const requests: string[] = [];
-  f.http!.on("request", (request, response) => {
+  f.onRequest((request, response) => {
     requests.push(request.method!);
     response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
     const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
@@ -946,13 +966,13 @@ test("explicit recovery stops a real journal-bound Controller after its Bot exec
 }, 120_000);
 
 test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
-  const f = await fixture({ hosted: true }), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];
+  const f = await fixture(), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];
   // Native credentials and command aliases are fixture-owned; the host, stores,
   // HTTP adapters, Controller, journal, IPC, provider adapter and deletion run unchanged.
   vi.spyOn(botEnvironment, "prepareBotEnvironment").mockImplementation(f.prepareEnvironment);
   let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null;
   const parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
-  f.http!.on("request", (request, response) => {
+  f.onRequest((request, response) => {
     void (async () => {
       response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));

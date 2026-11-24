@@ -28,12 +28,14 @@ export const eligibleTaskExecutionBinding = (binding: TaskExecutionBinding): boo
 
 export const deriveTaskSyncBindings = (ticket: TaskSyncTicket, response: TaskSync): ReadonlyMap<string, TaskExecutionBinding> => {
   const observed = new Map(response.mode === "snapshot" ? [] : ticket.taskBindings);
+  for (const id of response.deletedTaskIds) observed.delete(id);
   for (const task of response.tasks) observed.set(task.id, taskExecutionBinding(task));
   return observed;
 };
 
 export const deriveTaskSyncVersions = (ticket: TaskSyncTicket, response: TaskSync): ReadonlyMap<string, bigint> => {
   const versions = new Map(response.mode === "snapshot" ? [] : ticket.taskVersions);
+  for (const id of response.deletedTaskIds) versions.delete(id);
   for (const task of response.tasks) versions.set(task.id, task.version);
   return versions;
 };

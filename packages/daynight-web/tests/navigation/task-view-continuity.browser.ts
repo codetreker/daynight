@@ -15,7 +15,7 @@ async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
   const revalidationGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, viewerName: 'Reader', project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, viewerName: 'Reader', project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), modernParents: false, deletedTaskIds: [] as string[], coverageUpdatedAt: undefined as string | undefined, deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId;
@@ -41,7 +41,8 @@ async function install(page: Page, initial: TaskDetail[]) {
       if (state.graphMode === 'pending') await gate.promise;
       if (state.holdReplacement && taskSyncQuery(url).epoch === undefined) { state.replacementHeld = true; await gate.promise; }
       if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
-      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: targetProject === projectId ? state.epoch : taskSyncEpoch(targetProject), actorAccess: directAccessFixture(targetProject, state.viewer), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+      const sync = taskSyncFixture(graph, { query: taskSyncQuery(url), deletedTaskIds: state.deletedTaskIds, ...(state.coverageUpdatedAt === undefined ? {} : { coverageUpdatedAt: state.coverageUpdatedAt }), epoch: targetProject === projectId ? state.epoch : taskSyncEpoch(targetProject), actorAccess: directAccessFixture(targetProject, state.viewer), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties });
+      return send(state.modernParents ? { ...sync, tasks: sync.tasks.map(task => ({ ...task, parentTaskId: null })) } : sync);
     }
     const base = `/api/v1/projects/${targetProject}/tasks/`;
     if (path.startsWith(base)) {
@@ -1272,4 +1273,41 @@ test('refreshing from the narrow heading updates project statistics', async ({ p
   await expect.poll(() => statisticsReads).toBeGreaterThan(previousStatistics);
   await expect.poll(() => graphReads).toBeGreaterThan(previousGraph);
   expect(state.writes).toEqual([]);
+});
+
+
+test('same-epoch removal commits graph and dependency state across shared IDB tabs', async ({ page, context }, info) => {
+  const root = row(10, 'Deleted prerequisite'), child = row(11, 'Retained successor', [root.id]), unrelated = row(12, 'Unrelated task');
+  const first = await install(page, [root, child, unrelated]);
+  const peer = await context.newPage();
+  const second = await install(peer, [root, child, unrelated]);
+  first.modernParents = true; second.modernParents = true;
+  await page.goto(`/projects/${projectId}`); await peer.goto(`/projects/${projectId}`);
+  for (const tab of [page, peer]) { await expect(tab.locator('.snapshot-time time')).toBeVisible(); await tab.locator('#project-section-tab-tasks').click(); }
+  const before = await page.evaluate(({ project, viewer }) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const open = indexedDB.open('daynight-task-cache'); open.onerror = () => reject(open.error);
+    open.onsuccess = () => { const db = open.result; const tx = db.transaction('projects'); const get = tx.objectStore('projects').get([viewer, project]); get.onsuccess = () => resolve(get.result); tx.oncomplete = () => db.close(); };
+  }), { project: projectId, viewer: TEST_VIEWER_ID });
+  const changed = { ...child, version: 2n, dependsOn: [], blockedBy: [], ready: true, updatedAt: '2026-10-22T10:10:00Z' };
+  for (const state of [first, second]) { state.tasks = [changed, unrelated]; state.deletedTaskIds = [root.id]; state.coverageUpdatedAt = changed.updatedAt; }
+  const queries: URL[] = []; page.on('request', request => { if (request.url().includes('/task-sync')) queries.push(new URL(request.url())); });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  for (const tab of [page, peer]) {
+    await expect(tab.getByText(root.title, { exact: true })).toHaveCount(0);
+    await tab.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+    await expect(tab.getByText(child.title, { exact: true }).first()).toBeVisible();
+    await expect(tab.getByText(unrelated.title, { exact: true }).first()).toBeVisible();
+  }
+  const durable = await peer.evaluate(({ project, viewer, removed, retained }) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const open = indexedDB.open('daynight-task-cache'); open.onerror = () => reject(open.error);
+    open.onsuccess = () => { const db = open.result; const tx = db.transaction(['projects', 'summaries', 'taskRemovals']);
+      const manifest = tx.objectStore('projects').get([viewer, project]), gone = tx.objectStore('summaries').get([viewer, project, removed]), task = tx.objectStore('summaries').get([viewer, project, retained]), removal = tx.objectStore('taskRemovals').get([viewer, project, removed]);
+      tx.oncomplete = () => { resolve({ manifest: manifest.result, gone: gone.result === undefined, task: task.result, removal: removal.result }); db.close(); }; tx.onerror = () => reject(tx.error);
+    };
+  }), { project: projectId, viewer: TEST_VIEWER_ID, removed: root.id, retained: child.id });
+  expect(durable).toMatchObject({ gone: true, manifest: { epoch: first.epoch, coverageUpdatedAt: changed.updatedAt }, task: { dependencyState: { ready: true, blockedBy: [] } }, removal: { taskId: root.id, epoch: first.epoch } });
+  expect(queries.length).toBeGreaterThan(0); expect(queries.every(query => query.searchParams.get('epoch') === first.epoch)).toBe(true);
+  expect(first.writes).toEqual([]); expect(second.writes).toEqual([]);
+  await info.attach('atomic-removal-shared-idb', { body: stringifyWireJson({ before, durable, queries: queries.map(query => query.search) }), contentType: 'application/json' });
+  await peer.close();
 });
