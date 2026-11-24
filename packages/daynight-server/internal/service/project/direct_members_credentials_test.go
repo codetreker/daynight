@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,9 +39,10 @@ func assertNoDirectGrant(t *testing.T, f *membershipFixture, project, user strin
 }
 
 func TestDirectMemberOAuthBinding(t *testing.T) {
+	_, database, _, _ := projectService(t)
 	for _, scenario := range []string{"valid", "audience", "scope", "client", "user", "credential"} {
-		t.Run(scenario, func(t *testing.T) {
-			f := newMembershipFixture(t)
+		if !t.Run(scenario, func(t *testing.T) {
+			f := membershipFixtureWithStore(t, database)
 			owner, target := f.user(t), f.user(t)
 			project := f.project(t, owner, "OAuth binding")
 			issued := issueDirectOAuth(t, f, owner.UserID)
@@ -74,14 +76,17 @@ func TestDirectMemberOAuthBinding(t *testing.T) {
 				t.Fatalf("invalid OAuth admitted: %+v %v", result, err)
 			}
 			assertNoDirectGrant(t, f, project.ID, target.UserID)
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func TestDirectMemberCredentialRevokedWhileWaiting(t *testing.T) {
+	_, database, _, _ := projectService(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, model.OAuthCredential} {
-		t.Run(string(kind), func(t *testing.T) {
-			f := newMembershipFixture(t)
+		if !t.Run(string(kind), func(t *testing.T) {
+			f := membershipFixtureWithStore(t, database)
 			owner, target := f.user(t), f.user(t)
 			project := f.project(t, owner, "Revocation")
 			actor, grant := owner, ""
@@ -102,12 +107,19 @@ func TestDirectMemberCredentialRevokedWhileWaiting(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer holder.Rollback(context.Background())
+			var workers sync.WaitGroup
+			defer func() {
+				cancel()
+				_ = holder.Rollback(context.Background())
+				workers.Wait()
+			}()
 			if _, err = holder.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, project.ID); err != nil {
 				t.Fatal(err)
 			}
 			done := make(chan error, 1)
+			workers.Add(1)
 			go func() {
+				defer workers.Done()
 				_, err := NewDirectMembers(f.database, directCredentialResource).AddExistingMember(ctx, actor, project.ID, target.UserID, actor.UserID)
 				done <- err
 			}()
@@ -130,7 +142,9 @@ func TestDirectMemberCredentialRevokedWhileWaiting(t *testing.T) {
 				t.Fatalf("revocation admitted: %v", err)
 			}
 			assertNoDirectGrant(t, f, project.ID, target.UserID)
-		})
+		}) {
+			return
+		}
 	}
 }
 
