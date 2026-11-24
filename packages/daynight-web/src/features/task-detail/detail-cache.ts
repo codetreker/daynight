@@ -3,7 +3,7 @@ import { stringifyApiJson } from "../../api/json";
 import { parseTaskDetail } from "../../api/parse";
 import type { GraphTask, TaskDetail, TaskSummary } from "../../api/types";
 import { TaskCacheError, type DetailRecord, type ProjectRecord, type TaskIntrinsicDetail } from "../task-cache/database";
-import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
+import { TaskCacheLifecycleChanged, type SyncTicket, type TaskCacheScope } from "../task-cache/project-cache";
 import { sameDetailSummary, sameSummary } from "../task-cache/projection";
 
 export const DETAIL_CACHE_LIMITS = { records: 32, totalBytes: 8 * 1024 * 1024, recordBytes: 2 * 1024 * 1024 } as const;
@@ -52,6 +52,7 @@ const withDetailRecovery = async <T,>(scope: TaskCacheScope, ticket: SyncTicket,
 
 export const readCachedDetail = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<TaskIntrinsicDetail | null> =>
   withDetailRecovery(scope, ticket, signal, () => scope.detailTransaction(ticket, signal, async (store, manifest, summaries) => {
+    if (!scope.isCachedTaskReadable(ticket, taskId)) return null;
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return null;
     const record = validateRecord(row, ticket, manifest, summaries);
@@ -65,6 +66,7 @@ export const saveDetail = async (scope: TaskCacheScope, ticket: SyncTicket, deta
   const { parentTaskId: _parentTaskId, ...storedBody } = body;
   const byteSize = detailByteSize(storedBody);
   return withDetailRecovery(scope, ticket, signal, () => scope.detailTransaction(ticket, signal, async (store, manifest, summaries) => {
+    if (!scope.isCachedTaskReadable(ticket, detail.id)) throw new TaskCacheLifecycleChanged();
     const summary = summaries.get(detail.id);
     if (summary === undefined) return { kind: "newer" };
     if (detail.version < summary.version) return { kind: "older" };

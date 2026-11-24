@@ -35,6 +35,50 @@ const canvas = (session: GoalRelationSession, input: Map<string, TaskSummary>) =
   [...session.snapshot().sources.values()].flatMap(source => source.mode === 'inspection' || source.contribution === null ? [] : [source.contribution]), session.snapshot().deniedIds);
 
 describe('Goal graph relationship session', () => {
+  it('recreates a deleted local root with the same ID after its project history is replaced', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId));
+    const { session, scope, event } = await prepare(read);
+    await scope.observeHistory(await scope.beginSync(projectId, scope.signal), id(90), scope.signal);
+    session.setRoots(roots()); await settled(session);
+    event({ projectId, deletedTaskIds: [id(1)] });
+    expect(session.snapshot().sources.has(id(1))).toBe(false); expect(session.snapshot().deniedIds.has(id(1))).toBe(true);
+    session.setRoots(roots()); expect(read).toHaveBeenCalledTimes(1);
+    event({ projectId, historyChanged: true, historyHint: true });
+    session.setRoots(roots()); expect(read).toHaveBeenCalledTimes(1);
+    scope.retireTaskHistory(projectId, id(90)); await scope.beginSync(projectId, scope.signal);
+    event({ projectId, historyChanged: true });
+    session.setRoots(roots()); await settled(session);
+    expect(read).toHaveBeenCalledTimes(2); expect(session.snapshot().deniedIds.has(id(1))).toBe(false);
+  });
+  it('retires stale deletion qualification when an authorized root baseline arrives after a missed history event', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId));
+    const { session, scope, event } = await prepare(read);
+    await scope.observeHistory(await scope.beginSync(projectId, scope.signal), id(90), scope.signal);
+    session.setRoots(roots()); await settled(session);
+    event({ projectId, deletedTaskIds: [id(1)] }); session.setRoots(new Map());
+    scope.retireTaskHistory(projectId, id(90)); await scope.beginSync(projectId, scope.signal);
+    session.setRoots(roots()); await settled(session);
+    expect(read).toHaveBeenCalledTimes(2); expect(session.snapshot().deniedIds.has(id(1))).toBe(false);
+  });
+  it('withdraws only the committed deleted peer and preserves another Goal in the same external project', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(10) }, { target: related(11) }] }));
+    const { session, scope, event } = await prepare(read);
+    session.setRoots(roots()); await settled(session);
+    vi.spyOn(scope, 'qualifyProjection').mockImplementation(async (_fence, candidates) => new Set(candidates.filter(item => item.id !== id(10)).map(item => `${item.projectId}/${item.id}`)));
+    event({ projectId: externalProject, deletedTaskIds: [id(10)] });
+    expect(session.snapshot().sources.get(id(1))?.contribution?.prerequisites.map(item => item.target?.goalId ?? null)).toEqual([null, id(11)]);
+    await settled(session);
+    expect(session.snapshot().sources.get(id(1))?.contribution?.prerequisites.map(item => item.target?.goalId ?? null)).toEqual([null, id(11)]);
+  });
+  it('qualifies foreign targets before publishing a late relationship page when the deletion hint was missed', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(10) }], successors: [related(11)] }));
+    const { session, scope } = await prepare(read);
+    const qualification = vi.spyOn(scope, 'qualifyProjection').mockImplementation(async (_fence, candidates) => new Set(candidates.filter(item => item.id !== id(10)).map(item => `${item.projectId}/${item.id}`)));
+    session.setRoots(roots()); await settled(session);
+    expect(session.snapshot().sources.get(id(1))?.contribution?.prerequisites[0]?.target).toBeNull();
+    expect(session.snapshot().sources.get(id(1))?.contribution?.successors.map(item => item.goalId)).toEqual([id(11)]);
+    expect(qualification).toHaveBeenCalledWith(expect.any(Map), [{ projectId, id: id(1) }, { projectId: externalProject, id: id(10) }, { projectId: externalProject, id: id(11) }], expect.any(AbortSignal));
+  });
   it('withdraws a matched hidden prerequisite immediately through held and failed paging, rejecting older responses and admitting a fresh positive read', async () => {
     let hidden = false, holdPeer = false, peerReply!: (value: GoalDependenciesRead) => void, rejectPage!: (error: unknown) => void;
     const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {

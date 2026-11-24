@@ -7,7 +7,7 @@ import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessio
 import { useTaskRelations } from '../src/features/task-detail/useTaskRelations';
 import { detailFixture, graphFixture, resourceResponse } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph, fixtureTaskEpoch } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -238,4 +238,30 @@ it('retains the timeout across an identity pause and hidden page until visible a
     await act(async () => held.resolve(resourceResponse(graph('Late'), TEST_VIEWER_ID)));
     expect(screen.getByTestId('successor')).toHaveTextContent('New');
   } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+
+it('discards an unknown relation from a read started before a full same-history rebuild', async () => {
+  const held = deferred<Response>();
+  const subsequent = deferred<Response>();
+  let reads = 0;
+  const oldRequest = { signal: null as AbortSignal | null };
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-graph')) {
+      reads++;
+      if (reads === 1) { oldRequest.signal = init?.signal as AbortSignal; return held.promise; }
+      return subsequent.promise;
+    }
+    return Promise.resolve(resourceResponse(parent, TEST_VIEWER_ID));
+  }));
+  const { scope, view } = mount();
+  try {
+    await waitFor(() => expect(reads).toBe(1));
+    const ticket = await scope.beginSync(projectId, scope.signal);
+    const sync = taskSyncFromGraph(graphFixture([parent]), { epoch: fixtureTaskEpoch(projectId), query: {}, versionForTask: () => parent.version, propertiesForTask: () => parent.properties });
+    await act(async () => { await scope.applySync(ticket, sync, scope.signal); });
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    await act(async () => { held.resolve(resourceResponse(graph('Old unknown successor'), TEST_VIEWER_ID)); await held.promise; });
+    expect(oldRequest.signal?.aborted).toBe(true);
+    expect(screen.getByTestId('successor')).toHaveTextContent('none');
+  } finally { view.unmount(); scope.dispose(); }
 });

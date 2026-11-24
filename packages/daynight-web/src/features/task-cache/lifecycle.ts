@@ -50,3 +50,9 @@ export const validateProjectManifest = (value: unknown, userId: string, projectI
       epoch, project: parsedProject, coverageUpdatedAt, taskCount, edgeCount };
   } catch (error) { throw new TaskCacheError("corrupt", error); }
 };
+
+export class TaskCacheLifecycleChanged extends DOMException {
+  constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
+}
+export const isRetryableTaskCacheLifecycleChange = (error: unknown): error is TaskCacheLifecycleChanged =>
+  error instanceof TaskCacheLifecycleChanged && error.retryable;

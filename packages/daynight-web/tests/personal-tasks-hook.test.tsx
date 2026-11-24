@@ -11,7 +11,12 @@ import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const scopes: TaskCacheScope[] = [];
-const scopeFor = (userId = WORKER_USER) => { const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { void scope.invalidateScope(); } }); vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map()); scopes.push(scope); return scope; };
+const scopeFor = (userId = WORKER_USER) => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { void scope.invalidateScope(); } });
+  vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
+  vi.spyOn(scope, 'qualifyProjection').mockImplementation(async (_snapshot, candidates) => new Set(candidates.map(item => `${item.projectId}/${item.id}`)));
+  scopes.push(scope); return scope;
+};
 const wrapper = (scope: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}>{children}</TaskCacheProvider>;
 const flush = () => act(async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
@@ -19,6 +24,27 @@ const row = (number: number, project = 3, count = 1): api.PersonalTaskPage['item
 const page = (items: api.PersonalTaskPage['items'], nextCursor: string | null = null, totalTaskCount = items.length, totalProjectCount = new Set(items.map(item => item.project.id)).size): api.PersonalTaskRead => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, receivedMonotonic: performance.now(), inventoryRevision: 'a'.repeat(64), totalTaskCount, totalProjectCount, sessionPartial: true, items, nextCursor });
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.restoreAllMocks(); });
 describe('personal task inventory', () => {
+  it('withdraws a deleted row while retaining other rows in the same project and a fresh inventory recovers totals', async () => {
+    const scope = scopeFor(), later = deferred<api.PersonalTaskRead>();
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10, 3, 2), row(11, 3, 2)])).mockImplementationOnce(() => later.promise);
+    const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => publish({ projectId: workerId(3), deletedTaskIds: [workerId(10)] })); await flush();
+    expect(result.current.items.map(item => item.task.id)).toEqual([workerId(11)]); expect(result.current.totalTaskCount).toBeNull();
+    later.resolve(page([row(11)])); await flush();
+    expect(result.current.totalTaskCount).toBe(1); expect(result.current.loaded).toBe(true);
+  });
+  it('qualifies page-discovered projects before publishing a late inventory without a graph or hint', async () => {
+    const scope = scopeFor();
+    const qualify = vi.spyOn(scope, 'qualifyProjection').mockResolvedValue(new Set([`${workerId(4)}/${workerId(11)}`]));
+    const register = vi.spyOn(scope, 'registerProjectionProjects');
+    vi.spyOn(api, 'listPersonalTasks').mockResolvedValue(page([row(10), row(11, 4)]));
+    const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scope) }); await flush();
+    expect(result.current.items.map(item => item.task.id)).toEqual([workerId(11)]); expect(result.current.loaded).toBe(false); expect(result.current.totalTaskCount).toBeNull();
+    expect(register).toHaveBeenCalledWith([workerId(3)]); expect(register).toHaveBeenCalledWith([workerId(4)]);
+    expect(qualify).toHaveBeenCalledWith(expect.any(Map), [{ projectId: workerId(3), id: workerId(10) }, { projectId: workerId(4), id: workerId(11) }], expect.any(AbortSignal));
+  });
   it('invalidates colors for visible projects on each complete refresh', async () => {
     const scope = scopeFor(), notify = vi.spyOn(scope, 'notifyTagColors');
     vi.spyOn(api, 'listPersonalTasks').mockResolvedValue(page([row(10), row(11, 4)]));

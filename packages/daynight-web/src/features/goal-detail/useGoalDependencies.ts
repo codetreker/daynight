@@ -35,6 +35,14 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
     let disposed = false, sequence = 0;
     let controller: AbortController | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
+    let publishedFence: ReadonlyMap<string, string> | null = null;
+    const registrations = new Map<string, () => void>();
+    const register = (projectIds: readonly string[]) => { for (const id of projectIds) if (!registrations.has(id)) registrations.set(id, scope.registerProjectionProjects([id])); };
+    register([projectId]);
+    const candidates = (page: GoalDependencies) => [{ projectId, id: goalId }, ...[...page.prerequisites.flatMap(item => item.target === null ? [] : [item.target]), ...page.successors].map(item => ({ projectId: item.projectId, id: item.goalId }))];
+    const qualifiedPage = (page: GoalDependencies, allowed: ReadonlySet<string>): GoalDependencies => candidates(page).every(item => allowed.has(`${item.projectId}/${item.id}`)) ? page : ({ ...page,
+      prerequisites: page.prerequisites.map(item => item.target !== null && !allowed.has(`${item.target.projectId}/${item.target.goalId}`) ? { ...item, target: null } : item),
+      successors: page.successors.filter(item => allowed.has(`${item.projectId}/${item.goalId}`)) });
     const cancel = () => { sequence++; controller?.abort(); controller = null; };
     const read = (cursor: string | null, previous: readonly (string | null)[], replace: boolean) => {
       if (!active || disposed || document.visibilityState === 'hidden') return;
@@ -51,6 +59,7 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
         if (disposed || sequence !== requestSequence || qualification === null ||
           !sessions.isDirectQualificationHistoryCurrent(projectId, goalId, qualification) ||
           !accessDenied && sessions.captureDirectQualification(projectId, goalId) === null) return;
+        if (error instanceof ApiError && error.status === 410 && error.code === 'task_deleted' && sessions.reportDirectTaskDeleted(projectId, goalId, qualification)) return;
         setState(old => old.owner === owner ? { ...old, page: accessDenied ? null : old.page, unavailable: false, pending: false, error } : old);
         if (accessDenied) sourceDenied.current();
       };
@@ -60,6 +69,14 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
           if (!currentRequest()) return;
           qualification = sessions.captureDirectQualification(projectId, goalId);
           if (qualification === null) return;
+          const projectionFence = await scope.prepareProjection(signal);
+          const retainedState = stateRef.current;
+          if (retainedState.owner === owner && retainedState.page !== null && publishedFence !== null) {
+            const allowed = await scope.qualifyProjection(publishedFence, candidates(retainedState.page), signal);
+            if (!currentRequest()) return;
+            const retained = allowed.has(`${projectId}/${goalId}`) ? qualifiedPage(retainedState.page, allowed) : null;
+            setState(old => old.owner === owner && old.page === retainedState.page ? { ...old, page: retained } : old);
+          }
           setState(old => old.owner === owner ? { ...old, pending: true } : { ...opening, pending: true });
           const result = await getGoalDependencies(projectId, goalId, cursor, signal, {
             userId: scope.userId, onPrincipalMismatch: scope.principalMismatch,
@@ -73,10 +90,19 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
           if (!currentRequest() || qualification === null ||
             !await sessions.verifyDirectQualificationHistory(projectId, goalId, qualification, signal) ||
             sessions.captureDirectQualification(projectId, goalId) === null || !currentRequest()) return;
+          let page: GoalDependencies | null = null;
+          if (result.kind === 'available') {
+            const targets = candidates(result.page); register(targets.map(item => item.projectId));
+            const allowed = await scope.qualifyProjection(projectionFence, targets, signal);
+            if (!currentRequest()) return;
+            if (!allowed.has(`${projectId}/${goalId}`)) { setState(old => old.owner === owner ? { ...initial(owner), error: null } : old); sourceDenied.current(); return; }
+            page = qualifiedPage(result.page, allowed);
+          }
           if (entryId !== null && browserNavigation().snapshot().entryId === entryId) {
             saveGoalDependencyPosition(scope, entryId, { projectId, goalId, history, cursor, previous });
           }
-          setState({ owner, page: result.kind === 'available' ? result.page : null, unavailable: result.kind === 'unavailable',
+          publishedFence = projectionFence;
+          setState({ owner, page, unavailable: result.kind === 'unavailable',
             error: null, pending: false, cursor, previous });
         } catch (error) {
           if (!currentRequest() || isAbortError(error)) return;
@@ -98,6 +124,33 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
       refresh(); timer = setInterval(refresh, pollingInterval('taskSync'));
     };
     const unsubscribe = scope.subscribe(event => {
+      if (event.deletedTaskIds !== undefined || event.baselineRebuilt || event.taskDeletionHint !== undefined) {
+        if (event.deletedTaskIds?.length === 0 && !event.baselineRebuilt && event.taskDeletionHint === undefined) return;
+        if (!registrations.has(event.projectId)) return;
+        const removed = new Set(event.deletedTaskIds ?? (event.taskDeletionHint === undefined ? [] : [event.taskDeletionHint.taskId]));
+        const currentPage = stateRef.current.owner === owner ? stateRef.current.page : null;
+        if (!event.baselineRebuilt && event.taskDeletionHint === undefined && !(event.projectId === projectId && removed.has(goalId)) &&
+          (currentPage === null || !candidates(currentPage).some(item => item.projectId === event.projectId && removed.has(item.id)))) return;
+        cancel();
+        const previous = stateRef.current, fence = publishedFence;
+        setState(old => {
+          if (old.owner !== owner) return old;
+          if (event.projectId === projectId && removed.has(goalId)) return initial(owner);
+          return { ...old, cursor: null, previous: [], pending: false, page: old.page === null ? null : { ...old.page, nextCursor: null,
+            prerequisites: old.page.prerequisites.map(item => item.target?.projectId === event.projectId && removed.has(item.target.goalId) ? { ...item, target: null } : item),
+            successors: old.page.successors.filter(item => item.projectId !== event.projectId || !removed.has(item.goalId)) } };
+        });
+        if (event.projectId === projectId && removed.has(goalId)) { sourceDenied.current(); return; }
+        if (event.baselineRebuilt && previous.owner === owner && previous.page !== null && fence !== null) {
+          const page = previous.page;
+          void scope.qualifyProjection(fence, candidates(page), scope.signal).then(allowed => {
+            if (disposed || publishedFence !== fence) return;
+            setState(old => old.owner !== owner || old.page === null ? old : { ...old, page: allowed.has(`${projectId}/${goalId}`) ? qualifiedPage(old.page, allowed) : null });
+            if (!allowed.has(`${projectId}/${goalId}`)) sourceDenied.current();
+          }).catch(error => { if (!disposed && !isAbortError(error)) setState(old => old.owner === owner ? { ...old, page: null, error } : old); });
+        }
+        read(null, [], false); return;
+      }
       if (!event.accessRevoked && !event.directAccessUncertain && !event.historyChanged) return;
       // An in-flight page may contain a peer not present in the displayed page.
       // Every permission withdrawal invalidates that page before it can publish.
@@ -114,7 +167,7 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
     });
     visibility();
     document.addEventListener('visibilitychange', visibility); window.addEventListener('focus', refresh);
-    return () => { disposed = true; cancel(); readRef.current = () => {}; unsubscribe(); if (timer !== null) clearInterval(timer);
+    return () => { disposed = true; cancel(); readRef.current = () => {}; unsubscribe(); for (const unregister of registrations.values()) unregister(); if (timer !== null) clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility); window.removeEventListener('focus', refresh); };
   }, [scope, sessions, projectId, goalId, history, owner, opening, active, entryId]);
   const visible = state.owner === owner ? state : opening;

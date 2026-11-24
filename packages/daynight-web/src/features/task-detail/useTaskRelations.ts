@@ -48,6 +48,7 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
           await scope.ready(signal);
           qualification = sessions.captureDirectQualification(projectId, taskId);
           if (qualification === null) return;
+          const projectionFence = await scope.prepareProjection(signal);
           const project = requestId(projectId), task = requestId(taskId);
           const response = await request(`/api/v1/projects/${project}/task-graph?taskId=${encodeURIComponent(task)}`, signal, { headers: { Accept: 'application/json' } }, () => {
             deadline = setTimeout(() => {
@@ -72,8 +73,11 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
           // the current Task must still be admitted before publishing it.
           if (responseLifetime.aborted || !await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, responseLifetime) ||
             sessions.captureDirectQualification(projectId, taskId) === null || responseLifetime.aborted) return;
+          const accepted = await scope.qualifyProjection(projectionFence, [...nodes.keys()].map(id => ({ projectId, id })), responseLifetime);
+          for (const id of nodes.keys()) if (!accepted.has(`${projectId}/${id}`)) nodes.delete(id);
+          if (responseLifetime.aborted || !await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, responseLifetime)) return;
           pendingTimeout = null;
-          setState({ owner, relations: { nodes, successors: graph.tasks.filter((item) => item.dependsOn.includes(task)).map((item) => item.id) }, error: null });
+          setState({ owner, relations: { nodes, successors: [...nodes.values()].filter((item) => item.dependsOn.includes(task)).map((item) => item.id) }, error: null });
         } catch (error) {
           if (signal.aborted || isAbortError(error)) return;
           const denied = error instanceof ApiError && error.kind === 'server' && [401, 403, 404, 410].includes(error.status ?? 0);
@@ -81,7 +85,7 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
           if (signal.aborted || qualification !== null && (!sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification) ||
             !denied && sessions.captureDirectQualification(projectId, taskId) === null)) return;
           if (qualification !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') {
-            scope.fenceTaskHistory(projectId, null);
+            sessions.reportDirectTaskDeleted(projectId, taskId, qualification);
             return;
           }
           pendingTimeout = null;
@@ -98,9 +102,20 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
       timer = setInterval(read, pollingInterval('taskSync'));
     };
     refreshRef.current = () => { sequence++; controller?.abort(); controller = null; pendingTimeout = null; read(); };
+    const unsubscribe = scope.subscribe(event => {
+      if (event.projectId !== projectId || (event.deletedTaskIds?.length ?? 0) === 0 && !event.baselineRebuilt && event.taskDeletionHint === undefined) return;
+      sequence++; controller?.abort(); controller = null; pendingTimeout = null;
+      const deleted = new Set(event.deletedTaskIds ?? []);
+      if (event.taskDeletionHint !== undefined) { deleted.add(event.taskDeletionHint.taskId); for (const id of event.taskDeletionHint.pendingTaskIds) deleted.add(id); }
+      setState(old => old.owner !== owner || old.relations === null ? old : { ...old, relations: deleted.has(taskId) ? null : {
+        nodes: new Map([...old.relations.nodes].filter(([id]) => !deleted.has(id))),
+        successors: old.relations.successors.filter(id => !deleted.has(id)),
+      } });
+      read();
+    });
     visibility();
     document.addEventListener('visibilitychange', visibility);
-    return () => { disposed = true; refreshRef.current = () => {}; if (timer !== null) clearInterval(timer); controller?.abort(); document.removeEventListener('visibilitychange', visibility); };
+    return () => { disposed = true; unsubscribe(); refreshRef.current = () => {}; if (timer !== null) clearInterval(timer); controller?.abort(); document.removeEventListener('visibilitychange', visibility); };
   }, [scope, sessions, projectId, taskId, history, active, owner]);
   const visible = active && state.owner === owner ? state : { owner, relations: null, error: null };
   return { relations: visible.relations, error: visible.error, refresh };

@@ -3,8 +3,8 @@ import { waitForState as waitFor } from './helpers/waitForState';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskCacheError } from '../src/features/task-cache/database';
 import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
-import { detailFixture } from './helpers/taskDetail';
-import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
 const project = '10000000-0000-4000-8000-000000000001';
@@ -13,6 +13,12 @@ const child = '30000000-0000-4000-8000-000000000001';
 const epoch = '40000000-0000-4000-8000-000000000001';
 const goalDetail = detailFixture(project, goal, { type: 'goal', ready: false });
 const childDetail = detailFixture(project, child, { parentId: goal, title: 'Private child' });
+const syncResponse = (url: string) => {
+  const query = new URL(url, 'https://daynight.test').searchParams;
+  const requestedEpoch = query.get('epoch');
+  const sync = taskSyncFromGraph({ ...graphFixture([goalDetail]), tasks: [] }, { epoch, query: requestedEpoch === null ? {} : { epoch: requestedEpoch }, versionForTask: () => 1n });
+  return wireResponse({ ...sync, coverageUpdatedAt: goalDetail.updatedAt, deletedTaskIds: sync.mode === 'delta' ? [goal, child] : [] }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+};
 const response = (body: unknown) => wireResponse(body, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
 class Channel {
   static peers = new Set<Channel>(); static messages: unknown[] = [];
@@ -25,7 +31,7 @@ const resources: { scope: ReturnType<typeof createTaskCacheScope>; sessions: Tas
 const world = () => { const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); const sessions = new TaskDetailSessions(scope); resources.push({ scope, sessions }); return { scope, sessions }; };
 afterEach(() => { for (const { scope, sessions } of resources.splice(0)) { sessions.dispose(); scope.dispose(); } Channel.peers.clear(); Channel.messages = []; vi.unstubAllGlobals(); });
 
-it.each(['confirmed', 'unknown', 'already-deleted'] as const)('fences a peer child read before its first epoch after a %s Goal deletion', async outcome => {
+it.each(['confirmed', 'unknown', 'already-deleted'] as const)('revalidates a peer child after the committed baseline following a %s Goal deletion', async outcome => {
   vi.stubGlobal('BroadcastChannel', Channel);
   let finishWrite!: (response: Response) => void; let loseWrite!: (error: Error) => void;
   const write = new Promise<Response>((resolve, reject) => { finishWrite = resolve; loseWrite = reject; });
@@ -33,6 +39,7 @@ it.each(['confirmed', 'unknown', 'already-deleted'] as const)('fences a peer chi
   const old = new Promise<Response>(resolve => { finishOld = resolve; });
   let deleted = false; let childReads = 0; let firstSignal: AbortSignal | undefined; let writes = 0;
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return Promise.resolve(syncResponse(url));
     if (init?.method === 'DELETE') { writes++; return write; }
     if (url.endsWith(child)) {
       childReads++;
@@ -58,7 +65,7 @@ it.each(['confirmed', 'unknown', 'already-deleted'] as const)('fences a peer chi
   await waitFor(() => expect(childReads).toBeGreaterThan(1));
   finishOld(response(childDetail)); await old; await new Promise(resolve => setTimeout(resolve, 0));
   expect(peer.sessions.snapshot(project, child).detail).toBeNull();
-  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && (outcome === 'confirmed' ? 'retiredEpoch' in value : 'uncertainEpoch' in value))).toBe(true);
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'syncRevision' in value)).toBe(true);
   expect(writes).toBe(1);
 });
 
@@ -67,6 +74,7 @@ it('retires an already-open child when a closed Goal deletion loses its receipt 
   let loseWrite!: (error: Error) => void; const write = new Promise<Response>((_resolve, reject) => { loseWrite = reject; });
   let deleted = false; let writes = 0;
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return Promise.resolve(syncResponse(url));
     if (init?.method === 'DELETE') { writes++; return write; }
     if (deleted && url.endsWith(goal)) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
     if (deleted) return Promise.reject(new Error('offline'));
@@ -79,7 +87,7 @@ it('retires an already-open child when a closed Goal deletion loses its receipt 
   owner.sessions.deleteTask(project, goal, goalDetail.version, false); await waitFor(() => expect(writes).toBe(1));
   close(); deleted = true; loseWrite(new Error('response lost'));
   await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toBeNull());
-  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'syncRevision' in value)).toBe(true);
   expect(writes).toBe(1);
 });
 
@@ -113,13 +121,14 @@ it.each([
   { action: 'edit', outcome: 'refused' }, { action: 'edit', outcome: 'unknown' },
   { action: 'status', outcome: 'refused' }, { action: 'status', outcome: 'unknown' },
   { action: 'assignment', outcome: 'refused' }, { action: 'assignment', outcome: 'unknown' },
-] as const)('fences a peer child after a closed Goal $action observes deletion through $outcome', async ({ action, outcome }) => {
+] as const)('revalidates a peer child after a closed Goal $action observes deletion through $outcome', async ({ action, outcome }) => {
   vi.stubGlobal('BroadcastChannel', Channel);
   let finishWrite!: (response: Response) => void; let loseWrite!: (error: Error) => void;
   const write = new Promise<Response>((resolve, reject) => { finishWrite = resolve; loseWrite = reject; });
   let finishOld!: (response: Response) => void; const old = new Promise<Response>(resolve => { finishOld = resolve; });
   let deleted = false; let childReads = 0; let firstSignal: AbortSignal | undefined; let writes = 0;
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return Promise.resolve(syncResponse(url));
     if (init?.method === 'PATCH' || init?.method === 'PUT') { writes++; return write; }
     if (url.endsWith(child)) {
       childReads++;
@@ -144,7 +153,7 @@ it.each([
   await waitFor(() => expect(childReads).toBeGreaterThan(1));
   finishOld(response(childDetail)); await old; await new Promise(resolve => setTimeout(resolve, 0));
   expect(peer.sessions.snapshot(project, child).detail).toBeNull();
-  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'syncRevision' in value)).toBe(true);
   expect(writes).toBe(1);
 });
 
@@ -152,6 +161,7 @@ it('retains the reviewed Goal epoch when a submitted edit loses its direct admis
   vi.stubGlobal('BroadcastChannel', Channel);
   let deleted = false; let writes = 0;
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return Promise.resolve(syncResponse(url));
     if (init?.method === 'PATCH') { deleted = true; writes++; return Promise.reject(new Error('response lost')); }
     if (deleted && url.endsWith(goal)) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
     if (deleted) return Promise.reject(new Error('offline'));
@@ -167,14 +177,15 @@ it('retains the reviewed Goal epoch when a submitted edit loses its direct admis
   await waitFor(() => expect(owner.sessions.snapshot(project, goal)).toMatchObject({ detail: null, mutation: { phase: 'unknown', reconciliationError: { category: 'storage' } } }));
   verify.mockRestore(); close();
   await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toBeNull());
-  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'syncRevision' in value)).toBe(true);
   expect(writes).toBe(1);
 });
 
-it('fences Goal history when an open edit reconciles a 410 after its direct admission fence fails', async () => {
+it('rechecks Goal deletion when an open edit reconciles a 410 after its direct admission fence fails', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   let deleted = false; let writes = 0;
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return Promise.resolve(syncResponse(url));
     if (init?.method === 'PATCH') { deleted = true; writes++; return Promise.reject(new Error('response lost')); }
     if (deleted && url.endsWith(goal)) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
     if (deleted) return Promise.reject(new Error('offline'));
@@ -191,6 +202,6 @@ it('fences Goal history when an open edit reconciles a 410 after its direct admi
   verify.mockRestore(); owner.sessions.reconcile(project, goal);
   await waitFor(() => expect(owner.sessions.snapshot(project, goal)).toMatchObject({ status: 'deleted', mutation: { phase: 'reconciled', error: { category: 'storage' } } }));
   await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toBeNull());
-  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'syncRevision' in value)).toBe(true);
   expect(writes).toBe(1);
 });

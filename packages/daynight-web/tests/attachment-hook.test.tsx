@@ -1,4 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider";
+import { createTaskSessionWorld } from "./helpers/taskSessions";
+import { detailFixture, graphFixture } from "./helpers/taskDetail";
+import { taskSyncFromGraph } from "./helpers/taskSync";
 import { describe, expect, it, vi } from "vitest";
 import type { Attachment, AttachmentPage } from "../src/api/types";
 import { ApiError } from "../src/api/client";
@@ -363,4 +368,64 @@ describe("selected preview refresh coherence", () => {
     expect(transport.readText).toHaveBeenCalledTimes(2);
     expect(transport.list).toHaveBeenCalledTimes(3);
   });
+});
+
+it("withdraws an attachment preview and late text when the shared baseline commits its Task deletion", async () => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task), survivor = detailFixture(project, otherTask);
+  await world.sync([target, survivor]);
+  const transport = api();
+  const held = deferred<string>(); transport.readText.mockReturnValueOnce(held.promise);
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  try {
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    act(() => view.result.current.select(a.path));
+    await waitFor(() => expect(transport.readText).toHaveBeenCalledOnce());
+    const signal = transport.readText.mock.calls[0]![3];
+    const generation = world.scope.getHistoryGeneration(project);
+    const ticket = await world.scope.beginSync(project, world.scope.signal);
+    const sync = taskSyncFromGraph(graphFixture([survivor]), { epoch: ticket.epoch!, query: { epoch: ticket.epoch! }, versionForTask: () => 1n, propertiesForTask: () => survivor.properties });
+    await act(async () => { await world.scope.applySync(ticket, { ...sync, deletedTaskIds: [task] }, world.scope.signal); });
+    expect(signal.aborted).toBe(true);
+    expect(view.result.current.selectedPath).toBeNull();
+    expect(view.result.current.items).toEqual([]);
+    await act(async () => held.resolve("deleted private content"));
+    expect(view.result.current.preview.text).toBeNull();
+    expect(await view.result.current.put(a.path, new File(["replacement"], "a.md"))).toBe(false);
+    expect(transport.put).not.toHaveBeenCalled();
+    expect(world.scope.getHistoryGeneration(project)).toBe(generation);
+    expect(world.scope.getAuthorizedProject(project)?.summaries.has(otherTask)).toBe(true);
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it("preserves a selected iframe and pending attachment write when a full rebuild retains its Task", async () => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task);
+  await world.sync([target]);
+  const document = file("index.html", "text/html");
+  const transport = api(); transport.list.mockResolvedValue(page([document]));
+  const held = deferred<Attachment>(); transport.put.mockReturnValueOnce(held.promise);
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  try {
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    act(() => view.result.current.select(document.path));
+    await waitFor(() => expect(view.result.current.preview.status).toBe("ready"));
+    const iframe = view.result.current.preview.nativeSource;
+    let write!: Promise<boolean>;
+    act(() => { write = view.result.current.put(document.path, new File(["changed"], "index.html")); });
+    await waitFor(() => expect(transport.put).toHaveBeenCalledOnce());
+    const signal = transport.put.mock.calls[0]![4];
+    const ticket = await world.scope.beginSync(project, world.scope.signal);
+    const snapshot = taskSyncFromGraph(graphFixture([target]), { epoch: ticket.epoch!, query: {}, versionForTask: () => target.version, propertiesForTask: () => target.properties });
+    await act(async () => { await world.scope.applySync(ticket, snapshot, world.scope.signal, true, { rebuild: true }); });
+    expect(signal.aborted).toBe(false);
+    expect(view.result.current.write.status).toBe("saving");
+    expect(view.result.current.selectedPath).toBe(document.path);
+    expect(view.result.current.preview.nativeSource).toBe(iframe);
+    expect(await view.result.current.put(document.path, new File(["again"], "index.html"))).toBe(false);
+    await act(async () => { held.resolve(document); expect(await write).toBe(true); });
+    expect(transport.put).toHaveBeenCalledOnce();
+  } finally { view.unmount(); world.dispose(); }
 });

@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { pauseAuthRequests } from '../src/api/client';
 import { browserNavigation } from '../src/app/navigation';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { useGoalDependencies } from '../src/features/goal-detail/useGoalDependencies';
 import { finishGoalDependencyReturn, goalDependencyReturn, markGoalDependencyDeparture, rememberGoalDependencyReading } from '../src/features/goal-detail/goal-dependency-reading';
@@ -54,6 +55,37 @@ const timers = () => {
 const respond = (body: unknown) => Promise.resolve(resourceResponse(body, TEST_VIEWER_ID));
 const failure = (status = 503, code = 'internal_error') => wireResponse({ error: { code, message: 'Unavailable', requestId: 'failure' } }, { status, headers: viewerHeaders(TEST_VIEWER_ID) });
 afterEach(() => { cleanup(); browserNavigation().dispose(); sourceDenied.mockClear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it('qualifies a foreign Goal from a late dependency response even when no deletion event arrived', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  vi.spyOn(scope, 'qualifyProjection').mockImplementation(async (_fence, candidates) => new Set(candidates.filter(item => item.projectId !== peerId).map(item => `${item.projectId}/${item.id}`)));
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.includes('/goal-dependencies') ? respond(page('Deleted peer')) : respond(parent)));
+  const { view } = mount(scope);
+  try {
+    await waitFor(() => expect(dependencies.page).not.toBeNull());
+    expect(screen.getByTestId('goal')).toHaveTextContent('none'); expect(screen.getByTestId('successors').textContent).toBe('');
+    expect(dependencies.page?.prerequisites[0]?.target).toBeNull(); expect(dependencies.page?.successors).toEqual([]);
+    expect(sourceDenied).not.toHaveBeenCalled();
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+it('withdraws a committed deleted peer, retires downstream cursors, and keeps the source Goal open', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const subscribers = new Set<(event: CacheEvent) => void>();
+  const subscribe = scope.subscribe;
+  vi.spyOn(scope, 'subscribe').mockImplementation(listener => { subscribers.add(listener); const release = subscribe(listener); return () => { subscribers.delete(listener); release(); }; });
+  const later = deferred<Response>(); let reads = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.includes('/goal-dependencies') ? ++reads === 1 ? respond(page('Peer', 'next')) : later.promise : respond(parent)));
+  const { view } = mount(scope);
+  try {
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Peer'));
+    act(() => { for (const listener of subscribers) listener({ projectId: peerId, deletedTaskIds: [relation('Peer').goalId] }); });
+    expect(screen.getByTestId('goal')).toHaveTextContent('none'); expect(dependencies.page?.nextCursor).toBeNull(); expect(dependencies.hasPrevious).toBe(false);
+    expect(sessions.snapshot(projectId, goalId).status).toBe('ready'); expect(sourceDenied).not.toHaveBeenCalled();
+    later.resolve(resourceResponse({ ...page('Fresh'), prerequisites: [], successors: [] }, TEST_VIEWER_ID));
+    await waitFor(() => expect(dependencies.pending).toBe(false));
+  } finally { view.unmount(); scope.dispose(); }
+});
 
 it('refreshes independently of source versions, retaining visible relations on transient failure', async () => {
   const tick = timers(); let reads = 0;

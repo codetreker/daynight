@@ -47,6 +47,25 @@ it('loads and paginates live records without a project manifest', async () => {
   expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next']);
 });
 
+it('preserves a direct Session page when a full baseline rebuild still contains its Task', async () => {
+  const { scope, api, view } = setup();
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  const detail = detailFixture(projectId, taskId);
+  const ticket = await scope.beginSync(projectId, scope.signal);
+  await act(async () => {
+    await scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch, query: {}, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), scope.signal);
+  });
+  await waitFor(() => expect(screen.getByRole('button', { name: /Herdr/ })).toBeVisible());
+  expect(api.history).toHaveBeenCalledOnce();
+  const rebuild = await scope.beginSync(projectId, scope.signal);
+  await act(async () => {
+    await scope.applySync(rebuild, taskSyncFromGraph(graphFixture([detail]), { epoch, query: {}, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), scope.signal, true, { rebuild: true });
+  });
+  expect(screen.getByRole('button', { name: /Herdr/ })).toBeVisible();
+  expect(api.history).toHaveBeenCalledOnce();
+  view.unmount();
+});
+
 it('discovers the newest direct recording after empty history pages without a project manifest', async () => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));

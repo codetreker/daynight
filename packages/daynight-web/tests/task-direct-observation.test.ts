@@ -796,7 +796,7 @@ it.each([
   expect(writes).toBe(1);
 });
 
-it('retires a confirmed direct deletion before post-response history verification', async () => {
+it('withdraws a confirmed direct deletion before post-response history verification', async () => {
   const { sessions, scope } = world(); let writes = 0;
   vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
     if (init.method === 'DELETE') { writes++; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) })); }
@@ -811,7 +811,7 @@ it('retires a confirmed direct deletion before post-response history verificatio
   });
   sessions.deleteTask(project, task, 1n, false);
   await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'deleted', detail: null, mutation: { phase: 'confirmed' } }));
-  expect(scope.getHistoryGeneration(project)).toBeGreaterThan(0);
+  expect(scope.getHistoryGeneration(project)).toBe(0);
   expect(writes).toBe(1); expect(afterResponse).not.toHaveBeenCalled();
 });
 

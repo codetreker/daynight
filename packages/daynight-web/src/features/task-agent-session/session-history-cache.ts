@@ -44,7 +44,7 @@ export const readCachedSessionHistory = async (scope: TaskCacheScope, ticket: Sy
   taskId = requestId(taskId);
   const read = () => recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
-    return row === undefined || !summaries.has(taskId) ? null : validate(row, ticket, manifest);
+    return row === undefined || (!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId)) ? null : validate(row, ticket, manifest);
   }));
   const same = (left: SessionHistoryRecord, right: SessionHistoryRecord | null): boolean => right !== null &&
     left.requestToken === right.requestToken && left.paginationToken === right.paginationToken && left.clearedToken === right.clearedToken &&
@@ -67,7 +67,7 @@ export const readCachedSessionHistory = async (scope: TaskCacheScope, ticket: Sy
       if (!(error instanceof TaskCacheError) || error.category === 'corrupt') throw error;
       unchanged = same(cached, await read());
     }
-    if (unchanged) return scope.isHistoryUncertain(ticket, taskId) ? null : { ...cached.page, confirmedCompleteEmpty: cached.confirmedCompleteEmpty };
+    if (unchanged) return scope.isHistoryUncertain(ticket, taskId) || !scope.isCachedTaskReadable(ticket, taskId) ? null : { ...cached.page, confirmedCompleteEmpty: cached.confirmedCompleteEmpty };
   }
   throw new TaskCacheError('storage');
 };
@@ -75,7 +75,7 @@ export const readCachedSessionHistory = async (scope: TaskCacheScope, ticket: Sy
 export const getSessionHistoryToken = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<string | null> => {
   taskId = requestId(taskId);
   return recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return null;
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return null;
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     return row === undefined ? null : validate(row, ticket, manifest).requestToken;
   }));
@@ -90,7 +90,7 @@ export type SessionHistoryOwnership =
 export const readSessionHistoryOwnership = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<SessionHistoryOwnership> => {
   taskId = requestId(taskId);
   const result = await scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return { kind: 'task_absent' as const };
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return { kind: 'task_absent' as const };
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return { kind: 'absent' as const };
     try {
@@ -112,7 +112,7 @@ export const readSessionHistoryPaginationState = async (scope: TaskCacheScope, t
   taskId = requestId(taskId);
   if (scope.isHistoryUncertain(ticket, taskId)) return null;
   const state = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return null;
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return null;
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return null;
     const valid = validate(row, ticket, manifest);
@@ -125,7 +125,7 @@ export const beginSessionHistoryPagination = async (scope: TaskCacheScope, ticke
   taskId = requestId(taskId);
   if (scope.isHistoryUncertain(ticket, taskId)) return null;
   const state = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return null;
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return null;
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return null;
     const valid = validate(row, ticket, manifest);
@@ -153,7 +153,7 @@ export const beginSessionHistoryRefresh = async (scope: TaskCacheScope, ticket: 
   taskId = requestId(taskId);
   const uncertaintyRevision = scope.getHistoryUncertaintyRevision(ticket, taskId);
   const result = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return { kind: 'absent' as const };
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return { kind: 'absent' as const };
     const rows = (await store.index('by-project').getAll([scope.userId, ticket.projectId])).map(row => validate(row, ticket, manifest));
     if (rows.length > SESSION_HISTORY_CACHE_LIMITS.records || rows.reduce((sum, row) => sum + row.byteSize, 0) > SESSION_HISTORY_CACHE_LIMITS.totalBytes) throw new TaskCacheError('corrupt');
     const existing = rows.find(row => row.taskId === taskId);
@@ -251,7 +251,7 @@ export const saveSessionHistory = async (scope: TaskCacheScope, ticket: SyncTick
   const parsed = parseSessionHistory(page); const byteSize = sizeOf(parsed);
   if (confirmedCompleteEmpty === true && (parsed.items.length !== 0 || parsed.nextCursor === null)) throw new ApiError('protocol');
   const result = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId)) return { saved: false, changed: false };
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return { saved: false, changed: false };
     const rows = (await store.index('by-project').getAll([scope.userId, ticket.projectId])).map(row => validate(row, ticket, manifest));
     if (rows.length > SESSION_HISTORY_CACHE_LIMITS.records || rows.reduce((sum, row) => sum + row.byteSize, 0) > SESSION_HISTORY_CACHE_LIMITS.totalBytes) throw new TaskCacheError('corrupt');
     const existing = rows.find(row => row.taskId === taskId);
@@ -283,7 +283,7 @@ export const completeSessionHistoryPagination = async (scope: TaskCacheScope, ti
   const parsed = parseSessionHistory(firstPage);
   if (completeEmpty && (parsed.items.length !== 0 || parsed.nextCursor === null)) throw new ApiError('protocol');
   const result = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if (!summaries.has(taskId) || !scope.canSaveHistoryAfterUncertain(ticket, taskId, token)) return { saved: false, changed: false };
+    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId)) || !scope.canSaveHistoryAfterUncertain(ticket, taskId, token)) return { saved: false, changed: false };
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return { saved: false, changed: false };
     const valid = validate(row, ticket, manifest);

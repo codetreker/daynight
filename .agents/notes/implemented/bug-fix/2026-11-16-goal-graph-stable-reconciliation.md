@@ -23,9 +23,11 @@ and admitted navigation stayed authoritative.
 The [ordinary-subtree retirement decision](../architecture/2026-11-24-web-subtask-lifecycle-retirement.md)
 replaces cross-history display retention. A shared cache may omit ordinary parent
 edges and cannot prove that an old Goal projection excludes newly hidden
-descendants. Trusted deletion or history change therefore withdraws old project
-presentation immediately. Still-admitted same-history refreshes continue to retain
-valid content, geometry and interaction state.
+descendants. The [targeted read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)
+now supersedes deletion-driven project withdrawal: trusted deletion retires the
+matching resource and pending reads, while authoritative sync updates the complete
+graph. Genuine history changes still withdraw old project presentation.
+Still-admitted same-history updates retain valid content, geometry and interaction state.
 
 Mutation and internal history reconciliation replace active reads silently;
 periodic checks remain deduplicated and explicit refresh retains its progress

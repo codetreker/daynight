@@ -56,13 +56,8 @@ describe('task mutation admission across authentication pauses', () => {
     if (response === '204') { writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve(); } else pending.reject(response === '410' ? new ApiError('server', 410, 'task_deleted') : new ApiError('network'));
     await flush(); expect(sessions.snapshot(project, task).mutation.phase).toBe(response === '204' ? 'confirmed' : response === '410' ? 'refused' : 'unknown'); expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
     reads.mockResolvedValue(restored); resume();
-    if (response === '204') {
-      await waitFor(() => expect(world.scope.canPreviewProject(project)).toBe(false));
-      await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('unknown'));
-      await admitTaskGraph(world.scope, graphFixture([restored]), { epoch: replacementEpoch, versionForTask: () => restored.version, propertiesForTask: () => restored.properties });
-      sessions.observe(project, task, world.node(project, task), true); sessions.reconcile(project, task);
-    }
     await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
+    expect(world.scope.canPreviewProject(project)).toBe(true); expect(world.scope.getAuthorizedProject(project)?.manifest.epoch).toBe(replacementEpoch);
     expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
   });
   it('reenters the authentication wait when a new pause begins after ready resolves', async () => {
@@ -102,7 +97,7 @@ describe('task mutation admission across authentication pauses', () => {
     expect(reads).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
     resume(); await flush(); expect(fetcher).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
   });
-  it('retains trusted deletion and immediate history retirement through account refresh', async () => {
+  it('retains trusted targeted deletion through account refresh', async () => {
     const sessions = createSessions(); await open(sessions); const received = deferred<void>();
     writes.mockImplementationOnce((_project, _task, _version, _removeDepends, signal, admission) => {
       admission.onDispatch?.(); admission.onWriteConfirmed?.(); received.resolve();

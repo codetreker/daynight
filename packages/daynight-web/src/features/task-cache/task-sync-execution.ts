@@ -2,7 +2,8 @@ import { ApiError, getTaskSync, isAbortError } from '../../api/client';
 import type { TaskSyncRead } from '../../api/types';
 import { taskCacheFailureDiagnostic } from './diagnostics';
 import { deriveTaskSyncBindings, deriveTaskSyncVersions, validateTaskSyncObservationBindings, type TaskExecutionBinding } from './execution-binding';
-import { TaskCacheLifecycleChanged, type CachedProject, type TaskCacheScope, type TaskSyncTicket } from './project-cache';
+import { TaskCacheLifecycleChanged } from './lifecycle';
+import type { CachedProject, TaskCacheScope, TaskSyncTicket } from './project-cache';
 
 type AppliedSync = {
   readonly history: 'current';
