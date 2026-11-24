@@ -52,7 +52,7 @@ const directoryBirthtime = (value: { birthtimeNs: bigint }): string => {
 const readDiscardReceipt = async (home: string, task: LocalTask, ticket: ControllerLaunchTicket): Promise<DiscardReceipt | undefined> => {
   const file = discardReceiptPath(home, ticket);
   let handle;
-  try { handle = await open(file, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+  try { handle = await open(file, process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
   let text: string;
   try {

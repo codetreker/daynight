@@ -27,7 +27,9 @@ const parseReceipt = (value: unknown, ticket: ControllerLaunchTicket): Unrelease
 export const readUnreleasedLaunch = async (home: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): Promise<UnreleasedLaunchReceipt | undefined> => {
   const file = unreleasedLaunchPath(home, ticket, storageStateDirectory);
   let handle;
-  try { handle = await open(file, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+  // Windows requires a writable handle for fsync; inability to open one leaves
+  // the receipt unconfirmed rather than treating visibility as durability.
+  try { handle = await open(file, process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if (missing(error)) return undefined; throw error; }
   try {
     const stat = await handle.stat();
