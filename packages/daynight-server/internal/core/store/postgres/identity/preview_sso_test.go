@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type previewFixture struct {
@@ -70,6 +71,30 @@ func (f previewFixture) authorize(t *testing.T) {
 		}
 		return d.SetPreviewAuthorization(t.Context(), f.login.ID, f.principal, f.code, stamp.Add(time.Minute))
 	})
+}
+
+func TestPreviewCredentialIdentifiesOneSession(t *testing.T) {
+	first := newPreviewFixture(t)
+	second := newPreviewFixtureInStore(t, first.db)
+	ctx := t.Context()
+	const bind = `UPDATE sessions SET preview_token_hash=$2 WHERE id=$1`
+	_, err := first.db.Pool.Exec(ctx, bind, first.session.ID, first.preview)
+	requireNoError(t, err)
+
+	_, err = first.db.Pool.Exec(ctx, bind, second.session.ID, first.preview)
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "23505" || cause.ConstraintName != "sessions_preview_token_hash" {
+		t.Fatalf("duplicate preview credential should fail the unique index: %v", err)
+	}
+
+	var firstBound, secondUnbound bool
+	requireNoError(t, first.db.Pool.QueryRow(ctx, `SELECT
+        (SELECT preview_token_hash=$2 FROM sessions WHERE id=$1),
+        (SELECT preview_token_hash IS NULL FROM sessions WHERE id=$3)`,
+		first.session.ID, first.preview, second.session.ID).Scan(&firstBound, &secondUnbound))
+	if !firstBound || !secondUnbound {
+		t.Fatalf("preview binding changed after rejection: firstBound=%v secondUnbound=%v", firstBound, secondUnbound)
+	}
 }
 
 func TestPreviewSSOPersistenceRollbackAndRevocation(t *testing.T) {

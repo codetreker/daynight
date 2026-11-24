@@ -1037,13 +1037,14 @@ cleanup, original command failures and recoverable directory cleanup. Their
 failure cases remain separate from the normal API flows and the portable
 `scripts/check.sh` entry.
 
-The server's checked-in PostgreSQL format snapshot is compared with the complete
-migration history during ordinary validation. Refresh it with every migration;
-the [snapshot maintenance guide](../packages/daynight-server/README.md#schema-snapshot-maintenance)
-owns the PostgreSQL 18 regeneration command and equivalence requirements.
-Runtime startup initializes an empty target namespace atomically from the
-snapshot and replays historical migrations for an existing namespace. Missing
-ledger metadata alone does not establish that the namespace is empty.
+Ordinary validation compares the PostgreSQL snapshot with the 099 baseline
+and all subsequent migrations. Refresh the snapshot with every migration
+using the PostgreSQL 18 command in the
+[snapshot maintenance guide](../packages/daynight-server/README.md#schema-snapshot-maintenance).
+Startup atomically initializes an empty namespace from the current snapshot.
+A nonempty namespace requires a valid original ledger through 099 before
+the runtime can apply later migrations. Earlier installations use the
+[099 upgrade procedure](../packages/daynight-server/README.md#upgrading-databases-older-than-099).
 
 The startup/shutdown suite's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 checks grant removal and new project denial while an admitted upload remains

@@ -114,9 +114,10 @@ packages/daynight-server/
             └── postgres/
                 ├── internal/
                 └── schema/
+                    ├── baseline-099.sql
+                    ├── legacy-checksums.tsv
+                    ├── current.sql
                     └── migrations/
-                        ├── 026/
-                        ├── 083/
                         └── 115/
 ```
 
@@ -628,11 +629,10 @@ Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 
 进程启动时创建 `pgxpool` 并验证数据库连接，然后从 pool 获取并固定一条专用
 `pgxpool.Conn`。该连接取得 PostgreSQL session-level advisory migration lock，
-并在同一物理连接上完成版本读取、校验和全部内嵌 SQL 迁移。当前迁移依次建立 project、
-task/依赖、属性、附件与身份/成员机制，并持久化任务起止、项目设置、设备授权及共享速率窗口；
-应用记录必须是内嵌迁移的有序前缀。锁必须跨越整个迁移
-序列，不能使用会在单个迁移提交时释放的 transaction-level advisory lock，也不能
-通过 pool 的任意连接分别取得和释放锁。
+并在同一物理连接上检查目标 schema、校验账本与执行迁移。空 schema 在单个事务内
+加载 `current.sql` 并写入完整的原始版本与校验和。非空 schema 的账本必须是完整
+历史的有序前缀，且至少到 099。升级只执行 100 起待应用的迁移。锁必须跨越整个
+迁移序列，由同一物理连接持有和释放；单个迁移的事务提交不释放该锁。
 
 每个迁移在专用连接上的事务中连同版本记录一起提交；失败回滚当前迁移并退出，
 保留已成功的早先版本。版本未知、迁移内容与已记录校验值不一致或锁获取超时都
@@ -640,25 +640,21 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 确认解锁，则关闭该物理连接使 session 结束，不能把可能持锁的连接归还 pool。清理
 使用独立且有界的 context，避免已取消的启动 context 跳过解锁。
 
-当前 snapshot 与完整迁移历史统一位于 `postgres/schema`：普通 SQL 在 `schema/migrations`，
-包含冻结 Go transform 的迁移各自保留版本目录与内部布局。仓库身份迁移 083 的源码在
-`schema/migrations/083/migrate.go`，SQL 在其 `migrations/083_project_repository_identity.sql`，
-独立 `register.go` 向根注册表暴露 SQL。冻结文件与 SQL 原文不随目录移动改写；只移动目录不改变
-checksum。Worker 标签筛选继续使用其已发布的迁移 082，版本及账本内容保持不变。
+`postgres/schema` 维护版本 099 的基线、原始历史校验和以及完整的当前快照。
+测试和快照生成从基线加载目录定义、初始行及序列状态，再重放 100 起的原始迁移。
+冻结 Go transform 的后续迁移维护各自的版本目录，例如 115。旧账本条目，包括
+082 的 Worker 标签筛选和 083 的仓库身份迁移，仍使用原版本和校验和。启动与
+备份、离线存储清点共用同一账本校验规则。
 
-迁移 083 在同一个事务中增加 nullable `repository_identity`、分批计算回填并检查存量重复。
-`migration083` 冻结 transform，运行时与迁移共用 `repositoryidentity/v1`，迁移 checksum
-包含两份实际源码及其中的版本诊断；版本诊断的变化也会改变 checksum。身份规范化和 SQL 算法
-保持原规则，未来身份语义变化必须用新迁移重算及复查冲突。回填不改地址原文、业务时间、
-版本、授权或历史。活跃项目按 Team 和身份检查重复；无法解析的记录保留 NULL，诊断含
-`migration_version=83`、`project_id` 和 `error_kind=project_repository_identity_unavailable`，
-不含地址或凭据。活跃 NULL 中同 Team 重复原文同样使迁移失败。冲突报告 Team 与 Project ID，
-并连同字段、回填和 ledger 整体回滚。空库初始化使用包含该列的当前 schema snapshot；
-恢复操作由[服务指南](../../packages/daynight-server/README.md#team-repository-uniqueness-upgrade)拥有。
+早于 099 的合法旧库由固定 099 Server 执行原始迁移后再切换。非空 schema 缺账本或
+账本为空时先诊断并确认其来源。新版在这些情形下停止且不写入；损坏账本须在升级
+前诊断和恢复。[服务端过渡说明](../../packages/daynight-server/README.md#upgrading-databases-older-than-099)
+拥有操作步骤及源版本。原 083 的冻结 transform 仍随过渡版本执行，其身份回填、
+冲突条件和恢复语义见[仓库唯一性升级](../../packages/daynight-server/README.md#team-repository-uniqueness-upgrade)。
 
 迁移 115 在 `task_properties` 的 SHARE 锁内冻结校验全部 Worker 行，逐值比较 Go 与 PostgreSQL 的认领键提取，再建立非唯一 active 部分索引并写账本。冻结源码和 DDL 纳入校验和；属性原文、Task 版本、时间及 Sync 围栏保持不变。空库 snapshot 含同一索引，当前清单继续运行原读路径。部署预算与账本/索引核对、同账本重启由[Worker 索引设计](worker-active-claim-index.md)拥有。
 
-服务启动期间只支持当前迁移序列中已有的版本，不在业务读取时判断或修补旧格式。
+旧格式的处理集中在启动迁移和过渡版本；业务读取以当前格式为准。
 所有迁移成功且数据库可用之后才开始接受 HTTP 请求；启动失败释放已创建的 pool
 及监听资源。没有依赖后台任务去补齐图状态或引用。
 

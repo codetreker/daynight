@@ -31,7 +31,7 @@ func TestCredentialScopeActivationProcessStartup(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := postgres.ReplaySchema107ForTest(ctx, pool); err != nil {
+	if err := postgres.ReplayHistoricalSchemaForTest(ctx, pool, 107); err != nil {
 		t.Fatalf("replay historical schema: %v", err)
 	}
 	var historical bool
@@ -46,7 +46,7 @@ func TestCredentialScopeActivationProcessStartup(t *testing.T) {
 		  (table_name='sessions' AND column_name='last_used_at')))`).Scan(&historical); err != nil || !historical {
 		t.Fatalf("historical schema and ledger: valid=%v err=%v", historical, err)
 	}
-	if err := postgres.ReplaySchema107ForTest(ctx, pool); err == nil {
+	if err := postgres.ReplayHistoricalSchemaForTest(ctx, pool, 107); err == nil {
 		t.Fatal("historical fixture accepted a nonempty schema")
 	}
 	user, team, tokenID, deviceID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()

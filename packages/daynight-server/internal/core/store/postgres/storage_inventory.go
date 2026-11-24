@@ -37,14 +37,14 @@ func OpenReadOnly(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, databaseFailure("connect", err)
 	}
-	count, err := appliedMigrations(ctx, connection, schemaMigrations)
+	ledger, err := readMigrationLedger(ctx, connection, schemaMigrations)
 	connection.Release()
-	if err == nil && count != len(schemaMigrations) {
+	if err == nil && ledger.applied != len(schemaMigrations) {
 		err = errors.New("backup database requires a different reader migration version")
 	}
 	if err != nil {
 		pool.Close()
-		return nil, databaseFailure("backup reader version", err)
+		return nil, migrationFailure("backup reader version", err)
 	}
 	return &Store{Pool: pool}, nil
 }

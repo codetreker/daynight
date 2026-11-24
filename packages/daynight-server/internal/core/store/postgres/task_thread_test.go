@@ -42,19 +42,11 @@ func appendStoredThread(t *testing.T, database *Store, taskID, userID, body stri
 	return message
 }
 
-func TestThreadMigrationDefaultsCompositeIdentityAndRestart(t *testing.T) {
-	ctx := context.Background()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:28]); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	database := &Store{Pool: pool}
+func TestThreadSchemaDefaultsAndCompositeIdentity(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	ctx := t.Context()
+	database := isolatedStore(t)
+	pool := database.Pool
 	var defaultValue, primary, order string
 	var unique, foreignKeys bool
 	if err := pool.QueryRow(ctx, `SELECT column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_thread_messages' AND column_name='message_id'`).Scan(&defaultValue); err != nil || defaultValue != "gen_random_uuid()" {

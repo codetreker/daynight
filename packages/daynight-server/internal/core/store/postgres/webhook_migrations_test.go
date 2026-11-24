@@ -7,13 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -24,28 +22,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
+func TestWebhookCaptureConstraints(t *testing.T) {
 	ctx := context.Background()
-	pool := emptyPool(t)
-	if len(schemaMigrations) < 50 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 {
-		t.Fatal("unexpected capture migration boundary")
-	}
-	before := schemaMigrations[:49]
-	if err := migrate(ctx, pool, before); err != nil {
-		t.Fatal(err)
-	}
-	var ledger string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledger); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:50]); err != nil {
-		t.Fatal(err)
-	}
-	var after string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version < 50`).Scan(&after); err != nil || after != ledger {
-		t.Fatalf("old migration ledger changed: %v", err)
-	}
-
+	pool := isolatedStore(t).Pool
 	event, project, task, endpoint, owner, delivery := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	_, err := pool.Exec(ctx, `INSERT INTO webhook_events
 		(id,event_type,wire_version,schema_version,source,subject,project_id,task_id,task_version,
@@ -109,21 +88,14 @@ func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
 
 // The immediately preceding deployed schema contains real rows before Open
 // upgrades it; both Open calls must preserve those rows and the old ledger.
-func TestWebhookUpgradePopulated47AndReopen(t *testing.T) {
+func TestWebhookPolicyAndPopulatedBaselineReopen(t *testing.T) {
 	ctx := context.Background()
 	url := scopedDatabaseURL(t)
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(schemaMigrations) < 51 || schemaMigrations[46].version != 47 || schemaMigrations[47].version != 48 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 || schemaMigrations[50].version != 51 {
-		pool.Close()
-		t.Fatal("unexpected migration history")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:47]); err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
+	bootstrapBaseline(t, pool)
 	user, team, project, task := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	for _, step := range []struct {
 		query string
@@ -155,8 +127,8 @@ func TestWebhookUpgradePopulated47AndReopen(t *testing.T) {
 		var ledger, title, description, name, role string
 		var version int64
 		var count int
-		err = db.Pool.QueryRow(ctx, `SELECT (SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<=47), (SELECT count(*) FROM schema_migrations),t.title,t.description,t.version,u.name,tm.role FROM tasks t JOIN project_ownership po ON po.project_id=t.project_id JOIN team_members tm ON tm.team_id=po.team_id JOIN users u ON u.id=tm.user_id WHERE t.id=$1 AND u.id=$2`, task, user).Scan(&ledger, &count, &title, &description, &version, &name, &role)
-		if err != nil || ledger != oldLedger || count != len(schemaMigrations) || title != "Existing task" || description != "Preserved text" || version != 9007199254740993 || name != "Existing user" || role != "admin" {
+		err = db.Pool.QueryRow(ctx, `SELECT (SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<=99), (SELECT count(*) FROM schema_migrations),t.title,t.description,t.version,u.name,tm.role FROM tasks t JOIN project_ownership po ON po.project_id=t.project_id JOIN team_members tm ON tm.team_id=po.team_id JOIN users u ON u.id=tm.user_id WHERE t.id=$1 AND u.id=$2`, task, user).Scan(&ledger, &count, &title, &description, &version, &name, &role)
+		if err != nil || ledger != oldLedger || count != 97+len(schemaMigrations) || title != "Existing task" || description != "Preserved text" || version != 9007199254740993 || name != "Existing user" || role != "admin" {
 			db.Close()
 			t.Fatalf("open %d changed data or ledger: count=%d title=%q version=%d err=%v", attempt, count, title, version, err)
 		}
@@ -231,37 +203,12 @@ func TestWebhookSchemaConstraints(t *testing.T) {
 	}
 }
 
-func TestWebhookRedeliveryMigrationPreservesReceiptsAndEnforcesResult(t *testing.T) {
+func TestWebhookRedeliveryResultConstraints(t *testing.T) {
 	ctx := context.Background()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:51]); err != nil {
-		t.Fatal(err)
-	}
+	pool := isolatedStore(t).Pool
 	owner, operation, actor, endpoint, delivery := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if _, err := pool.Exec(ctx, `INSERT INTO webhook_operations(owner_kind,owner_id,operation_id,actor_user_id,endpoint_id,kind,issued_at_lexeme,request_sha256,fingerprint_version,semantic_fingerprint,effect,config_version_after,destination_revision_after,recorded_at,expires_at) VALUES('personal',$1,$2,$3,$4,'endpoint.create','2026-11-07T10:00:00Z',decode(repeat('aa',32),'hex'),1,decode(repeat('bb',32),'hex'),'applied',1,1,now(),now()+interval '30 days')`, owner, operation, actor, endpoint); err != nil {
 		t.Fatal(err)
-	}
-	var before string
-	if err := pool.QueryRow(ctx, `SELECT row_to_json(o)::text FROM webhook_operations o WHERE operation_id=$1`, operation).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	var ledger string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledger); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var after, afterLedger string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(o)-'delivery_id'-'generation_after')::text FROM webhook_operations o WHERE operation_id=$1`, operation).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	var originalJSON string
-	if err := pool.QueryRow(ctx, `SELECT $1::jsonb::text`, before).Scan(&originalJSON); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<=51`).Scan(&afterLedger); err != nil || before == "" || after != originalJSON || afterLedger != ledger {
-		t.Fatalf("migration changed existing receipt or ledger: %v", err)
 	}
 	for _, query := range []string{
 		`UPDATE webhook_operations SET kind='delivery.redeliver' WHERE $1::uuid IS NOT NULL`,
@@ -279,17 +226,10 @@ func TestWebhookRedeliveryMigrationPreservesReceiptsAndEnforcesResult(t *testing
 	}
 }
 
-func TestWebhookEventActorMigrationKeepsLegacyEventsUnknown(t *testing.T) {
+func TestWebhookEventWithoutAnActorHasUnknownProvenance(t *testing.T) {
 	ctx := t.Context()
-	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 97 })
-	if index < 1 {
-		t.Fatal("webhook event actor migration is missing")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
-	db := &Store{Pool: pool}
+	db := isolatedStore(t)
+	pool := db.Pool
 	project := queryProject(t, db, 1)
 	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Legacy')`, queryID(10), project.ID)
 	mustQueryExec(t, db, `INSERT INTO webhook_events
@@ -297,9 +237,6 @@ func TestWebhookEventActorMigrationKeepsLegacyEventsUnknown(t *testing.T) {
  occurred_at,recorded_at,fact_codec_version,fact_bytes,fact_sha256,original_fact_bytes)
  VALUES($1,'task.paused',1,1,'urn:daynight:project:' || $2::uuid::text,'tasks/' || $3::uuid::text,$2,$3,17,
  '2026-01-01T10:00:00Z','2026-01-01T10:00:01Z',1,convert_to('{}','UTF8'),sha256(convert_to('{}','UTF8')),2)`, queryID(90), project.ID, queryID(10))
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
 	var nullable int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
  WHERE table_schema=current_schema() AND table_name='webhook_events'
@@ -319,17 +256,11 @@ func TestWebhookEventActorMigrationKeepsLegacyEventsUnknown(t *testing.T) {
 
 // The fixture is a real pre-retirement schema, with multiple affected
 // subscriptions on one endpoint and a separate unaffected endpoint.
-func stepWebhookMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
+func stepWebhookMigrationFixture(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	ctx := t.Context()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 119 })
-	if index < 1 {
-		t.Fatal("step webhook retirement migration is missing")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapBaseline(t, pool)
+	migrateTo(t, pool, 118)
 	db := &Store{Pool: pool}
 	mustQueryExec(t, db, `INSERT INTO webhook_endpoints
  (id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,client_key,created_at,updated_at)
@@ -349,7 +280,7 @@ func stepWebhookMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
         ($4,$9,'task.step_updated','2026-01-01',NULL),
         ($5,$10,'task.created','2026-01-01',NULL),
         ($6,$10,'task.step_updated','2026-01-01','2026-01-02')`, queryID(20), queryID(21), queryID(22), queryID(23), queryID(24), queryID(25), queryID(10), queryID(11), queryID(12), queryID(13))
-	return pool, index
+	return pool
 }
 
 func stepWebhookRows(t *testing.T, pool *pgxpool.Pool) string {
@@ -367,7 +298,7 @@ func stepWebhookRows(t *testing.T, pool *pgxpool.Pool) string {
 
 func TestRetireStepWebhookBindingsMigration(t *testing.T) {
 	ctx := t.Context()
-	pool, _ := stepWebhookMigrationFixture(t)
+	pool := stepWebhookMigrationFixture(t)
 	var before string
 	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array(
  (SELECT to_jsonb(e)-'config_version'-'updated_at' FROM webhook_endpoints e WHERE id=$1),
@@ -408,7 +339,7 @@ func TestRetireStepWebhookBindingsMigration(t *testing.T) {
 
 func TestRetireStepWebhookBindingsMigrationRollback(t *testing.T) {
 	ctx := t.Context()
-	pool, _ := stepWebhookMigrationFixture(t)
+	pool := stepWebhookMigrationFixture(t)
 	before := stepWebhookRows(t, pool)
 	if _, err := pool.Exec(ctx, `CREATE FUNCTION reject_step_retirement() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected endpoint failure'; END $$;
  CREATE TRIGGER reject_step_retirement BEFORE UPDATE ON webhook_endpoints FOR EACH ROW EXECUTE FUNCTION reject_step_retirement()`); err != nil {
@@ -429,7 +360,7 @@ func TestRetireStepWebhookBindingsMigrationRollback(t *testing.T) {
 	}
 }
 
-func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
+func TestWebhookSourceCaptureAfterBaselineUpgrade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	url := scopedDatabaseURL(t)
@@ -438,16 +369,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if len(schemaMigrations) < 51 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 || schemaMigrations[50].version != 51 {
-		t.Fatal("unexpected migration boundary")
-	}
-	if err = migrate(ctx, pool, schemaMigrations[:49]); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256([]byte(migration026.TransformSource()))
-	if fmt.Sprintf("%x", digest) != "2e3c075680247546672293a9d32fb66dee88983b3d0f601f5b4d3fe6144f5f05" {
-		t.Fatalf("migration 026 source changed: %x", digest)
-	}
+	bootstrapBaseline(t, pool)
 	user, session, team, project, oldTask := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	token := sha256.Sum256([]byte(session))
 	for _, q := range []struct {
@@ -467,8 +389,6 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		}
 	}
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
-	// This is the persisted T02 shape. Current management code also writes the
-	// T04 wait table, which does not exist on the 49 schema under test.
 	endpoint, key, originalSubscription, originalBinding := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	const originalEpoch int64 = 1
 	destination := []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`)
@@ -489,9 +409,9 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	snapshot := func() string {
 		var value string
 		err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
- 'ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<=49),
- 'task',(SELECT to_jsonb(t) FROM tasks t WHERE id=$1),
- 'endpoints',(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM webhook_endpoints e),
+ 'ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<=99),
+ 'task',(SELECT to_jsonb(t)-'ancestor_deleted_at' FROM tasks t WHERE id=$1),
+ 'endpoints',(SELECT jsonb_agg(to_jsonb(e)-'client_key' ORDER BY id) FROM webhook_endpoints e),
  'keys',(SELECT jsonb_agg(to_jsonb(k) ORDER BY id) FROM webhook_signing_keys k),
  'subscriptions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM webhook_subscriptions s),
  'bindings',(SELECT jsonb_agg(to_jsonb(b) ORDER BY id) FROM webhook_bindings b),
@@ -502,15 +422,15 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		return value
 	}
 	before := snapshot()
-	if err = migrate(ctx, pool, schemaMigrations[:50]); err != nil {
+	if err = migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	upgraded := &Store{Pool: pool}
 	if after := snapshot(); after != before {
-		t.Fatalf("T02 data or old ledger changed: before=%s after=%s", before, after)
+		t.Fatalf("baseline data or old ledger changed: before=%s after=%s", before, after)
 	}
 	var count int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 50 {
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 97+len(schemaMigrations) {
 		t.Fatalf("migration count=%d err=%v", count, err)
 	}
 	for _, index := range []string{"webhook_deliveries_due", "webhook_deliveries_fifo", "webhook_deliveries_event", "webhook_deliveries_endpoint_revision", "webhook_deliveries_metadata_expiry", "webhook_deliveries_purging", "webhook_delivery_matches_subscription", "webhook_delivery_matches_binding"} {
@@ -523,17 +443,6 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	var defaultExpr string
 	if err = pool.QueryRow(ctx, `SELECT pg_get_expr(adbin,adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='webhook_deliveries'::regclass AND a.attname='queue_order'`).Scan(&defaultExpr); err != nil || !strings.Contains(defaultExpr, "webhook_delivery_queue_order_seq") {
 		t.Fatalf("queue default %q: %v", defaultExpr, err)
-	}
-	// Current Task DAO reads typed columns, dependencies and tag references, and
-	// capture writes event actors; supply their structural shape while keeping
-	// the webhook ledger at version 50 for the 50-to-51 proof.
-	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid; ALTER TABLE tasks ADD COLUMN ancestor_deleted_at timestamptz`); err != nil {
-		t.Fatal(err)
-	}
-	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL, dependencyTypesSQL, webhookEventActorSQL} {
-		if _, err = pool.Exec(ctx, schema); err != nil {
-			t.Fatal(err)
-		}
 	}
 	tasks := taskservice.NewTasks(upgraded, &webhookservice.Capturer{})
 	status := model.TaskTodo
@@ -574,19 +483,5 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 			t.Fatalf("original match digest differs: %x", matchHash)
 		}
 		previous = queue
-	}
-	// Advance a populated 50 schema to 51 and prove the new wait is backfilled
-	// without altering the capture rows or any existing ledger entries.
-	var before51 string
-	if err = pool.QueryRow(ctx, `SELECT jsonb_build_object('ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM webhook_events e),'deliveries',(SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM webhook_deliveries d),'matches',(SELECT jsonb_agg(to_jsonb(m) ORDER BY delivery_id,subscription_id,binding_id) FROM webhook_delivery_matches m))::text`).Scan(&before51); err != nil {
-		t.Fatal(err)
-	}
-	if err = migrate(ctx, pool, schemaMigrations[:51]); err != nil {
-		t.Fatal(err)
-	}
-	var after51 string
-	var waitCount int
-	if err = pool.QueryRow(ctx, `SELECT jsonb_build_object('ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<=50),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM webhook_events e),'deliveries',(SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM webhook_deliveries d),'matches',(SELECT jsonb_agg(to_jsonb(m) ORDER BY delivery_id,subscription_id,binding_id) FROM webhook_delivery_matches m))::text,(SELECT count(*) FROM webhook_endpoint_waits WHERE endpoint_id=$1 AND destination_revision=1 AND owner_kind='personal' AND owner_id=$2 AND not_before IS NULL)`, endpoint, user).Scan(&after51, &waitCount); err != nil || before51 != after51 || waitCount != 1 {
-		t.Fatalf("51 upgrade changed capture or old ledger: wait=%d err=%v", waitCount, err)
 	}
 }

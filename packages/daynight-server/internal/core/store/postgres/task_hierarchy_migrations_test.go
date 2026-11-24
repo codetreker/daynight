@@ -20,11 +20,11 @@ func ancestorVisibilityMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
 		t.Fatal("ancestor visibility migration must follow the actual previous ledger")
 	}
 	pool := emptyPool(t)
-	if err := migrate(t.Context(), pool, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapBaseline(t, pool)
+	migrateTo(t, pool, 122)
 	db := &Store{Pool: pool}
-	first, second := projectBeforeSettings(t, db, 1), projectBeforeSettings(t, db, 2)
+	first, second := queryID(1), queryID(2)
+	mustQueryExec(t, db, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'First','https://example.test/first.git'),($2,'Second','https://example.test/second.git')`, first, second)
 	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,parent_id,title,status,version,created_at,updated_at,deleted_at) VALUES
  ($1,$8,'goal',NULL,'Open Goal','todo',3,'2026-01-01','2026-01-02',NULL),
  ($2,$8,'goal',NULL,'Deleted Goal','done',9,'2026-01-01','2026-01-03','2026-01-03'),
@@ -33,10 +33,10 @@ func ancestorVisibilityMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
  ($5,$8,'task',$2,'Inherited hidden child','done',9007199254740993,'2026-01-01','2026-01-02',NULL),
  ($6,$8,'task',$2,'Physically deleted child','done',11,'2026-01-01','2026-01-02','2026-01-02'),
  ($7,$9,'goal',NULL,'Other project Goal','todo',13,'2026-01-01','2026-01-02',NULL)`,
-		queryID(10), queryID(11), queryID(12), queryID(13), queryID(14), queryID(15), queryID(16), first.ID, second.ID)
+		queryID(10), queryID(11), queryID(12), queryID(13), queryID(14), queryID(15), queryID(16), first, second)
 	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'retained','{"proof":true}')`, queryID(14))
-	mustQueryExec(t, db, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($2,$1,'proof.txt','text/plain',7)`, queryID(14), first.ID)
-	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($2,$1,$3,false)`, queryID(14), first.ID, queryID(12))
+	mustQueryExec(t, db, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($2,$1,'proof.txt','text/plain',7)`, queryID(14), first)
+	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($2,$1,$3,false)`, queryID(14), first, queryID(12))
 	return pool, index
 }
 
@@ -219,230 +219,4 @@ func TestTaskAncestorVisibilityMigrationLockWaitCancellation(t *testing.T) {
 		t.Fatalf("migration did not recover after the lock was released: %v", err)
 	}
 	assertMigrationPoolReusable(t, instance)
-}
-
-func TestTaskTypeParentMigrationPreservesResources(t *testing.T) {
-	ctx := context.Background()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:60]); err != nil {
-		t.Fatal(err)
-	}
-	db := &Store{Pool: pool}
-	project := projectBeforeSettings(t, db, 1)
-	first, second := queryID(10), queryID(11)
-	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title,description,status,version) VALUES($1,$3,'First','material','done',9),($2,$3,'Second','other','todo',3)`, first, second, project.ID)
-	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'custom','{"retained":true}')`, first)
-	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, second, first)
-	mustQueryExec(t, db, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'evidence.txt','text/plain',7)`, project.ID, first)
-	snapshot := func(typed bool) string {
-		t.Helper()
-		taskExpr := `to_jsonb(t) - 'ancestor_deleted_at'`
-		if typed {
-			taskExpr += ` - 'type' - 'parent_id'`
-		}
-		dependencyExpr := `to_jsonb(d)`
-		if typed {
-			dependencyExpr += ` - 'dependency_type' - 'goal_edge_id'`
-		}
-		var result string
-		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(`+taskExpr+` ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d), 'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY task_id,path) FROM task_attachments a))::text`).Scan(&result)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return result
-	}
-	before := snapshot(false)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	if after := snapshot(true); after != before {
-		t.Fatalf("migration changed existing resources: before=%s after=%s", before, after)
-	}
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE type='task' AND parent_id IS NULL`).Scan(&count); err != nil || count != 2 {
-		t.Fatalf("old rows not task/null: count=%d err=%v", count, err)
-	}
-	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Default')`, queryID(12), project.ID)
-	var typ string
-	var parent *string
-	if err := pool.QueryRow(ctx, `SELECT type,parent_id::text FROM tasks WHERE id=$1`, queryID(12)).Scan(&typ, &parent); err != nil || typ != "task" || parent != nil {
-		t.Fatalf("new defaults: type=%q parent=%v err=%v", typ, parent, err)
-	}
-	for _, name := range []string{"tasks_project_type_created_id", "tasks_project_parent_created_id"} {
-		var exists bool
-		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil || !exists {
-			t.Fatalf("missing index %s: %v", name, err)
-		}
-	}
-}
-
-func TestDependencyTypesMigrationPreservesLegacyWrites(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 90 })
-	if index < 0 {
-		t.Fatal("dependency type migration missing")
-	}
-	old, current := schemaMigrations[:index], schemaMigrations[:index+1]
-	if err := migrate(ctx, pool, old); err != nil {
-		t.Fatal(err)
-	}
-	ledger := func() string {
-		t.Helper()
-		var value string
-		if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		return value
-	}
-	indexes := func() string {
-		t.Helper()
-		var value string
-		if err := pool.QueryRow(ctx, `SELECT string_agg(indexdef, E'\n' ORDER BY indexname) FROM pg_indexes WHERE schemaname=current_schema() AND tablename='task_dependencies'`).Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		return value
-	}
-	oldLedger, oldIndexes := ledger(), indexes()
-	project, first, second, third, fourth := queryID(1), queryID(2), queryID(3), queryID(4), queryID(5)
-	if _, err := pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project, second, first); err != nil {
-		t.Fatal(err)
-	}
-
-	// The old writer holds its transaction open while the migration requests the table lock.
-	writer, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer writer.Rollback(context.Background())
-	if _, err := writer.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,false)`, project, third, first); err != nil {
-		t.Fatal(err)
-	}
-	migrationPool, application := migrationInstance(t, pool)
-	result := make(chan error, 1)
-	go func() { result <- migrate(ctx, migrationPool, current) }()
-	waitForMigration(t, func() bool {
-		var waiting bool
-		return pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a USING(pid)
-			WHERE a.application_name=$1 AND l.relation='task_dependencies'::regclass AND NOT l.granted)`, application).Scan(&waiting) == nil && waiting
-	})
-	if err := writer.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-
-	var priorLedger string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version < 90`).Scan(&priorLedger); err != nil || priorLedger != oldLedger {
-		t.Fatalf("prior migration ledger changed: before=%s after=%s err=%v", oldLedger, priorLedger, err)
-	}
-	if got := indexes(); got != oldIndexes {
-		t.Fatalf("legacy indexes changed: before=%s after=%s", oldIndexes, got)
-	}
-	// The old INSERT still supplies only the original columns after migration.
-	if _, err := pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project, fourth, first); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := pool.Query(ctx, `SELECT task_id::text,depends_on_task_id::text,external,dependency_type,goal_edge_id::text FROM task_dependencies WHERE project_id=$1 ORDER BY task_id`, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for _, want := range []struct {
-		id       string
-		external bool
-	}{{second, true}, {third, false}, {fourth, true}} {
-		if !rows.Next() {
-			t.Fatalf("missing legacy edge for %s: %v", want.id, rows.Err())
-		}
-		var id, predecessor, typ string
-		var external bool
-		var edgeID *string
-		if err := rows.Scan(&id, &predecessor, &external, &typ, &edgeID); err != nil {
-			t.Fatal(err)
-		}
-		if id != want.id || predecessor != first || external != want.external || typ != "task" || edgeID != nil {
-			t.Fatalf("unexpected edge: %s %s external=%v type=%s edgeID=%v", id, predecessor, external, typ, edgeID)
-		}
-	}
-	if rows.Next() || rows.Err() != nil {
-		t.Fatalf("unexpected extra edge or read error: %v", rows.Err())
-	}
-	rows.Close()
-
-	newLedger := ledger()
-	if err := migrate(ctx, pool, old); err == nil || !strings.Contains(err.Error(), "not an ordered prefix") {
-		t.Fatalf("old migration prefix accepted new ledger: %v", err)
-	}
-	if err := migrate(ctx, pool, current); err != nil {
-		t.Fatalf("repeated migration: %v", err)
-	}
-	if got := ledger(); got != newLedger {
-		t.Fatalf("rejection or repeated migration changed ledger: before=%s after=%s", newLedger, got)
-	}
-	assertMigrationPoolReusable(t, migrationPool)
-}
-
-func TestGoalDependencyMigrationFailurePreservesFirstStageAndResumes(t *testing.T) {
-	ctx := context.Background()
-	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 91 })
-	if index < 1 || schemaMigrations[index-1].version != 90 {
-		t.Fatal("goal dependency migrations are not consecutive")
-	}
-	first, both := schemaMigrations[:index], schemaMigrations[:index+1]
-	if err := migrate(ctx, pool, first); err != nil {
-		t.Fatal(err)
-	}
-	project, source, target := queryID(1), queryID(2), queryID(3)
-	if _, err := pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project, source, target); err != nil {
-		t.Fatal(err)
-	}
-	ledger := func() string {
-		t.Helper()
-		var result string
-		if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&result); err != nil {
-			t.Fatal(err)
-		}
-		return result
-	}
-	prior := ledger()
-	bad := append([]migration(nil), both...)
-	bad[index].sql += `; SELECT 1 / 0`
-	var failure *pgconn.PgError
-	if err := migrate(ctx, pool, bad); !errors.As(err, &failure) || failure.Code != "22012" {
-		t.Fatalf("injected second migration failure: %v", err)
-	}
-	var relation, reverse, identity *string
-	var typ string
-	var edgeID *string
-	err := pool.QueryRow(ctx, `SELECT to_regclass('goal_dependency_revisions')::text,to_regclass('goal_dependencies_predecessor')::text,to_regclass('goal_dependencies_edge_id')::text,dependency_type,goal_edge_id::text FROM task_dependencies WHERE project_id=$1 AND task_id=$2`, project, source).Scan(&relation, &reverse, &identity, &typ, &edgeID)
-	if err != nil || relation != nil || reverse != nil || identity != nil || typ != "task" || edgeID != nil || ledger() != prior {
-		t.Fatalf("partial second migration or lost first: table=%v reverse=%v id=%v type=%s edge=%v err=%v", relation, reverse, identity, typ, edgeID, err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project, queryID(4), target); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, both); err != nil {
-		t.Fatalf("resume actual migration: %v", err)
-	}
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies WHERE dependency_type='task' AND goal_edge_id IS NULL`).Scan(&count); err != nil || count != 2 {
-		t.Fatalf("old writes lost: count=%d err=%v", count, err)
-	}
-	if err := migrate(ctx, pool, first); err == nil || !strings.Contains(err.Error(), "not an ordered prefix") {
-		t.Fatalf("old prefix accepted new ledger: %v", err)
-	}
-	var oldLedger string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<=90`).Scan(&oldLedger); err != nil || oldLedger != prior {
-		t.Fatalf("resume changed first-stage ledger: %v", err)
-	}
-	assertMigrationPoolReusable(t, pool)
 }

@@ -186,23 +186,21 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	}
 }
 
-func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
+func TestTaskSyncEpochSurvivesBaselineUpgradeAndReplay(t *testing.T) {
 	pool := emptyPool(t)
 	ctx := context.Background()
-	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, "INSERT INTO projects(id,name,repo_url) VALUES ($1,'Existing','repo')", queryID(1)); err != nil {
-		t.Fatal(err)
-	}
-	if err := seedHistoricalProjectAdmin(ctx, &Store{Pool: pool}, queryID(1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, "INSERT INTO tasks(id,project_id,title) VALUES ($1,$2,'Existing task')", queryID(11), queryID(1)); err != nil {
+	bootstrapBaseline(t, pool)
+	s := &Store{Pool: pool}
+	project := queryProject(t, s, 1)
+	if _, err := pool.Exec(ctx, "INSERT INTO tasks(id,project_id,title) VALUES ($1,$2,'Existing task')", queryID(11), project.ID); err != nil {
 		t.Fatal(err)
 	}
 	var before time.Time
-	if err := pool.QueryRow(ctx, "SELECT updated_at FROM tasks").Scan(&before); err != nil {
+	var original string
+	if err := pool.QueryRow(ctx, "SELECT updated_at FROM tasks WHERE id=$1", queryID(11)).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&original); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
@@ -210,23 +208,11 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	}
 	var migrated time.Time
 	var version int64
-	if err := pool.QueryRow(ctx, "SELECT updated_at, version FROM tasks").Scan(&migrated, &version); err != nil || migrated != before || version != 1 {
+	if err := pool.QueryRow(ctx, "SELECT updated_at, version FROM tasks WHERE id=$1", queryID(11)).Scan(&migrated, &version); err != nil || migrated != before || version != 1 {
 		t.Fatalf("migration rewrote task signal: %v %d %v", migrated, version, err)
 	}
-	s := &Store{Pool: pool}
-	var original string
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		var err error
-		original, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if original == "" {
-		t.Fatal("existing project has no epoch")
-	}
 	other := queryProject(t, s, 2)
-	if err := writeProjectForTest(s, ctx, queryID(1), func(tx ProjectWriteScope) error {
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
 		_, err := tx.TaskDAO().UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: model.TaskTodo})
 		return err
 	}); err != nil {
@@ -236,7 +222,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		current, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
+		current, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, project.ID)
 		if err != nil {
 			return err
 		}
@@ -263,7 +249,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 		t.Fatal("window index column order is not (project_id, updated_at, id)")
 	}
 	var after time.Time
-	if err := pool.QueryRow(ctx, "SELECT updated_at FROM tasks").Scan(&after); err != nil || !after.After(before) {
+	if err := pool.QueryRow(ctx, "SELECT updated_at FROM tasks WHERE id=$1", queryID(11)).Scan(&after); err != nil || !after.After(before) {
 		t.Fatalf("normal task mutation clock lost: %v", err)
 	}
 }

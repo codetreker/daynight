@@ -8,19 +8,21 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os/exec"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
-	for _, scenario := range []string{"unknown history", "migration SQL failure", "snapshot SQL failure"} {
+	for _, scenario := range []string{"unknown history", "migration bridge required", "migration SQL failure", "snapshot SQL failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			values := processAPIEnvironment(t)
 			adminURL := values["DAYNIGHT_DATABASE_URL"]
@@ -47,7 +49,10 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				}
 			}()
 			var unknownVersion int64
-			if scenario == "unknown history" {
+			var priorLedger string
+			wantDiagnostic := "database migrate failed"
+			switch scenario {
+			case "unknown history":
 				initial := startPersistenceProcess(t, values)
 				if err := initial.stop(); err != nil {
 					t.Fatalf("initial process stop: %v", err)
@@ -58,11 +63,28 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 					SELECT max(version)+1,repeat('0',64) FROM schema_migrations RETURNING version`).Scan(&unknownVersion); err != nil {
 					t.Fatal(err)
 				}
-			} else if scenario == "migration SQL failure" {
-				if _, err := observer.Exec(ctx, "CREATE TABLE tasks (private_migration_marker boolean)"); err != nil {
+				wantDiagnostic = fmt.Sprintf("database migrate (migration version %d is not an ordered prefix) failed", unknownVersion)
+			case "migration bridge required":
+				if _, err := observer.Exec(ctx, "CREATE TABLE private_migration_marker (id bigint)"); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+				wantDiagnostic = "database migrate (migration ledger is missing or empty; verify the database's history before using the version-99 migration bridge) failed"
+			case "migration SQL failure":
+				pool, err := pgxpool.New(ctx, adminURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer pool.Close()
+				if err := postgres.ReplayHistoricalSchemaForTest(ctx, pool, 99); err != nil {
+					t.Fatal(err)
+				}
+				if err := observer.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&priorLedger); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := observer.Exec(ctx, "CREATE TABLE assistant_task_item_closures (private_migration_marker boolean)"); err != nil {
+					t.Fatal(err)
+				}
+			case "snapshot SQL failure":
 				query.Set("default_transaction_read_only", "on")
 				parsed.RawQuery = query.Encode()
 				values["DAYNIGHT_DATABASE_URL"] = parsed.String()
@@ -103,7 +125,7 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 					t.Fatalf("invalid startup diagnostic JSON: %v", err)
 				}
-				startup = startup || entry.Phase == "startup" && entry.Diagnostic == "database migrate failed"
+				startup = startup || entry.Phase == "startup" && entry.Diagnostic == wantDiagnostic
 				listening = listening || entry.Phase == "listening"
 			}
 			if err := scanner.Err(); err != nil || !startup || listening {
@@ -131,15 +153,32 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 			if err := listener.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "unknown history" {
+			switch scenario {
+			case "unknown history":
 				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version=$1", unknownVersion)
-			} else if scenario == "migration SQL failure" {
-				var versions []int64
-				if err := observer.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1}) {
-					t.Fatalf("failed migration changed the committed prefix: %v %v", versions, err)
+			case "migration bridge required":
+				var objects int
+				var original, noLedger bool
+				if err := observer.QueryRow(ctx, `SELECT count(*),
+					to_regclass('private_migration_marker') IS NOT NULL, to_regclass('schema_migrations') IS NULL
+					FROM pg_depend
+					WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&objects, &original, &noLedger); err != nil || objects != 1 || !original || !noLedger {
+					t.Fatalf("bridge refusal changed the namespace: objects=%d original=%t no ledger=%t err=%v", objects, original, noLedger, err)
 				}
-				_, err = observer.Exec(ctx, "DROP TABLE tasks")
-			} else {
+				_, err = observer.Exec(ctx, "DROP TABLE private_migration_marker")
+			case "migration SQL failure":
+				var latest int64
+				var prefixIntact, botRecovery, openedAt bool
+				if err := observer.QueryRow(ctx, `SELECT max(version),
+					(jsonb_agg(to_jsonb(m) ORDER BY version) FILTER (WHERE version <= 99))::text = $1,
+					to_regclass('bot_recovery') IS NOT NULL,
+					EXISTS (SELECT FROM information_schema.columns WHERE table_schema=current_schema()
+						AND table_name='assistant_task_items' AND column_name='opened_at')
+					FROM schema_migrations m`, priorLedger).Scan(&latest, &prefixIntact, &botRecovery, &openedAt); err != nil || latest != 100 || !prefixIntact || !botRecovery || openedAt {
+					t.Fatalf("failed migration did not preserve the committed prefix: latest=%d prefix=%t bot recovery=%t opened_at=%t err=%v", latest, prefixIntact, botRecovery, openedAt, err)
+				}
+				_, err = observer.Exec(ctx, "DROP TABLE assistant_task_item_closures")
+			case "snapshot SQL failure":
 				var objects int
 				if err := observer.QueryRow(ctx, `SELECT count(*) FROM pg_depend
 					WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&objects); err != nil || objects != 0 {
@@ -153,6 +192,14 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				t.Fatal(err)
 			}
 			recovered := startPersistenceProcess(t, values)
+			if scenario == "migration SQL failure" {
+				var applied bool
+				if err := observer.QueryRow(ctx, `SELECT EXISTS (SELECT FROM schema_migrations WHERE version=101)
+					AND EXISTS (SELECT FROM information_schema.columns WHERE table_schema=current_schema()
+						AND table_name='assistant_task_items' AND column_name='opened_at')`).Scan(&applied); err != nil || !applied {
+					t.Fatalf("recovered process did not complete migration 101: applied=%t err=%v", applied, err)
+				}
+			}
 			if err := recovered.stop(); err != nil {
 				t.Fatalf("recovered service did not stop cleanly: %v", err)
 			}

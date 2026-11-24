@@ -27,15 +27,16 @@ for the operation. Driver failures are mapped to neutral facts while preserving
 their original causes; cleanup failures and unknown completion remain distinct
 from business refusals.
 
-Historical SQL and checksum algorithms remain unchanged. Migrations with frozen
-Go transforms retain dedicated leaf packages; separate registration files expose
-their SQL and transforms without changing embedded bytes. The current snapshot
-and migration history share the `postgres/schema` entry point. Ordinary SQL is
-in `schema/migrations`; migrations 026 and 083 retain their independent packages
-and internal layouts in `schema/migrations/026` and `schema/migrations/083`. The
-[Team repository uniqueness decision](2026-11-18-team-project-repository-uniqueness.md)
-owns migration 083's domain rules and frozen identity source. The published Worker
-tag-filter migration keeps version 082 and its original checksum.
+The current snapshot and migration artifacts share the `postgres/schema` entry
+point. The original relocation brought 026 and 083 into dedicated leaf packages
+without changing their SQL or transform bytes and preserved Worker tag-filter
+migration 082's published identity. The
+[099 baseline decision](2026-11-24-postgres-migration-baseline.md)
+replaces that executable prefix with a baseline and the original checksums.
+Subsequent SQL stays in `schema/migrations`; migrations with frozen Go transforms
+retain dedicated leaf packages whose registration preserves the exact bytes.
+The [Team repository uniqueness decision](2026-11-18-team-project-repository-uniqueness.md)
+owns migration 083's rules and frozen identity source.
 
 ## Alternatives
 
@@ -56,7 +57,6 @@ different directories.
 Runtime and business consumers depend on contracts, while backend code owns SQL,
 scans, connection management and migration registration. Splitting DAOs requires
 explicit composition of their shared transaction and preserves existing lock
-ordering. The frozen migration source carries its original package declaration
-because its exact bytes participate in the installed checksum. Moving the
-ordinary SQL and frozen package without rewriting them preserves ledger
-checksums and upgrade behavior while bringing the format artifacts together.
+ordering. Frozen transform source carries its original package declaration because its
+exact bytes participate in the installed checksum. At the original relocation,
+preserving the bytes let existing ledgers validate without a database change.
