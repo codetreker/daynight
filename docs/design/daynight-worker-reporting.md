@@ -80,7 +80,7 @@ OS、内存和 CPU 使用 Node OS API。CPU 每次先读取逻辑处理器 times
 
 命令 runner 用 `OwnedCommandCleanupError` 标记该次命令曾未能确认清理，`hasOwnedCommandCleanupFailure` 保留这一历史分类。私有 `WeakMap` 将错误关联到原始 `ChildProcess` 既有 `close` 监听的状态；确认依赖该命令对象及其输出流关闭，不使用可复用 PID、全局 Provider 标记或另一探测的结果。普通 runner 仅在等待 `close` 超时且终止调用未失败时，允许晚到 `close` 确认。只有 `exit`、leader 消失、终止失败后 `close`，以及其它清理 owner 或旧构造产生的无确认句柄错误，都不能据此解除阻塞。
 
-Linux 进程身份观察的实际操作预算耗尽使用可验证的私有证据关联原始错误及其包装；结算时重新核对错误树，不能把同一截止时刻出现的独立失败视为超时。执行资源的原 owner 只有在原进程组停止、child 与输出 join 以及 journal 的停止记录持久化后才确认清理；观察超时与其它失败混合时保留完整诊断链。
+原命令 owner 清理时，Linux 进程身份观察的实际操作预算耗尽使用可验证的私有证据关联原始错误及其包装；结算时重新核对错误树，不能把同一截止时刻出现的独立失败视为超时。该清理路径保留已经观察到的身份冲突与独立失败，即使进程随后消失；其它 Controller 观察保留其原有的进程消失处理。原 child 已关闭时，owner 使用原 child 句柄确认退出，再检查原进程组，而不对已退出的 leader 发起新的身份采样。执行资源的原 owner 只有在原进程组停止、child 与输出 join 以及 journal 的停止记录持久化后才确认清理；观察超时与其它失败混合时保留完整诊断链。
 
 `hasUnconfirmedOwnedCommandCleanup` 单独查询当前责任，递归检查 `Error.cause` 和 `AggregateError.errors`；任何一项尚未确认，整个对应探测仍受屏障保护。普通聚合错误没有清理标记时不产生清理屏障。`versions` 为 Codex/Copilot 分别保留原失败及 `cleanupUncertain`，未确认时继续返回 unavailable，不因 60 秒缓存到期启动替代进程。原责任全部确认后，下一轮正常采集先删除该工具的旧失败缓存，再执行版本命令；新探测结果使用本轮 `checkedAt`，成功才发布新版本，失败保留实际错误；未确认时返回的 unavailable 也带本轮检查时间，该时间不是成功证据。确认事件本身不产生成功报告、额外调度、轮询进程、重复监听或更长预算。历史取舍与不能以时间或缓存替代清理证据的原因见[探测恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-06-native-probe-cleanup-recovery.md)。
 

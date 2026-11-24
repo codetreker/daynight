@@ -55,6 +55,9 @@ the actual bounded operation. The original owner binds that evidence to its
 cleanup error and checks the retained error tree again at settlement. A deadline
 coincident with an independent failure is not itself evidence that the failure
 is a wait; changing the error or its members invalidates the classification.
+The owner can use its original joined child to establish the leader's exit,
+then still checks the process group and joins output before saving closure. This
+avoids re-observing a reaped leader without treating PID disappearance as proof.
 
 Worker shutdown joins the original reporter, reconciles the original owner, and
 stops that same reporter again. It excludes the first error from fatal shutdown

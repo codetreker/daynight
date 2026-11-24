@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { expect, it, vi } from "vitest";
+import { createOperation, OperationError, type Operation } from "../../../src/api/operation.js";
 import type { WorkerTelemetry } from "../../../src/api/types.js";
 import { confirmControllerProcessesStopped, ControllerProcessWaitDeadlineError } from "../../../src/commands/controller/process-proof.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
@@ -20,14 +20,15 @@ const telemetry: WorkerTelemetry = {
   versions: { daynight: "0.26.1", codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
 };
 
-it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal failure"] as const)(
+it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal failure", "late output failure", "late reporter cancellation", "late unrelated cancellation", "late tampered cancellation"] as const)(
   "settles a real observation deadline only with complete original cleanup: %s", async scenario => {
     const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/owned-observation");
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, "run-")), bin = path.join(directory, "bin");
     await mkdir(bin);
-    const marker = path.join(directory, "slow-ps"), ps = path.join(bin, "ps"), oldPath = process.env.PATH, oldMarker = process.env.DAYNIGHT_TEST_SLOW_PS;
-    await writeFile(ps, `#!${process.execPath}\nconst fs=require('node:fs'), cp=require('node:child_process');\nif(process.argv.includes('-p') && fs.existsSync(process.env.DAYNIGHT_TEST_SLOW_PS)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1800);\nconst result=cp.spawnSync('/usr/bin/ps',process.argv.slice(2),{stdio:'inherit'});process.exit(result.status??1);\n`);
+    const marker = path.join(directory, "slow-ps"), lateOutput = path.join(directory, "late-output"), lateRelease = path.join(directory, "late-release"), ps = path.join(bin, "ps"), oldPath = process.env.PATH, oldMarker = process.env.DAYNIGHT_TEST_SLOW_PS;
+    const lateCancellation = scenario === "late reporter cancellation" || scenario === "late unrelated cancellation" || scenario === "late tampered cancellation";
+    await writeFile(ps, `#!${process.execPath}\nconst fs=require('node:fs'), cp=require('node:child_process');\nif(process.argv.includes('-p') && fs.existsSync(process.env.DAYNIGHT_TEST_SLOW_PS)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${lateCancellation ? 6500 : 1800});\nconst result=cp.spawnSync('/usr/bin/ps',process.argv.slice(2),{stdio:'inherit'});process.exit(result.status??1);\n`);
     await chmod(ps, 0o700);
     const journal = await openExecutionResourceJournal({ directory: path.join(directory, "journal"), identity: { serverOrigin: "https://example.test", userId: randomUUID(), workerId: randomUUID() } });
     process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ""}`;
@@ -41,41 +42,70 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
     };
     let output = "", issue: unknown, resourceId: string | undefined;
     const outputGate = Promise.withResolvers<void>();
+    let lateConsumed = false;
+    let activeOperation: Operation | undefined;
+    const releaseCollector = Promise.withResolvers<void>();
+    const unrelated = new AbortController();
     const collected = Promise.withResolvers<void>();
     const controller = new AbortController();
-    const reporter = createWorkerReporter({ signal: controller.signal, collect: async () => {
-      const operation = createOperation({ limits: { totalMs: 5000, requestMs: 5000 } });
-      const source = `const fs=require('node:fs');process.stdout.write('original output');setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'armed'),3000);process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`;
+    const reporter = createWorkerReporter({ signal: controller.signal, collect: async reporterOperation => {
+      const operation = createOperation({ ...(lateCancellation ? { signal: scenario === "late unrelated cancellation" ? unrelated.signal : reporterOperation.signal } : {}), limits: lateCancellation ? { totalMs: 15_000, requestMs: 10_000 } : { totalMs: 5000, requestMs: 5000 } });
+      activeOperation = operation;
+      const consume = operation.consume;
+      operation.consume = bytes => { if (operation.signal.aborted) lateConsumed = true; consume(bytes); };
+      const source = `const fs=require('node:fs');process.stdout.write('original output');setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'armed'),${lateCancellation ? 500 : 3000});${scenario === "late output failure" || lateCancellation ? `setTimeout(()=>{process.stdout.write('x');fs.writeFileSync(${JSON.stringify(lateOutput)},'written');${scenario === "late output failure" ? `const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(lateRelease)})){clearInterval(timer);process.stdout.write('independent overflow');}},10);` : ""}},${lateCancellation ? 6500 : 5200});` : ""}process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`;
       try {
         await runLifecycleOwnedCommand({ file: process.execPath, args: ["-e", source], environment: process.env }, operation, sink,
-          { cleanupWithinDeadline: true, onStdout: async chunk => { output += chunk.toString(); await outputGate.promise; } });
+          { cleanupWithinDeadline: true, ...(lateCancellation ? { timeoutMs: 1000 } : {}), ...(scenario === "late output failure" ? { maximumOutputBytes: 16 } : {}), onStdout: async chunk => { output += chunk.toString(); await outputGate.promise; } });
         throw new Error("The controlled process unexpectedly completed.");
       } catch (error) { issue = error; }
-      finally { operation.dispose(); }
+      finally { if (!lateCancellation) operation.dispose(); }
       collected.resolve();
+      if (lateCancellation) await releaseCollector.promise;
       return { telemetry, issues: [{ component: "assistantHost_claude", code: "timeout", error: issue }] };
     }, send: async () => ({ observedAt: timestamp, lastReportedAt: timestamp }), emit: () => {} });
     try {
       await collected.promise;
       expect(issue).toBeInstanceOf(OwnedCommandCleanupError);
       const cleanup = issue as OwnedCommandCleanupError;
-      await expect(reporter.stop()).rejects.toBe(cleanup);
+      if (scenario === "late unrelated cancellation") unrelated.abort(new Error("unrelated cancellation"));
+      const initialStop = reporter.stop();
+      releaseCollector.resolve();
+      await expect(initialStop).rejects.toBe(cleanup);
       const original = retainedOwnedCommandBoundaries();
       expect(original).toHaveLength(1);
       const boundary = original[0]!;
       resourceId = boundary.resourceId;
       expect(boundary.proof?.processGroupId).toBe(boundary.proof?.pid);
       const [savedBefore] = await journal.read();
-      expect(savedBefore?.event).toMatchObject({ resourceId, stage: scenario === "confirmed" ? "unknown" : "bound", proof: boundary.proof });
+      expect(savedBefore?.event).toMatchObject({ resourceId, stage: scenario === "independent journal failure" ? "bound" : "unknown", proof: boundary.proof });
       expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
+      if (scenario === "late output failure" || lateCancellation) {
+        await vi.waitFor(async () => { expect(await readFile(lateOutput, "utf8")).toBe("written"); }, { timeout: 5000, interval: 25 });
+        if (scenario === "late tampered cancellation") cleanup.errors.push(new Error("tampered evidence"));
+        const failures = cleanup.errors.length;
+        outputGate.resolve();
+        await vi.waitFor(() => { expect(lateConsumed).toBe(true); }, { timeout: 5000, interval: 25 });
+        if (lateCancellation) {
+          expect(cleanup.errors).toHaveLength(failures + 1);
+          expect(cleanup.errors.at(-1)).toBe(activeOperation?.signal.reason);
+          expect(cleanup.errors.at(-1)).toBeInstanceOf(OperationError);
+        } else {
+          expect(cleanup.errors).toHaveLength(failures);
+          await writeFile(lateRelease, "release");
+          await vi.waitFor(() => { expect(cleanup.errors.some(error => error instanceof RangeError)).toBe(true); }, { timeout: 5000, interval: 25 });
+        }
+      }
       await unlink(marker);
 
       // Re-observing the process group cannot substitute for joining the
       // original output consumer, even after the process has terminated.
-      await expect(reconcileOwnedCommandBoundary(resourceId, durableSink, Date.now() + 1000)).rejects.toThrow();
-      expect(retainedOwnedCommandBoundaries()).toContainEqual(boundary);
-      await expect(reporter.stop()).rejects.toBe(cleanup);
-      outputGate.resolve();
+      if (scenario !== "late output failure" && !lateCancellation) {
+        await expect(reconcileOwnedCommandBoundary(resourceId, durableSink, Date.now() + 1000)).rejects.toThrow();
+        expect(retainedOwnedCommandBoundaries()).toContainEqual(boundary);
+        await expect(reporter.stop()).rejects.toBe(cleanup);
+        outputGate.resolve();
+      }
 
       // The real process boundary and streams may be closed, but a failed
       // durable terminal event must retain the original owner's responsibility.
@@ -115,13 +145,29 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
         Object.assign(wait, { errors: [new Error("independent observation failure")] });
         expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
         await expect(reporter.stop()).rejects.toBe(cleanup);
-      } else {
+      } else if (scenario === "independent journal failure") {
         expect(cleanup.errors).toContain(persistenceFailure);
+        expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
+        await expect(reporter.stop()).rejects.toBe(cleanup);
+      } else if (scenario === "late output failure") {
+        expect(cleanup.errors.filter(error => error instanceof RangeError)).toHaveLength(1);
+        expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
+        await expect(reporter.stop()).rejects.toBe(cleanup);
+      } else if (scenario === "late reporter cancellation") {
+        expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
+        await expect(reporter.stop()).resolves.toBeUndefined();
+        const signal = activeOperation!.signal, original = Object.getOwnPropertyDescriptor(signal, "reason");
+        Object.defineProperty(signal, "reason", { configurable: true, value: new Error("changed signal") });
+        await expect(reporter.stop()).rejects.toBe(cleanup);
+        if (original === undefined) Reflect.deleteProperty(signal, "reason"); else Object.defineProperty(signal, "reason", original);
+        await expect(reporter.stop()).resolves.toBeUndefined();
+      } else {
         expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
         await expect(reporter.stop()).rejects.toBe(cleanup);
       }
     } finally {
       controller.abort();
+      unrelated.abort(); releaseCollector.resolve(); activeOperation?.dispose();
       outputGate.resolve();
       await unlink(marker).catch(() => {});
       rejectStopped = false;

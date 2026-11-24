@@ -35,19 +35,21 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
 
 it("recognizes only the actual proc read abort and rejects modified evidence", async () => {
+  const proof = await captureProcessProof(pid);
   io.read.mockImplementation((_path: string, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
   }));
-  const error = await captureProcessProof(pid, 20).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 20, { strictObservation: true }).catch(cause => cause);
   expect(isControllerProcessObservationDeadline(error)).toBe(true);
   error.cause.message = "changed";
   expect(isControllerProcessObservationDeadline(error)).toBe(false);
 });
 
 it("does not classify a proc read error merely because it resembles an abort", async () => {
+  const proof = await captureProcessProof(pid);
   const failure = Object.assign(new Error("aborted"), { name: "AbortError" });
   io.read.mockRejectedValue(failure);
-  const error = await captureProcessProof(pid, 20).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 20, { strictObservation: true }).catch(cause => cause);
   expect(error).toBe(failure);
   expect(isControllerProcessObservationDeadline(error)).toBe(false);
 });
@@ -210,14 +212,14 @@ it("confirms disappearance when the original proc stat open is missing and liven
     }
     return read(file, options);
   });
-  expect(await inspectProcessProof(proof)).toBe("stopped");
+  expect(await inspectProcessProof(proof, 5000, { strictObservation: true })).toBe("stopped");
 });
 
 it("retains a boot read failure even if the process disappears", async () => {
   const proof = await captureProcessProof(pid);
   const failure = Object.assign(new Error("boot open failed"), { code: "ENOENT", syscall: "open", path: "/proc/sys/kernel/random/boot_id" });
   io.read.mockImplementation(async () => { present = false; throw failure; });
-  await expect(inspectProcessProof(proof)).rejects.toBe(failure);
+  await expect(inspectProcessProof(proof, 5000, { strictObservation: true })).rejects.toBe(failure);
 });
 
 it("retains a boot identity conflict when stat is missing and the process disappears", async () => {
@@ -231,7 +233,7 @@ it("retains a boot identity conflict when stat is missing and the process disapp
     }
     return read(file, options);
   });
-  const error = await inspectProcessProof(proof).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
   expect(error).toBeInstanceOf(AggregateError);
   expect(error.errors[0]).toMatchObject({ code: "ENOENT", path: `/proc/${pid}/stat` });
   expect(error.errors[1].message).toMatch(/conflicts/);
@@ -244,9 +246,20 @@ it.each(["exit", "signal", "parse"] as const)("retains ps %s failure even if the
     present = false;
     callback(kind === "parse" ? null : failure, kind === "parse" ? "malformed" : "");
   });
-  const error = await inspectProcessProof(proof).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
   if (kind === "parse") expect(error.message).toMatch(/command identity/);
   else expect(error).toBe(failure);
+});
+
+it("keeps ordinary disappearance handling while strict cleanup retains a ps failure", async () => {
+  const proof = await captureProcessProof(pid);
+  const failure = Object.assign(new Error("ps failed"), { code: 1 });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error, output: string) => void) => {
+    present = false; callback(failure, "");
+  });
+  expect(await inspectProcessProof(proof)).toBe("stopped");
+  present = true;
+  await expect(inspectProcessProof(proof, 5000, { strictObservation: true })).rejects.toBe(failure);
 });
 
 it("retains a partial identity conflict if ps fails and the process disappears", async () => {
@@ -256,7 +269,7 @@ it("retains a partial identity conflict if ps fails and the process disappears",
   io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error, output: string) => void) => {
     present = false; callback(failure, "");
   });
-  const error = await inspectProcessProof(proof).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
   expect(error).toBeInstanceOf(AggregateError);
   expect(error.errors).toContain(failure);
   expect(error.errors[1].message).toMatch(/conflicts/);
@@ -431,7 +444,7 @@ it("settles a completed consistent observation that finishes at its deadline", a
     if (file.endsWith("boot_id") && ++bootReads === 2) vi.advanceTimersByTime(100);
     return result;
   });
-  const error = await inspectProcessProof(proof, 100).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
   expect(isControllerProcessObservationDeadline(error)).toBe(true);
 });
 
@@ -446,7 +459,7 @@ it("retains a complete conflicting observation even when its deadline expires", 
     if (file.endsWith("boot_id") && ++bootReads === 2) vi.advanceTimersByTime(100);
     return result;
   });
-  const error = await inspectProcessProof(proof, 100).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
   expect(error.message).toMatch(/conflicting identity/);
   expect(isControllerProcessObservationDeadline(error)).toBe(false);
 });
@@ -460,7 +473,7 @@ it("retains a malformed final observation even when its deadline expires", async
     if (file.endsWith("boot_id") && ++bootReads === 2) { vi.advanceTimersByTime(100); return "invalid"; }
     return read(file, options);
   });
-  const error = await inspectProcessProof(proof, 100).catch(cause => cause);
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
   expect(error.message).toMatch(/boot identity/);
   expect(isControllerProcessObservationDeadline(error)).toBe(false);
 });
@@ -469,7 +482,7 @@ it("settles an exiting-process wait only after a complete consistent observation
   const proof = await captureProcessProof(pid);
   vi.useFakeTimers();
   flags = "4";
-  const pending = inspectProcessProof(proof, 100).catch(cause => cause);
+  const pending = inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
   await vi.advanceTimersByTimeAsync(100);
   expect(isControllerProcessObservationDeadline(await pending)).toBe(true);
 });

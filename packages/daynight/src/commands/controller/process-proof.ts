@@ -49,8 +49,8 @@ const recordObservationDeadline = <T extends Error>(error: T, prior?: unknown): 
   observationDeadlines.set(error, () => intact() && (prior === undefined || isControllerProcessObservationDeadline(prior)));
   return error;
 };
-const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => {
-  const timedLinuxIdentity = process.platform === "linux" && file === "ps" && args[0] === "-p";
+const run = (file: string, args: string[], timeout = 5000, strictObservation = false): Promise<string> => new Promise((resolve, reject) => {
+  const timedLinuxIdentity = strictObservation && process.platform === "linux" && file === "ps" && args[0] === "-p";
   let launched = false, terminated = false, finished = false;
   const child = execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => {
     finished = true;
@@ -73,27 +73,28 @@ const run = (file: string, args: string[], timeout = 5000): Promise<string> => n
   }
 });
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
-const captureLinuxProcessState = createLinuxProcessCapture(
+const linuxCapture = (strictObservation: boolean) => createLinuxProcessCapture(
   async (file, timeout) => {
     const signal = AbortSignal.timeout(timeout);
     try { return await readFile(file, { encoding: "utf8", signal }); }
     catch (error) {
-      if (error instanceof Error && /^\/proc\/[1-9][0-9]*\/stat$/.test(file) && "code" in error && error.code === "ENOENT"
+      if (strictObservation && error instanceof Error && /^\/proc\/[1-9][0-9]*\/stat$/.test(file) && "code" in error && error.code === "ENOENT"
         && "syscall" in error && error.syscall === "open" && "path" in error && error.path === file) {
         missingLinuxStats.set(error, { path: file, intact: snapshotErrors(error) });
       }
-      if (error instanceof Error && error.name === "AbortError" && signal.aborted && error.cause === signal.reason) {
+      if (strictObservation && error instanceof Error && error.name === "AbortError" && signal.aborted && error.cause === signal.reason) {
         throw recordObservationDeadline(new ControllerProcessObservationDeadlineError(error));
       }
       throw error;
     }
   },
-  (pid, timeout) => run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeout),
+  (pid, timeout) => run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeout, strictObservation),
   hash,
 );
+const captureLinuxProcessState = linuxCapture(false), captureStrictLinuxProcessState = linuxCapture(true);
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
 const capturePosixProcessState = async (pid: number, timeoutMs: number, expected?: ProcessProof): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
-  if (process.platform === "linux") return captureLinuxProcessState(pid, timeoutMs, expected === undefined ? undefined : observed => completedLinuxObservationDeadline(expected, observed), expected === undefined ? undefined : (error, partial) => retainPartialIdentityFailure(expected, error, partial));
+  if (process.platform === "linux") return expected === undefined ? captureLinuxProcessState(pid, timeoutMs) : captureStrictLinuxProcessState(pid, timeoutMs, observed => completedLinuxObservationDeadline(expected, observed), (error, partial) => retainPartialIdentityFailure(expected, error, partial));
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
@@ -149,7 +150,8 @@ export class ControllerProcessWaitDeadlineError extends Error {
     this.name = "ControllerProcessWaitDeadlineError";
   }
 }
-const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
+type ProcessObservationOptions = { strictObservation?: boolean };
+const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void, options: ProcessObservationOptions = {}): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
   validPid(proof.pid);
   if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
   try { process.kill(proof.pid, 0); }
@@ -164,11 +166,11 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
       let completed: Awaited<ReturnType<typeof capturePosixProcessState>> | undefined;
       const budget = () => {
         const left = deadline - performance.now();
-        if (left <= 0) throw completed === undefined ? new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.") : completedLinuxObservationDeadline(proof, completed);
+        if (left <= 0) throw options.strictObservation !== true || completed === undefined ? new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.") : completedLinuxObservationDeadline(proof, completed);
         return left;
       };
       for (;;) {
-        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())), proof);
+        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())), options.strictObservation === true ? proof : undefined);
         completed = observed;
         const left = budget();
         // Linux can clear argv before becoming a zombie. Its kernel exit flag
@@ -181,9 +183,7 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
     current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
   }
   catch (error) {
-    if (process.platform === "linux" && isMissingLinuxStat(error, proof.pid)) {
-      try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; }
-    } else if (process.platform !== "linux") {
+    if (process.platform !== "linux" || options.strictObservation !== true || isMissingLinuxStat(error, proof.pid)) {
       try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; }
     }
     throw error;
@@ -200,8 +200,8 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
   onMismatch?.({ status, sameBirth: current.startedAt === proof.startedAt, sameParent: current.parentPid === proof.parentPid, sameGroup: current.processGroupId === proof.processGroupId, sameCommand: current.commandHash === proof.commandHash });
   return "replaced";
 };
-export const inspectProcessProof = async (proof: ProcessProof, timeoutMs = 5000): Promise<"running" | "stopped" | "replaced"> => {
-  const state = await inspectProcessState(proof, timeoutMs);
+export const inspectProcessProof = async (proof: ProcessProof, timeoutMs = 5000, options: ProcessObservationOptions = {}): Promise<"running" | "stopped" | "replaced"> => {
+  const state = await inspectProcessState(proof, timeoutMs, undefined, options);
   if (state === "exiting") throw new Error("The original process is exiting and its full identity cannot be rechecked yet.");
   return state;
 };
@@ -232,18 +232,18 @@ const groupMembers = async (group: number, deadline?: number, waitPhase?: "term"
   remaining(deadline);
   return result;
 };
-const confirmRetainedProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number): Promise<boolean> => {
+const confirmRetainedProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, options: ProcessObservationOptions = {}): Promise<boolean> => {
   for (const proof of [controller, ...native]) {
     let mismatch: ProcessMismatch | undefined;
-    const state = await bounded(deadline, () => inspectProcessState(proof, remaining(deadline), evidence => { mismatch = evidence; }));
+    const state = await bounded(deadline, () => inspectProcessState(proof, remaining(deadline), evidence => { mismatch = evidence; }, options));
     remaining(deadline);
     if (state === "running" || state === "exiting") return false;
     if (state === "replaced" && mismatch?.sameBirth === true) throw new ControllerProcessIdentityConflictError(proof.pid, mismatch);
   }
   return true;
 };
-export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, lease?: ControllerJobLease): Promise<boolean> => {
-  if (!await confirmRetainedProcessesStopped(controller, native, deadline)) return false;
+export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, lease?: ControllerJobLease, options: ProcessObservationOptions = {}): Promise<boolean> => {
+  if (!await confirmRetainedProcessesStopped(controller, native, deadline, options)) return false;
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; its descendants cannot be inferred stopped.");
     if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
@@ -255,7 +255,13 @@ export const confirmControllerProcessesStopped = async (controller: ProcessProof
   if (controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
   return (await groupMembers(controller.pid, deadline)).length === 0;
 };
-export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease, options: { guardian?: boolean } = {}): Promise<void> => {
+/** Only the original command owner can supply its joined child handle. */
+export const confirmClosedOwnedCommandGroup = async (proof: ProcessProof, child: { pid?: number | undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }, deadline: number): Promise<boolean> => {
+  if (process.platform !== "linux" || child.pid !== proof.pid || child.exitCode === null && child.signalCode === null) throw new Error("Original owned command child closure is unconfirmed.");
+  if (proof.processGroupId !== proof.pid) throw new Error("Owned command was not launched in its own process group.");
+  return (await groupMembers(proof.pid, deadline)).length === 0;
+};
+export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease, options: ProcessObservationOptions & { guardian?: boolean } = {}): Promise<void> => {
   remaining(deadline);
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
@@ -272,7 +278,7 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
     let attributable = false, originalsStopped = true;
     for (const proof of [controller, ...native]) {
       if (proof.processGroupId !== controller.pid) continue;
-      const state = await bounded(deadline, () => inspectProcessProof(proof, remaining(deadline)));
+      const state = await bounded(deadline, () => inspectProcessProof(proof, remaining(deadline), options));
       remaining(deadline);
       if (state === "running") attributable = true;
       if (state !== "stopped") originalsStopped = false;

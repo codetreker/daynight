@@ -58,7 +58,7 @@ const snapshotCleanupEvidence = (root: Error): (() => boolean) => {
   });
 };
 const cleanupWaits = new WeakSet<Error>();
-const cleanupWaitEvidence = new WeakMap<OwnedCommandCleanupError, { wait: Error; observation: boolean; intact: () => boolean; commandDeadline?: OwnedCommandDeadlineError; cancellation?: OperationError; cancellationCause: unknown; originalCause: unknown; originalErrors: readonly unknown[] }>();
+const cleanupWaitEvidence = new WeakMap<OwnedCommandCleanupError, { wait: Error; observation: boolean; intact: () => boolean; signal?: AbortSignal; commandDeadline?: OwnedCommandDeadlineError; cancellation?: OperationError; cancellationCause: unknown; originalCause: unknown; originalErrors: readonly unknown[] }>();
 /** A deadline created by the original owner while waiting for cleanup. */
 export const ownedCommandCleanupWait = (message: string): Error => {
   const error = new Error(message);
@@ -71,10 +71,25 @@ export const registerOwnedCommandCleanupWait = (error: OwnedCommandCleanupError,
   const observation = isControllerProcessObservationDeadline(wait);
   if (!(cleanupWaits.has(wait) || wait instanceof ControllerProcessWaitDeadlineError || observation)) return;
   const commandDeadline = commandFailure instanceof OwnedCommandDeadlineError ? commandFailure : undefined;
-  const cancellation = signal?.aborted === true && commandFailure === signal.reason && commandFailure instanceof OperationError && commandFailure.kind === "cancelled" ? commandFailure : undefined;
+  const cancellation = signal?.aborted === true && signal.reason instanceof OperationError && signal.reason.kind === "cancelled" && (commandFailure === signal.reason || error.errors.includes(signal.reason)) ? signal.reason : undefined;
   const allowed = (item: unknown): boolean => item === wait || commandDeadline !== undefined && item === commandDeadline || cancellation !== undefined && item === cancellation;
   if (!error.errors.includes(wait) || !error.errors.every(allowed) || error.cause !== undefined && !allowed(error.cause)) return;
-  cleanupWaitEvidence.set(error, { wait, observation, intact: snapshotCleanupEvidence(error), ...(commandDeadline === undefined ? {} : { commandDeadline }), ...(cancellation === undefined ? {} : { cancellation }), cancellationCause: cancellation?.cause, originalCause: error.cause, originalErrors: [...error.errors] });
+  cleanupWaitEvidence.set(error, { wait, observation, intact: snapshotCleanupEvidence(error), ...(signal === undefined ? {} : { signal }), ...(commandDeadline === undefined ? {} : { commandDeadline }), ...(cancellation === undefined ? {} : { cancellation }), cancellationCause: cancellation?.cause, originalCause: error.cause, originalErrors: [...error.errors] });
+};
+
+/** Add only the original operation's late cancellation to unchanged owner evidence. */
+export const registerOwnedCommandLateCancellation = (error: OwnedCommandCleanupError, cancellation: unknown, signal: AbortSignal): boolean => {
+  try {
+    const evidence = cleanupWaitEvidence.get(error);
+    if (evidence === undefined || evidence.signal !== signal || evidence.cancellation !== undefined || !evidence.intact()
+      || evidence.commandDeadline?.cause !== undefined || error.cause !== evidence.originalCause
+      || error.errors.length !== evidence.originalErrors.length || !evidence.originalErrors.every((item, index) => error.errors[index] === item)
+      || evidence.observation && !isControllerProcessObservationDeadline(evidence.wait)
+      || !signal.aborted || cancellation !== signal.reason || !(cancellation instanceof OperationError) || cancellation.kind !== "cancelled") return false;
+    error.errors.push(cancellation);
+    cleanupWaitEvidence.set(error, { ...evidence, cancellation, cancellationCause: cancellation.cause, intact: snapshotCleanupEvidence(error), originalErrors: [...error.errors] });
+    return true;
+  } catch { return false; }
 };
 
 /** The optional predicate must recognize cancellation of the caller's own reporter. */
@@ -87,7 +102,7 @@ export const isConfirmedOwnedCommandCleanupWait = (error: unknown, isCancellatio
   } else if (!(cleanupWaits.has(evidence.wait) || evidence.wait instanceof ControllerProcessWaitDeadlineError) || evidence.wait.cause !== undefined) return false;
   if (evidence.cancellation !== undefined) {
     if (evidence.cancellation.cause !== evidence.cancellationCause) return false;
-    try { if (isCancellation?.(evidence.cancellation) !== true) return false; } catch { return false; }
+    try { if (evidence.signal?.aborted !== true || evidence.signal.reason !== evidence.cancellation || isCancellation?.(evidence.cancellation) !== true) return false; } catch { return false; }
   }
   const allowed = (item: unknown): boolean => item === evidence.wait || item === evidence.commandDeadline && item !== undefined || item === evidence.cancellation && item !== undefined;
   return error.cause === evidence.originalCause && error.errors.length === evidence.originalErrors.length &&

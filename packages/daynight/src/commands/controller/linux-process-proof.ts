@@ -62,7 +62,7 @@ export function createLinuxProcessCapture(
     const first = await ps(); partial.first = first;
     const second = await ps();
     const after = stat(await read(`/proc/${pid}/stat`));
-    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", true));
+    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", completedDeadline !== undefined));
     // Exit can discard the command before Z appears. PF_EXITING permits waiting
     // only; a final zombie proves this instance exited. Neither supplies a
     // running proof, and birth/group fences and descendant checks still apply.
