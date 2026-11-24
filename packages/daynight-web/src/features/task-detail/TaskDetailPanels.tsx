@@ -7,6 +7,7 @@ type PanelSlot = ReactNode | ((active: boolean) => ReactNode);
 type OrdinaryTaskTab = Exclude<TaskDetailTab, 'description'>;
 type TaskDetailPanelsProps = {
   readonly overview: ReactNode | ((showAttachments: () => void) => ReactNode);
+  readonly subtasks?: PanelSlot;
   readonly attachments: PanelSlot;
   readonly discussion?: PanelSlot;
   readonly session?: PanelSlot;
@@ -16,10 +17,10 @@ type TaskDetailPanelsProps = {
   readonly onChange?: (tab: TaskDetailTab) => void;
 };
 
-export const TaskDetailPanels = ({ overview, attachments, discussion, session, usage, active: controlledActive, onChange, suspended = false }: TaskDetailPanelsProps) => {
+export const TaskDetailPanels = ({ overview, subtasks, attachments, discussion, session, usage, active: controlledActive, onChange, suspended = false }: TaskDetailPanelsProps) => {
   const { messages, locale } = useI18n();
   const [localActive, setLocalActive] = useState<OrdinaryTaskTab>('overview');
-  const tabs: readonly OrdinaryTaskTab[] = ['overview', 'attachments', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const), ...(usage === undefined ? [] : ['usage'] as const)];
+  const tabs: readonly OrdinaryTaskTab[] = ['overview', 'subtasks', 'attachments', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const), ...(usage === undefined ? [] : ['usage'] as const)];
   const requested = controlledActive === undefined ? localActive : controlledActive;
   const active = tabs.find((tab) => tab === requested) ?? 'overview';
   // A Goal-only URL can be visited in browser history; don't push a new entry
@@ -57,8 +58,8 @@ export const TaskDetailPanels = ({ overview, attachments, discussion, session, u
     for (const child of bar.children) observer.observe(child);
     return () => observer.disconnect();
   }, [id, active, messages, session !== undefined, usage !== undefined, discussion !== undefined, suspended]);
-  const labels = { overview: messages.inspection.detail.overview, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, session: 'Session', usage: locale === 'zh-CN' ? '用量' : 'Usage' };
-  const slots = { attachments, discussion, session, usage };
+  const labels = { overview: messages.inspection.detail.overview, subtasks: locale === 'zh-CN' ? '子任务' : 'Subtasks', attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, session: 'Session', usage: locale === 'zh-CN' ? '用量' : 'Usage' };
+  const slots = { subtasks, attachments, discussion, session, usage };
   const content = (tab: OrdinaryTaskTab) => {
     if (tab === 'overview') return typeof overview === 'function' ? overview(() => setActive('attachments')) : overview;
     const slot = slots[tab];

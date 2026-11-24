@@ -13,7 +13,7 @@
 
 ## 责任与数据流
 
-`TaskDetailSurface` 的普通 Task 概览挂载 `OrdinaryTaskRelations`，以 parent/children 两个 slot 保留关联栏与主内容布局。普通父项读取使用当前身份、Task 和项目历史，直属子项通过 `parentTaskId` 过滤的授权 GET 分页，显示全部五态，并提供固定父 Task 的创建表单。字段缺省不证明无父项或空集合；旧共享快照不承担完整关系证明。父子链接使用真实 Task ID 的独立详情地址及既有草稿保护，不改变 Goal 的直属进度和普通依赖图。状态、取消和删除阻塞由共享 `TaskLifecycleBlockers` 呈现服务端原因与可读 Task ID，生命周期确认见[状态设计](daynight-task-status.md#web-读取缓存与进度)，删除退役见[删除设计](daynight-task-deletion.md#cli-与-web-操作)。
+`TaskDetailSurface` 在稳定阅读边界挂载 `OrdinaryTaskRelations`，将 parent slot 放入概览关联栏、children slot 放入保留挂载的子任务页签。共同 Task 观察和资格围栏保护父项及子项独立发布的结果与错误；页签选择不控制关系读取。创建弹窗只在子任务页签可见时呈现，宿主消费原作用域的确认回执并刷新列表与项目图，异步预检结束后再次检查呈现身份和资格。普通父项读取使用当前身份、Task 和项目历史，直属子项通过 `parentTaskId` 过滤的授权 GET 分页，显示全部五态，并提供固定父 Task 的创建表单。字段缺省不证明无父项或空集合；旧共享快照不承担完整关系证明。父子链接使用真实 Task ID 的独立详情地址及既有草稿保护，不改变 Goal 的直属进度和普通依赖图。状态、取消和删除阻塞由共享 `TaskLifecycleBlockers` 呈现服务端原因与可读 Task ID，生命周期确认见[状态设计](daynight-task-status.md#web-读取缓存与进度)，删除退役见[删除设计](daynight-task-deletion.md#cli-与-web-操作)。
 
 ```mermaid
 flowchart LR

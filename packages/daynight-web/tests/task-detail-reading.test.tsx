@@ -30,6 +30,32 @@ const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概�
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
+  it('keeps the selected attachment and mounted subtask slot across tab changes', async () => {
+    const api = fixture([file('docs/result.md')]);
+    const states: boolean[] = [];
+    const selections: TaskDetailNavigation[] = [];
+    const Content = () => {
+      const [selection, setSelection] = useState<TaskDetailNavigation>({ tab: 'attachments', path: 'docs/result.md' });
+      return <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={selection} onSelectionChange={next => { selections.push(next); setSelection(next); }} overview={description => description} subtasks={active => { states.push(active); return <input aria-label="Subtask state" />; }} />;
+    };
+    render(<Content />);
+    await screen.findByRole('heading', { name: 'Preview docs/result.md' });
+    fireEvent.click(screen.getByRole('tab', { name: '子任务' }));
+    const input = screen.getByRole('textbox', { name: 'Subtask state' });
+    fireEvent.change(input, { target: { value: 'retained' } });
+    expect(selections.at(-1)).toEqual({ tab: 'subtasks', path: 'docs/result.md' });
+    expect(states.at(-1)).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    expect(states.at(-1)).toBe(false);
+    expect(input.closest('[role="tabpanel"]')).toHaveAttribute('inert');
+    fireEvent.click(screen.getByRole('tab', { name: '子任务' }));
+    expect(screen.getByRole('textbox', { name: 'Subtask state' })).toBe(input);
+    expect(input).toHaveValue('retained');
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    expect(screen.getByRole('heading', { name: 'Preview docs/result.md' })).toBeVisible();
+    expect(api.list).toHaveBeenCalledOnce();
+  });
+
   it('opens Task-root Markdown attachments through the existing attachment controller', async () => {
     const api = fixture([file('docs/result.md')]);
     render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md) ![Overview image](images/chart.png)" overview={(content) => content} />);

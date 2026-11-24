@@ -76,6 +76,7 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
 
   await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${parentId}`);
   await expect(page.getByRole("heading", { name: "Acceptance task", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
   const children = page.getByRole("region", { name: "Subtasks", exact: true });
   await expect(children.getByText("No subtasks", { exact: true })).toBeVisible();
   await children.getByRole("button", { name: "New subtask" }).click();
@@ -90,6 +91,7 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   const created = await creation.json() as Task;
   expect(created).toMatchObject({ title: "Repair acceptance finding", parentTaskId: parentId, status: "todo", assignedTo: parent.assignedTo, version: 1 });
   const childId = created.id;
+  await expect(page.getByRole("tab", { name: "Subtasks", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(children.getByRole("link", { name: created.title, exact: true })).toBeVisible();
   expect(await show(parentId)).toMatchObject({ id: parentId, status: "in_progress", version: parent.version });
   expect((await show(goalId)).progress).toMatchObject({ total: 1, done: 0, unfinished: 1 });
@@ -137,7 +139,7 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   await page.reload();
   await expect(page.locator(".task-status-trigger")).toContainText("Done");
   await expect(page.getByRole("region", { name: "Discussion" })).toContainText("Reverification passed");
-  await page.getByRole("tab", { name: "Overview", exact: true }).click();
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
   await expect(page.getByRole("region", { name: "Subtasks" })).toContainText("Repair acceptance finding");
   await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${goalId}`);
   await expect(page.locator(".goal-information-progress")).toHaveText("1/1 completed");
@@ -151,6 +153,7 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   expect(await mcp<MCPTask>("task_show", { projectId, taskId: finished, view: "full", taskParentView: "v1" })).toMatchObject({ id: finished, status: "done", version: String(finishedBefore.version), parentTaskId: cancelParent });
   await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${cancelParent}`);
   await expect(page.locator(".task-status-trigger")).toContainText("Cancelled");
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
   await expect(page.getByRole("region", { name: "Subtasks" })).toContainText("Pending descendant");
   await expect(page.getByRole("region", { name: "Subtasks" })).toContainText("Finished descendant");
 
@@ -179,6 +182,7 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   await search(deleteParent, "Deletion parent", true);
   await search(deleteChild, "Deletion child", true);
   await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${deleteParent}`);
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
   await expect(page.getByRole("region", { name: "Subtasks" })).toContainText("Deletion child");
   const beforeSync = await page.request.get(`${topology.baseURL}/api/v1/projects/${projectId}/task-sync`);
   expect(beforeSync.status()).toBe(200);

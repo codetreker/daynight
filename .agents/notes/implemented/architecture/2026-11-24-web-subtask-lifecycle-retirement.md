@@ -14,7 +14,7 @@ when refresh fails or an earlier request completes late.
 
 ## Decision
 
-Production Task Overview mounts the
+The production Task reading surface mounts the
 [ordinary relationship component](2026-11-23-web-ordinary-task-relations.md).
 `TaskStatusConfirmation` distinguishes ordinary cancellation from the explicit
 descendant intent offered after an unfinished-child refusal. The reviewed Task,

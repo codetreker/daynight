@@ -9,12 +9,16 @@ const parentId = '00000000-0000-4000-8000-000000000041';
 const childId = '00000000-0000-4000-8000-000000000042';
 const personalId = '00000000-0000-4000-8000-000000000011';
 const time = '2026-10-20T09:00:00Z';
-const install = async (context: BrowserContext, locale: string, lost = false, endedChildren = false) => {
-  let parent = detailFixture(projectId, parentId, { title: 'Parent acceptance', parentTaskId: null, version: 5n });
+type RelationOptions = { empty?: boolean; paginate?: boolean; oldServer?: boolean; endedParent?: boolean };
+const install = async (context: BrowserContext, locale: string, lost = false, endedChildren = false, options: RelationOptions = {}) => {
+  let parent = detailFixture(projectId, parentId, { title: 'Parent acceptance', ...(options.oldServer ? {} : { parentTaskId: null }), version: 5n, ...(options.endedParent ? { status: 'done', completedAt: time, ready: false } : {}) });
   let child = detailFixture(projectId, childId, { title: 'Repair child', parentTaskId: parentId, version: 2n, ...(endedChildren ? { status: 'done', completedAt: time, ready: false } : {}) });
   let removed = false;
+  let hasChild = !options.empty;
+  let failNext = options.paginate ?? false;
   const writes: unknown[] = [];
-  const graph = () => graphFixture([parent, child]);
+  const otherChildren = (['proposed', 'in_progress', 'done', 'cancelled'] as const).map((status, index) => detailFixture(projectId, `00000000-0000-4000-8000-0000000000${43 + index}`, { title: `Child ${status}`, parentTaskId: parentId, status, ready: false, version: 2n, ...(status === 'in_progress' ? { startedAt: time } : {}), ...(status === 'done' ? { completedAt: time } : {}), ...(status === 'cancelled' ? { cancelledAt: time } : {}) }));
+  const graph = () => graphFixture([parent, ...(hasChild ? [child] : []), ...(options.paginate ? otherChildren : [])]);
   await context.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await context.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -32,7 +36,18 @@ const install = async (context: BrowserContext, locale: string, lost = false, en
     if (path.endsWith('/tags/colors/resolve')) return send({ items: [], catalogEpoch: taskSyncEpoch(projectId) });
     if (path.endsWith('/task-sync')) return removed ? send({ error: { code: 'unavailable', message: 'Refresh unavailable', requestId: 'w2-refresh' } }, 503) : send(taskSyncFixture(graph(), { query: taskSyncQuery(url), versionForTask: row => row.id === parentId ? parent.version : child.version }));
     if (path.endsWith('/task-graph')) return send(graph());
-    if (path.endsWith('/tasks')) return send({ items: url.searchParams.get('parentTaskId') === parentId ? [child] : [], nextCursor: null }, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+    if (path.endsWith('/tasks') && request.method() === 'POST') {
+      const input = request.postDataJSON(); writes.push(input);
+      child = detailFixture(projectId, childId, { title: input.title, description: input.description, assignedTo: input.assignedTo, parentTaskId: parentId, status: input.status, ready: input.status === 'todo', version: 1n }); hasChild = true;
+      return send(child, 201, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+    }
+    if (path.endsWith('/tasks') && request.method() === 'GET') {
+      if (url.searchParams.get('parentTaskId') !== parentId) return send({ items: [], nextCursor: null }, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+      const cursor = url.searchParams.get('cursor');
+      if (options.paginate && cursor !== null && failNext) { failNext = false; return send({ error: { code: 'unavailable', message: 'Page unavailable', requestId: 'page-error' } }, 503); }
+      const all = [...(hasChild ? [child] : []), ...(options.paginate ? otherChildren : [])];
+      return send({ items: cursor === null ? all.slice(0, 3) : all.slice(3), nextCursor: options.paginate && cursor === null ? 'next-page' : null }, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+    }
     if (path === `/api/v1/projects/${projectId}/tasks/${parentId}` && request.method() === 'DELETE') {
       writes.push(request.postDataJSON()); removed = true;
       return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
@@ -70,6 +85,7 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) {
     const writes = await install(context, locale);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/projects/${projectId}/tasks/${parentId}`);
+    await page.getByRole('tab', { name: /^(Subtasks|子任务)$/ }).click();
     await expect(page.getByRole('region', { name: /^(Subtasks|子任务)$/ })).toContainText('Repair child');
     let confirmation = await openCancellation(page);
     await page.keyboard.press('Escape');
@@ -136,4 +152,60 @@ test('ordinary parent deletion withdraws peer graph and child attachments while 
   await expect(child.getByRole('heading', { name: 'Repair child', exact: true })).toHaveCount(0);
   await info.attach('retired-project', { body: await project.screenshot(), contentType: 'image/png' });
   await info.attach('retired-child-material', { body: await child.screenshot(), contentType: 'image/png' });
+});
+
+test('direct children keep five statuses and recover from a failed next page', async ({ context, page }) => {
+  const writes = await install(context, 'en', false, false, { paginate: true });
+  await page.goto(`/projects/${projectId}/tasks/${parentId}?tab=subtasks`);
+  const panel = page.getByRole('region', { name: 'Subtasks' });
+  await expect(panel).toContainText('Repair child');
+  await expect(panel).toContainText('Child proposed');
+  await expect(panel).toContainText('Child in_progress');
+  await panel.getByRole('button', { name: 'Next' }).click();
+  await expect(panel.getByRole('alert')).toContainText('Could not load subtasks');
+  await panel.getByRole('button', { name: 'Retry' }).click();
+  await expect(panel).toContainText('Child done');
+  await expect(panel).toContainText('Child cancelled');
+  await panel.getByRole('button', { name: 'Previous' }).click();
+  await expect(panel).toContainText('Repair child');
+  expect(writes).toEqual([]);
+});
+
+test('project member creates the first child and remains on the subtask tab', async ({ context, page }, info) => {
+  const writes = await install(context, 'en', false, false, { empty: true });
+  await page.goto(`/projects/${projectId}/tasks/${parentId}`);
+  await page.getByRole('tab', { name: 'Subtasks', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Subtasks' });
+  await expect(panel).toContainText('No subtasks');
+  await panel.getByRole('button', { name: 'New subtask' }).click();
+  const dialog = page.getByRole('dialog', { name: 'New subtask' });
+  await expect(dialog).toContainText(`Parent Task: Parent acceptance (${parentId})`);
+  await dialog.getByLabel('Title').fill('First child');
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Subtasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(panel).toContainText('First child');
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ title: 'First child', parentTaskId: parentId });
+  await info.attach('first-child', { body: await page.screenshot(), contentType: 'image/png' });
+});
+
+test('terminal parent remains readable while creation is disabled', async ({ context, page }) => {
+  const writes = await install(context, 'en', false, false, { endedParent: true });
+  await page.goto(`/projects/${projectId}/tasks/${parentId}?tab=subtasks`);
+  const panel = page.getByRole('region', { name: 'Subtasks' });
+  await expect(panel).toContainText('Repair child');
+  await expect(panel.getByRole('button', { name: 'New subtask' })).toBeDisabled();
+  expect(writes).toEqual([]);
+});
+
+test('older server without ordinary parent projection reports unsupported on the subtask tab', async ({ context, page }) => {
+  const writes = await install(context, 'en', false, false, { oldServer: true });
+  await page.goto(`/projects/${projectId}/tasks/${parentId}`);
+  await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Subtasks', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Subtasks' });
+  await expect(panel).toContainText('This server does not support ordinary Task relationships.');
+  await expect(panel.getByRole('button', { name: 'New subtask' })).toBeDisabled();
+  expect(writes).toEqual([]);
 });

@@ -16,7 +16,7 @@ Web Task requests select the ordinary-parent projection and retain the distincti
 between a missing `parentTaskId` and an explicit null. Direct child pages use the
 authorized parent filter and current Task and project-history admission. The
 ordinary relation controls share a detail component with separate parent and child
-slots, mounted in production Task Overview. Links target the ordinary Task's
+slots, mounted across the production Task reading surface. The [subtask tab decision](2026-11-24-web-subtask-tab.md) owns their current presentation and independent publication. Links target the ordinary Task's
 independent detail URL and use the existing draft-aware browser navigation.
 
 The initial relationship delivery kept production composition inactive until
