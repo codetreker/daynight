@@ -15,7 +15,6 @@ export class CodexBotRecoveryError extends Error {
 }
 const invalid = (detail: string) => new CodexBotRecoveryError("recovery_material_invalid", detail);
 const incomplete = (detail: string) => new CodexBotRecoveryError("recovery_material_incomplete", detail);
-const version = (value: string) => { if (value !== "0.169.0") throw new CodexBotRecoveryError("recovery_version_unsupported", "Codex recovery requires the verified 0.169.0 runtime."); };
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 const ownedFile = (name: unknown, prefix: string): name is string => typeof name === "string" && name.startsWith(`${prefix}-`) && name.endsWith(".jsonl") && uuid(name.slice(prefix.length + 1, -6));
@@ -148,9 +147,8 @@ export class CodexBotRecovery {
   }
 
   /** A snapshot is immutable. Native resume receives a separate active copy. */
-  async prepare(nativeSessionId: string | null, providerVersion: string): Promise<string | undefined> {
+  async prepare(nativeSessionId: string | null): Promise<string | undefined> {
     this.assertPublicationConfirmed();
-    version(providerVersion);
     this.manifest = await this.load();
     if (this.manifest?.dirty) throw new CodexBotRecoveryError("outcome_unknown", "The original Codex operation has no verified recovery point; do not replay it.");
     if (nativeSessionId === null) {
@@ -160,8 +158,6 @@ export class CodexBotRecovery {
     const point = this.manifest?.point;
     if (!point) throw new CodexBotRecoveryError("recovery_material_missing", "The original Codex thread has no protected rollout.");
     if (point.nativeSessionId !== nativeSessionId) throw invalid("The protected Codex thread differs from the original native Session.");
-    version(point.providerVersion);
-    if (point.providerVersion !== providerVersion) throw new CodexBotRecoveryError("recovery_version_unsupported", "The original Codex runtime version differs.");
     const destination = path.join(this.options.directory, `active-${randomUUID()}.jsonl`);
     const copied = await this.copy(path.join(this.options.directory, point.file), destination, nativeSessionId, point.protectedThroughTurn);
     if (copied.bytes !== point.bytes || copied.sha256 !== point.sha256) {
@@ -177,7 +173,6 @@ export class CodexBotRecovery {
 
   async protect(input: { path: string; nativeSessionId: string; providerVersion: string; protectedThroughTurn: string | null; settingsAfter?: number }): Promise<void> {
     this.assertPublicationConfirmed();
-    version(input.providerVersion);
     if (!uuid(input.nativeSessionId)) throw invalid("The native Codex Session ID is invalid.");
     if (input.settingsAfter !== undefined && (!Number.isSafeInteger(input.settingsAfter) || input.settingsAfter < 0)) throw invalid("The Codex settings checkpoint offset is invalid.");
     this.manifest ??= await this.load();
@@ -228,7 +223,6 @@ export class CodexBotRecovery {
           if (entry.type === "session_meta") {
             metadataCount++;
             if (metadataCount !== 1 || payload.id !== nativeSessionId || typeof payload.cwd !== "string" || await realpath(payload.cwd) !== cwd) throw invalid("Codex rollout Session identity or working directory differs.");
-            if (payload.cli_version !== "0.169.0") throw new CodexBotRecoveryError("recovery_version_unsupported", "The Codex rollout was not written by the verified runtime version.");
           }
           if (entry.type === "compacted") hasTurns = true;
           if (entry.type === "event_msg" && payload.type === "task_started") { activeTurn = true; hasTurns = true; }

@@ -27,7 +27,7 @@ const protect = async () => { const storage = new CodexBotRecovery(options); awa
 test("a verified point resumes the original thread from a separate dirty active copy", async () => {
   await protect(); const original = await manifest();
   await unlink(source);
-  const recovered = new CodexBotRecovery(options), active = await recovered.prepare(nativeSessionId, providerVersion);
+  const recovered = new CodexBotRecovery(options), active = await recovered.prepare(nativeSessionId);
   expect(active).toMatch(/active-.*\.jsonl$/); expect(await readFile(active!, "utf8")).toBe(rollout());
   expect(recovered.protectedThroughTurn).toBe(turn); expect((await manifest()).dirty).toBe(true);
   await appendFile(active!, JSON.stringify({ type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { model: "new" } } }) + "\n");
@@ -35,30 +35,37 @@ test("a verified point resumes the original thread from a separate dirty active 
   await recovered.protect({ ...input(), path: active! });
   expect((await manifest()).dirty).toBe(false);
   expect((await readdir(options.directory)).filter(name => name.startsWith("snapshot-"))).toHaveLength(1);
-  const next = new CodexBotRecovery(options), nextActive = await next.prepare(nativeSessionId, providerVersion);
+  const next = new CodexBotRecovery(options), nextActive = await next.prepare(nativeSessionId);
   expect(nextActive).not.toBe(active); expect((await readdir(options.directory)).filter(name => name.startsWith("active-"))).toHaveLength(1);
 });
 
 test("a pending first start cannot create a replacement thread after a restart", async () => {
   const storage = new CodexBotRecovery(options);
-  expect(await storage.prepare(null, providerVersion)).toBeUndefined();
+  expect(await storage.prepare(null)).toBeUndefined();
   await storage.markDirty();
-  await expect(new CodexBotRecovery(options).prepare(null, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown" });
+  await expect(new CodexBotRecovery(options).prepare(null)).rejects.toMatchObject({ code: "outcome_unknown" });
   await writeFile(source, rollout(null)); await storage.protect(input(null));
   expect((await manifest()).point.protectedThroughTurn).toBeNull();
-  await expect(new CodexBotRecovery(options).prepare(null, providerVersion)).rejects.toMatchObject({ code: "recovery_material_invalid" });
+  await expect(new CodexBotRecovery(options).prepare(null)).rejects.toMatchObject({ code: "recovery_material_invalid" });
 });
 
 test("pending side effects cannot fall back to a previously completed turn", async () => {
   const storage = await protect(); await storage.markDirty();
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "outcome_unknown" });
   expect((await manifest()).point.protectedThroughTurn).toBe(turn);
 });
 
-test.each(["0.169.1", "0.168.0", "unknown"])("unverified native version %s never starts or rewrites storage", async value => {
-  const storage = await protect(), before = await manifest();
-  await expect(storage.prepare(nativeSessionId, value)).rejects.toMatchObject({ code: "recovery_version_unsupported" });
-  expect(await manifest()).toEqual(before);
+test.each(["0.170.0", "0.168.0", "99.0.0-dev", "unknown"])("runtime version %s is diagnostic metadata, not recovery admission", async value => {
+  const storage = new CodexBotRecovery(options);
+  expect(await storage.prepare(null)).toBeUndefined();
+  await writeFile(source, rollout().replace(providerVersion, value));
+  await storage.protect({ ...input(), providerVersion: value });
+  expect((await manifest()).point.providerVersion).toBe(value);
+  const recovered = new CodexBotRecovery(options), active = await recovered.prepare(nativeSessionId);
+  expect(await readFile(active!, "utf8")).toBe(await readFile(source, "utf8"));
+  await recovered.protect({ ...input(), path: active!, providerVersion: "new-runtime" });
+  expect((await manifest()).point.providerVersion).toBe("new-runtime");
+  expect((await manifest()).dirty).toBe(false);
 });
 
 test.each(["thread", "bot", "owner", "service", "session", "cwd"])("recovery rejects mismatched %s identity", async field => {
@@ -68,13 +75,13 @@ test.each(["thread", "bot", "owner", "service", "session", "cwd"])("recovery rej
   if (field === "service") next.identity.serverOrigin = "https://other.example";
   if (field === "session") next.identity.sessionId = randomUUID();
   if (field === "cwd") { next.cwd = join(root, "other"); await mkdir(next.cwd); }
-  await expect(new CodexBotRecovery(next).prepare(field === "thread" ? randomUUID() : nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "recovery_material_invalid" });
+  await expect(new CodexBotRecovery(next).prepare(field === "thread" ? randomUUID() : nativeSessionId)).rejects.toMatchObject({ code: "recovery_material_invalid" });
 });
 
 test.each(["snapshot", "manifest"])("missing %s reports absent recovery material", async field => {
   await protect(); const point = await manifest();
   await unlink(join(options.directory, field === "manifest" ? "manifest.json" : point.point.file));
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "recovery_material_missing" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "recovery_material_missing" });
   if (field === "snapshot") expect(await manifest()).toEqual(point);
   expect((await readdir(options.directory)).some(name => name.startsWith("active-"))).toBe(false);
 });
@@ -82,11 +89,11 @@ test.each(["snapshot", "manifest"])("missing %s reports absent recovery material
 test("a valid JSONL with changed bytes still fails the immutable digest", async () => {
   await protect(); const point = await manifest();
   await appendFile(join(options.directory, point.point.file), JSON.stringify({ type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { model: "tampered" } } }) + "\n");
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "recovery_material_invalid" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "recovery_material_invalid" });
   expect(await manifest()).toEqual(point);
   expect((await readdir(options.directory)).some(name => name.startsWith("active-"))).toBe(false);
   await writeFile(join(options.directory, point.point.file), rollout());
-  expect(await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).toMatch(/active-.*\.jsonl$/);
+  expect(await new CodexBotRecovery(options).prepare(nativeSessionId)).toMatch(/active-.*\.jsonl$/);
 });
 
 test.each(["partial", "wrong-turn", "active", "wrong-thread", "wrong-cwd", "invalid-json", "invalid-utf8"])("%s source cannot replace the last complete point", async mode => {
@@ -121,25 +128,25 @@ test("a complete compacted turn is protected independently of the preceding turn
   await appendFile(source, compact);
   await storage.protect(input("compact-turn"));
   expect(storage.protectedThroughTurn).toBe("compact-turn");
-  const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
+  const active = await new CodexBotRecovery(options).prepare(nativeSessionId);
   expect(await readFile(active!, "utf8")).toContain('"type":"compacted"');
 });
 
 test("a path escape in a manifest cannot read outside the Bot directory", async () => {
   await protect(); const value = await manifest(); value.point.file = "../original.jsonl";
   await writeFile(join(options.directory, "manifest.json"), JSON.stringify(value));
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "recovery_material_invalid" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "recovery_material_invalid" });
 });
 
 test("an unsupported manifest format preserves the existing recovery material", async () => {
   await protect(); const value = await manifest(); value.recoveryFormatVersion = 2;
   await writeFile(join(options.directory, "manifest.json"), JSON.stringify(value));
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "recovery_version_unsupported" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "recovery_version_unsupported" });
   expect(await readFile(join(options.directory, value.point.file), "utf8")).toBe(rollout());
 });
 
 test("an unpersisted first rollout is retryable without publishing a point", async () => {
-  const storage = new CodexBotRecovery(options); await storage.prepare(null, providerVersion); await storage.markDirty();
+  const storage = new CodexBotRecovery(options); await storage.prepare(null); await storage.markDirty();
   await expect(storage.protect(input(null))).rejects.toMatchObject({ code: "recovery_material_incomplete", retryable: true });
   await writeFile(source, "");
   await expect(storage.protect(input(null))).rejects.toMatchObject({ code: "recovery_material_incomplete", retryable: true });
@@ -192,7 +199,7 @@ test("a durably aborted turn preserves its interruption and resumes the same thr
   ].map(item => JSON.stringify(item)).join("\n") + "\n";
   await appendFile(source, aborted); await storage.protect(input("cancelled-turn"));
   expect(storage.protectedThroughTurn).toBe("cancelled-turn"); expect((await manifest()).dirty).toBe(false);
-  const resumed = new CodexBotRecovery(options), active = await resumed.prepare(nativeSessionId, providerVersion);
+  const resumed = new CodexBotRecovery(options), active = await resumed.prepare(nativeSessionId);
   expect(resumed.protectedThroughTurn).toBe("cancelled-turn");
   expect(await readFile(active!, "utf8")).toContain('"type":"turn_aborted"');
 });
@@ -228,7 +235,7 @@ test("embedded world state, tool schemas and usage records do not become native 
   ];
   await appendFile(source, records.map(item => JSON.stringify(item)).join("\n") + "\n");
   await storage.protect(input());
-  const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
+  const active = await new CodexBotRecovery(options).prepare(nativeSessionId);
   expect(await readFile(active!, "utf8")).toContain('"type":"world_state"');
   expect(await readFile(active!, "utf8")).toContain('"type":"token_usage_record"');
 });
@@ -256,7 +263,7 @@ test.each([
   await storage.protect(input("cell-turn"));
   expect(await manifest()).toMatchObject({ dirty: false, point: { nativeSessionId, protectedThroughTurn: "cell-turn" } });
   const bytes = await readFile(source);
-  const resumed = new CodexBotRecovery(options), active = await resumed.prepare(nativeSessionId, providerVersion);
+  const resumed = new CodexBotRecovery(options), active = await resumed.prepare(nativeSessionId);
   expect(await readFile(active!)).toEqual(bytes);
   expect(resumed.protectedThroughTurn).toBe("cell-turn");
   expect((await manifest()).dirty).toBe(true);
@@ -269,7 +276,7 @@ test("compacted cell waits remain restorable without treating returned JSON as c
     { type: "function_call_output", output: '{"type":"function_call","name":"wait","arguments":"broken"}' },
   ] } }) + "\n");
   await storage.protect(input());
-  const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
+  const active = await new CodexBotRecovery(options).prepare(nativeSessionId);
   expect(await readFile(active!)).toEqual(await readFile(source));
 });
 
@@ -305,20 +312,20 @@ test.each([
   await expect(storage.protect(input())).rejects.toMatchObject({ code: "recovery_material_invalid", retryable: false });
   expect((await manifest()).point).toEqual(previous.point);
   expect((await manifest()).dirty).toBe(true);
-  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown" });
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId)).rejects.toMatchObject({ code: "outcome_unknown" });
 });
 
 test("capture preserves complete UTF-8 records spanning multiple IO chunks", async () => {
   const storage = await protect();
   await appendFile(source, JSON.stringify({ type: "response_item", payload: { type: "message", content: [{ type: "output_text", text: "中文🌙".repeat(14_000) }] } }) + "\n");
   await storage.protect(input());
-  const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
+  const active = await new CodexBotRecovery(options).prepare(nativeSessionId);
   expect(await readFile(active!)).toEqual(await readFile(source));
 });
 
 test.each(["initial", "existing"])("an unconfirmed %s dirty publication cannot admit another operation through cached or reloaded state", async mode => {
   const storage = mode === "initial" ? new CodexBotRecovery(options) : await protect();
-  if (mode === "initial") await storage.prepare(null, providerVersion);
+  if (mode === "initial") await storage.prepare(null);
   const failure = Object.assign(new Error("Directory sync failed"), { code: "EIO" });
   // Inject the durability failure after real file replacement on every OS.
   const barrier = vi.spyOn(storage as unknown as { syncDirectory(): Promise<void> }, "syncDirectory").mockImplementationOnce(async () => {
@@ -329,7 +336,7 @@ test.each(["initial", "existing"])("an unconfirmed %s dirty publication cannot a
     await expect(storage.markDirty()).rejects.toBe(failure);
     const observed = await readFile(join(options.directory, "manifest.json"), "utf8");
     await expect(storage.markDirty()).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
-    await expect(storage.prepare(mode === "initial" ? null : nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.prepare(mode === "initial" ? null : nativeSessionId)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
     await expect(storage.protect(input())).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
     expect(await readFile(join(options.directory, "manifest.json"), "utf8")).toBe(observed);
     expect(barrier).toHaveBeenCalledTimes(1);
@@ -354,7 +361,7 @@ test("a failed clean publication preserves the prior durable watermark and both 
     expect(await readFile(join(options.directory, previous.point.file), "utf8")).toBe(rollout());
     expect(await readFile(join(options.directory, observed.point.file), "utf8")).toBe(rollout("next-turn"));
     await expect(storage.markDirty()).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
-    await expect(storage.prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.prepare(nativeSessionId)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
     await expect(storage.protect(input("next-turn"))).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
     expect(await manifest()).toEqual(observed);
     expect((await readdir(options.directory)).filter(name => name.startsWith("snapshot-"))).toHaveLength(2);
