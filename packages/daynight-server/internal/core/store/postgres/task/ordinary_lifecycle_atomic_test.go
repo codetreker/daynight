@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,22 +14,32 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/google/uuid"
 )
 
 // The first operation holds the Project lock until PostgreSQL reports the
 // competing operation waiting on that lock. Both use production admission.
 func TestOrdinaryParentLifecycleSerializesCreationAndReopen(t *testing.T) {
+	db := writerStore(t)
 	for _, childOperation := range []string{"create", "reopen"} {
 		for _, parentOperation := range []string{"complete", "cancel", "delete"} {
 			for _, parentFirst := range []bool{false, true} {
 				name := fmt.Sprintf("%s_%s_parentFirst_%v", childOperation, parentOperation, parentFirst)
-				t.Run(name, func(t *testing.T) {
-					db := writerStore(t)
-					project := writerProject(t, db, 300)
-					parentID, childID := testutil.QueryID(301), testutil.QueryID(302)
+				if !t.Run(name, func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-					defer cancel()
-					_, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'task','parent','todo')`, parentID, project.ID)
+					var writes sync.WaitGroup
+					defer func() {
+						cancel()
+						writes.Wait()
+						if !t.Failed() {
+							testutil.AssertPoolReusable(t, db.Pool)
+						}
+					}()
+					projectID := uuid.NewString()
+					parentID, childID := uuid.NewString(), uuid.NewString()
+					project, err := testutil.CreateProject(ctx, db.Pool, db, projectID, "Project", "https://example.com/owner/"+projectID+".git")
+					mustOK(t, err)
+					_, err = db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'task','parent','todo')`, parentID, project.ID)
 					mustOK(t, err)
 					if childOperation == "reopen" {
 						_, err = db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,status,parent_id) VALUES($1,$2,'task','child','done',$3)`, childID, project.ID, parentID)
@@ -83,7 +94,7 @@ func TestOrdinaryParentLifecycleSerializesCreationAndReopen(t *testing.T) {
 					}
 					firstReady, firstDone, secondDone := make(chan error, 1), make(chan error, 1), make(chan error, 1)
 					release := make(chan struct{})
-					go func() {
+					writes.Go(func() {
 						completion, err := db.WriteProject(ctx, project.ID, func(scope store.ProjectWriteScope) error {
 							err := first(scope)
 							firstReady <- err
@@ -101,14 +112,17 @@ func TestOrdinaryParentLifecycleSerializesCreationAndReopen(t *testing.T) {
 							err = fmt.Errorf("first outcome: %s", completion.Outcome)
 						}
 						firstDone <- err
-					}()
+					})
 					select {
 					case err := <-firstReady:
 						mustOK(t, err)
 					case <-ctx.Done():
 						t.Fatal("first write did not reach barrier")
 					}
-					go func() { _, err := db.WriteProject(ctx, project.ID, second); secondDone <- err }()
+					writes.Go(func() {
+						_, err := db.WriteProject(ctx, project.ID, second)
+						secondDone <- err
+					})
 					waitProjectLock(t, ctx, db)
 					close(release)
 					select {
@@ -154,7 +168,9 @@ func TestOrdinaryParentLifecycleSerializesCreationAndReopen(t *testing.T) {
 							t.Fatalf("committed child: %+v", row)
 						}
 					}
-				})
+				}) {
+					return
+				}
 			}
 		}
 	}

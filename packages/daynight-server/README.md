@@ -3066,6 +3066,10 @@ completion marker afterward. Later invocations use new
 directories, preserving earlier evidence. The corresponding CI artifacts include
 these files even when validation fails.
 
+The module command runs all standard Go vet analyzers in its coverage
+invocation. The lifecycle entry separately vets both the ordinary and tagged
+builds of `cmd/daynight-server`, outside the module coverage package list.
+
 Capture preserves the same Go invocation, parameters and coverage calculation.
 File or forwarding errors fail validation. The existing command supervisor owns
 the coverage process group, with a 30-minute module bound and the existing
@@ -3085,18 +3089,24 @@ functions are exempt. Requiring both partitions to exceed 90% also requires
 their combined statement coverage to exceed 90%. The module entry selects all
 of its production packages for `-coverpkg`, preserving cross-package coverage
 within that partition. The lifecycle entry measures the command package from
-its own directory and vets its tagged tests. Neither entry relies on coverage
+its own directory and vets both command variants. Neither entry relies on coverage
 of its production code from the other job.
 
 `scripts/validation-env.sh` supplies the common race policy and an absolute-path
 unit-test Web resource overlay. The absolute replacement paths remain valid
 when the command coverage run changes directory and its fresh-process test
 builds a child from the module root. Production builds retain real Web assets.
-Module tests require isolated PostgreSQL and Redis instances; command tests
-require isolated PostgreSQL. Redis DAO fixtures use unique keys and remove them;
-preparation failures fail validation. Package concurrency stays limited to two:
-schema-isolated fixtures still share the database-wide migration advisory lock.
-Both entries clear cached test results before their coverage runs.
+Module tests require isolated PostgreSQL and Redis instances. Command tests
+require isolated PostgreSQL. Redis DAO fixtures use unique keys and remove
+them. Preparation failures fail validation. In PR CI the single module job
+runs up to four Go packages concurrently with a bounded in-memory data
+directory for its PostgreSQL service. The Store root retains its dedicated
+database, and PostgreSQL keeps its transaction and sync settings. Local,
+main, and lifecycle coverage validation keep package concurrency at two; the
+ordinary command vet uses four in PR CI. Both
+coverage entries clear cached test results before running.
+The [module throughput decision](../../.agents/notes/implemented/testing/2026-11-24-go-module-ci-throughput.md)
+records the resource and vet boundaries.
 
 Schema-stable Task DAO tests share one real Store per sequential parent test.
 Each independent case resets mutable tables and sequence state before executing
