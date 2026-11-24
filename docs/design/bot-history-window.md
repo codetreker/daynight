@@ -6,7 +6,7 @@
 
 Controller 在 `hello` 中显式声明 `botHistoryWindowVersion: 1`，服务端仅对真实 Bot Session 接纳该能力，并在 `welcome` 中回显。普通 Task 和独立 Test Session 不能通过声明能力变成 Bot。未声明能力的连接维持原协议；启用窗口后，旧 `timeline`、`inspect_page`、`entry_chunk` 完整历史读取明确返回 `upgrade_required`。
 
-`GET /api/v1/test-sessions/{sessionId}/bot-history-window` 接受 `mode=tail|before|changes`、`cursor` 和 `limit`。尾页默认 50 条，每页最多 200 条。读取复用现有 Controller content broker 的容量、超时、源水位和执行身份检查；网络等待结束后重新验证权限、完整 fence 与历史代次。离线返回不可读状态，不能用空结果代替。
+`GET /api/v1/test-sessions/{sessionId}/bot-history-window` 接受 `mode=tail|before|changes`、`cursor` 和 `limit`。尾页默认 50 条，每页最多 200 条。读取复用现有 Controller content broker 的容量、超时、源水位和执行身份检查；网络等待结束后重新验证权限、完整 fence、历史代次与检查点的源代次。离线返回不可读状态，不能用空结果代替。
 
 响应使用独立 `bot_history_window` 格式，包含完整 Controller fence、`historyEpoch`、`windowRevision`、`retainedFromSeq`、`throughSeq`、`earlierHistoryUnavailable`、分页位置及预览条目。预览带稳定 ID、序列、修订、UTF-8 字节数、裁剪和省略事实、资源 ID。`tool` 为 null 或包含工具名、命令、工作目录、状态及退出码的结构；未知字段保留 null。非工具条目的 `tool` 必须为 null。预览不提供完整原文的 `body` 或 `contentRef` 承诺。所有数字水位使用精确十进制字符串。
 
@@ -20,9 +20,11 @@ Controller 在 `hello` 中显式声明 `botHistoryWindowVersion: 1`，服务端�
 
 ## 持久检查点与引用
 
-Controller 使用原连接凭据向 `PUT /api/v1/test-sessions/{sessionId}/bot-history-window/checkpoint` 提交窗口检查点。检查点包含完整 fence、历史代次、单调窗口版本、保留边界、源事件确认水位，以及至多 500 个条目的 ID、序列、修订、摘要、资源引用和精确图片出现身份。图片出现元数据继续核验 source revision、来源摘要、part 与调用位置，不能仅凭 entry ID 准入采集。预览正文仍在本机。
+Controller 使用原连接凭据向 `PUT /api/v1/test-sessions/{sessionId}/bot-history-window/checkpoint` 提交窗口检查点。检查点包含完整 fence、历史代次、单调窗口版本、保留边界、必需的 `sourceEpoch` 与源事件确认水位 `sourceThrough`，以及至多 500 个条目的 ID、序列、修订、摘要、资源引用和精确图片出现身份。`sourceEpoch` 为规范 UUID，随检查点持久化并在提交回执中回显。图片出现元数据继续核验 source revision、来源摘要、part 与调用位置，不能仅凭 entry ID 准入采集。预览正文仍在本机。
 
-更新在原 Session 锁和数据库事务内验证当前 Bot、连接和源水位，并保存检查点及窗口引用。相同版本只能重现相同内容；旧版本、回退低水位、已淘汰条目的迟到修订及不一致资源必须拒绝。窗口全部淘汰时仍保留已观察上界与省略事实。连接或历史身份变化要求重新建立相符检查点，不能混用旧响应。
+更新在原 Session 锁和数据库事务内验证当前 Bot、连接、源代次和源水位，并保存检查点及窗口引用。相同版本只能重现相同内容；旧版本、回退低水位、已淘汰条目的迟到修订及不一致资源必须拒绝。窗口全部淘汰时仍保留已观察上界与省略事实。连接或历史身份变化要求重新建立相符检查点，不能混用旧响应。
+
+同一连接的 `source_reset` 可以改变源代次并从零重新计数，而逻辑历史代次保持不变。仅比较数字水位无法区分这些来源：迟到的旧源提交必须拒绝，旧的持久检查点不能在新源达到相同计数后重新用于窗口读取或图片准入。新源须重新提交匹配当前源代次的检查点；可以重新绑定同一逻辑窗口，但不能借此回退窗口版本、保留边界或改写同版本内容。读取在等待 Controller 响应期间发生源切换时要求重置，不能把等待前的响应用于新检查点。游标仍按逻辑历史连续性判断，不把源事件重新计数等同于展示历史清空。
 
 窗口资源采用独立引用用途，与待决操作、审批、原生恢复及归档引用分开。窗口推进只释放归属于展示历史的引用。资源仍被其他所有者引用或有在途读取租约时保留字节；清理不削弱原有资源授权。普通 Task 归档继续沿用自身保留规则。
 

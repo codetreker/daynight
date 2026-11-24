@@ -70,11 +70,13 @@ export type BotHistoryCheckpointEntry = {
 };
 
 export type BotHistoryCheckpoint = BotHistoryWindowBoundary & {
+  /** Source watermarks are comparable only within the same source epoch. */
+  readonly sourceEpoch: string;
   readonly sourceThrough: string;
   readonly entries: readonly BotHistoryCheckpointEntry[];
 };
 
-export type BotHistoryCheckpointReceipt = BotHistoryWindowBoundary & { readonly sourceThrough: string; readonly cleanupPending: boolean };
+export type BotHistoryCheckpointReceipt = BotHistoryWindowBoundary & { readonly sourceEpoch: string; readonly sourceThrough: string; readonly cleanupPending: boolean };
 
 const boundaryKeys = ["sessionId", "testExecutionId", "executionGeneration", "connectionEpoch", "botHistoryWindowVersion", "historyEpoch", "windowRevision", "retainedFromSeq", "throughSeq", "earlierHistoryUnavailable"] as const;
 const fail = (): never => { throw new Error("Invalid Bot history window protocol value."); };
@@ -139,7 +141,7 @@ export const parseBotHistoryWindowRequest = (value: unknown): BotHistoryWindowRe
 };
 
 export const parseBotHistoryCheckpoint = (value: unknown): BotHistoryCheckpoint => {
-  const o = imageObject(value, [...boundaryKeys, "sourceThrough", "entries"]), state = boundary(o);
+  const o = imageObject(value, [...boundaryKeys, "sourceEpoch", "sourceThrough", "entries"]), state = boundary(o);
   if (!Array.isArray(o.entries) || o.entries.length > BOT_HISTORY_WINDOW_ENTRIES || new TextEncoder().encode(JSON.stringify(value)).length > 2_097_152) return fail();
   const entries = o.entries.map((value): BotHistoryCheckpointEntry => {
     const item = imageObject(value, ["entryId", "entrySeq", "revision", "sha256", "resourceIds", "imageOccurrences"]);
@@ -158,10 +160,10 @@ export const parseBotHistoryCheckpoint = (value: unknown): BotHistoryCheckpoint 
       imageIds.add(occurrence.imageId);
     }
   }
-  return { ...state, sourceThrough: imageDecimal(o.sourceThrough, true), entries };
+  return { ...state, sourceEpoch: imageId(o.sourceEpoch), sourceThrough: imageDecimal(o.sourceThrough, true), entries };
 };
 
 export const parseBotHistoryCheckpointReceipt = (value: unknown): BotHistoryCheckpointReceipt => {
-  const o = imageObject(value, [...boundaryKeys, "sourceThrough", "cleanupPending"]);
-  return { ...boundary(o), sourceThrough: imageDecimal(o.sourceThrough, true), cleanupPending: bool(o.cleanupPending) };
+  const o = imageObject(value, [...boundaryKeys, "sourceEpoch", "sourceThrough", "cleanupPending"]);
+  return { ...boundary(o), sourceEpoch: imageId(o.sourceEpoch), sourceThrough: imageDecimal(o.sourceThrough, true), cleanupPending: bool(o.cleanupPending) };
 };

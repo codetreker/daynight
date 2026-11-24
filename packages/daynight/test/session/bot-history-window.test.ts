@@ -63,7 +63,7 @@ describe("Bot history window protocol", () => {
   });
 
   it("validates complete checkpoint references without coupling source and entry counters", async () => {
-    const checkpoint = { ...boundary(), sourceThrough: "99", entries: [{ entryId: id, entrySeq: entry().entrySeq, revision: "2", sha256: await botHistoryWindowEntryDigest(entry()), resourceIds: [id], imageOccurrences: [] }] };
+    const checkpoint = { ...boundary(), sourceEpoch: "00000000-0000-4000-8000-000000000002", sourceThrough: "99", entries: [{ entryId: id, entrySeq: entry().entrySeq, revision: "2", sha256: await botHistoryWindowEntryDigest(entry()), resourceIds: [id], imageOccurrences: [] }] };
     expect(parseBotHistoryCheckpoint(checkpoint)).toEqual(checkpoint);
     const occurrence = { imageId: id, entryId: id, container: "content", partId: id, sourceRevision: "2", sourceTextSha256: "a".repeat(64), callId: null, sourceKey: "image" };
     const withImage = { ...checkpoint, entries: [{ ...checkpoint.entries[0], imageOccurrences: [occurrence] }] };
@@ -76,9 +76,17 @@ describe("Bot history window protocol", () => {
     expect(() => parseBotHistoryCheckpoint({ ...checkpoint, entries: [checkpoint.entries[0], checkpoint.entries[0]] })).toThrow();
     const empty = { ...checkpoint, retainedFromSeq: null, entries: [] };
     expect(parseBotHistoryCheckpoint(empty)).toEqual(empty);
-    const receipt = { ...boundary(), sourceThrough: "99", cleanupPending: true };
+    const receipt = { ...boundary(), sourceEpoch: "00000000-0000-4000-8000-000000000002", sourceThrough: "99", cleanupPending: true };
     expect(parseBotHistoryCheckpointReceipt(receipt)).toEqual(receipt);
     expect(() => parseBotHistoryCheckpointReceipt({ ...receipt, cleanupPending: undefined })).toThrow();
+    const { sourceEpoch: _checkpointSource, ...missingCheckpointSource } = checkpoint;
+    const { sourceEpoch: _receiptSource, ...missingReceiptSource } = receipt;
+    expect(() => parseBotHistoryCheckpoint(missingCheckpointSource)).toThrow();
+    expect(() => parseBotHistoryCheckpointReceipt(missingReceiptSource)).toThrow();
+    for (const sourceEpoch of [undefined, null, "", "old-source", "AAAAAAAA-0000-4000-8000-000000000002", 2]) {
+      expect(() => parseBotHistoryCheckpoint({ ...checkpoint, sourceEpoch })).toThrow();
+      expect(() => parseBotHistoryCheckpointReceipt({ ...receipt, sourceEpoch })).toThrow();
+    }
   });
 
   it.each(["tail", "before", "changes"] as const)("keeps %s reads in a separate request variant", (mode) => {

@@ -91,12 +91,15 @@ type BotHistoryCheckpointEntry struct {
 
 type BotHistoryCheckpoint struct {
 	BotHistoryWindowBoundary
+	// SourceEpoch qualifies the source watermark independently of logical history.
+	SourceEpoch   string                      `json:"sourceEpoch"`
 	SourceThrough string                      `json:"sourceThrough"`
 	Entries       []BotHistoryCheckpointEntry `json:"entries"`
 }
 
 type BotHistoryCheckpointReceipt struct {
 	BotHistoryWindowBoundary
+	SourceEpoch    string `json:"sourceEpoch"`
 	SourceThrough  string `json:"sourceThrough"`
 	CleanupPending bool   `json:"cleanupPending"`
 }
@@ -209,6 +212,7 @@ func DecodeBotHistoryWindowRequest(data []byte) (BotHistoryWindowRequest, error)
 
 func DecodeBotHistoryCheckpoint(data []byte) (BotHistoryCheckpoint, error) {
 	fields := extend(botWindowBoundarySchema, schema{
+		"sourceEpoch":   identifier,
 		"sourceThrough": zeroSequence,
 		"entries": many(nested(schema{
 			"entryId": identifier, "entrySeq": sequence, "revision": sequence,
@@ -242,7 +246,7 @@ func DecodeBotHistoryCheckpoint(data []byte) (BotHistoryCheckpoint, error) {
 }
 
 func DecodeBotHistoryCheckpointReceipt(data []byte) (BotHistoryCheckpointReceipt, error) {
-	v, err := decodeBotWindow[BotHistoryCheckpointReceipt](data, extend(botWindowBoundarySchema, schema{"sourceThrough": zeroSequence, "cleanupPending": boolean}))
+	v, err := decodeBotWindow[BotHistoryCheckpointReceipt](data, extend(botWindowBoundarySchema, schema{"sourceEpoch": identifier, "sourceThrough": zeroSequence, "cleanupPending": boolean}))
 	if err != nil || !validBotWindowBoundary(v.BotHistoryWindowBoundary) {
 		return BotHistoryCheckpointReceipt{}, errInvalid
 	}

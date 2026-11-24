@@ -14,9 +14,12 @@ retention instead of actual references and active readers.
 
 Use an explicitly negotiated Bot window capability with separate preview and
 checkpoint formats. A checkpoint stores the execution identity, history epoch,
-monotonic revision, retained boundaries, entry digests and resource references;
+source epoch and watermark, monotonic revision, retained boundaries, entry digests and resource references;
 the Controller keeps display bytes. Reads validate the returned previews against
-the committed checkpoint and recheck authorization after the network wait.
+the committed checkpoint and recheck authorization and source identity after the
+network wait. A source reset requires a checkpoint bound to the new source even
+when its numeric watermark reaches the old value. Rebinding the same logical
+window preserves its revision and retention constraints.
 
 Window cursors bind the complete execution identity and retained range. A
 changed revision triggers a bounded scan that includes revised existing entries;
@@ -47,6 +50,12 @@ original Controller remains the source of display bytes.
 **Use only newly allocated entry sequences for incremental reads.** Revisions
 of existing IDs would disappear from the result. A bounded rescan avoids a
 second durable change log while preserving those updates.
+
+**Bind checkpoints only to the source counter.** A source reset can reuse that
+counter without changing the connection fence or logical history epoch. Old
+publications and saved metadata could then pass admission again. Persisting and
+checking the source epoch distinguishes event generations without treating a
+source reset as display-history eviction.
 
 ## Consequences
 

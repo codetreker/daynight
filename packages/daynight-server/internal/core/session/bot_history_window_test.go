@@ -17,7 +17,7 @@ func windowReadFixture(t *testing.T) (sp.BotHistoryCheckpoint, []sp.BotHistoryWi
 	t.Helper()
 	low, high := "10", "30"
 	boundary := sp.BotHistoryWindowBoundary{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: uuid.NewString(), ExecutionGeneration: "2"}, ConnectionEpoch: "3"}, BotHistoryWindowVersion: 1, HistoryEpoch: uuid.NewString(), WindowRevision: "5", RetainedFromSeq: &low, ThroughSeq: &high, EarlierHistoryUnavailable: true}
-	cp := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: boundary, SourceThrough: "7", Entries: []sp.BotHistoryCheckpointEntry{}}
+	cp := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: boundary, SourceEpoch: uuid.NewString(), SourceThrough: "7", Entries: []sp.BotHistoryCheckpointEntry{}}
 	entries := []sp.BotHistoryWindowEntry{}
 	for _, sequence := range []string{"10", "20", "30"} {
 		size := "4"
@@ -353,14 +353,14 @@ func (d *windowReadDAO) BotHistoryCheckpoint(ctx context.Context, id string) ([]
 }
 
 func TestBotWindowReaderRechecksCommittedWindowAndAuthority(t *testing.T) {
-	for _, scenario := range []string{"success", "revoked", "checkpoint advanced", "identity changed", "controller reset", "wrong body", "budget"} {
+	for _, scenario := range []string{"success", "revoked", "checkpoint advanced", "identity changed", "source changed", "controller reset", "wrong body", "budget"} {
 		t.Run(scenario, func(t *testing.T) {
 			cp, entries := windowReadFixture(t)
 			page := windowReadPage(cp, entries[1:]...)
 			now := time.Now()
 			expiry := now.Add(time.Hour)
 			bot := uuid.NewString()
-			r := &record{BotID: &bot, SourceSeq: 7, Snapshot: sp.Snapshot{ControllerFence: cp.ControllerFence, HistoryEpoch: cp.HistoryEpoch, ConnectionState: "connected", Lifecycle: "active", Synchronized: true}, Live: &liveSession{Synced: true, BotHistoryWindowVersion: 1}, LastSeen: &now, ConnectionExpiry: &expiry}
+			r := &record{BotID: &bot, SourceEpoch: &cp.SourceEpoch, SourceSeq: 7, Snapshot: sp.Snapshot{ControllerFence: cp.ControllerFence, HistoryEpoch: cp.HistoryEpoch, ConnectionState: "connected", Lifecycle: "active", Synchronized: true}, Live: &liveSession{Synced: true, BotHistoryWindowVersion: 1}, LastSeen: &now, ConnectionExpiry: &expiry}
 			s := &Execution{Engine: NewEngine(nil)}
 			principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 			reads, checkpoints := 0, 0
@@ -382,6 +382,9 @@ func TestBotWindowReaderRechecksCommittedWindowAndAuthority(t *testing.T) {
 				if reads == 4 {
 					if scenario == "checkpoint advanced" {
 						cp.WindowRevision = "6"
+					}
+					if scenario == "source changed" {
+						cp.SourceEpoch = uuid.NewString()
 					}
 					if scenario == "identity changed" {
 						cp.HistoryEpoch = uuid.NewString()
@@ -438,7 +441,7 @@ func TestBotWindowReaderRechecksCommittedWindowAndAuthority(t *testing.T) {
 			}
 			op.Finish(store.TransactionCommitted)
 			got := <-done
-			code := map[string]string{"revoked": "forbidden", "checkpoint advanced": "reset_required", "identity changed": "reset_required", "controller reset": "reset_required", "wrong body": "content_changed", "budget": "content_unavailable"}[scenario]
+			code := map[string]string{"revoked": "forbidden", "checkpoint advanced": "reset_required", "identity changed": "reset_required", "source changed": "reset_required", "controller reset": "reset_required", "wrong body": "content_changed", "budget": "content_unavailable"}[scenario]
 			if code != "" {
 				botFault(t, got.err, code)
 				return

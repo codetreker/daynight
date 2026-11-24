@@ -156,7 +156,7 @@ func (s *Execution) ReadBotHistoryWindow(ctx context.Context, principal model.Pr
 		if err != nil {
 			return err
 		}
-		if current.ControllerFence != initial.ControllerFence || current.HistoryEpoch != initial.HistoryEpoch {
+		if current.ControllerFence != initial.ControllerFence || current.HistoryEpoch != initial.HistoryEpoch || current.SourceEpoch != initial.SourceEpoch {
 			return botWindowReset(current.BotHistoryWindowBoundary)
 		}
 		if readErr != nil {

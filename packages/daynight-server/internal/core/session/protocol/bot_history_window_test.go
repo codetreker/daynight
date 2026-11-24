@@ -169,9 +169,9 @@ func TestBotWindowToolMetadataPreservesUnknownsAndBounds(t *testing.T) {
 }
 
 func TestBotWindowCheckpointClosureAndRequest(t *testing.T) {
-	checkpoint := BotHistoryCheckpoint{BotHistoryWindowBoundary: windowBoundary(), SourceThrough: "99", Entries: []BotHistoryCheckpointEntry{{EntryID: relayID, EntrySeq: "9007199254740993", Revision: "2", SHA256: strings.Repeat("a", 64), ResourceIDs: []string{relayID}, ImageOccurrences: []ImageOccurrence{}}}}
-	if _, err := DecodeBotHistoryCheckpoint(windowJSON(t, checkpoint)); err != nil {
-		t.Fatal(err)
+	checkpoint := BotHistoryCheckpoint{BotHistoryWindowBoundary: windowBoundary(), SourceEpoch: "00000000-0000-4000-8000-000000000002", SourceThrough: "99", Entries: []BotHistoryCheckpointEntry{{EntryID: relayID, EntrySeq: "9007199254740993", Revision: "2", SHA256: strings.Repeat("a", 64), ResourceIDs: []string{relayID}, ImageOccurrences: []ImageOccurrence{}}}}
+	if parsed, err := DecodeBotHistoryCheckpoint(windowJSON(t, checkpoint)); err != nil || !reflect.DeepEqual(parsed, checkpoint) {
+		t.Fatalf("checkpoint round trip: %#v %v", parsed, err)
 	}
 	occurrence := ImageOccurrence{ImageID: relayID, EntryID: relayID, Container: "content", PartID: windowString(relayID), SourceRevision: windowString("2"), SourceTextSHA256: windowString(strings.Repeat("a", 64)), SourceKey: "image"}
 	checkpoint.Entries[0].ImageOccurrences = []ImageOccurrence{occurrence}
@@ -187,7 +187,7 @@ func TestBotWindowCheckpointClosureAndRequest(t *testing.T) {
 		t.Fatal("accepted duplicate image occurrence")
 	}
 	checkpoint.Entries[0].ImageOccurrences = []ImageOccurrence{}
-	receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: checkpoint.BotHistoryWindowBoundary, SourceThrough: checkpoint.SourceThrough}
+	receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: checkpoint.BotHistoryWindowBoundary, SourceEpoch: checkpoint.SourceEpoch, SourceThrough: checkpoint.SourceThrough}
 	if _, err := DecodeBotHistoryCheckpointReceipt(windowJSON(t, receipt)); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestBotWindowCheckpointClosureAndRequest(t *testing.T) {
 
 func TestBotWindowCheckpointReceiptRequiresCompleteCommitFacts(t *testing.T) {
 	for _, pending := range []bool{false, true} {
-		receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceThrough: "9007199254740997", CleanupPending: pending}
+		receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceEpoch: "00000000-0000-4000-8000-000000000002", SourceThrough: "9007199254740997", CleanupPending: pending}
 		parsed, err := DecodeBotHistoryCheckpointReceipt(windowJSON(t, receipt))
 		if err != nil || !reflect.DeepEqual(parsed, receipt) {
 			t.Fatalf("cleanup pending %v: %#v %v", pending, parsed, err)
@@ -239,7 +239,7 @@ func TestBotWindowCheckpointReceiptRequiresCompleteCommitFacts(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceThrough: "9007199254740997", CleanupPending: true}
+			receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceEpoch: "00000000-0000-4000-8000-000000000002", SourceThrough: "9007199254740997", CleanupPending: true}
 			var input map[string]any
 			if err := json.Unmarshal(windowJSON(t, receipt), &input); err != nil {
 				t.Fatal(err)
@@ -248,6 +248,36 @@ func TestBotWindowCheckpointReceiptRequiresCompleteCommitFacts(t *testing.T) {
 			parsed, err := DecodeBotHistoryCheckpointReceipt(windowJSON(t, input))
 			if err == nil || !reflect.DeepEqual(parsed, BotHistoryCheckpointReceipt{}) {
 				t.Fatalf("unusable receipt exposed commit facts: %#v %v", parsed, err)
+			}
+		})
+	}
+}
+
+func TestBotWindowCheckpointSourceEpochIsRequired(t *testing.T) {
+	checkpoint := BotHistoryCheckpoint{BotHistoryWindowBoundary: windowBoundary(), SourceEpoch: "00000000-0000-4000-8000-000000000002", SourceThrough: "99", Entries: []BotHistoryCheckpointEntry{}}
+	checkpoint.RetainedFromSeq = nil
+	receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: checkpoint.BotHistoryWindowBoundary, SourceEpoch: checkpoint.SourceEpoch, SourceThrough: checkpoint.SourceThrough}
+	for name, value := range map[string]any{"checkpoint": checkpoint, "receipt": receipt} {
+		t.Run(name, func(t *testing.T) {
+			var input map[string]any
+			if err := json.Unmarshal(windowJSON(t, value), &input); err != nil {
+				t.Fatal(err)
+			}
+			reject := func() {
+				data := windowJSON(t, input)
+				if name == "checkpoint" {
+					if parsed, err := DecodeBotHistoryCheckpoint(data); err == nil || !reflect.DeepEqual(parsed, BotHistoryCheckpoint{}) {
+						t.Fatalf("accepted checkpoint without valid source identity: %#v %v", parsed, err)
+					}
+				} else if parsed, err := DecodeBotHistoryCheckpointReceipt(data); err == nil || !reflect.DeepEqual(parsed, BotHistoryCheckpointReceipt{}) {
+					t.Fatalf("accepted receipt without valid source identity: %#v %v", parsed, err)
+				}
+			}
+			delete(input, "sourceEpoch")
+			reject()
+			for _, invalid := range []any{nil, "", "old-source", "AAAAAAAA-0000-4000-8000-000000000002", 2} {
+				input["sourceEpoch"] = invalid
+				reject()
 			}
 		})
 	}

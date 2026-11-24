@@ -170,6 +170,7 @@ func TestBotWindowCaptureUsesExactOccurrenceAndRetiresLateCompletion(t *testing.
 	f.r.Live.BotHistoryWindowVersion = 1
 	in := checkpointFixture()
 	in.ControllerFence = f.r.Snapshot.ControllerFence
+	f.r.SourceEpoch = &in.SourceEpoch
 	f.r.Snapshot.HistoryEpoch = in.HistoryEpoch
 	f.r.SourceSeq = 4
 	part, revision, digest := uuid.NewString(), "1", hashBytes([]byte("source"))

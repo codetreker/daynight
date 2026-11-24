@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -48,6 +49,16 @@ func TestBotHistoryWindowCheckpointAndReferenceTransaction(t *testing.T) {
 	id, _ := prepareImageSession(t, db)
 	resource := uuid.NewString()
 	ctx := t.Context()
+	sourceEpoch := uuid.NewString()
+	mustQueryExec(t, db, `UPDATE task_sessions SET source_epoch=$2 WHERE id=$1`, id, sourceEpoch)
+	checkpoint := sp.BotHistoryCheckpoint{
+		BotHistoryWindowBoundary: sp.BotHistoryWindowBoundary{WindowRevision: "1"},
+		SourceEpoch:              sourceEpoch, SourceThrough: "0", Entries: []sp.BotHistoryCheckpointEntry{},
+	}
+	saved, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
 		dao := base.(store.BotHistoryWindowDAO)
 		if _, err := dao.BotHistoryCheckpoint(ctx, id); !errors.Is(err, model.ErrNotFound) {
@@ -56,16 +67,21 @@ func TestBotHistoryWindowCheckpointAndReferenceTransaction(t *testing.T) {
 		if err := base.(store.SessionResourceDAO).InsertSessionResource(ctx, store.SessionResourceRecord{SessionID: id, Resource: sp.Resource{ResourceID: resource, Status: "available", Name: "original"}}); err != nil {
 			return err
 		}
-		return dao.SaveBotHistoryCheckpoint(ctx, id, []byte(`{"windowRevision":"1"}`))
+		return dao.SaveBotHistoryCheckpoint(ctx, id, saved)
 	})
 	cause := errors.New("rollback checkpoint with its reference")
-	_, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+	checkpoint.WindowRevision, checkpoint.SourceEpoch = "2", uuid.NewString()
+	replacement, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.WriteSession(ctx, func(scope store.SessionScope) error {
 		base := scope.SessionDAO()
 		if _, err := base.LockSession(ctx, id); err != nil {
 			return err
 		}
 		dao := base.(store.BotHistoryWindowDAO)
-		if err := dao.SaveBotHistoryCheckpoint(ctx, id, []byte(`{"windowRevision":"2"}`)); err != nil {
+		if err := dao.SaveBotHistoryCheckpoint(ctx, id, replacement); err != nil {
 			return err
 		}
 		if err := base.(store.SessionResourceDAO).AddSessionResourceReference(ctx, store.SessionResourceReference{SessionID: id, ResourceID: resource, Kind: "bot_window", ReferenceID: "entry"}); err != nil {
@@ -85,8 +101,16 @@ func TestBotHistoryWindowCheckpointAndReferenceTransaction(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if string(raw) != `{"windowRevision": "1"}` {
-			t.Fatal("rollback changed checkpoint", string(raw))
+		var persisted sp.BotHistoryCheckpoint
+		if err = json.Unmarshal(raw, &persisted); err != nil {
+			return err
+		}
+		record, err := base.LockSession(ctx, id)
+		if err != nil {
+			return err
+		}
+		if record.SourceEpoch == nil || *record.SourceEpoch != sourceEpoch || persisted.SourceEpoch != *record.SourceEpoch || persisted.SourceThrough != "0" || persisted.WindowRevision != "1" {
+			t.Fatal("rollback changed the persisted checkpoint source identity", persisted, record.SourceEpoch)
 		}
 		refs, err := dao.SessionResourceReferences(ctx, id, "bot_window")
 		if err != nil {

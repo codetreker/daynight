@@ -100,8 +100,8 @@ func TestBotWindowCheckpointHTTPUsesControllerCredentialAndExactBody(t *testing.
 	f := newTestSessionRouteFixture(t)
 	f.auth.ExpectCalls(0)
 	boundary := windowHTTPBoundary()
-	checkpoint := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: boundary, SourceThrough: "0", Entries: []sp.BotHistoryCheckpointEntry{}}
-	receipt := sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: boundary, SourceThrough: "0", CleanupPending: true}
+	checkpoint := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: boundary, SourceEpoch: uuid.NewString(), SourceThrough: "0", Entries: []sp.BotHistoryCheckpointEntry{}}
+	receipt := sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: boundary, SourceEpoch: checkpoint.SourceEpoch, SourceThrough: "0", CleanupPending: true}
 	credential := "dncontroller_window-original"
 	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
 		c.CommitBotHistoryCheckpoint = func(ctx context.Context, token string, in sp.BotHistoryCheckpoint) (sp.BotHistoryCheckpointReceipt, error) {
@@ -132,6 +132,8 @@ func TestBotWindowCheckpointHTTPUsesControllerCredentialAndExactBody(t *testing.
 		modify             func(*http.Request)
 	}{
 		{"invalid body", path, "{}", nil},
+		{"missing source epoch", path, strings.Replace(body, `"sourceEpoch":"`+checkpoint.SourceEpoch+`",`, "", 1), nil},
+		{"empty source epoch", path, strings.Replace(body, checkpoint.SourceEpoch, "", 1), nil},
 		{"unknown field", path, strings.TrimSuffix(body, "}") + `,"unexpected":true}`, nil},
 		{"wrong path", strings.Replace(path, boundary.SessionID, uuid.NewString(), 1), body, nil},
 		{"noncanonical path", strings.Replace(path, boundary.SessionID, strings.ToUpper(boundary.SessionID), 1), body, nil},

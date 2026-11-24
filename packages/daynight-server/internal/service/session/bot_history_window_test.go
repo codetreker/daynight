@@ -32,7 +32,7 @@ func TestBotCheckpointServicePreservesAdmissionAndCompletionFailures(t *testing.
 					ControllerFence:         sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"},
 					BotHistoryWindowVersion: 1, HistoryEpoch: uuid.NewString(), WindowRevision: "1",
 				},
-				SourceThrough: "0", Entries: []sp.BotHistoryCheckpointEntry{},
+				SourceEpoch: uuid.NewString(), SourceThrough: "0", Entries: []sp.BotHistoryCheckpointEntry{},
 			}
 			refusal := &model.Fault{Code: "unauthenticated", Message: "Controller authority was revoked."}
 			var callbackError error = refusal
@@ -155,8 +155,8 @@ func TestBotCheckpointReceiptSurvivesReclamationFailure(t *testing.T) {
 	for _, point := range []string{"success", "commit rejected", "commit unknown", "cleanup failed", "reader active"} {
 		t.Run(point, func(t *testing.T) {
 			ctx := t.Context()
-			input := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: sp.BotHistoryWindowBoundary{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "original-session"}}, WindowRevision: "2"}, SourceThrough: "9"}
-			receipt := sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: input.BotHistoryWindowBoundary, SourceThrough: input.SourceThrough}
+			input := sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: sp.BotHistoryWindowBoundary{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "original-session"}}, WindowRevision: "2"}, SourceEpoch: uuid.NewString(), SourceThrough: "9"}
+			receipt := sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: input.BotHistoryWindowBoundary, SourceEpoch: input.SourceEpoch, SourceThrough: input.SourceThrough}
 			var calls []string
 			var commitError error
 			if point == "commit rejected" {

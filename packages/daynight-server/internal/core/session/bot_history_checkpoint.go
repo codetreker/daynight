@@ -74,7 +74,7 @@ func readBotHistoryCheckpoint(ctx context.Context, tx *operationTx, r *record) (
 	if err != nil {
 		return v, fault("source_corrupt", "The Bot history checkpoint is invalid.")
 	}
-	if v.ControllerFence != r.Snapshot.ControllerFence || v.HistoryEpoch != r.Snapshot.HistoryEpoch || v.SourceThrough != decimal(r.SourceSeq) {
+	if v.ControllerFence != r.Snapshot.ControllerFence || v.HistoryEpoch != r.Snapshot.HistoryEpoch || r.SourceEpoch == nil || v.SourceEpoch != *r.SourceEpoch || v.SourceThrough != decimal(r.SourceSeq) {
 		return v, fault("history_unavailable", "The current Bot history checkpoint has not been published.")
 	}
 	return v, nil
@@ -116,7 +116,7 @@ func (s *Execution) CommitBotHistoryCheckpoint(ctx context.Context, credential s
 		if r.BotID == nil || r.Live == nil || r.Live.BotHistoryWindowVersion != sp.BotHistoryWindowVersion {
 			return fault("upgrade_required", "A negotiated Bot history window is required.")
 		}
-		if r.Snapshot.Lifecycle != "active" || in.HistoryEpoch != r.Snapshot.HistoryEpoch || in.SourceThrough != decimal(r.SourceSeq) {
+		if r.Snapshot.Lifecycle != "active" || in.HistoryEpoch != r.Snapshot.HistoryEpoch || r.SourceEpoch == nil || in.SourceEpoch != *r.SourceEpoch || in.SourceThrough != decimal(r.SourceSeq) {
 			return fault("reset_required", "The Bot history source changed before publication.")
 		}
 		dao, err := botHistoryDAO(tx)
@@ -147,7 +147,7 @@ func (s *Execution) CommitBotHistoryCheckpoint(ctx context.Context, credential s
 	if err != nil {
 		return sp.BotHistoryCheckpointReceipt{}, err
 	}
-	return sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: in.BotHistoryWindowBoundary, SourceThrough: in.SourceThrough}, nil
+	return sp.BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: in.BotHistoryWindowBoundary, SourceEpoch: in.SourceEpoch, SourceThrough: in.SourceThrough}, nil
 }
 
 func validateBotHistoryCheckpointAdvance(old, next sp.BotHistoryCheckpoint) error {
@@ -158,9 +158,10 @@ func validateBotHistoryCheckpointAdvance(old, next sp.BotHistoryCheckpoint) erro
 		return fault("content_changed", "The Bot history window revision moved backwards.")
 	}
 	if next.WindowRevision == old.WindowRevision {
-		// Reconnection may rebind the same logical checkpoint to a new fence.
+		// Reconnection and source reset may rebind the same logical checkpoint.
 		copy := old
 		copy.ControllerFence = next.ControllerFence
+		copy.SourceEpoch = next.SourceEpoch
 		copy.SourceThrough = next.SourceThrough
 		if !jsonEqual(encode(copy), encode(next)) {
 			return fault("content_changed", "A Bot history window revision has different content.")
@@ -308,6 +309,9 @@ func retireEvictedBotCapture(ctx context.Context, tx *operationTx, r *record, ca
 		if _, pending := r.Live.PendingInteractions[capture.Request.Occurrence.EntryID]; pending {
 			return false, nil
 		}
+	}
+	if r.SourceEpoch == nil || checkpoint.SourceEpoch != *r.SourceEpoch {
+		return false, fault("history_unavailable", "The current Bot history checkpoint has not been published.")
 	}
 	for _, entry := range checkpoint.Entries {
 		for _, occurrence := range entry.ImageOccurrences {

@@ -19,11 +19,11 @@ func hashBytes(raw []byte) string { value := sha256.Sum256(raw); return hex.Enco
 
 func checkpointFixture() sp.BotHistoryCheckpoint {
 	low, through := "2", "3"
-	return sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: sp.BotHistoryWindowBoundary{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, BotHistoryWindowVersion: 1, HistoryEpoch: uuid.NewString(), WindowRevision: "2", RetainedFromSeq: &low, ThroughSeq: &through, EarlierHistoryUnavailable: true}, SourceThrough: "4", Entries: []sp.BotHistoryCheckpointEntry{{EntryID: uuid.NewString(), EntrySeq: "2", Revision: "1", SHA256: hashBytes([]byte("first")), ResourceIDs: []string{}, ImageOccurrences: []sp.ImageOccurrence{}}, {EntryID: uuid.NewString(), EntrySeq: "3", Revision: "1", SHA256: hashBytes([]byte("last")), ResourceIDs: []string{}, ImageOccurrences: []sp.ImageOccurrence{}}}}
+	return sp.BotHistoryCheckpoint{BotHistoryWindowBoundary: sp.BotHistoryWindowBoundary{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, BotHistoryWindowVersion: 1, HistoryEpoch: uuid.NewString(), WindowRevision: "2", RetainedFromSeq: &low, ThroughSeq: &through, EarlierHistoryUnavailable: true}, SourceEpoch: uuid.NewString(), SourceThrough: "4", Entries: []sp.BotHistoryCheckpointEntry{{EntryID: uuid.NewString(), EntrySeq: "2", Revision: "1", SHA256: hashBytes([]byte("first")), ResourceIDs: []string{}, ImageOccurrences: []sp.ImageOccurrence{}}, {EntryID: uuid.NewString(), EntrySeq: "3", Revision: "1", SHA256: hashBytes([]byte("last")), ResourceIDs: []string{}, ImageOccurrences: []sp.ImageOccurrence{}}}}
 }
 
 func TestBotHistoryCheckpointAdvance(t *testing.T) {
-	for _, kind := range []string{"repeat", "fence", "advance", "epoch", "backwards revision", "changed same revision", "backwards low", "backwards through", "forgot eviction", "entry sequence", "late revision", "same revision hash", "resurrect", "empty then resurrect"} {
+	for _, kind := range []string{"repeat", "fence", "source rebind", "source rebind changed content", "source rebind regression", "advance", "epoch", "backwards revision", "changed same revision", "backwards low", "backwards through", "forgot eviction", "entry sequence", "late revision", "same revision hash", "resurrect", "empty then resurrect"} {
 		t.Run(kind, func(t *testing.T) {
 			old := checkpointFixture()
 			next, _ := sp.DecodeBotHistoryCheckpoint(encode(old))
@@ -37,6 +37,17 @@ func TestBotHistoryCheckpointAdvance(t *testing.T) {
 				next = old
 				next.ConnectionEpoch = "2"
 				bad = false
+			case "source rebind", "source rebind changed content", "source rebind regression":
+				next.SourceEpoch = uuid.NewString()
+				next.SourceThrough = "0"
+				next.WindowRevision = old.WindowRevision
+				bad = kind != "source rebind"
+				if kind == "source rebind changed content" {
+					next.Entries[0].Revision = "2"
+				}
+				if kind == "source rebind regression" {
+					next.WindowRevision = "1"
+				}
 			case "advance":
 				next.Entries = next.Entries[1:]
 				next.RetainedFromSeq = &next.Entries[0].EntrySeq
@@ -118,7 +129,7 @@ func (d *checkpointRuleDAO) QueueBotHistoryReclaim(ctx context.Context, session,
 }
 
 func TestBotHistoryCheckpointCommitPreservesUnknownOutcomeAndAuthority(t *testing.T) {
-	for _, kind := range []string{"success", "duplicate", "unknown", "revoked", "wrong token", "not bot", "old source", "old epoch", "unsupported", "save failure"} {
+	for _, kind := range []string{"success", "duplicate", "unknown", "revoked", "wrong token", "not bot", "old source", "other source epoch", "missing source epoch", "old epoch", "unsupported", "save failure"} {
 		t.Run(kind, func(t *testing.T) {
 			in := checkpointFixture()
 			in.Entries = []sp.BotHistoryCheckpointEntry{}
@@ -126,7 +137,7 @@ func TestBotHistoryCheckpointCommitPreservesUnknownOutcomeAndAuthority(t *testin
 			token := "controller-secret"
 			hash := sha256.Sum256([]byte(token))
 			bot := uuid.NewString()
-			r := &record{BotID: &bot, GrantHash: hash[:], SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch, Lifecycle: "active"}, Live: &liveSession{BotHistoryWindowVersion: 1}}
+			r := &record{BotID: &bot, GrantHash: hash[:], SourceEpoch: &in.SourceEpoch, SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch, Lifecycle: "active"}, Live: &liveSession{BotHistoryWindowVersion: 1}}
 			writes := 0
 			cause := errors.New("write completion unknown")
 			dao := &checkpointRuleDAO{read: func(_ context.Context, id string) ([]byte, error) {
@@ -175,6 +186,11 @@ func TestBotHistoryCheckpointCommitPreservesUnknownOutcomeAndAuthority(t *testin
 				r.BotID = nil
 			case "old source":
 				r.SourceSeq = 5
+			case "other source epoch":
+				epoch := uuid.NewString()
+				r.SourceEpoch = &epoch
+			case "missing source epoch":
+				r.SourceEpoch = nil
 			case "old epoch":
 				r.Snapshot.HistoryEpoch = uuid.NewString()
 			case "unsupported":
@@ -204,7 +220,7 @@ func TestBotHistoryCheckpointCommitPreservesUnknownOutcomeAndAuthority(t *testin
 func TestBotHistoryCheckpointReadsAndConnectionDowngrade(t *testing.T) {
 	in := checkpointFixture()
 	bot := uuid.NewString()
-	r := &record{BotID: &bot, SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch}}
+	r := &record{BotID: &bot, SourceEpoch: &in.SourceEpoch, SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch}}
 	dao := &checkpointRuleDAO{read: func(context.Context, string) ([]byte, error) { return encode(in), nil }}
 	tx := &operationTx{dao: dao}
 	if _, err := readBotHistoryCheckpoint(t.Context(), tx, r); err != nil {
@@ -266,7 +282,7 @@ func TestBotHistoryCheckpointUnreadableStateCannotBecomeEmptyHistory(t *testing.
 	for _, kind := range []string{"unsupported store", "not published", "read failure", "broken JSON", "invalid schema", "other connection", "other epoch"} {
 		t.Run(kind, func(t *testing.T) {
 			checkpoint := checkpointFixture()
-			r := &record{SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: checkpoint.ControllerFence, HistoryEpoch: checkpoint.HistoryEpoch}}
+			r := &record{SourceEpoch: &checkpoint.SourceEpoch, SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: checkpoint.ControllerFence, HistoryEpoch: checkpoint.HistoryEpoch}}
 			cause := errors.New("checkpoint storage failed")
 			ctx := t.Context()
 			dao := &checkpointRuleDAO{read: func(actual context.Context, id string) ([]byte, error) {
@@ -323,7 +339,7 @@ func TestBotHistoryCheckpointPublicationFailsBeforeReplacingOwnership(t *testing
 			token := "original-controller-token"
 			hash := sha256.Sum256([]byte(token))
 			bot := uuid.NewString()
-			r := &record{BotID: &bot, GrantHash: hash[:], SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch, Lifecycle: "active"}, Live: &liveSession{BotHistoryWindowVersion: 1}}
+			r := &record{BotID: &bot, GrantHash: hash[:], SourceEpoch: &in.SourceEpoch, SourceSeq: 4, Snapshot: sp.Snapshot{ControllerFence: in.ControllerFence, HistoryEpoch: in.HistoryEpoch, Lifecycle: "active"}, Live: &liveSession{BotHistoryWindowVersion: 1}}
 			cause := errors.New("checkpoint query failed")
 			trace := []string{}
 			dao := &checkpointRuleDAO{read: func(ctx context.Context, id string) ([]byte, error) {
@@ -608,12 +624,12 @@ func TestBotHistoryMessagePinsRequireSettledCaptureAndCompleteClosure(t *testing
 }
 
 func TestBotHistoryLateCaptureRetirementKeepsUncertainOrProtectedEvidence(t *testing.T) {
-	for _, kind := range []string{"not bot", "old store", "no checkpoint", "read failure", "corrupt checkpoint", "pending approval", "queue failure"} {
+	for _, kind := range []string{"not bot", "old store", "no checkpoint", "read failure", "corrupt checkpoint", "pending approval", "pending after source reset", "other source", "missing source", "queue failure"} {
 		t.Run(kind, func(t *testing.T) {
 			checkpoint := checkpointFixture()
 			bot, resource := uuid.NewString(), uuid.NewString()
 			capture := store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "content", SourceKey: "original"}}}
-			r := &record{BotID: &bot, Snapshot: sp.Snapshot{ControllerFence: checkpoint.ControllerFence}, Live: &liveSession{PendingInteractions: map[string]sp.TimelineEntry{}}}
+			r := &record{BotID: &bot, SourceEpoch: &checkpoint.SourceEpoch, Snapshot: sp.Snapshot{ControllerFence: checkpoint.ControllerFence}, Live: &liveSession{PendingInteractions: map[string]sp.TimelineEntry{}}}
 			cause := errors.New("retirement storage failed")
 			reads, queues := 0, 0
 			dao := &checkpointRuleDAO{read: func(ctx context.Context, id string) ([]byte, error) {
@@ -644,14 +660,23 @@ func TestBotHistoryLateCaptureRetirementKeepsUncertainOrProtectedEvidence(t *tes
 			if kind == "old store" {
 				tx.dao = &struct{ store.SessionDAO }{}
 			}
-			if kind == "pending approval" {
+			if kind == "pending approval" || kind == "pending after source reset" {
 				r.Live.PendingInteractions[capture.Request.Occurrence.EntryID] = sp.TimelineEntry{EntryID: capture.Request.Occurrence.EntryID, Kind: "interaction"}
+			}
+			if kind == "other source" || kind == "pending after source reset" {
+				epoch := uuid.NewString()
+				r.SourceEpoch = &epoch
+			}
+			if kind == "missing source" {
+				r.SourceEpoch = nil
 			}
 			retired, err := retireEvictedBotCapture(t.Context(), tx, r, capture, resource)
 			if kind == "read failure" || kind == "queue failure" {
 				if !errors.Is(err, cause) {
 					t.Fatal(err)
 				}
+			} else if kind == "other source" || kind == "missing source" {
+				botFault(t, err, "history_unavailable")
 			} else if kind == "corrupt checkpoint" {
 				botFault(t, err, "source_corrupt")
 			} else if err != nil {
