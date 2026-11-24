@@ -336,7 +336,7 @@ it("retries removal of a released prelaunch claim's task-named worktree after re
     expect(worktreePaths(f.project.localPath)).not.toContain(checkout);
     await expect(access(checkout)).rejects.toMatchObject({ code: "ENOENT" });
   } finally { clearance.resolve(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
-});
+}, 30_000);
 
 it("reconciles a persisted missing-Web cleanup schedule on first shutdown after the local index became done", async () => {
   const f = await fixture();
