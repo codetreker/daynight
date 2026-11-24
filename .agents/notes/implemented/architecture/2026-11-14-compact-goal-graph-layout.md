@@ -24,6 +24,8 @@ The initial Goal viewport uses a maximum zoom of 1 and normally a minimum of
 0.8, lowering that minimum to fit a card on a narrow canvas, down to 0.2; explicit fit shows the
 complete graph. Topology and direction changes create a new readable layout,
 while content updates and passive resizing preserve geometry and viewport. The
+[in-progress framing decision](../bug-fix/2026-11-24-in-progress-graph-framing.md)
+uses this readable viewport as the baseline and adjusts its initial translation. The
 [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
 and [inspection design](../../../../docs/design/daynight-task-inspection.md#goal-整体图)
 own the full behavior and mechanism. This replaces the original layout and
