@@ -522,7 +522,7 @@ export class TaskCacheScope {
           if (row.userId !== this.userId || row.userFence !== fence || typeof row.cacheGeneration !== "string" || canonicalId(row.cacheGeneration) !== row.cacheGeneration ||
             !Array.isArray(history) || history.some(value => typeof value !== "string" || canonicalId(value) !== value) || new Set(history).size !== history.length || history.includes(row.cacheGeneration) ||
             row.unknownAncestors !== undefined && typeof row.unknownAncestors !== "boolean") corrupt.add(row.projectId);
-          else { generations.set(row.projectId, row.cacheGeneration); histories.set(row.projectId, history); baselines.set(row.projectId, { cacheGeneration: row.state === "invalidated" && row.invalidatedBy === "user" ? null : row.cacheGeneration, rebuildRevision: row.rebuildRevision ?? null }); }
+          else { generations.set(row.projectId, row.cacheGeneration); histories.set(row.projectId, history); baselines.set(row.projectId, { cacheGeneration: row.state === "invalidated" && row.invalidatedBy === "user" ? null : row.cacheGeneration, rebuildRevision: row.manualRebuildRevision ?? null }); }
         }
         return { generations, corrupt, histories, baselines };
       }, signal);
@@ -745,8 +745,7 @@ export class TaskCacheScope {
       this.emit(historyChanged ? { projectId, historyChanged: true, historyHint: true, cacheGenerationChanged: true } : changed ? { projectId, cacheGenerationChanged: true } : {
         projectId, ...(deletedTaskIds !== null ? { syncRevision: project!.manifest.syncRevision, deletedTaskIds,
           ...(project!.manifest.rebuildRevision !== undefined ? { rebuildRevision: project!.manifest.rebuildRevision,
-            ...(project!.manifest.rebuildRevision !== previous?.rebuildRevision ? { baselineRebuilt: true as const } : {}) } :
-            hint.baselineRebuilt && hint.syncRevision === project!.manifest.syncRevision ? { baselineRebuilt: true as const } : {}) } : {}),
+            ...(project!.manifest.rebuildRevision !== previous?.rebuildRevision ? { baselineRebuilt: true as const } : {}) } : {}) } : {}),
       });
     }
   }
@@ -1060,7 +1059,7 @@ export class TaskCacheScope {
           const summary = manifest?.state === "active" ? await transaction.objectStore("summaries").get([this.userId, projectId, taskId]) : undefined;
           result.set(taskResourceKey(projectId, taskId), {
           epoch: manifest?.epoch ?? null, cacheGeneration: manifest?.state === "invalidated" && manifest.invalidatedBy === "user" ? null : manifest?.cacheGeneration ?? null, syncRevision: manifest?.syncRevision ?? null,
-          rebuildRevision: manifest?.rebuildRevision ?? null,
+          rebuildRevision: manifest?.manualRebuildRevision ?? null,
           removed: removals.has(taskId) || this.readAdmission.hinted(projectId, taskId, manifest?.epoch ?? null, this.getHistoryGeneration(projectId)),
           inBaseline: summary !== undefined, summaryVersion: summary?.summary.version ?? null,
         });
@@ -1296,7 +1295,7 @@ export class TaskCacheScope {
     if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: observed.manifest?.epoch ?? null, generation: 0 });
     const fence = { userId: this.userId, userFence: observed.userFence, projectId, taskId, scopeRevision,
       historyGeneration: this.histories.get(projectId)!.generation, openingSequence, requestGeneration, taskRevision: this.readAdmission.revision(projectId, taskId) };
-    this.directReadBaselines.set(fence, { known: observed.known, epoch: observed.manifest?.epoch ?? null, cacheGeneration: observed.manifest?.state === "invalidated" && observed.manifest.invalidatedBy === "user" ? null : observed.manifest?.cacheGeneration ?? null, rebuildRevision: observed.manifest?.rebuildRevision ?? null, summaryVersion: observed.summaryVersion });
+    this.directReadBaselines.set(fence, { known: observed.known, epoch: observed.manifest?.epoch ?? null, cacheGeneration: observed.manifest?.state === "invalidated" && observed.manifest.invalidatedBy === "user" ? null : observed.manifest?.cacheGeneration ?? null, rebuildRevision: observed.manifest?.manualRebuildRevision ?? null, summaryVersion: observed.summaryVersion });
     this.readAdmission.observeTask(projectId, taskId);
     this.directProjects.add(projectId);
     this.ticketHistoryVersions.set(fence, this.historyVersions.get(projectId) ?? 0);
@@ -1610,7 +1609,8 @@ export class TaskCacheScope {
           ...(historyChanged ? nextHistory(current) : { generationAncestors: current.generationAncestors ?? [], unknownAncestors: current.unknownAncestors === true }),
           state: "active", invalidatedBy: null, epoch: response.epoch, project,
           coverageUpdatedAt: response.coverageUpdatedAt, syncRevision,
-          ...(options?.rebuild ? { rebuildRevision: syncRevision } : !historyChanged && current.rebuildRevision !== undefined ? { rebuildRevision: current.rebuildRevision } : {}),
+          ...(replacing ? { rebuildRevision: syncRevision } : !historyChanged && current.rebuildRevision !== undefined ? { rebuildRevision: current.rebuildRevision } : {}),
+          ...(options?.rebuild ? { manualRebuildRevision: syncRevision } : !historyChanged && current.manualRebuildRevision !== undefined ? { manualRebuildRevision: current.manualRebuildRevision } : {}),
           taskCount: tasks.length, edgeCount: edgeCount(tasks),
         };
         this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal, ticket.scopeRevision);

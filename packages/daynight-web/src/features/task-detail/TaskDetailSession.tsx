@@ -179,7 +179,7 @@ export class TaskDetailSessions {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
             } else if (!qualification.inBaseline) this.requireResourceRecheck(entry);
-            else if (entry.source === "direct") {
+            else if (entry.source === "direct" && qualification.rebuildRevision !== null) {
               const receipt = entry.receipt;
               const valid = receipt !== null && await this.scope.verifyTaskRead(receipt.fence, this.scope.signal);
               if (!this.disposed && opening === entry.openingGeneration && entry.receipt === receipt && !valid) this.requireResourceRecheck(entry);

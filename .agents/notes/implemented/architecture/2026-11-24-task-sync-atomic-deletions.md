@@ -38,10 +38,12 @@ Schema upgrade rebuilds refetchable task baselines while preserving account,
 profile and compatible Session lifecycles. Same-epoch explicit replacement keeps
 history generation and removal identities and records the difference from the
 previous complete authorized set. Every snapshot establishes a persisted rebuild revision and emits a post-commit
-baseline-rebuilt event, including the first baseline. The marker survives later
-same-history deltas, so delayed hints and independent readers without a prior
-local manifest still detect that complete baseline. Real history replacement
-clears old removals and keeps its existing history fences.
+baseline-rebuilt event, including the first baseline. An explicit manual rebuild
+also records a separate manual revision used for independent read qualification;
+an ordinary first baseline does not revoke a concurrent successful direct read.
+Both markers survive later same-history deltas, so delayed hints can identify the
+committed baseline. Real history replacement clears old removals and keeps its
+existing history fences.
 The [sync design](../../../../docs/design/daynight-task-sync.md) owns mechanisms,
 and the [deletion data decision](2026-11-24-task-sync-deletion-data.md) owns the
 server snapshot. Deletion callers and the server still use their epoch rotation

@@ -193,6 +193,20 @@ it("recovers a committed full rebuild witness when a later delta wins before its
     rebuildRevision: rebuilt.project.manifest.syncRevision, syncRevision: advanced.project.manifest.syncRevision });
 });
 
+it("retains an initial snapshot witness across a delta before its delayed peer hint", async () => {
+  const cache = scope(); const direct = scope();
+  await direct.beginTaskRead(projectId, taskId(99), 1, 1, signal());
+  const events: import("../src/features/task-cache/project-cache").CacheEvent[] = [];
+  direct.subscribeProjection(event => events.push(event));
+  for (const channel of Channel.channels) vi.spyOn(channel, "postMessage").mockImplementation(value => { Channel.hints.push(value); });
+  const initial = await seed(cache);
+  const advanced = await delta(cache, [task(2)]);
+  const delayedHint = { userId, projectId, userFence: initial.project.manifest.userFence, syncRevision: initial.project.manifest.syncRevision, baselineRebuilt: true };
+  for (const channel of Channel.channels) channel.onmessage?.({ data: delayedHint } as MessageEvent<unknown>);
+  await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ projectId, baselineRebuilt: true,
+    syncRevision: advanced.project.manifest.syncRevision, rebuildRevision: initial.project.manifest.syncRevision })));
+});
+
 it.each(["history", "suspension"] as const)("rejects publication when %s changes during the persisted commit check", async (change) => {
   const cache = scope(); const result = await seed(cache);
   const get = fake.IDBObjectStore.prototype.get;

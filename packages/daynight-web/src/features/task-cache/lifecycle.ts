@@ -36,13 +36,14 @@ export const validateProjectManifest = (value: unknown, userId: string, projectI
     const edgeCount = count(data.edgeCount);
     if (data.state === "invalidated") {
       if (data.invalidatedBy !== "access" && data.invalidatedBy !== "corrupt" && data.invalidatedBy !== "user" ||
-        data.epoch !== null || data.project !== null || data.coverageUpdatedAt !== null || data.rebuildRevision !== undefined || taskCount !== 0 || edgeCount !== 0) throw new Error("Invalid invalidated cache baseline.");
+        data.epoch !== null || data.project !== null || data.coverageUpdatedAt !== null || data.rebuildRevision !== undefined || data.manualRebuildRevision !== undefined || taskCount !== 0 || edgeCount !== 0) throw new Error("Invalid invalidated cache baseline.");
       return { userId, projectId, userFence, cacheGeneration, syncRevision, ...history, state: "invalidated", invalidatedBy: data.invalidatedBy,
         epoch: null, project: null, coverageUpdatedAt: null, taskCount, edgeCount };
     }
     if (data.state !== "active" || data.invalidatedBy !== null) throw new Error("Invalid active cache baseline.");
     const epoch = uuid(data.epoch);
-    const rebuild = data.rebuildRevision === undefined ? {} : { rebuildRevision: uuid(data.rebuildRevision) };
+    const rebuild = { ...(data.rebuildRevision === undefined ? {} : { rebuildRevision: uuid(data.rebuildRevision) }),
+      ...(data.manualRebuildRevision === undefined ? {} : { manualRebuildRevision: uuid(data.manualRebuildRevision) }) };
     const parsedProject = project(data.project);
     const coverageUpdatedAt = data.coverageUpdatedAt === null ? null : timestamp(data.coverageUpdatedAt);
     if (parsedProject.id !== projectId || taskCount !== 0 && coverageUpdatedAt === null || coverageUpdatedAt?.startsWith("0000-")) throw new Error("Invalid active cache manifest.");
