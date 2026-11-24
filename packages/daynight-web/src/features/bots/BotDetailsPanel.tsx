@@ -141,7 +141,7 @@ function BotObservationInformation({ bot, observation }: { readonly bot: BotDefi
     else if (value.state === 'abnormal') action = m.actions.failure;
   }
   return <>
-    <div><dt>{b.status}</dt><dd><BotStatus bot={bot} observation={observation} showWorkerName={false} />{observation?.error ? <p role="alert">{m.readFailed}</p> : null}{observation && <button className="button quiet bot-observation-refresh" type="button" aria-busy={observation.busy} disabled={observation.busy} onClick={observation.refresh}>{m.refresh}</button>}</dd></div>
+    <div><dt>{b.status}</dt><dd><BotStatus bot={bot} observation={observation} showWorkerName={false} />{observation?.error ? <p role="alert">{m.readFailed}</p> : null}{observation && <button className="button quiet bot-observation-refresh" type="button" aria-busy={observation.refreshing} disabled={observation.refreshing} onClick={observation.refreshExplicit}>{m.refresh}</button>}</dd></div>
     <div><dt>{m.machine}</dt><dd><bdi>{machineName}</bdi>{value?.machine && <p><code>{value.machine.id}</code></p>}</dd></div>
     <div><dt>{m.workerId}</dt><dd><code>{value?.workerId ?? m.unknown}</code></dd></div>
     <div><dt>{b.agent}</dt><dd>{provider === 'claude' ? 'Claude Code' : provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</dd></div>

@@ -12,7 +12,7 @@ import { BOT_TIME, botDefinition, botId, botWorkerDefaults } from './helpers/bot
 
 const observation = (change: Partial<BotObservation> = {}): BotObservationRead => ({
   value: { schemaVersion: 1, botId: botId(), botVersion: '1', workerId: botId(22), machine: { id: 'original-machine', name: 'Original workstation' }, provider: 'codex', sessionId: botId(30), testExecutionId: botId(31), nativeSessionId: 'native-original', hostingGeneration: '1', executionGeneration: '1', connectionEpoch: '1', state: 'idle', reason: 'idle', observedAt: BOT_TIME, workerLastSeenAt: BOT_TIME, sessionLastSeenAt: BOT_TIME, freshUntil: '2026-11-04T12:00:30Z', currentTurnId: null, ...change },
-  stale: false, busy: false, error: null, refresh: vi.fn(),
+  stale: false, busy: false, refreshing: false, error: null, refresh: vi.fn(), refreshExplicit: vi.fn(),
 });
 const target = (read: BotObservationRead): BotConversationTarget => ({ bot: botDefinition(), worker: botWorkerDefaults(), stale: false, observation: read, name: 'Original assistant', detailsId: 'details', detailsOpen: false, detailsOpener: createRef(), onDetails: vi.fn(), follow: vi.fn() });
 const session: SessionHeaderSlot = { snapshot: null, startupReport: null, active: true, current: true, available: true, readOnly: false, runtimeReady: true, authPaused: false, status: 'ready', fullscreen: false, displayMode: 'standard', statusDescriptionId: 'session-status', provider: <span>Codex</span>, activity: <span>Unrelated Session activity</span>, display: null, focus: null, refresh: null };
@@ -43,7 +43,7 @@ it('withdraws live status while retaining dated machine and Session facts and a 
   expect(screen.getAllByText('Original workstation')).toHaveLength(2);
   expect(document.querySelectorAll(`time[datetime="${BOT_TIME}"]`).length).toBeGreaterThanOrEqual(3);
   fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
-  expect(read.refresh).toHaveBeenCalledOnce();
+  expect(read.refreshExplicit).toHaveBeenCalledOnce();
 });
 
 it('does not infer availability from startup readiness, another Worker, or another Bot observation', () => {

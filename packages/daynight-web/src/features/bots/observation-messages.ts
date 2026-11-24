@@ -2,7 +2,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
   states: { offline: 'Offline', connecting: 'Connecting', recovering: 'Recovering', idle: 'Online · idle', working: 'Working', abnormal: 'Abnormal', unknown: 'Status unknown' },
-  expired: 'Observation out of date', machine: 'Machine', machineUnknown: 'Machine unknown', unknown: 'Unknown', observed: 'Observed', workerLastSeen: 'Worker last reported', sessionLastSeen: 'Session last reported', nativeSession: 'Native Session ID', platformSession: 'Daynight Session ID', workerId: 'Worker ID', lastState: 'Last observed status', reason: 'Reason', action: 'Next step', refresh: 'Refresh status', readFailed: 'Could not read this assistant’s status.',
+  expired: 'Observation out of date', expiredCompact: 'Expired', machine: 'Machine', machineUnknown: 'Machine unknown', unknown: 'Unknown', observed: 'Observed', workerLastSeen: 'Worker last reported', sessionLastSeen: 'Session last reported', nativeSession: 'Native Session ID', platformSession: 'Daynight Session ID', workerId: 'Worker ID', lastState: 'Last observed status', reason: 'Reason', action: 'Next step', refresh: 'Refresh status', readFailed: 'Could not read this assistant’s status.',
   staleHelp: 'These are previously observed facts. Refresh the status before relying on them.',
   reasons: {
     worker_unobserved: 'This Worker has not reported yet.', worker_heartbeat_expired: 'The Worker heartbeat has expired.',
@@ -29,7 +29,7 @@ const en = {
 };
 const zh: typeof en = {
   states: { offline: '离线', connecting: '连接中', recovering: '恢复中', idle: '在线 · 空闲', working: '工作中', abnormal: '异常', unknown: '状态未知' },
-  expired: '观测已过期', machine: '机器', machineUnknown: '机器未知', unknown: '未知', observed: '观测时间', workerLastSeen: 'Worker 最后上报', sessionLastSeen: '会话最后上报', nativeSession: '原生 Session ID', platformSession: 'Daynight Session ID', workerId: 'Worker ID', lastState: '上次观测状态', reason: '原因', action: '下一步', refresh: '刷新状态', readFailed: '无法读取这个助手的状态。',
+  expired: '观测已过期', expiredCompact: '已过期', machine: '机器', machineUnknown: '机器未知', unknown: '未知', observed: '观测时间', workerLastSeen: 'Worker 最后上报', sessionLastSeen: '会话最后上报', nativeSession: '原生 Session ID', platformSession: 'Daynight Session ID', workerId: 'Worker ID', lastState: '上次观测状态', reason: '原因', action: '下一步', refresh: '刷新状态', readFailed: '无法读取这个助手的状态。',
   staleHelp: '以下为先前观测的事实，使用前请刷新状态。',
   reasons: {
     worker_unobserved: '尚未收到这个 Worker 的报告。', worker_heartbeat_expired: 'Worker 心跳已过期。', hosting_identity_mismatch: '承载机器与助手的恢复身份不一致。', provider_unavailable: '这个机器上的 Provider 不可用。',

@@ -13,8 +13,8 @@ export function BotStatus({ bot, observation, showWorkerName = true, compact = f
   const names = useWorkerNames(value && showWorkerName ? [{ userId: bot.ownerUserId, workerId: value.workerId }] : []);
   const state = value && !observation?.stale ? value.state : 'unknown';
   return <span className={`bot-status bot-observation-${state}${compact ? ' bot-status-compact' : ''}`}>
-    <span>{value && observation?.stale ? m.expired : m.states[state]}</span>
+    <span>{value && observation?.stale ? compact ? m.expiredCompact : m.expired : m.states[state]}</span>
     {showWorkerName && <bdi className="bot-observation-machine">{value ? names.name(bot.ownerUserId, value.workerId, value.machine?.name ?? m.machineUnknown, true) : m.machineUnknown}</bdi>}
-    {value && observation?.stale && <time dateTime={value.observedAt}>{m.observed}: {new Date(value.observedAt).toLocaleString()}</time>}
+    {value && observation?.stale && <time className={compact ? 'bot-observation-time-description' : undefined} dateTime={value.observedAt}>{m.observed}: {new Date(value.observedAt).toLocaleString()}</time>}
   </span>;
 }
