@@ -33,14 +33,35 @@ case "$1" in
     if [[ "$*" == *./cmd/daynight-server* ]]; then printf '%s\\n' example/cmd/daynight-server
     elif [[ -z "\${EMPTY_PACKAGES-}" ]]; then printf '%s\\n' example/api example/cmd/daynight-server example/internal/server
     fi ;;
-  build) exit "\${BUILD_EXIT:-0}" ;;
+  build)
+    if [[ "$*" == *coverage-normalize* ]]; then
+      if [[ "\${NORMALIZE_BUILD_EXIT:-0}" != 0 ]]; then exit "$NORMALIZE_BUILD_EXIT"; fi
+      cat > "$3" <<'NORMALIZER'
+#!/usr/bin/env bash
+printf 'normalize %s\n' "$*" >> "$TRACE"
+if [[ "\${NORMALIZE_KILL:-0}" == 1 ]]; then
+  printf 'partial candidate\n' > "$2"
+  kill -KILL "$$"
+fi
+exit "\${NORMALIZE_EXIT:-0}"
+NORMALIZER
+      chmod +x "$3"
+    fi
+    exit "\${BUILD_EXIT:-0}" ;;
   vet)
     if [[ " \${GOFLAGS-} " == *' -tags=startupshutdown '* ]]; then exit "\${TAGGED_VET_EXIT:-0}"; fi
     exit "\${ORDINARY_VET_EXIT:-0}" ;;
   test)
+    if [[ "$*" == *coverage-normalize* ]]; then exit "\${NORMALIZE_TEST_EXIT:-0}"; fi
     if [[ "$*" == *TestWebhookRunnerAbruptProcessRecovery* ]]; then exit "\${PROCESS_EXIT:-0}"; fi
     if [[ "$*" == *./testdata/testauth* ]]; then exit "\${TESTAUTH_EXIT:-0}"; fi
     if [[ -n "\${MODULE_TEST_EXIT-}" ]]; then exit "$MODULE_TEST_EXIT"; fi
+    for argument in "$@"; do
+      if [[ "$argument" == -coverprofile=* ]]; then
+        covered=\${PROFILE_COVERED:-10}; total=\${PROFILE_TOTAL:-11}
+        printf 'mode: atomic\\nexample/server/source.go:1.1,2.1 %s 1\\nexample/server/source.go:3.1,4.1 %s 0\\n' "$covered" "$((total-covered))" > "\${argument#-coverprofile=}"
+      fi
+    done
     printf '%s\\n' '{"Action":"pass","Package":"example"}' ;;
   install)
     cat > "$GOBIN/go-cov" <<'COV'
@@ -48,7 +69,7 @@ case "$1" in
 set -eu
 printf 'go-cov %s GOFLAGS=%s CWD=%s CONFIG_ENV=%s\\n' "$*" "\${GOFLAGS-}" "$PWD" "\${THRESHOLD_TOTAL-unset},\${EXCLUDE_PACKAGES-unset},\${BUILD_TAGS-unset},\${COVERPROFILE-unset}" >> "$TRACE"
 if [[ "\${COV_EXIT:-0}" != 0 ]]; then exit "$COV_EXIT"; fi
-go test -json > /dev/null
+go test -json -coverprofile=coverage.out > /dev/null
 profile=coverage.out
 for argument in "$@"; do
   if [[ "$argument" == --coverprofile=* ]]; then profile="\${argument#--coverprofile=}"; fi

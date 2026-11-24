@@ -47,6 +47,8 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
     'fs.appendFileSync(path.join(root,"trace"),JSON.stringify({args,cwd:process.cwd(),flags:process.env.GOFLAGS,path:process.env.PATH})+"\\n");',
     'if(args[0]!=="test"){ process.stdout.write("example/pkg\\n"); process.exit(0); }',
     '(async()=>{',
+    'const profile=args.find(arg=>arg.startsWith("-coverprofile="));',
+    'if(profile&&profile.slice("-coverprofile=".length)){fs.writeFileSync(profile.slice("-coverprofile=".length),process.env.FIXTURE_PROFILE||"mode: atomic\\na.go:1.1,1.2 1 1\\n");fs.writeFileSync(path.join(root,"go-pid"),String(process.pid));}',
     'const input=fs.readFileSync(path.join(root,"input"));',
     'if(mode==="overlap"){',
     ' await new Promise((resolve,reject)=>process.stdout.write(input.subarray(0,200),error=>error?reject(error):resolve()));',
@@ -73,7 +75,11 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
     'fs.writeFileSync(path.join(root,"cov-args"),JSON.stringify(process.argv.slice(2)));',
     'if(mode==="missing"){process.exit(0);}',
     'const list=spawnSync("go",["list","./..."],{encoding:"utf8"}); if(list.status!==0)process.exit(list.status||1);',
-    'const child=spawn("go",["test","example/pkg","-json","-timeout=10m","argument with spaces"],{stdio:["ignore","pipe","inherit"]});',
+    'const testArgs=["test","example/pkg","-json","-timeout=10m","argument with spaces"];',
+    'if(process.env.FIXTURE_PROFILE_ARG==="1"||process.env.FIXTURE_PROFILE_ARG==="duplicate")testArgs.push("-coverprofile="+path.join(root,"coverage.out"));',
+    'if(process.env.FIXTURE_PROFILE_ARG==="duplicate")testArgs.push("-coverprofile="+path.join(root,"coverage.out"));',
+    'if(process.env.FIXTURE_PROFILE_ARG==="empty")testArgs.push("-coverprofile=");',
+    'const child=spawn("go",testArgs,{stdio:["ignore","pipe","inherit"]});',
     'let held=false; const received=fs.createWriteStream(path.join(root,"received"));',
     'if(mode==="overlap"){(async()=>{',
     ' while(!fs.existsSync(path.join(root,"first-ready")))await new Promise(resolve=>setTimeout(resolve,10));',
@@ -93,6 +99,7 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
     '  const watcher=fs.watch(root,()=>{if(fs.existsSync(path.join(root,"release"))){watcher.close();child.stdout.resume();}});',
     ' }',
     '});',
+    'child.stdout.on("end",()=>{if(process.env.FIXTURE_PROFILE_ARG==="1"&&fs.existsSync(path.join(root,"coverage.out")))fs.copyFileSync(path.join(root,"coverage.out"),path.join(root,"consumer-profile"));});',
     'child.on("close",(code,signal)=>{received.end(()=>{',
     ' if(["kill-shim","forward-failure","ignore-failure"].includes(mode))process.exit(0);',
     ' if(mode==="repeat"){spawnSync("go",["test","example/pkg","-json"],{stdio:"ignore"});process.exit(0);}',
@@ -101,6 +108,20 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
   ].join('\n');
   await writeFile(join(root, 'go'), fakeGo, { mode: 0o755 });
   await writeFile(join(root, 'go-cov'), fakeCov, { mode: 0o755 });
+  const normalizer = [
+    '#!' + process.execPath,
+    'const fs=require("node:fs"),path=require("node:path");',
+    'const root=process.env.FIXTURE_ROOT, profile=process.argv[2], temporary=process.argv[3];',
+    'fs.writeFileSync(path.join(root,"normalizer-args"),JSON.stringify(process.argv.slice(2)));',
+    'const pid=Number(fs.readFileSync(path.join(root,"go-pid"),"utf8"));',
+    'try{process.kill(pid,0);console.error("go test still running");process.exit(1);}catch(error){if(error.code!=="ESRCH")throw error;}',
+    'const data=fs.readFileSync(profile,"utf8");',
+    'if(data.startsWith("broken")){console.error("invalid profile");process.exit(1);}',
+    'fs.writeFileSync(temporary,data+"normalized\\n");',
+    'if(process.env.FIXTURE_NORMALIZER_HANG==="1"){fs.writeFileSync(path.join(root,"normalizer-pid"),String(process.pid));fs.writeFileSync(path.join(root,"normalizer-ready"),"");setInterval(()=>{},1000);}else fs.renameSync(temporary,profile);',
+  ].join('\n');
+  await writeFile(join(root, 'normalizer'), normalizer, { mode: 0o755 });
+  await writeFile(join(root, 'normalize.tmp'), '');
   const preload = [
     'const fs=require("node:fs");',
     'if(process.argv[1]?.endsWith("command-timeout.mts")&&process.env.FIXTURE_DEADLINE_READY==="1"){',
@@ -136,22 +157,29 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
         }
       }
     }
+    if (await exists(join(root, 'normalizer-pid'))) {
+      const pid = Number(await readFile(join(root, 'normalizer-pid'), 'utf8'));
+      if (!stopped(pid)) {
+        try { process.kill(pid, 'SIGKILL'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      }
+    }
     await rm(root, { recursive: true, force: true });
   });
-  const args = (scope: string, duration: number) => [join(directory, 'command-timeout.mts'), String(duration), '100',
+  const args = (scope: string, duration: number, extra: string[] = []) => [join(directory, 'command-timeout.mts'), String(duration), '100',
     process.execPath, join(directory, 'go-cov-capture.mts'), scope, join(root, 'go'), join(root, 'go-cov'),
-    '--race=true', '--coverprofile=coverage.out'];
+    ...extra, '--race=true', '--coverprofile=coverage.out'];
   return {
     root, env,
-    run: (scope = 'module', duration = 5000) => {
-      const result = spawnSync(process.execPath, args(scope, duration), { cwd: root, env, encoding: 'utf8', timeout: duration + 5000 });
+    run: (scope = 'module', duration = 5000, extra: string[] = []) => {
+      const result = spawnSync(process.execPath, args(scope, duration, extra), { cwd: root, env, encoding: 'utf8', timeout: duration + 5000 });
       assert.ifError(result.error);
       return result;
     },
-    start: (duration = 5000, deadlineAfterReady = false) => {
+    start: (duration = 5000, deadlineAfterReady = false, extra: string[] = []) => {
       const runEnv = deadlineAfterReady ? { ...env, FIXTURE_DEADLINE_READY: '1',
         NODE_OPTIONS: (env.NODE_OPTIONS ?? '') + ' --require=' + JSON.stringify(join(root, 'fault.cjs')) } : env;
-      running = spawn(process.execPath, args('module', duration), { cwd: root, env: runEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      running = spawn(process.execPath, args('module', duration, extra), { cwd: root, env: runEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '', stderr = '';
       running.stdout!.on('data', chunk => { stdout += chunk; });
       running.stderr!.on('data', chunk => { stderr += chunk; });

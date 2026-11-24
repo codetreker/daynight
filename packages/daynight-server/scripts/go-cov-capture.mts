@@ -23,6 +23,16 @@ try {
     if (!quoteChar) throw new Error('Go -exec launcher path contains both quote characters.');
     execArg = ' -exec=' + quote(quoteChar + launcher + quoteChar);
   }
+  let normalizer = '';
+  let normalizerTemp = '';
+  if (args[0]?.startsWith('--normalize=')) {
+    normalizer = args.shift()!.slice('--normalize='.length);
+    if (!['module', 'module-pr'].includes(scope!) || !isAbsolute(normalizer)) throw new Error('Expected an absolute module coverage normalizer.');
+    accessSync(normalizer, fsConstants.X_OK);
+    if (!args[0]?.startsWith('--normalize-temp=')) throw new Error('Expected an absolute normalizer temporary path.');
+    normalizerTemp = args.shift()!.slice('--normalize-temp='.length);
+    if (!isAbsolute(normalizerTemp)) throw new Error('Expected an absolute normalizer temporary path.');
+  }
   mkdirSync(base, { recursive: true });
   const directory = mkdtempSync(join(base, 'run-'));
   shim = join(directory, '.shim');
@@ -34,7 +44,7 @@ try {
     process.env.PATH === undefined ? 'unset PATH' : 'PATH=' + quote(process.env.PATH) + '; export PATH',
     'if [ "$1" != test ]; then exec ' + quote(realGo) + ' "$@"; fi',
     'shift',
-    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' test' + execArg + ' "$@"',
+    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' ' + quote(normalizer) + ' ' + quote(normalizerTemp) + ' test' + execArg + ' "$@"',
     '',
   ].join('\n'), { mode: 0o700 });
   console.error('Go test evidence: ' + directory);
