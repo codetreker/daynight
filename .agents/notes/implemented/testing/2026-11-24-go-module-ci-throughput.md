@@ -14,8 +14,8 @@ for the resources of a single hosted runner.
 
 The Go module job executes its complete ordinary test package list in one
 coverage invocation. The invocation applies all standard vet analyzers to its
-compiled package and test variants. The command package has a separate vet pass
-for its ordinary build, plus its existing lifecycle validation. The complete
+compiled package and test variants. The independent lifecycle job owns both the
+ordinary command vet pass and the tagged command vet and coverage. The complete
 cross-package coverage universe, failure propagation and coverage gates still
 apply to the module.
 
@@ -24,7 +24,8 @@ isolated PostgreSQL service uses a bounded memory-backed data directory. The
 workflow checks the actual mounted filesystem before preparing the dedicated
 Store root database. PostgreSQL sync, transaction and migration lock behavior
 remain intact. Local and main package concurrency stay at two, with the
-existing race policy for each entry.
+existing race policy for each entry. The ordinary command vet also uses four
+package slots in PR CI; lifecycle coverage retains two.
 
 ## Alternatives
 
@@ -40,6 +41,8 @@ the tests.
 ## Consequences
 
 The module job records phase timings and the usual raw Go test evidence.
+Moving ordinary command vet to the independent lifecycle job retains the check
+without putting its separate compile graph on the module job's critical path.
 Memory-backed PostgreSQL consumes runner memory up to its configured limit.
 The hosted check establishes elapsed time and exercises the complete suite
 under the selected package concurrency.

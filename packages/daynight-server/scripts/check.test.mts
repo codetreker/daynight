@@ -4,7 +4,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runValidation } from './testdata/validation-fixture.mts';
 
-test('module check shares compilation between full vet and coverage and separately vets the ordinary command', async (t) => {
+test('module check shares compilation between full vet and coverage for its module packages', async (t) => {
   const { result, trace, fixture } = await runValidation(t, 'check', undefined, { GOFLAGS: '-race=false -tags=stress' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(trace, /node scripts\/command-timeout.mts 1800000 5000 env GOFLAGS=.*node scripts\/go-cov-capture.mts module /);
@@ -19,11 +19,8 @@ test('module check shares compilation between full vet and coverage and separate
   assert.match(coverage, /--race=true --exclude-packages=example\/cmd\/daynight-server/);
   assert.match(coverage, /-p=2 .* -tags= -race=true -vet=all -coverpkg=example\/api,example\/internal\/server/);
   assert.doesNotMatch(coverage, /-coverpkg=[^ ]*cmd\/daynight-server/);
-  const commands = trace.split('\n');
-  const standaloneVet = commands.filter(line => line.startsWith('go vet '));
-  assert.equal(standaloneVet.length, 1);
-  assert.match(standaloneVet[0]!, /^go vet \.\/cmd\/daynight-server GOFLAGS=.* -p=2 .* -race=true /);
-  const coveredTests = commands.filter(line => line.startsWith('go test -json '));
+  assert.doesNotMatch(trace, /^go vet /m);
+  const coveredTests = trace.split('\n').filter(line => line.startsWith('go test -json '));
   assert.equal(coveredTests.length, 1);
   assert.match(coveredTests[0]!, /-race=true -vet=all -coverpkg=example\/api,example\/internal\/server /);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth .* -race=true/);
@@ -37,23 +34,20 @@ test('PR CI uses four Go package slots with race disabled and propagates coverag
     COV_EXIT: '17', GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/42/merge',
   });
   assert.equal(result.status, 17);
-  assert.match(trace, /go vet .* -race=false/);
   assert.match(trace, /go test .* -race=false/);
   assert.match(trace, /go-cov --race=false .* -race=false -p=4 -vet=all -coverpkg=/);
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
 });
 
-test('module check propagates command vet, fixture and covered test failures', async (t) => {
-  for (const [extra, expected] of [[{ VET_EXIT: '21' }, 21], [{ TESTAUTH_EXIT: '22' }, 22]] as const) {
-    const { result, trace } = await runValidation(t, 'check', undefined, extra);
-    assert.equal(result.status, expected);
-    assert.doesNotMatch(trace, /(?:^|\n)go-cov |node scripts\/coverage.mts/);
-  }
+test('module check propagates fixture and covered test failures', async (t) => {
+  const fixtureFailure = await runValidation(t, 'check', undefined, { TESTAUTH_EXIT: '22' });
+  assert.equal(fixtureFailure.result.status, 22);
+  assert.doesNotMatch(fixtureFailure.trace, /(?:^|\n)go-cov |node scripts\/coverage.mts/);
 
-  const { result, trace } = await runValidation(t, 'check', undefined, { MODULE_TEST_EXIT: '23' });
-  assert.equal(result.status, 23);
-  assert.match(trace, /go test -json .* -vet=all /);
-  assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
+  const coveredFailure = await runValidation(t, 'check', undefined, { MODULE_TEST_EXIT: '23' });
+  assert.equal(coveredFailure.result.status, 23);
+  assert.match(coveredFailure.trace, /go test -json .* -vet=all /);
+  assert.doesNotMatch(coveredFailure.trace, /node scripts\/coverage.mts/);
 });
 
 test('main push enables race despite inherited false flags', async (t) => {
@@ -61,7 +55,6 @@ test('main push enables race despite inherited false flags', async (t) => {
     GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GOFLAGS: '-race=false',
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(trace, /go vet .* -race=true/);
   assert.match(trace, /go test .* -race=true/);
   assert.match(trace, /go-cov --race=true .* -p=2 .* -race=true -vet=all -coverpkg=/);
   assert.doesNotMatch(trace, /-p=4/);

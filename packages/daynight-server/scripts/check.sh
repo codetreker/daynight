@@ -20,12 +20,6 @@ fi
 
 node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts
 
-# The coverage invocation vets its full package set. The untagged command
-# package is outside that set and still needs its ordinary vet pass.
-started=$SECONDS
-GOFLAGS="$module_go_flags" go vet ./cmd/daynight-server
-printf 'Command vet completed in %ss\n' "$((SECONDS - started))"
-
 started=$SECONDS
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
