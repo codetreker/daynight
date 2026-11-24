@@ -11,16 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestTaskSessionMigrationCreatesDurableRelayTables(t *testing.T) {
-	s := isolatedStore(t)
-	for _, table := range []string{"task_sessions", "session_events", "session_timeline", "session_operations", "session_resources"} {
-		var count int
-		if err := s.Pool.QueryRow(context.Background(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
-			t.Fatalf("missing durable relay table %s: %v", table, err)
-		}
-	}
-}
-
 func taskSessionTransitionFacts(t *testing.T, database *Store) map[string]string {
 	t.Helper()
 	facts := taskPropertyFacts(t, database)

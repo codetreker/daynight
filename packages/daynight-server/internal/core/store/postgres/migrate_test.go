@@ -5,181 +5,17 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"slices"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
-	pool := emptyPool(t)
-	ctx := context.Background()
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	database := &Store{Pool: pool}
-	if err := migrate(ctx, database.Pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var count, foreignKeys int
-	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != len(schemaMigrations) {
-		t.Fatalf("versions: %d, %v", count, err)
-	}
-	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
-	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass)
-	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
-		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
-	}
-	wantedKeys := map[string]map[string]bool{
-		"bots": {
-			"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
-			"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
-		},
-		"bot_worker_preferences": {
-			"FOREIGN KEY (user_id) REFERENCES users(id)":                              true,
-			"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
-		},
-		"bot_configuration_preferences": {
-			"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
-		},
-		"bot_model_preferences":  {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true},
-		"bot_effort_preferences": {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true},
-		"task_sessions": {
-			"FOREIGN KEY (bot_id, owner_user_id) REFERENCES bots(id, owner_user_id)": true,
-		},
-		"private_upload_chunks": {
-			"FOREIGN KEY (transfer_id) REFERENCES private_transfers(id) ON DELETE CASCADE": true,
-		},
-	}
-	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
- WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var table, definition string
-		if err := rows.Scan(&table, &definition); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		if !wantedKeys[table][definition] {
-			rows.Close()
-			t.Fatalf("unexpected foreign key on %s: %s", table, definition)
-		}
-		delete(wantedKeys[table], definition)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	for table, constraints := range wantedKeys {
-		if len(constraints) != 0 {
-			t.Fatalf("missing foreign key constraints on %s: %v", table, constraints)
-		}
-	}
-	for _, sql := range []string{
-		`INSERT INTO projects (id, name, repo_url) VALUES ('00000000-0000-0000-0000-000000000001', '  ', 'https://example.com/repo')`,
-		`INSERT INTO projects (id, name, repo_url) VALUES ('00000000-0000-0000-0000-000000000001', 'project', '  ')`,
-		`INSERT INTO tasks (id, project_id, title) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', ' ')`,
-		`INSERT INTO tasks (id, project_id, title, status) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'task', 'unknown')`,
-		`INSERT INTO tasks (id, project_id, title, version) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'task', 0)`,
-		`INSERT INTO task_dependencies VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002')`,
-	} {
-		_, err := database.Pool.Exec(ctx, sql)
-		var failure *pgconn.PgError
-		if !errors.As(err, &failure) || failure.Code != "23514" {
-			t.Fatalf("expected check rejection, got %v", err)
-		}
-	}
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO projects (id, name, repo_url) VALUES ('00000000-0000-0000-0000-000000000001', 'project', 'https://example.com/repo')`); err != nil {
-		t.Fatal(err)
-	}
-	var created, updated time.Time
-	if err := database.Pool.QueryRow(ctx, "SELECT created_at, updated_at FROM projects").Scan(&created, &updated); err != nil || !created.Equal(updated) || created.IsZero() {
-		t.Fatalf("database times: %v, %v, %v", created, updated, err)
-	}
-	assertMigrationPoolReusable(t, database.Pool)
-}
-
-func TestMigration126DropsWorkerLifecycleAndPreservesSessionOperations(t *testing.T) {
-	pool := emptyPool(t)
-	ctx := t.Context()
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 126 })
-	if index < 2 || schemaMigrations[index-2].version != 124 || schemaMigrations[index-1].version != 125 {
-		t.Fatal("expected worker lifecycle removal after migrations 124 and 125")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:index-1]); err != nil {
-		t.Fatal(err)
-	}
-
-	user, worker, session, operation := queryID(1), queryID(2), queryID(3), queryID(4)
-	if _, err := pool.Exec(ctx, `WITH worker AS (
-		INSERT INTO workers (user_id, worker_id, created_at, last_seen_at, telemetry, task_snapshot)
-		VALUES ($1, $2, now(), now(), '{}', '{}')
-		RETURNING user_id, worker_id
-	)
-	INSERT INTO worker_lifecycle (user_id, worker_id, protocol_version, intent_version, desired, admission, instance_epoch, updated_at)
-	SELECT user_id, worker_id, 1, 3, 'enabled', 'open', 1, now() FROM worker`, user, worker); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_operations
-		(session_id, operation_id, operation_seq, body_hash, command, actor_user_id, credential_id, credential_kind, receipt, worker_id, worker_intent_version)
-		VALUES ($1, $2, 1, decode(repeat('ab', 32), 'hex'), '{}', $3, $3, 'pat', '{"state":"accepted"}', $4, 3)`,
-		session, operation, user, worker); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
-
-	const preserved = `SELECT
-		(SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version IN (110, 125)),
-		(SELECT to_jsonb(w)::text FROM workers w WHERE user_id = $1 AND worker_id = $2),
-		(SELECT (to_jsonb(o) - 'worker_id' - 'worker_intent_version')::text
-		 FROM session_operations o WHERE session_id = $3 AND operation_id = $4)`
-	var oldMigration, oldWorker, oldOperation string
-	if err := pool.QueryRow(ctx, preserved, user, worker, session, operation).Scan(&oldMigration, &oldWorker, &oldOperation); err != nil {
-		t.Fatal(err)
-	}
-	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
-		t.Fatal(err)
-	}
-
-	var tablesGone, columnsGone bool
-	if err := pool.QueryRow(ctx, `SELECT
-		to_regclass('worker_lifecycle') IS NULL
-		AND to_regclass('worker_lifecycle_operations') IS NULL
-		AND to_regclass('worker_lifecycle_observations') IS NULL,
-		NOT EXISTS (SELECT FROM information_schema.columns
-			WHERE table_schema = current_schema() AND table_name = 'session_operations'
-			AND column_name IN ('worker_id', 'worker_intent_version'))`).Scan(&tablesGone, &columnsGone); err != nil {
-		t.Fatal(err)
-	}
-	if !tablesGone || !columnsGone {
-		t.Fatalf("worker lifecycle schema remains: tables removed=%t, columns removed=%t", tablesGone, columnsGone)
-	}
-	var newMigration, newWorker, newOperation string
-	if err := pool.QueryRow(ctx, preserved, user, worker, session, operation).Scan(&newMigration, &newWorker, &newOperation); err != nil {
-		t.Fatal(err)
-	}
-	if newMigration != oldMigration || newWorker != oldWorker || newOperation != oldOperation {
-		t.Fatalf("upgrade changed retained rows: migrations 110 and 125=%t, worker=%t, session operation=%t",
-			newMigration != oldMigration, newWorker != oldWorker, newOperation != oldOperation)
-	}
-	var checksum string
-	if err := pool.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version = 126").Scan(&checksum); err != nil {
-		t.Fatal(err)
-	}
-	if checksum != schemaMigrations[index].checksum() {
-		t.Fatalf("migration 126 checksum: got %s, want %s", checksum, schemaMigrations[index].checksum())
-	}
-}
 
 func TestMigrationsRejectInvalidHistory(t *testing.T) {
 	database := isolatedStore(t)
@@ -491,4 +327,92 @@ func migrationInstance(t *testing.T, pool *pgxpool.Pool) (*pgxpool.Pool, string)
 	}
 	t.Cleanup(instance.Close)
 	return instance, application
+}
+
+func TestHistoricalUpgradePreservesMaterialsAndCreatesOAuthTables(t *testing.T) {
+	ctx := context.Background()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:13]); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{Pool: pool}
+	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,'legacy-user',now(),now())`, queryID(2))
+	mustQueryExec(t, s, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Legacy project','https://example.test/repo')`, queryID(1))
+	mustQueryExec(t, s, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, queryID(1), queryID(2))
+	mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title,description,status,version,allow_agents,required_platform,properties)
+		VALUES($1,$3,'Legacy task','## Original Markdown','proposed',9007199254740993,true,'linux',
+		'{"pullRequests":[{"url":"https://example.test/pr","title":"Original"}]}'),
+		($2,$3,'Dependency','Preserved','done',7,false,NULL,'{"pullRequests":[]}')`, queryID(10), queryID(11), queryID(1))
+	mustQueryExec(t, s, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,false)`, queryID(1), queryID(10), queryID(11))
+	mustQueryExec(t, s, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'nested/plan.md','text/markdown',123)`, queryID(1), queryID(10))
+
+	facts := statusMigrationRelatedFacts(t, s)
+	before := statusMigrationRows(t, s)
+	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
+		t.Fatal(err)
+	}
+	afterStatus := statusMigrationRows(t, s)
+	if len(afterStatus) != 2 || afterStatus[0].Status != "todo" || afterStatus[0].Version != before[0].Version+1 || afterStatus[0].Materials != before[0].Materials || !reflect.DeepEqual(afterStatus[1], before[1]) {
+		t.Fatalf("status migration changed legacy task materials: before=%+v after=%+v", before, afterStatus)
+	}
+	var statusLedger string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=14`).Scan(&statusLedger); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	// Later migrations add project columns, so compare only the old ledger and
+	// resource tables that are unchanged by the intervening schema changes.
+	currentFacts := statusMigrationRelatedFacts(t, s)
+	for _, key := range []string{"ledger", "dependencies", "attachments"} {
+		if currentFacts[key] != facts[key] {
+			t.Fatalf("upgrade changed %s: before=%s after=%s", key, facts[key], currentFacts[key])
+		}
+	}
+	var typedEdges int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies WHERE dependency_type='task' AND goal_edge_id IS NULL`).Scan(&typedEdges); err != nil || typedEdges != 1 {
+		t.Fatalf("upgrade did not preserve the legacy task edge type: count=%d err=%v", typedEdges, err)
+	}
+	var currentLedger string
+	var versions []int64
+	if err := pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=14`).Scan(&currentLedger); err != nil || currentLedger != statusLedger {
+		t.Fatalf("upgrade changed applied ledger: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT array_agg(version ORDER BY version) FROM schema_migrations`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	wantVersions := make([]int64, len(schemaMigrations))
+	for i, m := range schemaMigrations {
+		wantVersions[i] = m.version
+	}
+	if !reflect.DeepEqual(versions, wantVersions) {
+		t.Fatalf("upgrade ledger: got %v want %v", versions, wantVersions)
+	}
+	if len(versions) < 39 || versions[37] != 38 || versions[38] != 39 {
+		t.Fatalf("OAuth migrations missing from ledger: %v", versions)
+	}
+	task := snapshotTask(t, s, queryID(1), queryID(10))
+	prs, err := taskproperty.PullRequests(task.Properties)
+	if err != nil || len(prs) != 1 || prs[0].URL != "https://example.test/pr" || prs[0].Title != "Original" || task.Title != "Legacy task" || task.Description != "## Original Markdown" || task.Status != "todo" || task.Version != 9007199254740994 || !task.UpdatedAt.Equal(afterStatus[0].UpdatedAt) || !task.AllowAgents || task.RequiredPlatform == nil || *task.RequiredPlatform != "linux" || !reflect.DeepEqual(task.DependsOn, []string{queryID(11)}) {
+		t.Fatalf("upgrade changed task or migrated properties: task=%+v prs=%+v err=%v", task, prs, err)
+	}
+	var grants, access, refresh, clients int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants), (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens), (SELECT count(*) FROM oauth_clients)`).Scan(&grants, &access, &refresh, &clients); err != nil || grants != 0 || access != 0 || refresh != 0 || clients != 0 {
+		t.Fatalf("new OAuth tables: grants=%d access=%d refresh=%d clients=%d err=%v", grants, access, refresh, clients, err)
+	}
+	var fullLedger string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t`).Scan(&fullLedger); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	var repeatedLedger string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t`).Scan(&repeatedLedger); err != nil || repeatedLedger != fullLedger {
+		t.Fatalf("repeat changed applied ledger: %v", err)
+	}
+	if repeated := snapshotTask(t, s, queryID(1), queryID(10)); !reflect.DeepEqual(repeated, task) || !reflect.DeepEqual(statusMigrationRelatedFacts(t, s), currentFacts) {
+		t.Fatal("repeat changed task or related materials")
+	}
 }

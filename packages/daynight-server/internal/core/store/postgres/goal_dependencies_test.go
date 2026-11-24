@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -227,6 +228,8 @@ func TestGoalDependencyTeamLockCancellationAndIndependence(t *testing.T) {
 
 func TestGoalDependencyRemovalDatabaseFailuresRollBack(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	project := queryProject(t, db, 1)
 	for _, scenario := range []struct {
 		name, triggerSQL, triggerTable, code, phase string
 		revision                                    *int64
@@ -254,18 +257,22 @@ func TestGoalDependencyRemovalDatabaseFailuresRollBack(t *testing.T) {
 			triggerTable: "goal_dependency_revisions", code: "P1013", phase: "advance goal dependency revision", revision: new(int64(7)),
 		},
 	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			db := isolatedStore(t)
+		if !t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
-			project := queryProject(t, db, 1)
-			source, target := queryID(11), queryID(12)
+			source, target := uuid.NewString(), uuid.NewString()
 			mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$3,'goal','source','todo'),($2,$3,'goal','target','done')`, source, target, project.ID)
-			mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES($1,$2,$3,'goal',$4)`, project.ID, source, target, queryID(13))
+			mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES($1,$2,$3,'goal',$4)`, project.ID, source, target, uuid.NewString())
 			if scenario.revision != nil {
 				mustQueryExec(t, db, `INSERT INTO goal_dependency_revisions(goal_id,revision) VALUES($1,$2)`, source, *scenario.revision)
 			}
 			mustQueryExec(t, db, scenario.triggerSQL)
+			triggerPresent := true
+			t.Cleanup(func() {
+				if triggerPresent {
+					mustQueryExec(t, db, "DROP TRIGGER refuse_goal_removal ON "+scenario.triggerTable+"; DROP FUNCTION refuse_goal_removal()")
+				}
+			})
 			completion, err := db.WriteProject(ctx, project.ID, func(scope store.ProjectWriteScope) error {
 				dao := scope.GoalDependencyDAO()
 				if err := dao.LockTeam(ctx); err != nil {
@@ -296,6 +303,7 @@ func TestGoalDependencyRemovalDatabaseFailuresRollBack(t *testing.T) {
 				t.Fatal("database diagnostic was exposed by the error")
 			}
 			mustQueryExec(t, db, "DROP TRIGGER refuse_goal_removal ON "+scenario.triggerTable+"; DROP FUNCTION refuse_goal_removal()")
+			triggerPresent = false
 			assertFaultTriggerRemoved(t, db, "refuse_goal_removal", scenario.triggerTable)
 			if err := writeProjectForTest(db, ctx, project.ID, func(scope store.ProjectWriteScope) error {
 				dao := scope.GoalDependencyDAO()
@@ -306,6 +314,8 @@ func TestGoalDependencyRemovalDatabaseFailuresRollBack(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("removal after fault cleanup: %v", err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }

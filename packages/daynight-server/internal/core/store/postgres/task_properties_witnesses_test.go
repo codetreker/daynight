@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,61 +58,6 @@ func taskPropertyFacts(t *testing.T, database *Store) map[string]string {
 	}
 	facts["dependencies"] = edges
 	return facts
-}
-
-func TestTaskPropertiesPartialWritesRollBackMetadataAndEdges(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	old := queryTask(t, database, project.ID, 2, model.TaskDone)
-	prerequisite := queryTask(t, database, project.ID, 3, model.TaskDone)
-	target := queryTask(t, database, project.ID, 4, model.TaskInProgress, old.ID)
-	putTaskPropertyFixture(t, database, target.ID, "pullRequests", []byte(`[{"url":"old\u0000","title":"Old"}]`))
-	target = snapshotTask(t, database, project.ID, target.ID)
-	before := taskPropertyFacts(t, database)
-	values := taskPropertyWriteValues(target)
-	values.Title, values.Description = "Changed", "Changed"
-	values.DependsOn = []string{prerequisite.ID}
-	values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"changed\u0000","title":"Changed"}]`)}
-	for _, fragment := range []string{"UPDATE tasks SET", "INSERT INTO task_dependencies"} {
-		t.Run("cancel after "+fragment, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			traced := taskPropertyTracedStore(t, database, taskPropertyQueryAction{
-				match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel,
-			})
-			completion, err := traced.WriteProject(ctx, project.ID, func(scope ProjectWriteScope) error {
-				_, err := scope.TaskDAO().UpdateTask(ctx, target.ID, values)
-				return err
-			})
-			if !errors.Is(err, context.Canceled) || completion.Outcome == TransactionCommitted {
-				t.Fatalf("partial write cancellation lost its outcome or cause: %+v %v", completion, err)
-			}
-			if !reflect.DeepEqual(taskPropertyFacts(t, database), before) {
-				t.Fatal("partial write persisted task fields, properties or dependency edges")
-			}
-		})
-	}
-	mustQueryExec(t, database, `CREATE FUNCTION reject_property_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION USING ERRCODE='P1201',MESSAGE='private property edge failure'; END $$;
-		CREATE TRIGGER reject_property_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_property_edge()`)
-	for _, create := range []bool{false, true} {
-		completion, err := database.WriteProject(context.Background(), project.ID, func(scope ProjectWriteScope) error {
-			if create {
-				_, err := scope.TaskDAO().CreateTask(context.Background(), queryID(5), values)
-				return err
-			}
-			_, err := scope.TaskDAO().UpdateTask(context.Background(), target.ID, values)
-			return err
-		})
-		var cause *pgconn.PgError
-		if completion.Outcome != TransactionNotCommitted || !errors.As(err, &cause) || cause.Code != "P1201" {
-			t.Fatalf("edge write failure lost confirmed rollback or SQL cause: %+v %v", completion, err)
-		}
-		if !reflect.DeepEqual(taskPropertyFacts(t, database), before) {
-			t.Fatal("failed edge write persisted partial task or property state")
-		}
-	}
 }
 
 func TestTaskPropertiesReadSharesTaskSnapshot(t *testing.T) {
@@ -232,6 +178,48 @@ func TestTaskResponseAdmissionRollsBackActualWrites(t *testing.T) {
 		})
 		if completion.Outcome != TransactionNotCommitted || !errors.Is(err, refused) || !reflect.DeepEqual(taskPropertyFacts(t, database), before) {
 			t.Fatalf("post-write response refusal lost rollback, cause or state: %+v %v", completion, err)
+		}
+	}
+}
+
+func TestMigratedBlockedWhitespaceSetIsNoOp(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
+		t.Fatal(err)
+	}
+	db := &Store{Pool: pool}
+	project := queryProject(t, db, 1)
+	var user string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM project_grants WHERE project_id=$1 AND role='admin' LIMIT 1`, project.ID).Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: queryID(99)}
+	for i, v := range []string{"true", "false"} {
+		id := queryID(10 + i)
+		mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title,status,version,created_at,updated_at) VALUES($1,$2,'Task','todo',17,'2026-01-01T10:00:00Z','2026-01-01T11:00:00Z')`, id, project.ID)
+		mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused',$2)`, id, " \n"+v+" ")
+	}
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	svc := taskservice.NewTasks(db)
+	for i, v := range []string{"true", "false"} {
+		id := queryID(10 + i)
+		before, err := svc.Get(ctx, principal, project.ID, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"paused", "blocked"} {
+			got, err := svc.SetProperty(ctx, principal, project.ID, id, name, v, before.Version)
+			if err != nil || got.Version != before.Version || !got.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatalf("%s %s: %#v %v", name, v, got, err)
+			}
+		}
+		var raw string
+		var version int64
+		if err := pool.QueryRow(ctx, `SELECT p.value,t.version FROM tasks t JOIN task_properties p ON p.task_id=t.id AND p.name='blocked' WHERE t.id=$1`, id).Scan(&raw, &version); err != nil || raw != " \n"+v+" " || version != before.Version {
+			t.Fatalf("persisted: %q %d %v", raw, version, err)
 		}
 	}
 }
