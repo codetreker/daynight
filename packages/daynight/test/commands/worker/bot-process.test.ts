@@ -704,6 +704,137 @@ test("explicit journal-only deletion stops its original generation without recon
   } finally { read.mockRestore(); }
 });
 
+test.skipIf(process.platform === "linux")("journal-only deletion uses the current platform proof without Linux history", async () => {
+  const f = await journalOnlyDeletion();
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementation(() => { throw new Error("Linux history must not be read"); });
+  const current = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  try {
+    expect(await f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).toMatchObject({ stopProof: { stoppedAt: "2026-11-05T00:00:00Z" } });
+    expect(history).not.toHaveBeenCalled(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce(); expect(f.deps.recordStopped).toHaveBeenCalledOnce();
+  } finally { history.mockRestore(); current.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["recovered history", "repeated I/O", "stop failure", "unconfirmed stop"] as const)("journal-only deletion retains historical I/O while attempting bounded stop (%s)", async kind => {
+  const f = await journalOnlyDeletion(), first = Object.assign(new Error("historical read failed"), { code: "EIO" });
+  const second = Object.assign(new Error("historical recheck failed"), { code: "EIO" }), stopFailure = new Error("tree stop failed");
+  const native = { pid: 456, parentPid: 123, processGroupId: 456, startedAt: "native-original", commandHash: "b".repeat(64) };
+  f.patch({ nativeProcesses: [native] });
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  if (kind === "repeated I/O") history.mockImplementationOnce(() => { throw second; });
+  const current = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  if (kind === "stop failure") f.deps.stopProcesses.mockRejectedValueOnce(stopFailure);
+  if (kind === "unconfirmed stop") { f.deps.stopProcesses.mockImplementationOnce(async () => {}); f.deps.confirmStopped.mockResolvedValue(false); }
+  const started = Date.now(); let completed = false;
+  try {
+    const error = await f.manager.withDeletion(f.record, f.signal, async stop => { await stop({ recoverMissingExecution: true }); completed = true; }).catch(error => error);
+    if (kind === "recovered history") expect(error).toBe(first);
+    else {
+      expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first); expect(error.errors).toHaveLength(2);
+      if (kind === "repeated I/O") expect(error.errors[1]).toBe(second);
+      else if (kind === "stop failure") expect(error.errors[1]).toBe(stopFailure);
+      else expect(error.errors[1].message).toMatch(/did not stop/);
+    }
+    expect(history).toHaveBeenCalledTimes(2);
+    const deadline = history.mock.calls[0]![2];
+    expect(deadline).toBeGreaterThanOrEqual(started); expect(deadline).toBeLessThanOrEqual(started + 10_500);
+    expect(history.mock.calls[1]![2]).toBe(deadline);
+    expect(history.mock.calls[0]![3]).toEqual({ maxBusyMs: 1000 }); expect(history.mock.calls[1]![3]).toEqual({ maxBusyMs: 1000 });
+    expect(current).toHaveBeenCalledWith(f.record.intent!.journalPath, f.getTicket(), deadline);
+    expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, [native], deadline);
+    if (kind === "stop failure") expect(f.deps.confirmStopped).not.toHaveBeenCalled();
+    else expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, [native], deadline);
+    expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(completed).toBe(false); expect(f.release).not.toHaveBeenCalled();
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+    expect(f.current().intent).toEqual(f.record.intent); expect(existsSync(f.record.intent!.ticketPath)).toBe(true);
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+  } finally { history.mockRestore(); current.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["historical stopped", "historical conflict", "current stopped", "current conflict", "current I/O"] as const)("journal-only deletion preserves historical I/O and avoids signaling on %s", async kind => {
+  const f = await journalOnlyDeletion(), first = Object.assign(new Error("historical read failed"), { code: "EIO" });
+  const currentFailure = Object.assign(new Error("current journal read failed"), { code: "EIO" });
+  const stopped = { ...f.saved(), lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  if (kind === "historical stopped") history.mockReturnValueOnce(stopped);
+  if (kind === "historical conflict") history.mockReturnValueOnce({ ...stopped, controllerInstanceId: id(99) });
+  const current = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  if (kind === "current stopped") current.mockReturnValue(stopped);
+  if (kind === "current conflict") current.mockReturnValue({ ...f.saved(), controllerInstanceId: id(99) });
+  if (kind === "current I/O") current.mockImplementation(() => { throw currentFailure; });
+  let completed = false;
+  try {
+    const error = await f.manager.withDeletion(f.record, f.signal, async stop => { await stop({ recoverMissingExecution: true }); completed = true; }).catch(error => error);
+    if (kind === "historical stopped" || kind === "current stopped") expect(error).toBe(first);
+    else {
+      expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first); expect(error.errors).toHaveLength(2);
+      if (kind === "current I/O") expect(error.errors[1]).toBe(currentFailure); else expect(error.errors[1].message).toMatch(/does not match|conflicts/i);
+    }
+    if (kind.startsWith("historical")) expect(current).not.toHaveBeenCalled(); else expect(current).toHaveBeenCalledOnce();
+    expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.stopBootstrap).not.toHaveBeenCalled();
+    expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(completed).toBe(false); expect(f.release).not.toHaveBeenCalled();
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+  } finally { history.mockRestore(); current.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("journal-only deletion rejects a non-I/O historical conflict without signaling", async () => {
+  const f = await journalOnlyDeletion(), conflict = new ControllerLaunchJournalConflictError("historical identity conflict");
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw conflict; });
+  const current = vi.spyOn(lifecycle, "readCurrentControllerSnapshot");
+  try {
+    await expect(f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).rejects.toBe(conflict);
+    expect(current).not.toHaveBeenCalled(); expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+  } finally { history.mockRestore(); current.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["original ticket", "conflicting ticket"] as const)("journal-only deletion checks a real current journal after historical I/O (%s)", async kind => {
+  const f = await journalOnlyDeletion(), ticket = f.getTicket(), file = f.record.intent!.journalPath;
+  const journalTicket = kind === "original ticket" ? ticket : { ...ticket, controllerInstanceId: id(99) };
+  const native = { pid: 456, parentPid: 123, processGroupId: 456, startedAt: "native-original", commandHash: "b".repeat(64) };
+  mkdirSync(path.dirname(file), { recursive: true });
+  const journal = lifecycle.openControllerLifecycleStore(file, journalTicket, { onMigration: () => {} });
+  try { journal.patchSnapshot({ controllerProcess: f.saved().controllerProcess, nativeProcesses: [native], nativeSessionId: f.saved().nativeSessionId, lifecycle: "ready", error: null }); }
+  finally { journal.close(); }
+  const first = Object.assign(new Error("historical read failed"), { code: "EIO" });
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  try {
+    const error = await f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true })).catch(error => error);
+    if (kind === "original ticket") {
+      expect(error).toBe(first);
+      expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, [native], expect.any(Number));
+      expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, [native], expect.any(Number));
+    } else {
+      expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first); expect(error.errors).toHaveLength(2);
+      expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.confirmStopped).not.toHaveBeenCalled();
+    }
+    expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.executions.get(f.record)).toBeNull();
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+  } finally { history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["confirmed", "stop failure"] as const)("journal-only deletion retains its Job after historical I/O (%s)", async kind => {
+  const f = await journalOnlyDeletion(), first = Object.assign(new Error("historical read failed"), { code: "EIO" }), failure = new Error("tree stop failed");
+  const lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => {},
+    retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: async () => {} };
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  const current = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  if (kind === "stop failure") f.deps.stopProcesses.mockRejectedValueOnce(failure);
+  try {
+    const error = await f.createProcess(f.deps, 3, leases).withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true })).catch(error => error);
+    if (kind === "confirmed") { expect(error).toBe(first); expect(leases.release).not.toHaveBeenCalled(); }
+    else { expect(error.errors).toEqual([first, failure]); expect(leases.release).not.toHaveBeenCalled(); }
+    const deadline = history.mock.calls[0]![2];
+    expect(leases.retain).toHaveBeenCalledWith(f.record.intent!.launchId, f.saved().controllerProcess, deadline);
+    expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
+    if (kind === "confirmed") expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
+    else expect(f.deps.confirmStopped).not.toHaveBeenCalled();
+    expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().cleanup).toBeUndefined();
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+  } finally { history.mockRestore(); current.mockRestore(); }
+});
+
 test.each(["ticket", "journal"])("journal-only deletion rejects a conflicting %s before stopping", async kind => {
   const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
   const ticket = kind === "ticket" ? vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...f.getTicket(), controllerInstanceId: id(99) }) : undefined;

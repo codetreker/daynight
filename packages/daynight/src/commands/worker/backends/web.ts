@@ -12,7 +12,7 @@ import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, L
 import { readCompatibleControllerOperation, readControllerSnapshot, readCompatibleControllerSnapshot, readCurrentControllerSnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, readRecoverableInitialInput, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ControllerProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
-import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, hasUnsafeControllerObservationFailure, isControllerEvidenceReadIoFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
 import { sameWorktreeLocation } from "../worktrees/paths.js";
 import { continuingOriginalGeneration, healthyOriginalGeneration, recoveringInitialGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
@@ -56,6 +56,35 @@ export type WebInputAuthority = (task: LocalTask, ticket: ControllerLaunchTicket
 export type WebInputWaitingReason = WebAutomaticInputWait | "storage_maintenance" | "configuration_pending";
 export type WebAdvanceResult = { kind: "observed" | "upgrade"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
+class WebHistoricalObservationError extends ControllerLaunchJournalObservationError {
+  constructor(cause: unknown, readonly blockBootstrap: boolean) {
+    super(new Error("Controller history could not be established during cleanup."), cause);
+  }
+}
+const hasBlockedWebHistoricalObservation = (error: unknown, seen = new Set<object>()): boolean => {
+  if (error === null || typeof error !== "object" || seen.has(error)) return false;
+  if (error instanceof WebHistoricalObservationError && error.blockBootstrap) return true;
+  seen.add(error);
+  const children: unknown[] = error instanceof AggregateError ? [...error.errors] : [];
+  if (error instanceof Error && error.cause !== undefined) children.push(error.cause);
+  return children.some(child => hasBlockedWebHistoricalObservation(child, seen));
+};
+const permitsWebRetainedFallback = (error: unknown, seen = new Set<object>()): boolean => {
+  if (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError || isControllerEvidenceReadIoFailure(error)) return true;
+  if (!(error instanceof AggregateError) || error.errors.length === 0 || seen.has(error)) return false;
+  seen.add(error);
+  const allowed = error.errors.every(child => permitsWebRetainedFallback(child, seen));
+  seen.delete(error);
+  return allowed;
+};
+const containsWebJournalOrIpcFailure = (error: unknown, seen = new Set<object>()): boolean => {
+  if (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError) return true;
+  if (!(error instanceof AggregateError) || seen.has(error)) return false;
+  seen.add(error);
+  const found = error.errors.some(child => containsWebJournalOrIpcFailure(child, seen));
+  seen.delete(error);
+  return found;
+};
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const jobLeases = options.jobLeases ?? createControllerJobLeases();
   const retainLease = async (launchId: string, proof: ControllerProcessProof, deadline: number): Promise<void> => {
@@ -72,18 +101,39 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (match === null) throw new Error("The preceding Windows controller has no original Job identity.");
     return match[1]!;
   };
-  const confirmWithLease = async (launchId: string, controller: ControllerProcessProof, native: readonly ProcessProof[], deadline?: number, snapshot?: ControllerSnapshot, ticketHint?: ControllerLaunchTicket) => {
+  const confirmWithLease = async (launchId: string, controller: ControllerProcessProof, native: readonly ProcessProof[], deadline?: number, snapshot?: ControllerSnapshot, ticketHint?: ControllerLaunchTicket, cleanupHistory = false, onHistoryIo?: (error: ControllerLaunchJournalObservationError) => void) => {
     if (isLinuxControllerLaunch(controller)) {
       const ticket = ticketHint ?? await readLaunchTicket(options.homeDirectory, launchId);
       if (ticket.launchId !== launchId || controller.launchId !== launchId) throw new Error("Web stop proof ticket conflicts with its original launch.");
-      const proven = readHistoricalStoppedControllerGeneration(path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId), "journal.sqlite"), ticket, deadline ?? Date.now() + 5000);
-      if (proven !== null) {
+      const historicalDeadline = deadline ?? Date.now() + 5000;
+      const readHistory = () => cleanupHistory
+        ? readHistoricalStoppedControllerGeneration(path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId), "journal.sqlite"), ticket, historicalDeadline, { maxBusyMs: 1000 })
+        : readHistoricalStoppedControllerGeneration(path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId), "journal.sqlite"), ticket, historicalDeadline);
+      const validateHistory = (proven: ControllerSnapshot): void => {
         if (snapshot === undefined || proven.executionId !== snapshot.executionId || proven.executionGeneration !== snapshot.executionGeneration
           || proven.controllerInstanceId !== snapshot.controllerInstanceId || proven.nativeSessionId !== snapshot.nativeSessionId
           || !preservesControllerProcessProof(controller, proven.controllerProcess, launchId)
           || JSON.stringify(native) !== JSON.stringify(proven.nativeProcesses)) throw new Error("Web durable stop proof conflicts with its original execution evidence.");
-        return true;
+      };
+      let proven: ControllerSnapshot | null;
+      try { proven = readHistory(); if (proven !== null) validateHistory(proven); }
+      catch (error) {
+        if (!cleanupHistory) throw error;
+        if (!isControllerEvidenceReadIoFailure(error)) throw new WebHistoricalObservationError(error, true);
+        try {
+          const recovered = readHistory();
+          if (recovered !== null) { validateHistory(recovered); throw new WebHistoricalObservationError(error, true); }
+        } catch (recheck) {
+          if (recheck instanceof WebHistoricalObservationError) throw recheck;
+          const failure = new WebHistoricalObservationError(new AggregateError([error, recheck], "Web historical stop recheck failed."), !isControllerEvidenceReadIoFailure(recheck));
+          if (!failure.blockBootstrap && onHistoryIo !== undefined) { onHistoryIo(failure); return false; }
+          throw failure;
+        }
+        const failure = new WebHistoricalObservationError(error, false);
+        if (onHistoryIo !== undefined) { onHistoryIo(failure); return false; }
+        throw failure;
       }
+      if (proven !== null) return true;
     }
     if (!jobLeases.enabled) return deadline === undefined ? confirmControllerProcessesStopped(controller, native) : confirmControllerProcessesStopped(controller, native, deadline);
     const lease = await jobLeases.get(launchId);
@@ -790,8 +840,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       };
       let stage: WorkerCleanupStage = "observation";
       let fallback: { proof: ControllerProcessProof; deadline: number; task: LocalTask } | undefined, fallbackTicket: ControllerLaunchTicket | undefined;
-      let bootstrapAttempted = false, bootstrapCompleted = false, treeAttempted = false, treeEvidenceBlocked = false, leaseAttempted = false;
+      let bootstrapAttempted = false, bootstrapCompleted = false, bootstrapEvidenceBlocked = false, treeAttempted = false, treeEvidenceBlocked = false, leaseAttempted = false;
       let stopRequestFailure: { cause: unknown } | undefined;
+      let historicalReadFailure: ControllerLaunchJournalObservationError | undefined;
+      const retainHistoricalFailure = (failure: ControllerLaunchJournalObservationError): void => {
+        historicalReadFailure = historicalReadFailure === undefined ? failure : new ControllerLaunchJournalObservationError(
+          new Error("Multiple historical journal observations failed."), new AggregateError([historicalReadFailure.journalCause, failure.journalCause], "Web historical journal reads failed."));
+      };
       phase(input, { kind: "cleanup", phase: stage });
       try {
         const startedAt = options.now();
@@ -838,8 +893,28 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt) throw new Error("The cleanup ticket does not identify the original execution.");
             if (execution.controllerProcess === null) throw new Error("The original controller spawn identity is missing; cleanup cannot infer stop.");
             fallbackTicket = ticket;
-            const historical = isLinuxControllerLaunch(execution.controllerProcess)
-              ? readHistoricalStoppedControllerGeneration(journal(task), ticket, stopDeadline) : null;
+            let historical: ControllerSnapshot | null = null;
+            if (isLinuxControllerLaunch(execution.controllerProcess)) {
+              const readHistorical = () => readHistoricalStoppedControllerGeneration(journal(task), ticket, stopDeadline, { maxBusyMs: 1000 });
+              const validateHistorical = (snapshot: ControllerSnapshot): void => {
+                if (!matchesGeneration(task, snapshot) || !preservesControllerProcessProof(execution.controllerProcess!, snapshot.controllerProcess, ticket.launchId)
+                  || !preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses)) throw new Error("Web cleanup stopped history conflicts with its original execution.");
+              };
+              try { historical = readHistorical(); if (historical !== null) validateHistorical(historical); }
+              catch (error) {
+                if (!isControllerEvidenceReadIoFailure(error)) { bootstrapEvidenceBlocked = true; treeEvidenceBlocked = true; throw error; }
+                const original = new ControllerLaunchJournalObservationError(new Error("Controller IPC was not observed after the historical journal read failed."), error);
+                try {
+                  const recovered = readHistorical();
+                  if (recovered !== null) { validateHistorical(recovered); bootstrapEvidenceBlocked = true; treeEvidenceBlocked = true; throw original; }
+                } catch (recheck) {
+                  if (recheck === original) throw recheck;
+                  if (!isControllerEvidenceReadIoFailure(recheck)) { bootstrapEvidenceBlocked = true; treeEvidenceBlocked = true; throw new AggregateError([original, recheck], "Web historical stop evidence could not be rechecked.", { cause: original }); }
+                  retainHistoricalFailure(new ControllerLaunchJournalObservationError(new Error("Controller IPC was not observed after the historical journal read failed."), new AggregateError([error, recheck], "Web historical journal reads failed.")));
+                }
+                if (historicalReadFailure === undefined) retainHistoricalFailure(original);
+              }
+            }
             if (historical !== null) {
               if (!matchesGeneration(task, historical) || !preservesControllerProcessProof(execution.controllerProcess, historical.controllerProcess, ticket.launchId)
                 || !preservesNativeProcessPrefix(execution.nativeProcesses, historical.nativeProcesses)) throw new Error("Web cleanup stopped history conflicts with its original execution.");
@@ -921,7 +996,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               if (proof == null) { treeEvidenceBlocked = true; throw new Error("The committed controller process identity is missing; cleanup cannot infer stop."); }
               let stopped: boolean;
               try {
-                stopped = await confirmWithLease(execution.launchId, proof, native, stopDeadline, saved ?? undefined, ticket);
+                stopped = await confirmWithLease(execution.launchId, proof, native, stopDeadline, saved ?? undefined, ticket, true, retainHistoricalFailure);
                 if (!immediateStop && task.status !== "done" && !stopped && options.now() < intent.deadline) {
                   if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process identity.");
                   if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
@@ -938,18 +1013,22 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                     operation = readCompatibleControllerOperation(journal(task), ticket, operationId, stopDeadline);
                   }
                   if (operation !== null && (operation.kind !== "cleanup" || operation.executionGeneration !== execution.executionGeneration)) throw new Error("The cleanup operation belongs to a different controller generation.");
-                  if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return { task, complete: false };
+                  if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) {
+                    if (historicalReadFailure !== undefined) { bootstrapEvidenceBlocked = true; treeEvidenceBlocked = true; throw historicalReadFailure; }
+                    return { task, complete: false };
+                  }
                 }
                 if (!stopped) {
                   if (reachable) try { await request(ticket, { kind: "stop", deadline: stopDeadline }, { signal, timeoutMs: Math.max(1, Math.min(2000, stopDeadline - Date.now())) }); } catch (error) { stopRequestFailure = { cause: error }; if (hasUnsafeControllerObservationFailure(error)) throw error; }
                   signal.throwIfAborted();
                   treeAttempted = true;
                   await stopWithLease(execution.launchId, proof, native, stopDeadline);
-                  stopped = await confirmWithLease(execution.launchId, proof, native, stopDeadline, saved ?? undefined, ticket);
+                  stopped = await confirmWithLease(execution.launchId, proof, native, stopDeadline, saved ?? undefined, ticket, true, retainHistoricalFailure);
                 }
                 if (!stopped) throw new Error("The original controller or its native processes still exist.");
                 treeAttempted = true;
                 if (stopRequestFailure !== undefined) throw stopRequestFailure.cause;
+                if (historicalReadFailure !== undefined) throw historicalReadFailure;
               } catch (error) {
                 let observationError: unknown;
                 try { observationError = await notifyStopped(); } catch (failure) { observationError = failure; }
@@ -1035,13 +1114,18 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         autoInput.forget(task);
         return { task, complete: true };
       } catch (error) {
-        const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
+        const failures: unknown[] = [];
+        if (historicalReadFailure !== undefined && !(error instanceof AggregateError && error.errors.includes(historicalReadFailure))) failures.push(historicalReadFailure);
+        if (stopRequestFailure !== undefined && !failures.includes(stopRequestFailure.cause)) failures.push(stopRequestFailure.cause);
+        if (!failures.includes(error)) failures.push(error);
         treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
+        if (hasBlockedWebHistoricalObservation(error)) { bootstrapEvidenceBlocked = true; treeEvidenceBlocked = true; }
+        if (historicalReadFailure !== undefined && treeEvidenceBlocked) bootstrapEvidenceBlocked = true;
         if (stage === "agent-stop" && fallback !== undefined) {
           if (!bootstrapAttempted && !bootstrapCompleted && !treeAttempted && !leaseAttempted && fallbackTicket !== undefined) {
             try { leaseAttempted = true; await retainLease(fallbackTicket.launchId, fallback.proof, fallback.deadline); } catch (leaseError) { failures.push(leaseError); }
           }
-          if (!bootstrapAttempted && !bootstrapCompleted && !treeAttempted) {
+          if (!bootstrapEvidenceBlocked && !bootstrapAttempted && !bootstrapCompleted && !treeAttempted) {
             try { await stopControllerBootstrap(fallback.proof, fallback.deadline); bootstrapCompleted = true; }
             catch (stopError) { failures.push(stopError); bootstrapCompleted = stopError instanceof ControllerBootstrapReplacedError; }
           }
@@ -1058,12 +1142,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 if (!matchesGeneration(fallback.task, saved) || !preservesControllerProcessProof(fallback.proof, saved.controllerProcess, fallbackTicket.launchId) || !preservesNativeProcessPrefix(fallback.task.webExecution!.nativeProcesses, saved.nativeProcesses)) throw new Error("Web fallback journal conflicts with the original process evidence.");
                 treeAttempted = true;
                 await stopWithLease(fallbackTicket.launchId, saved.controllerProcess, saved.nativeProcesses, fallback.deadline); remaining();
-                if (!await confirmWithLease(fallbackTicket.launchId, saved.controllerProcess, saved.nativeProcesses, fallback.deadline, saved, fallbackTicket)) throw new Error("Web original process tree did not stop; evidence is retained.");
+                if (!await confirmWithLease(fallbackTicket.launchId, saved.controllerProcess, saved.nativeProcesses, fallback.deadline, saved, fallbackTicket, true)) throw new Error("Web original process tree did not stop; evidence is retained.");
                 remaining();
               } else if (observation.kind !== "pre-writer-exited") throw new Error("Web bootstrap exit could not be classified; evidence is retained.", observation.kind === "unknown" ? { cause: observation.cause } : undefined);
             } catch (verificationError) { failures.push(verificationError); journalIoFailure = isControllerJournalIoFailure(verificationError); }
             const previous = fallback.task.webExecution!;
-            if (!treeAttempted && journalIoFailure && (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError)
+            if (!treeAttempted && journalIoFailure && permitsWebRetainedFallback(error) && containsWebJournalOrIpcFailure(error)
+              && (stopRequestFailure === undefined || stopRequestFailure.cause instanceof ControllerIpcOutcomeUnknownError)
               && process.platform !== "win32" && previous.launchSubmission === "acknowledged"
               && (isLinuxControllerLaunch(fallback.proof)
                 ? fallbackTicket !== undefined && fallback.proof.launchId === fallbackTicket.launchId

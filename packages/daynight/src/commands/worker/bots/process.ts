@@ -762,7 +762,33 @@ export const createBotProcess = (options: {
     if (record.observed.deletion?.workerCleanup.code !== "execution_evidence_missing" || record.observed.deletion.workerCleanup.state !== "failed") throw new BotExecutionEvidenceMissingError();
     const deadline = Date.now() + 10_000, ticket = await checkedTicket(record);
     signal.throwIfAborted(); deletionRecord(record);
-    const historical = readHistoricalStoppedControllerGeneration(intent.journalPath, ticket, deadline);
+    let historical: ControllerSnapshot | null = null;
+    try { if (process.platform === "linux") historical = readHistoricalStoppedControllerGeneration(intent.journalPath, ticket, deadline, { maxBusyMs: 1000 }); }
+    catch (first) {
+      if (!isControllerEvidenceReadIoFailure(first)) throw first;
+      const failures: unknown[] = [first];
+      try {
+        let recovered: ControllerSnapshot | null = null;
+        try { recovered = readHistoricalStoppedControllerGeneration(intent.journalPath, ticket, deadline, { maxBusyMs: 1000 }); }
+        catch (error) { if (!isControllerEvidenceReadIoFailure(error)) throw error; failures.push(error); }
+        if (recovered !== null) {
+          validateBotExecutionSnapshot(record, recovered);
+        } else {
+          signal.throwIfAborted(); deletionRecord(record);
+          const current = readCurrentControllerSnapshot(intent.journalPath, ticket, deadline);
+          validateBotExecutionSnapshot(record, current);
+          if (current.controllerProcess === null) throw new BotExecutionEvidenceMissingError();
+          if (current.lifecycle !== "stopped" || !current.nativeStopped) {
+            if (jobLeases.enabled) await retainJob(intent.launchId, current.controllerProcess, deadline);
+            signal.throwIfAborted(); deletionRecord(record);
+            await stopWithLease(intent.launchId, current.controllerProcess, current.nativeProcesses, deadline);
+            if (!await confirmWithLease(ticket, intent.journalPath, current.controllerProcess, current.nativeProcesses, deadline)) throw new Error("Original Bot process tree did not stop; evidence is retained.");
+          }
+        }
+      } catch (error) { failures.push(error); }
+      if (failures.length > 1) throw new AggregateError(failures, "Bot historical observation and deletion stop failed.", { cause: first });
+      throw first;
+    }
     const snapshot = historical !== null && isLinuxControllerLaunch(historical.controllerProcess) ? historical : readCurrentControllerSnapshot(intent.journalPath, ticket, deadline);
     validateBotExecutionSnapshot(record, snapshot);
     if (snapshot.controllerProcess === null) throw new BotExecutionEvidenceMissingError();

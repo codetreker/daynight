@@ -60,6 +60,15 @@ and a reread exposes a recovered identity conflict before signaling. A pure read
 does not bypass normal authenticated stop, and remains reported even if later
 observation succeeds; unclassified or conflicting evidence cannot authorize the
 retained-proof fallback.
+Task shutdown also rechecks a historical read I/O failure within bounded lock
+waits before using the retained-proof stop path. A recovered stopped record or
+an identity or format conflict prevents signaling, and the original read error
+remains reported.
+Retired Task cleanup and explicit Bot deletion recovery likewise retain their
+original error and resources after a historical read failure. They may stop only
+an independently verified current boundary; a missing execution row cannot be
+reconstructed into a deletion completion receipt. Non-Linux Bot recovery uses its
+existing current-journal and Job proof path without reading Linux stop history.
 Receipt read I/O is rechecked separately from receipt validation; a recovered
 conflict blocks signaling. Persistent receipt I/O permits bounded cleanup only
 with an acknowledged, matching saved Controller snapshot and an independently
