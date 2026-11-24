@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { get as httpsGet } from 'node:https';
-import { createConnection, createServer, type Server } from 'node:net';
+import { createServer, type Server } from 'node:net';
 import path from 'node:path';
 import { sourceFingerprint } from './build.ts';
 import { verifyCandidateBuild, verifyCandidateCombination, verifyRepairArtifact } from './subtask-compat-recovery-provenance.ts';
@@ -9,6 +9,7 @@ import { readRegisteredMigrations } from './subtask-compat-recovery-manifest.ts'
 import { migrationLedgerQuery, migrationManifestHash, observeMigrationLedger, requireMigrationPlan, requireSettledCandidateLedger, type MigrationEntry } from './subtask-compat-recovery-migrations.ts';
 import { type CommandOptions, type ManagedCommand, type CommandResult } from './command.ts';
 import { initializeRunOwnership, startOwnedPlaywright } from './fixture-owner.ts';
+import { recoveryControl } from './subtask-compat-recovery-control.ts';
 
 type Resources = { network: string; ingress: string; volume: string; postgres: string; redis: string; auth: string; old: string; candidate: string; repair: string; controlled: string; image: string };
 type Context = {
@@ -324,12 +325,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     query: async () => await psql(migrationLedgerQuery),
     record: async value => await ctx.evidence(stage, value),
   });
-  const control = async (operation: string): Promise<Record<string, unknown>> => await new Promise((resolve, reject) => {
-    const socket = createConnection(path.join(privateDir, 'control.sock')); let data = '';
-    const timer = setTimeout(() => { socket.destroy(); reject(new Error('Recovery control timed out.')); }, 10_000);
-    socket.once('connect', () => socket.write(`${operation}\n`)); socket.on('data', chunk => { data += chunk.toString(); if (data.length > 32768) socket.destroy(); });
-    socket.once('error', error => { clearTimeout(timer); reject(error); }); socket.once('end', () => { clearTimeout(timer); try { const result = JSON.parse(data) as Record<string, unknown>; if (result.error) reject(new Error('Recovery control refused.')); else resolve(result); } catch (error) { reject(error); } });
-  });
+  const control = async (operation: string): Promise<Record<string, unknown>> => await recoveryControl(privateDir, operation);
   const waitExit = async (name: string): Promise<void> => {
     const result = await observe(['wait', name]); if (result.exitCode !== 0 || !/^\d+$/.test(result.stdout.trim()) || result.stdout.trim() === '0') throw new Error('Candidate did not fail as required.');
   };

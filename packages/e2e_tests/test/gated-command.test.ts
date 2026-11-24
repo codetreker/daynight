@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { startCommand, type ManagedCommand } from "../src/command.ts";
 import { startGatedCommand, stopGate } from "../src/gated-command.ts";
 import { readGateReceipt, writeGateReceipt } from "../src/gated-record.ts";
-import { beginBrowserScope, bindBrowserScope, finishBrowserScope, initializeRunOwnership, recoverRunOwnership, startOwnedPlaywright } from "../src/fixture-owner.ts";
+import { beginBrowserScope, bindBrowserScope, finishBrowserScope, initializeRunOwnership, recoverRunOwnership, registerFixtureClaim, startOwnedAuxiliary, startOwnedPlaywright } from "../src/fixture-owner.ts";
 import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "../src/process-evidence.ts";
 
 const repository = path.resolve(import.meta.dirname, "../../.."), parent = path.join(repository, ".tmp", "product-e2e");
@@ -305,6 +305,38 @@ test("recovery lock rejects concurrent ownership and releases after holder SIGKI
     locker.kill("SIGKILL"); await once(locker, "exit");
     await recoverRunOwnership({ repository, runDirectory: run, mode: "independent" });
   } finally { if (locker.exitCode === null && locker.signalCode === null) locker.kill("SIGKILL"); await rm(run, { recursive: true, force: true }); }
+});
+
+test("concurrent auxiliary commands serialize ownership and a failed operation releases its turn", { timeout: 20_000 }, async () => {
+  const run = await create(), exitFile = path.join(run, "exit");
+  let playwright: ManagedCommand | undefined;
+  const commands: ManagedCommand[] = [];
+  try {
+    await initializeRunOwnership(repository, run);
+    playwright = await startOwnedPlaywright({ repository, runDirectory: run, command: process.execPath,
+      args: ["-e", `const fs=require('fs');setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(0)},20)`], options: { cwd: run, timeoutMs: 15_000, onOutput: () => {} } });
+    const failed = registerFixtureClaim(repository, run, randomUUID());
+    const launches = Array.from({ length: 6 }, (_, index) => startOwnedAuxiliary({ repository, runDirectory: run, command: process.execPath,
+      args: ["-e", `process.stdout.write(${JSON.stringify(String(index))})`], options: { cwd: run, timeoutMs: 10_000, onOutput: () => {} } }));
+    const results = await Promise.allSettled([failed, ...launches]);
+    assert.equal(results[0]!.status, "rejected");
+    for (const result of results.slice(1)) {
+      assert.equal(result.status, "fulfilled");
+      if (result.status === "fulfilled") commands.push(result.value as ManagedCommand);
+    }
+    const completed = await Promise.all(commands.map(command => command.finished));
+    assert.deepEqual(completed.map(result => result.stdout), ["0", "1", "2", "3", "4", "5"]);
+    assert.ok(completed.every(result => result.exitCode === 0));
+    const owner = JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8")) as { commands: { stopped: boolean }[] };
+    assert.equal(owner.commands.length, 6);
+    assert.ok(owner.commands.every(command => command.stopped));
+    await writeFile(exitFile, "exit"); assert.equal((await playwright.finished).exitCode, 0);
+    await recoverRunOwnership({ repository, runDirectory: run, mode: "owner" });
+  } finally {
+    await Promise.allSettled(commands.map(command => command.stop()));
+    await playwright?.stop().catch(() => {});
+    await rm(run, { recursive: true, force: true });
+  }
 });
 
 test("detached browser after Playwright interruption prevents verified cleanup", async () => {

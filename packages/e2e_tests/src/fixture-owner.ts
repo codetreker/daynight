@@ -7,6 +7,7 @@ import type { CommandOptions, CommandResult, ManagedCommand } from "./command.ts
 import { startGatedCommand, stopGate } from "./gated-command.ts";
 import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "./process-evidence.ts";
 import { loadFixtureStopProofs, readFixtureBot, readFixtureExecutions, stopRecordedFixtureBot, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "./worker-cleanup.ts";
+import { stopCompatWorkerContainer } from "./subtask-compat-worker-container.ts";
 
 type Launch = { id: string; stopped: boolean };
 type BrowserScope = { id: string; proof: ProcessEvidence | null; stopped: boolean; launchState?: "prepared" | "submitted" | "never_started"; launcher?: ProcessEvidence };
@@ -16,14 +17,26 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const ownerPath = (run: string) => path.join(run, "results", "fixture-owner.json");
 const browserPath = (run: string) => path.join(run, "results", "browser-ownership.json");
 const lockPath = (run: string) => path.join(run, "results", "fixture-owner-lock.sqlite");
+// SQLite's synchronous busy wait must not block an async holder in this process.
+const localLocks = new Map<string, Promise<void>>();
 const withLock = async <T>(run: string, operation: () => Promise<T>): Promise<T> => {
-  if (!(await stat(lockPath(run))).isFile()) throw new Error("Fixture ownership lock is unavailable.");
-  const db = new DatabaseSync(lockPath(run));
+  const previous = localLocks.get(run);
+  let release!: () => void;
+  const turn = new Promise<void>(resolve => { release = resolve; });
+  localLocks.set(run, turn);
   try {
-    db.exec("PRAGMA busy_timeout=1000; BEGIN IMMEDIATE");
-    try { const result = await operation(); db.exec("COMMIT"); return result; }
-    catch (error) { db.exec("ROLLBACK"); throw error; }
-  } finally { db.close(); }
+    if (previous) await previous;
+    if (!(await stat(lockPath(run))).isFile()) throw new Error("Fixture ownership lock is unavailable.");
+    const db = new DatabaseSync(lockPath(run));
+    try {
+      db.exec("PRAGMA busy_timeout=1000; BEGIN IMMEDIATE");
+      try { const result = await operation(); db.exec("COMMIT"); return result; }
+      catch (error) { db.exec("ROLLBACK"); throw error; }
+    } finally { db.close(); }
+  } finally {
+    release();
+    if (localLocks.get(run) === turn) localLocks.delete(run);
+  }
 };
 const validateRun = async (repository: string, run: string): Promise<string> => {
   const actual = await realpath(run), parent = path.join(await realpath(repository), ".tmp", "product-e2e");
@@ -235,6 +248,9 @@ export const recoverRunOwnership = async (input: { repository: string; runDirect
   if (owner.verified) return;
   if (owner.playwright !== null && !owner.playwright.stopped) await stopGate(run, owner.playwright.id, Date.now() + 15_000);
   const latest = await readOwner(run);
+  // The compatibility fixture's container owns every Worker descendant, including
+  // detached Controllers. Stop that boundary before removing any fixture data.
+  await stopCompatWorkerContainer(run, true, latest.fixture.identity?.workerId);
   if (owner.playwright !== null) {
     if (latest.playwright?.id !== owner.playwright.id) throw new Error("Playwright ownership changed during recovery.");
     latest.playwright.stopped = true; await writeOwner(run, latest);
