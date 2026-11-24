@@ -38,6 +38,9 @@ ownership of dispatched operations while retiring their old read qualifications.
 An open direct Task retained by a same-history rebuild keeps its reading subtree
 while its detail is revalidated; deletion, access loss and real history changes
 still withdraw the affected content.
+An initial direct GET without a receipt keeps its request through a rebuild;
+its response still requires the original fence and at most one automatic reread
+if that fence has expired.
 
 The [atomic cache decision](../architecture/2026-11-24-task-sync-atomic-deletions.md)
 owns durable ordering and the [read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)

@@ -178,6 +178,10 @@ export class TaskDetailSessions {
             if (qualification.removed) {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
+            } else if (entry.source === "direct" && entry.receipt === null && entry.read !== null) {
+              // The in-flight response owns a fence; check that fence when the
+              // response arrives before deciding whether another read is needed.
+              return;
             } else if (!qualification.inBaseline) this.requireResourceRecheck(entry);
             else if (entry.source === "direct" && qualification.rebuildRevision !== null) {
               const receipt = entry.receipt;
@@ -782,7 +786,17 @@ export class TaskDetailSessions {
       await this.scope.ready(signal);
       if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration || !this.scope.isTaskReadCurrent(fence)) return;
       if (await this.scope.observeHistory(fence, observation.epoch, signal) !== "current") return;
-      if (signal.aborted || generation !== entry.generation || opening !== entry.openingGeneration || !await this.scope.verifyTaskRead(fence, signal)) return;
+      if (signal.aborted || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      const admitted = await this.scope.verifyTaskRead(fence, signal);
+      if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      if (!admitted) {
+        if (!this.scope.isTaskReadCurrent(fence)) return;
+        if (!entry.historyRetry) {
+          entry.historyRetry = true;
+          queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
+        } else { entry.directParentReadFailed = true; this.failRead(entry, new ApiError("protocol"), reconciliation); }
+        return;
+      }
       const floor = this.taskVersionFloor(entry);
       if (floor !== null && observation.detail.version < floor) {
         throw new ApiError("protocol");

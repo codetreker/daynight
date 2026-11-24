@@ -1412,3 +1412,69 @@ it("keeps a verified task conflict when mismatch wins the promise race", async (
     expect(scope.hasIdentityMismatch).toBe(true); expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(writes).toBe(1);
   } finally { taskSpy.mockRestore(); resume(); }
 });
+
+it.each([false, true])('keeps the first direct GET across a same-history rebuild and rechecks only if its version changes (%s)', async changed => {
+  const { sessions, scope } = world();
+  const original = body(), updated = changed ? body(2n, 'Updated') : original;
+  const initial = await scope.beginSync(project, signal());
+  const syncFor = (value: ReturnType<typeof body>) => taskSyncFromGraph(graphFixture([value]), { epoch, query: {}, versionForTask: () => value.version, propertiesForTask: () => value.properties });
+  await scope.observeHistory(initial, epoch, signal()); await scope.applySync(initial, syncFor(original), signal());
+  const first = deferred<Response>(), second = deferred<Response>();
+  const fetcher = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise); vi.stubGlobal('fetch', fetcher);
+  try {
+    sessions.openDirect(project, task);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const firstSignal = fetcher.mock.calls[0]![1]!.signal as AbortSignal;
+    const ticket = await scope.beginSync(project, signal());
+    await scope.applySync(ticket, syncFor(updated), signal(), true, { rebuild: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(firstSignal.aborted).toBe(false); expect(fetcher).toHaveBeenCalledOnce();
+    first.resolve(response(original));
+    if (changed) {
+      await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      expect(sessions.snapshot(project, task).detail).toBeNull();
+      expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+      second.resolve(response(updated));
+    }
+    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: { version: updated.version }, requiresFreshRead: false }));
+    expect(fetcher).toHaveBeenCalledTimes(changed ? 2 : 1);
+  } finally { first.resolve(response(original)); second.resolve(response(updated)); }
+});
+
+it('bounds retries when successive direct responses cannot be admitted', async () => {
+  const { sessions, scope } = world(); const original = body();
+  const initial = await scope.beginSync(project, signal());
+  const sync = taskSyncFromGraph(graphFixture([original]), { epoch, query: {}, versionForTask: () => original.version, propertiesForTask: () => original.properties });
+  await scope.observeHistory(initial, epoch, signal()); await scope.applySync(initial, sync, signal());
+  const fetcher = vi.fn().mockImplementation(() => Promise.resolve(response(original))); vi.stubGlobal('fetch', fetcher);
+  const verify = vi.spyOn(scope, 'verifyTaskRead').mockResolvedValue(false);
+  sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'error', detail: null, error: { kind: 'protocol' } }));
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(sessions.snapshot(project, task).detail).toBeNull();
+  verify.mockRestore();
+  sessions.load(project, task, 1, 'refresh');
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: { version: original.version }, error: null }));
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});
+
+it('withdraws a first direct read when the rebuilt baseline confirms its deletion', async () => {
+  const { sessions, scope } = world(); const original = body();
+  const initial = await scope.beginSync(project, signal());
+  const syncFor = (value: ReturnType<typeof body>) => taskSyncFromGraph(graphFixture([value]), { epoch, query: {}, versionForTask: () => value.version, propertiesForTask: () => value.properties });
+  await scope.observeHistory(initial, epoch, signal()); await scope.applySync(initial, syncFor(original), signal());
+  const first = deferred<Response>(); const fetcher = vi.fn().mockReturnValue(first.promise); vi.stubGlobal('fetch', fetcher);
+  try {
+    sessions.openDirect(project, task); await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const firstSignal = fetcher.mock.calls[0]![1]!.signal as AbortSignal;
+    const survivor = detailFixture(project, '20000000-0000-4000-8000-000000000002');
+    const ticket = await scope.beginSync(project, signal());
+    const snapshot = taskSyncFromGraph(graphFixture([survivor]), { epoch, query: {}, versionForTask: () => survivor.version, propertiesForTask: () => survivor.properties });
+    await scope.applySync(ticket, snapshot, signal(), true, { rebuild: true });
+    await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
+    expect(firstSignal.aborted).toBe(true);
+    first.resolve(response(original)); await new Promise(resolve => setTimeout(resolve, 0));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'deleted', detail: null });
+    expect(fetcher).toHaveBeenCalledOnce();
+  } finally { first.resolve(response(original)); }
+});
