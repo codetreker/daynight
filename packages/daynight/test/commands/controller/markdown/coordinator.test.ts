@@ -195,21 +195,49 @@ test("a new timeline revision waits for ACK inside an active local source checkp
   let ack = f.journal.getLastSourceSequence();
   const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
   const bridge = createControllerCaptureBridge({ journal: f.journal, beforeCapture: async () => {}, provider: () => null, writable: () => true, capture: f.capture, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => ack, sourceEpoch: f.ticket.executionId });
-  let waiting = 0; const verify = bridge.providerOptions.verifyImageCapture!;
-  bridge.providerOptions.verifyImageCapture = (captureId, attemptId) => { try { verify(captureId, attemptId); } catch (error) { waiting++; throw error; } };
+  let waiting = 0, checks = 0; const verify = bridge.providerOptions.verifyImageCapture!;
+  bridge.providerOptions.verifyImageCapture = (captureId, attemptId) => { checks++; try { verify(captureId, attemptId); } catch (error) { waiting++; throw error; } };
   const coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal: f.journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: f.policy, onReceipt() {} });
+  const timers: { handle: ReturnType<typeof setTimeout>; fire: () => void; delay: number; due: number; cleared: boolean; fired: boolean }[] = [];
+  const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;
+  const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    if (delay === undefined || delay <= 50 || delay > 5100) return realSetTimeout(callback, delay, ...args);
+    const fire = () => callback(...args);
+    const handle = realSetTimeout(() => { timer.fired = true; fire(); }, delay);
+    const timer = { handle, fire, delay, due: performance.now() + delay, cleared: false, fired: false };
+    timers.push(timer);
+    return handle;
+  });
+  const clearSpy = vi.spyOn(globalThis, "clearTimeout").mockImplementation(handle => {
+    const timer = timers.find(item => item.handle === handle); if (timer) timer.cleared = true;
+    realClearTimeout(handle);
+  });
+  let monotonicClock: ReturnType<typeof vi.spyOn> | undefined, wallClock: ReturnType<typeof vi.spyOn> | undefined;
   try {
     const work = coordinator.stageNative(request, new AbortController().signal);
     await checkpoint;
     f.journal.projectTimeline({ entryId: request.occurrence.entryId, revision: "2", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId: request.occurrence.imageId, label: "updated", error: { code: "capture_pending", message: "Waiting" } }] });
     releaseCheckpoint();
     await vi.waitFor(() => expect(waiting).toBeGreaterThan(0));
-    await new Promise(resolve => setTimeout(resolve, 5100));
+    // The helper startup deadline precedes the local source open deadline.
+    const fiveSecondTimers = timers.filter(timer => timer.delay === 5000);
+    expect(fiveSecondTimers.length).toBeGreaterThanOrEqual(2);
+    expect(fiveSecondTimers[0]!.cleared).toBe(true);
+    const openWasCleared = fiveSecondTimers[1]!.cleared;
+    const previousChecks = checks, previousWaiting = waiting, observed = performance.now();
+    const now = performance.now.bind(performance), wallNow = Date.now.bind(Date);
+    monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => now() + 5100);
+    wallClock = vi.spyOn(Date, "now").mockImplementation(() => wallNow() + 5100);
+    for (const timer of timers) if (!timer.cleared && !timer.fired && timer.due <= observed + 5100) { realClearTimeout(timer.handle); timer.fired = true; timer.fire(); }
+    expect(openWasCleared).toBe(true);
+    await vi.waitFor(() => expect(checks).toBeGreaterThan(previousChecks));
+    expect(waiting).toBeGreaterThan(previousWaiting);
+    monotonicClock.mockRestore(); wallClock.mockRestore();
     expect(coordinator.get(request.occurrence.imageId)?.sourceAdmission).toBeUndefined();
     ack = f.journal.getLastSourceSequence(); f.journal.acknowledgeEvents(ack);
     const result = await work;
     expect(coordinator.get(request.occurrence.imageId)?.sourceAdmission?.validated).toEqual(result);
-  } finally { releaseCheckpoint(); await coordinator.stop(); }
+  } finally { monotonicClock?.mockRestore(); wallClock?.mockRestore(); timeoutSpy.mockRestore(); clearSpy.mockRestore(); releaseCheckpoint(); await coordinator.stop(); }
 }, 15_000);
 
 test("native retry admits only the current original request and never rereads an interrupted attempt", async () => {
