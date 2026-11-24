@@ -53,8 +53,8 @@ export class TaskReadAdmission {
 }
 
 export const survivesBaselineChange = (before: Pick<TaskQualification, 'cacheGeneration' | 'rebuildRevision'>, after: TaskQualification): boolean =>
-  !after.removed && (before.cacheGeneration === after.cacheGeneration && before.rebuildRevision === after.rebuildRevision ||
-    before.cacheGeneration === null && after.rebuildRevision === null && after.inBaseline);
+  !after.removed && before.rebuildRevision === after.rebuildRevision &&
+  (before.cacheGeneration === after.cacheGeneration || after.inBaseline);
 
 export const deletionCandidates = (taskId: string, summaries: ReadonlyMap<string, TaskSummary>, observedIds: readonly string[]): readonly string[] => {
   const root = summaries.get(taskId);

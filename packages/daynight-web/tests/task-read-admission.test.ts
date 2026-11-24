@@ -135,6 +135,35 @@ it('retains a direct reader across same-history session cache generation rotatio
   expect(await cache.verifyTaskRead(fence, signal())).toBe(true);
 });
 
+it('rejects old history reads from shared storage before a peer hint arrives', async () => {
+  const writer = scope(); await seed(writer);
+  const reader = scope();
+  const fence = await reader.beginTaskRead(projectId, rootId, 1, 1, signal());
+  const projection = await reader.prepareProjection(signal());
+  const ticket = await writer.beginSync(projectId, signal());
+  await writer.applySync(ticket, response([root], {}, { epoch: replacement }), signal());
+  expect(await reader.verifyTaskRead(fence, signal())).toBe(false);
+  expect((await reader.qualifyProjection(projection, [{ projectId, id: rootId }], signal())).size).toBe(0);
+});
+
+it('rejects an old direct response observed without a manifest after a peer installs a new history', async () => {
+  const reader = scope();
+  const fence = await reader.beginTaskRead(projectId, rootId, 1, 1, signal());
+  const projection = await reader.prepareProjection(signal());
+  const writer = scope(); const ticket = await writer.beginSync(projectId, signal());
+  await writer.applySync(ticket, response([root], {}, { epoch: replacement }), signal());
+  expect(await reader.observeHistory(fence, epoch, signal())).toBe('current');
+  expect(await reader.verifyTaskRead(fence, signal())).toBe(false);
+  expect((await reader.qualifyProjection(projection, [{ projectId, id: rootId }], signal())).size).toBe(0);
+});
+
+it('rejects a page begun against a placeholder before another history is installed', async () => {
+  const writer = scope(); const ticket = await writer.beginSync(projectId, signal());
+  const reader = scope(); const projection = await reader.prepareProjection(signal());
+  await writer.applySync(ticket, response([root], {}, { epoch: replacement }), signal());
+  expect((await reader.qualifyProjection(projection, [{ projectId, id: rootId }], signal())).size).toBe(0);
+});
+
 it('does not treat retained detail rows as corrupt while a precise deletion is awaiting sync', async () => {
   const cache = scope(); await seed(cache);
   const ticket = await cache.beginSync(projectId, signal());

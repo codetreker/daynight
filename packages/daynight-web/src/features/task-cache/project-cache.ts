@@ -32,7 +32,8 @@ export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
   readonly scopeRevision: number; readonly historyGeneration: number; readonly openingSequence: number; readonly requestGeneration: number; readonly taskRevision?: number;
 };
-type DirectReadBaseline = { readonly known: boolean; readonly epoch: string | null; readonly cacheGeneration: string | null; readonly rebuildRevision: string | null; readonly summaryVersion: bigint | null };
+type DirectReadBaseline = { readonly known: boolean; readonly epoch: string | null; readonly cacheGeneration: string | null; readonly rebuildRevision: string | null; readonly summaryVersion: bigint | null;
+  readonly conflict?: { readonly liveEpoch: string; readonly userFence: string; readonly cacheGeneration: string; readonly epoch: string } };
 export type SessionHistoryRotationDenial = {
   readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null;
   readonly expectedLeaseExpiresAt?: number | null; readonly marker: string; readonly requestToken: string; readonly origin?: symbol;
@@ -106,7 +107,7 @@ export class TaskCacheScope {
   private readonly directRevisions = new Map<string, number>();
   private readonly readAdmission = new TaskReadAdmission();
   private readonly deletionRechecks = new Map<string, { revision: number; work: Promise<void> }>();
-  private readonly projectionReadBaselines = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, { cacheGeneration: string | null; rebuildRevision: string | null }>>();
+  private readonly projectionReadBaselines = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, { epoch: string | null; cacheGeneration: string | null; rebuildRevision: string | null }>>();
   private readonly projectionTaskRevisions = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, number>>();
   private readonly projectionDeletionRevisions = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, number>>();
   private readonly directReadBaselines = new WeakMap<TaskReadFence, DirectReadBaseline>();
@@ -513,7 +514,7 @@ export class TaskCacheScope {
       const { generations, corrupt, histories, baselines } = await this.userTransaction(async (transaction, fence) => {
         const rows = await transaction.objectStore("projects").index("by-user").getAll(this.userId);
         const generations = new Map<string, string>();
-        const baselines = new Map<string, { cacheGeneration: string | null; rebuildRevision: string | null }>();
+        const baselines = new Map<string, { epoch: string | null; cacheGeneration: string | null; rebuildRevision: string | null }>();
         const histories = new Map<string, readonly string[]>();
         const corrupt = new Set<string>();
         for (const row of rows) {
@@ -522,7 +523,7 @@ export class TaskCacheScope {
           if (row.userId !== this.userId || row.userFence !== fence || typeof row.cacheGeneration !== "string" || canonicalId(row.cacheGeneration) !== row.cacheGeneration ||
             !Array.isArray(history) || history.some(value => typeof value !== "string" || canonicalId(value) !== value) || new Set(history).size !== history.length || history.includes(row.cacheGeneration) ||
             row.unknownAncestors !== undefined && typeof row.unknownAncestors !== "boolean") corrupt.add(row.projectId);
-          else { generations.set(row.projectId, row.cacheGeneration); histories.set(row.projectId, history); baselines.set(row.projectId, { cacheGeneration: row.state === "invalidated" && row.invalidatedBy === "user" ? null : row.cacheGeneration, rebuildRevision: row.manualRebuildRevision ?? null }); }
+          else { generations.set(row.projectId, row.cacheGeneration); histories.set(row.projectId, history); baselines.set(row.projectId, { epoch: row.epoch, cacheGeneration: row.state === "invalidated" && row.invalidatedBy === "user" ? null : row.cacheGeneration, rebuildRevision: row.manualRebuildRevision ?? null }); }
         }
         return { generations, corrupt, histories, baselines };
       }, signal);
@@ -1089,7 +1090,9 @@ export class TaskCacheScope {
       if ((revisions?.get(candidate.projectId) ?? 0) !== this.readAdmission.projectRevision(candidate.projectId) &&
         (!current.inBaseline || (this.projectionTaskRevisions.get(snapshot)?.get(key) ?? 0) !== this.readAdmission.revision(candidate.projectId, candidate.id))) continue;
       const before = baselines?.get(candidate.projectId);
-      if (before !== undefined ? !survivesBaselineChange(before, current) : current.rebuildRevision !== null && !current.inBaseline) continue;
+      if (before?.epoch === null && current.epoch !== null) continue;
+      if (before?.epoch != null && current.epoch !== null && before.epoch !== current.epoch) continue;
+      if (before !== undefined ? !survivesBaselineChange(before, current) : current.cacheGeneration !== null) continue;
       allowed.add(key);
     }
     return allowed;
@@ -1295,7 +1298,8 @@ export class TaskCacheScope {
     if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: observed.manifest?.epoch ?? null, generation: 0 });
     const fence = { userId: this.userId, userFence: observed.userFence, projectId, taskId, scopeRevision,
       historyGeneration: this.histories.get(projectId)!.generation, openingSequence, requestGeneration, taskRevision: this.readAdmission.revision(projectId, taskId) };
-    this.directReadBaselines.set(fence, { known: observed.known, epoch: observed.manifest?.epoch ?? null, cacheGeneration: observed.manifest?.state === "invalidated" && observed.manifest.invalidatedBy === "user" ? null : observed.manifest?.cacheGeneration ?? null, rebuildRevision: observed.manifest?.manualRebuildRevision ?? null, summaryVersion: observed.summaryVersion });
+    const conflict = this.conflictingManifests.get(projectId);
+    this.directReadBaselines.set(fence, { known: observed.known, epoch: observed.manifest?.epoch ?? null, cacheGeneration: observed.manifest?.state === "invalidated" && observed.manifest.invalidatedBy === "user" ? null : observed.manifest?.cacheGeneration ?? null, rebuildRevision: observed.manifest?.manualRebuildRevision ?? null, summaryVersion: observed.summaryVersion, ...(conflict === undefined ? {} : { conflict }) });
     this.readAdmission.observeTask(projectId, taskId);
     this.directProjects.add(projectId);
     this.ticketHistoryVersions.set(fence, this.historyVersions.get(projectId) ?? 0);
@@ -1345,7 +1349,13 @@ export class TaskCacheScope {
       if (before?.known !== false || !(error instanceof TaskCacheError) || error.category !== "corrupt" && error.category !== "storage") throw error;
       return this.isTaskReadCurrent(fence);
     }
-    return !current.removed && (before === undefined || !before.known && current.rebuildRevision === null || survivesBaselineChange(before, current) ||
+    const observedEpoch = this.histories.get(fence.projectId)?.epoch ?? null;
+    const conflict = before?.conflict;
+    const confirmedLiveRead = conflict !== undefined && conflict === this.conflictingManifests.get(fence.projectId) &&
+      conflict.liveEpoch === observedEpoch && conflict.epoch === current.epoch && conflict.cacheGeneration === current.cacheGeneration && conflict.userFence === fence.userFence;
+    return !current.removed && (confirmedLiveRead || observedEpoch === null || current.epoch === null || observedEpoch === current.epoch) &&
+      (confirmedLiveRead || before?.epoch == null || current.epoch === null || before.epoch === current.epoch) &&
+      (before === undefined || !before.known && current.rebuildRevision === null || survivesBaselineChange(before, current) ||
       before.epoch !== null && before.epoch === current.epoch && before.summaryVersion !== null && before.summaryVersion === current.summaryVersion) && this.isTaskReadCurrent(fence);
   }
   reportTaskDeleted(ticket: TaskReadFence | SyncTicket, epoch: string | null, targetTaskId?: string): boolean {
