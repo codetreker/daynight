@@ -186,23 +186,23 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   await expect(page.getByRole("region", { name: "Subtasks" })).toContainText("Deletion child");
   const beforeSync = await page.request.get(`${topology.baseURL}/api/v1/projects/${projectId}/task-sync`);
   expect(beforeSync.status()).toBe(200);
-  const beforeSnapshot = await beforeSync.json() as { epoch: string; tasks: { id: string }[] };
+  const beforeSnapshot = await beforeSync.json() as { epoch: string; coverageUpdatedAt: string; tasks: { id: string }[] };
   expect(beforeSnapshot.tasks.map(task => task.id)).toEqual(expect.arrayContaining([deleteParent, deleteChild]));
   await command(["task", "delete", deleteParent, "--if-version", String(ended.version)]);
   for (const id of [deleteParent, deleteChild]) {
     const response = await page.request.get(`${topology.baseURL}/api/v1/projects/${projectId}/tasks/${id}`);
     expect(response.status(), `deleted ${id}`).toBe(410);
   }
-  const refreshedSync = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === "GET");
-  await page.goto(`${topology.baseURL}/projects/${projectId}`);
-  const syncResponse = await refreshedSync;
+  const query = new URLSearchParams({ epoch: beforeSnapshot.epoch, since: beforeSnapshot.coverageUpdatedAt });
+  const syncResponse = await page.request.get(`${topology.baseURL}/api/v1/projects/${projectId}/task-sync?${query}`);
   expect(syncResponse.status()).toBe(200);
-  const snapshot = await syncResponse.json() as { mode: string; epoch: string; tasks: { id: string }[] };
-  expect(snapshot.mode).toBe("snapshot");
-  expect(snapshot.epoch).not.toBe(beforeSnapshot.epoch);
-  expect(snapshot.tasks.map(task => task.id)).not.toContain(deleteParent);
-  expect(snapshot.tasks.map(task => task.id)).not.toContain(deleteChild);
-  expect(snapshot.tasks.map(task => task.id)).toContain(parentId);
+  const delta = await syncResponse.json() as { mode: string; epoch: string; tasks: { id: string }[]; deletedTaskIds: string[] };
+  expect(delta.mode).toBe("delta");
+  expect(delta.epoch).toBe(beforeSnapshot.epoch);
+  expect(delta.deletedTaskIds).toEqual(expect.arrayContaining([deleteParent, deleteChild]));
+  expect(delta.tasks.map(task => task.id)).not.toContain(deleteParent);
+  expect(delta.tasks.map(task => task.id)).not.toContain(deleteChild);
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
   await page.reload();
   await page.getByRole("tab", { name: "Task list" }).click();
   await search(deleteParent, "Deletion parent", false);
