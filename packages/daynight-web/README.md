@@ -980,30 +980,31 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 13 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 13 clears project, summary and
+schema 15 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles`, `taskRemovals` and `sessionHistory` stores. Schema 15 clears project, summary and
 detail records and their watermarks before strict parsing, preserving user fences,
 profiles and compatible Session-history formats. A full snapshot can clear the
 refetchable Session catalogue. Upgrades from schema 1 through 4 rotate user fences; schema 7 Session records lack the complete-empty
 proof and are cleared. Task-sync summaries require complete `title` strings; project ordinary task rows
 use those values, while graph and other preview consumers retain their existing
 preview contract. Task summaries, search results and details require `tags` references; missing or malformed references fail parsing. Missing fields are not supplied with defaults.
-Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
+Upgrade failures roll back, and old connections close on versionchange. User fences, project generations, commit revisions and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and actual counts for both active and invalidated manifests.
 Complete graph and sync responses are not rejected by stored node, edge or
 Session-map counts; cache quotas remain independent.
-An invalidated manifest has a recognized reason, null epoch/Project/watermark and
+An invalidated manifest has a recognized reason, canonical syncRevision, null epoch/Project/watermark and
 zero task/edge counts; it cannot retain a usable incremental baseline. The shared
 details store and guarded transaction interface support intrinsic content reuse,
 bounded LRU and business-version-driven detail reads.
 
-`beginSync` reads the epoch, greatest exact accepted summary `updatedAt` and slim
-Task execution bindings in its existing transaction. Its `TaskSyncTicket` keeps
+`beginSync` reads the epoch, committed `coverageUpdatedAt`, local `syncRevision` and slim
+Task execution bindings in its existing transaction. `executeTaskSync` shares the single request/history/apply path with callers; the graph hook owns polling, retry and page Session observations. `isSyncCommitCurrent` checks durable commit eligibility before publication. `taskReadQualification` returns the current stored epoch/generation/revision and removal/baseline membership for one project/task. Scoped cross-tab removal hints are verified against shared storage and existing authorization before targeted cache/projection events.
+Its `TaskSyncTicket` keeps
 that immutable request baseline in memory; snapshot observations use only
 returned Tasks, while delta observations overlay returned Tasks on the baseline.
 `applySync` validates the transaction's complete durable set and atomically saves
-changed summaries with that watermark. Every snapshot/delta record contains its
+changed summaries, removals, dependency states and that authoritative coverage in one transaction. Empty active collections can retain coverage. A stale syncRevision rejects the complete response before history retirement or application. Every snapshot/delta record contains its
 required type, nullable parentId/assignedTo/cancelledAt and complete current
 properties from the task row's database snapshot. Each ordinary Task has a
 separate same-version dependency state; Goal records have no dependency state. Higher task
@@ -1014,11 +1015,9 @@ property keys and JSON values: object order is
 irrelevant, array order matters, and missing differs from null or an empty array.
 Older responses cannot revive removed properties. Snapshot states replace the
 collection; delta states patch only matching owner versions. A readiness-only
-change is persisted and published, including across tabs. A late state for the
-same owner version can temporarily replace a newer prerequisite observation.
+change is persisted and published, including across tabs. A response whose captured local commit revision was replaced cannot overwrite a newer prerequisite observation.
 Graph projections omit properties and Goal resources; the typed summary map
-retains both complete properties and Goal existence. Only project-sync summaries
-advance the watermark.
+retains both complete properties and Goal existence. Only complete successful project-sync commits advance the watermark.
 Details, mutations, request time, Project time and `observedAt` cannot establish
 project coverage. UTC seconds plus nine fractional digits preserve ordering;
 business versions remain bigint. The default ten-second server overlap can

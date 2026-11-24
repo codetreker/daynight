@@ -22,8 +22,9 @@ expression index bounds deletion reads by project and effective deletion time;
 the existing project/update index supplies coverage. Deleting a root changes
 its update time and its descendants' inherited deletion time atomically.
 
-The current Web continues to derive its watermark from visible summaries and
-Task deletion still rotates the project epoch. The [sync design](../../../../docs/design/daynight-task-sync.md)
+The Web consumes this coverage and deletion identity atomically through the
+[cache deletion decision](2026-11-24-task-sync-atomic-deletions.md). Task deletion
+still rotates the project epoch. The [sync design](../../../../docs/design/daynight-task-sync.md)
 owns the protocol. This extends the historical [window API decision](../../archived/architecture/2026-10-24-task-summary-window-api.md)
 without changing its project lock, snapshot or time assumptions.
 
@@ -45,5 +46,5 @@ Repeated overlap windows can return the same ID; the response carries no task
 body for it. Wide windows can return many retained IDs and the transactional
 index build blocks conflicting writes during migration. Physical deletion of
 retained rows would require a replacement coverage mechanism or a history
-replacement before it could preserve this contract. The current Web continues
-its existing epoch-based deletion recovery.
+replacement before it could preserve this contract. The Web stores same-history removals and their coverage; deletion callers still
+use existing epoch-based recovery until their lifecycle contract is changed.

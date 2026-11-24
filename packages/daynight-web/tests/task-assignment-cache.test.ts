@@ -76,16 +76,16 @@ describe('assignment cache atomicity', () => {
     const conflict = { ...original, assignedTo: to }; const details = [updatedSibling, conflict];
     const incoming = taskSyncFromGraph(graphFixture(details), { query: { epoch: ticket.epoch! }, versionForTask: (node) => details.find((detail) => detail.id === node.id)!.version, propertiesForTask: (node) => details.find((detail) => detail.id === node.id)!.properties });
     await expect(scope.applySync(ticket, incoming, signal())).rejects.toMatchObject({ kind: 'protocol' });
-    expect(scope.getAuthorizedProject(projectId)).toBe(initial); expect(scope.getAuthorizedProject(projectId)?.manifest.maxUpdatedAt).toBe(initial.manifest.maxUpdatedAt); expect(writes).toEqual([]);
+    expect(scope.getAuthorizedProject(projectId)).toBe(initial); expect(scope.getAuthorizedProject(projectId)?.manifest.coverageUpdatedAt).toBe(initial.manifest.coverageUpdatedAt); expect(writes).toEqual([]);
     const persisted = await inspect(); expect(await persisted.get('projects', [TEST_VIEWER_ID, projectId])).toEqual(initial.manifest);
     expect((await persisted.get('summaries', [TEST_VIEWER_ID, projectId, taskId]))!.summary).toEqual(summary(original)); expect((await persisted.get('summaries', [TEST_VIEWER_ID, projectId, siblingId]))!.summary).toEqual(summary(sibling));
-    expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+    expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt);
   });
   it('rejects a contradictory same-version detail while retaining its persisted assignment and watermark', async () => {
     const detail = body({ assignedTo: person }); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, detail, signal());
     await expect(saveDetail(scope, ticket, { ...detail, assignedTo: null }, signal())).rejects.toMatchObject({ kind: 'protocol' });
     const database = await inspect(); expect((await database.get('details', [TEST_VIEWER_ID, projectId, taskId]))!.detail.assignedTo).toBe(person); expect((await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId]))!.summary.assignedTo).toBe(person);
-    expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt); expect(scope.getAuthorizedProject(projectId)?.index.nodes.get(taskId)?.assignedTo).toBe(person);
+    expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(ticket.coverageUpdatedAt); expect(scope.getAuthorizedProject(projectId)?.index.nodes.get(taskId)?.assignedTo).toBe(person);
   });
 });
 

@@ -4,8 +4,8 @@ import type { ProjectPerson } from "../../api/auth-types";
 import type { SessionHistoryItem } from "../../api/terminal-sessions";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 14;
-export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory"] as const;
+export const TASK_CACHE_SCHEMA = 15;
+export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory", "taskRemovals"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
@@ -13,7 +13,13 @@ export type ProjectRecord = {
   readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean;
   readonly invalidatedBy: "access" | "corrupt" | "user" | null;
   readonly epoch: string | null; readonly project: Project | null;
-  readonly maxUpdatedAt: string | null; readonly taskCount: number; readonly edgeCount: number;
+  readonly coverageUpdatedAt: string | null; readonly syncRevision: string;
+  readonly rebuildRevision?: string;
+  readonly taskCount: number; readonly edgeCount: number;
+};
+export type TaskRemovalRecord = {
+  readonly userId: string; readonly projectId: string; readonly taskId: string;
+  readonly userFence: string; readonly epoch: string; readonly syncRevision: string;
 };
 export type SummaryRecord = {
   readonly userId: string; readonly projectId: string; readonly taskId: string;
@@ -49,6 +55,7 @@ export interface TaskCacheSchema extends DBSchema {
   details: { key: [string, string, string]; value: DetailRecord; indexes: { "by-user": string; "by-project": [string, string] } };
   profiles: { key: [string, string, string]; value: ProfileRecord; indexes: { "by-user": string; "by-project": [string, string] } };
   sessionHistory: { key: [string, string, string]; value: SessionHistoryRecord; indexes: { "by-user": string; "by-project": [string, string] } };
+  taskRemovals: { key: [string, string, string]; value: TaskRemovalRecord; indexes: { "by-user": string; "by-project": [string, string] } };
 }
 export class TaskCacheError extends Error {
   constructor(readonly category: "storage" | "blocked" | "versionchange" | "closed" | "corrupt", cause?: unknown) {
@@ -83,12 +90,17 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else if (oldVersion < 14) {
+        } else if (oldVersion < 15) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
             if (oldVersion < 5) for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });
           };
           void rebuild().catch((error: unknown) => { upgradeFailure = error; try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ } });
+        }
+        if (!database.objectStoreNames.contains("taskRemovals")) {
+          const removals = database.createObjectStore("taskRemovals", { keyPath: ["userId", "projectId", "taskId"] });
+          removals.createIndex("by-user", "userId");
+          removals.createIndex("by-project", ["userId", "projectId"]);
         }
         if (!database.objectStoreNames.contains("profiles")) {
           const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });

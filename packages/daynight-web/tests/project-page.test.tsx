@@ -1399,6 +1399,7 @@ describe("status-first task chains", () => {
     expect(presentedRoots()).toEqual([A, F, E, C].map((id) => `task-root-${id}`));
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${F}`)).toBeNull();
+    await waitFor(() => expect(titleActions().getByRole("button", { name: "刷新" })).toBeEnabled());
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     await waitFor(() => expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`)));
     expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`));
@@ -1429,6 +1430,7 @@ describe("transient task chain dialogs", () => {
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
+    await waitFor(() => expect(titleActions().getByRole("button", { name: "刷新" })).toBeEnabled());
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${A}`)).toBeNull();

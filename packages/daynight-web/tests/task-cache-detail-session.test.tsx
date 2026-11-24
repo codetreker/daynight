@@ -152,9 +152,9 @@ it("holds newer detail until matching summary, without advancing the project wat
   const first = body(); const next = { ...first, version: 6n, description: "New", updatedAt: "2026-10-22T10:00:20Z" }; const scope = await seed([first]);
   const fetch = vi.fn().mockResolvedValue(resourceResponse(next, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);
   const session = new TaskDetailSessions(scope); sessions.push(session); const refresh = vi.fn(); session.subscribeProject(projectId, refresh); session.observe(projectId, taskId, node(scope));
-  const watermark = (await scope.beginSync(projectId, signal())).maxUpdatedAt; session.load(projectId, taskId, 1, "open");
+  const watermark = (await scope.beginSync(projectId, signal())).coverageUpdatedAt; session.load(projectId, taskId, 1, "open");
   await waitFor(() => expect(refresh).toHaveBeenCalledOnce()); expect(session.snapshot(projectId, taskId).detail).toBeNull();
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(watermark);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(watermark);
   await apply(scope, [next]); session.observe(projectId, taskId, node(scope));
   await waitFor(() => expect(session.snapshot(projectId, taskId).detail?.description).toBe("New")); expect(fetch).toHaveBeenCalledOnce();
 });
@@ -259,11 +259,11 @@ it("drops the prior generation's committed-version floor and live authority afte
 it("shows a valid confirmed write's raw authoritative body while summary sync is behind, without advancing coverage", async () => {
   const detail = body(); const saved = { ...detail, version: 6n, status: "in_progress" as const, ready: false, startedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" }; const scope = await seed([detail]);
   const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);
-  const session = await open(scope); const watermark = (await scope.beginSync(projectId, signal())).maxUpdatedAt;
+  const session = await open(scope); const watermark = (await scope.beginSync(projectId, signal())).coverageUpdatedAt;
   session.setStatus(projectId, taskId, "in_progress", detail.version);
   await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
   expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 6n, status: "in_progress", ready: false }, requiresFreshRead: true, graphMismatch: true });
-  expect(scope.getSummaryVersion(projectId, taskId)).toBe(5n); expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(watermark);
+  expect(scope.getSummaryVersion(projectId, taskId)).toBe(5n); expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(watermark);
   const { openDB } = await import("idb"); const connection = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   expect((await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).detail.version).toBe(5n); connection.close();
   await apply(scope, [saved]); session.observe(projectId, taskId, node(scope));
@@ -305,7 +305,7 @@ it("clears same-version private content immediately on a new generation and keep
   act(() => result.current.retry());
   await waitFor(() => expect(result.current.detail?.description).toBe(restored.description));
   expect(result.current.detail?.properties.pullRequests).toEqual(restored.properties.pullRequests); expect(result.current.canSetStatus).toBe(true);
-  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(oldTicket.maxUpdatedAt);
+  expect((await scope.beginSync(projectId, signal())).coverageUpdatedAt).toBe(oldTicket.coverageUpdatedAt);
 });
 
 it("retains an admitted body through a failed refresh within the same generation", async () => {

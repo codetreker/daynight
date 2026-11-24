@@ -43,7 +43,8 @@ bounded contract without those additions.
 
 The map preserves authoritative retained facts without requiring a query per
 Task, and an unchanged successor can receive a readiness patch. Large change
-sets can still produce large responses. Owner-version matching cannot order two
-different prerequisite observations for the same owner version; a late response
-may temporarily restore an older derived state. A later relevant change or full
-snapshot can refresh it, without a guarantee that the next poll will do so.
+sets can still produce large responses. Owner-version matching alone could not order two prerequisite observations for
+the same owner version. The [atomic deletion cache](2026-11-24-task-sync-atomic-deletions.md)
+now compares captured local commit revisions, rejecting a response superseded
+by another material commit. The server protocol still carries no global apply
+sequence or prerequisite-version witnesses.

@@ -49,11 +49,14 @@ const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => 
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
 const otherRecords = new Map<string, TaskDetail>();
+const graphTaskDetails = new WeakMap<TaskGraph['tasks'][number], TaskDetail>();
 const graph = (): TaskGraph => {
   const tasks = [...records.values()].map((task) => {
     const blockedBy = task.dependsOn.filter((dependency) => records.get(dependency)!.status !== 'done');
-    return { type: task.type, parentId: task.parentId, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
+    const node = { type: task.type, parentId: task.parentId, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
+    graphTaskDetails.set(node, task);
+    return node;
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
     summary: { proposed: 0, total: tasks.length,
@@ -74,7 +77,7 @@ const stat = (label: string) => screen.getByText(label, { selector: '.stat-label
 let root: HTMLDivElement;
 beforeEach(() => {
   window.history.replaceState(null, "", `/projects/${project}`);
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties })));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => graphTaskDetails.get(task)!.version, propertiesForTask: (task) => graphTaskDetails.get(task)!.properties })));
 });
 
 beforeEach(() => {
@@ -246,6 +249,7 @@ describe('status in shared production task details', () => {
         dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time }],
       summary: { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
     };
+    graphTaskDetails.set(otherGraph.tasks[0]!, other);
     graphRequest.mockImplementation(async (projectId) => projectId === project ? graph() : otherGraph);
     vi.mocked(getTask).mockImplementation(async (projectId, taskId) => projectId === project ? records.get(taskId)! : other);
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
@@ -302,13 +306,32 @@ describe('status in shared production task details', () => {
     fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     let dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
+    const mutationRefresh = deferred<TaskGraph>();
+    const previousGraphReads = graphRequest.mock.calls.length;
+    graphRequest.mockReturnValueOnce(mutationRefresh.promise);
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(previousGraphReads + 1));
+    expect(stat('In progress')).toHaveTextContent('0');
+    await act(async () => { mutationRefresh.resolve(graph()); });
+    await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeEnabled());
     const current = records.get(standalone)!;
     records.set(standalone, { ...current, status, ready: false, version: current.version + 1n, updatedAt: '2026-10-22T00:02:00Z' });
+    const laterDetail = deferred<TaskDetail>();
+    const laterRefresh = deferred<TaskGraph>();
+    const previousDetailReads = vi.mocked(getTask).mock.calls.length;
+    const confirmedGraphReads = graphRequest.mock.calls.length;
+    vi.mocked(getTask).mockReturnValueOnce(laterDetail.promise);
+    graphRequest.mockReturnValueOnce(laterRefresh.promise);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     dialog = detailDialog();
+    await waitFor(() => expect(getTask).toHaveBeenCalledTimes(previousDetailReads + 1));
+    await act(async () => { laterDetail.resolve(records.get(standalone)!); });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(confirmedGraphReads + 1));
+    expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeDisabled();
+    await act(async () => { laterRefresh.resolve(graph()); });
     await within(dialog).findByRole('button', { name: status === 'done' ? 'Done' : 'In progress' });
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     await waitFor(() => expect(within(dialog).getByRole('button', { name: status === 'done' ? 'Done' : 'In progress' })).toBeEnabled());

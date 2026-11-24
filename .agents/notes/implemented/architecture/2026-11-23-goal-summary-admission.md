@@ -34,12 +34,13 @@ dependency arrays and the durable synchronization watermark. Summary-to-summary
 and detail-to-detail comparisons still require equal intrinsic content at equal
 versions.
 
-The browser's schema 14 upgrade atomically clears project manifests, summaries,
+The Goal admission decision introduced a schema 14 upgrade that atomically cleared project manifests, summaries,
 details and their watermarks, including structurally valid schema 13 Goal
-summaries with incomplete empty edges. It preserves user identity fences,
+summaries with incomplete empty edges. It preserved user identity fences,
 profiles and compatible Session history under the existing upgrade rules. The
-next ordinary project read obtains a full snapshot; reopening schema 14 retains
-the rebuilt data. Server output and the matching embedded Web ship together.
+next ordinary project read obtained a full snapshot. The current
+[atomic deletion cache](2026-11-24-task-sync-atomic-deletions.md) rebuilds those
+projections under schema 15 and retains unrelated store lifecycles. Server output and the matching embedded Web ship together.
 Old relationship writers that do not touch Goal Task versions and update times
 must exit before enabling the output, and existing pages refresh to load the
 matching consumer. No URL, epoch/since, watermark or polling change is required.

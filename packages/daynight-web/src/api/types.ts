@@ -165,6 +165,8 @@ export type TaskSync = {
   readonly actorAccess: ProjectAccess;
   readonly mode: "snapshot" | "delta";
   readonly epoch: string;
+  readonly coverageUpdatedAt: string | null;
+  readonly deletedTaskIds: readonly string[];
   readonly project: Project;
   readonly observedAt: string;
   readonly responseTaskAt: string;

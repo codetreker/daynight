@@ -29,6 +29,8 @@ export const rememberTaskEpoch = (projectId: string, epoch: string): void => { o
 export const fixtureTaskEpoch = (projectId: string): string => observedEpochs.get(projectId) ?? worldEpoch ?? taskSyncEpoch(projectId);
 
 export type TaskSyncFixtureOptions = {
+  readonly coverageUpdatedAt?: string | null;
+  readonly deletedTaskIds?: readonly string[];
   readonly sessions?: TaskSync['sessions'];
   readonly taskObservations?: TaskSync['taskObservations'];
   readonly actorAccess?: ProjectAccess;
@@ -69,7 +71,7 @@ export const statesForSummaries = (tasks: readonly TaskSummary[]) => new Map(tas
   return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 }] as const;
 }));
 
-export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, taskObservations, assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}), tagsForTask = () => [] }: TaskSyncFixtureOptions): WireTaskSync => {
+export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, taskObservations, assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), coverageUpdatedAt, deletedTaskIds = [], versionForTask, propertiesForTask = () => ({}), tagsForTask = () => [] }: TaskSyncFixtureOptions): WireTaskSync => {
   rememberTaskEpoch(graph.project.id, epoch);
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
@@ -80,12 +82,14 @@ export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, taskObservati
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
   const selectedIds = new Set(tasks.map((task) => task.id));
-  const dependencyStates = Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && (selectedIds.has(task.id) || task.dependsOn.some((id) => selectedIds.has(id)))).map((task) => [task.id,
+  const affectedIds = new Set([...selectedIds, ...deletedTaskIds]);
+  const dependencyStates = Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && (selectedIds.has(task.id) || task.dependsOn.some((id) => affectedIds.has(id)))).map((task) => [task.id,
     { taskVersion: versionForTask(task).toString(), blockedBy: task.blockedBy, ready: task.ready }]));
   const observations: TaskSync['taskObservations'] = taskObservations ?? Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && task.status === 'in_progress').map((task) => [task.id, {
     taskVersion: versionForTask(task), state: 'unavailable', observedAt: null, freshUntil: null, needsAttention: null, canOpen: false,
   }]));
-  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt,
+  const coverage = coverageUpdatedAt === undefined ? graph.tasks.reduce<string | null>((maximum, task) => maximum === null || nanoseconds(task.updatedAt) > nanoseconds(maximum) ? task.updatedAt : maximum, null) : coverageUpdatedAt;
+  return { assigneeVersions, actorAccess, mode, epoch, coverageUpdatedAt: coverage, deletedTaskIds: mode === 'snapshot' ? [] : deletedTaskIds, project: graph.project, observedAt: graph.observedAt,
     responseTaskAt: graph.observedAt, responseSessionAt: graph.observedAt,
     sessionPartial: Object.values(observations).some((item) => item.state === 'unavailable'),
     taskObservations: Object.fromEntries(Object.entries(observations).map(([id, item]) => [id, { ...item, taskVersion: item.taskVersion.toString() }])),
@@ -112,10 +116,22 @@ export const taskSyncReadFixture = (sync: TaskSync, receivedMonotonic = performa
 export const createGraphSyncFixture = ({ propertiesForTask = () => ({}) }: { readonly propertiesForTask?: (task: GraphTask, projectId: string) => TaskProperties } = {}) => {
   const projects = new Map<string, Map<string, { version: bigint; signature: string }>>();
   const epochs = new Map<string, string>();
+  const activeIds = new Map<string, ReadonlySet<string>>();
+  const deletions = new Map<string, Map<string, string>>();
+  const coverages = new Map<string, string | null>();
   let generation = 0;
   return {
-    reset: () => { projects.clear(); epochs.clear(); generation++; },
+    reset: () => { projects.clear(); epochs.clear(); activeIds.clear(); deletions.clear(); coverages.clear(); generation++; },
     toSync: (graph: TaskGraph, query: NonNullable<TaskSyncFixtureOptions['query']> = {}, epochOverride?: string): TaskSync => {
+      const projectId = graph.project.id;
+      const previousEpoch = epochs.get(projectId);
+      let epoch = epochOverride ?? previousEpoch ?? taskSyncEpoch(generation === 0 ? projectId : `${projectId}:${generation}`);
+      let removed = deletions.get(projectId) ?? new Map<string, string>();
+      const currentIds = new Set(graph.tasks.map((task) => task.id));
+      if (previousEpoch !== undefined && epoch === previousEpoch && [...currentIds].some((taskId) => removed.has(taskId))) epoch = taskSyncEpoch(`${projectId}:restored:${++generation}`);
+      const changedHistory = previousEpoch !== undefined && previousEpoch !== epoch;
+      if (changedHistory) { removed = new Map(); activeIds.delete(projectId); coverages.delete(projectId); }
+      epochs.set(projectId, epoch);
       let versions = projects.get(graph.project.id);
       if (versions === undefined) { versions = new Map(); projects.set(graph.project.id, versions); }
       const properties = (task: GraphTask) => propertiesForTask(task, graph.project.id);
@@ -128,9 +144,17 @@ export const createGraphSyncFixture = ({ propertiesForTask = () => ({}) }: { rea
         versions.set(task.id, { version, signature });
         current.set(task.id, version);
       }
-      const epoch = epochOverride ?? epochs.get(graph.project.id) ?? taskSyncEpoch(generation === 0 ? graph.project.id : `${graph.project.id}:${generation}`);
-      epochs.set(graph.project.id, epoch);
-      return taskSyncFromGraph(graph, { query, epoch, versionForTask: (task) => current.get(task.id)!, propertiesForTask: properties });
+      let coverageUpdatedAt = coverages.get(projectId) ?? null;
+      if (fixture.coverageUpdatedAt !== null && (coverageUpdatedAt === null || nanoseconds(fixture.coverageUpdatedAt) > nanoseconds(coverageUpdatedAt))) coverageUpdatedAt = fixture.coverageUpdatedAt;
+      const missing = [...(activeIds.get(projectId) ?? [])].filter((taskId) => !currentIds.has(taskId));
+      if (missing.length !== 0) {
+        if (coverageUpdatedAt === null || nanoseconds(graph.observedAt) > nanoseconds(coverageUpdatedAt)) coverageUpdatedAt = graph.observedAt;
+        for (const taskId of missing) removed.set(taskId, coverageUpdatedAt);
+      }
+      activeIds.set(projectId, currentIds); deletions.set(projectId, removed); coverages.set(projectId, coverageUpdatedAt);
+      const lowerBound = query.since === undefined ? null : nanoseconds(query.since) - 10_000_000_000n;
+      const deletedTaskIds = [...removed].filter(([, time]) => lowerBound === null || nanoseconds(time) >= lowerBound).map(([taskId]) => taskId).sort();
+      return taskSyncFromGraph(graph, { query, epoch, coverageUpdatedAt, deletedTaskIds, versionForTask: (task) => current.get(task.id)!, propertiesForTask: properties });
     },
   };
 };
