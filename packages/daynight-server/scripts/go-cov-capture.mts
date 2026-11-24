@@ -9,11 +9,20 @@ const scripts = dirname(fileURLToPath(import.meta.url));
 const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
 let shim: string | undefined;
 try {
-  if (!['module', 'startup-shutdown'].includes(scope ?? '') || !realGo || !isAbsolute(realGo) || !command || !isAbsolute(command)) {
-    throw new Error('Usage: go-cov-capture.mts module|startup-shutdown ABSOLUTE_GO ABSOLUTE_GO_COV [ARGUMENT...]');
+  if (!['module', 'module-pr', 'startup-shutdown'].includes(scope ?? '') || !realGo || !isAbsolute(realGo) || !command || !isAbsolute(command)) {
+    throw new Error('Usage: go-cov-capture.mts module|module-pr|startup-shutdown ABSOLUTE_GO ABSOLUTE_GO_COV [ARGUMENT...]');
   }
   accessSync(realGo, fsConstants.X_OK);
-  const base = resolve(scripts, '../.tmp/go-test-evidence', scope!);
+  const base = resolve(scripts, '../.tmp/go-test-evidence', scope === 'module-pr' ? 'module' : scope!);
+  const launcher = join(scripts, 'go-test-database-exec.sh');
+  let execArg = '';
+  if (scope === 'module-pr') {
+    accessSync(launcher, fsConstants.X_OK);
+    // Go's -exec parser accepts a quoted field but has no escape syntax.
+    const quoteChar = !launcher.includes("'") ? "'" : !launcher.includes('"') ? '"' : undefined;
+    if (!quoteChar) throw new Error('Go -exec launcher path contains both quote characters.');
+    execArg = ' -exec=' + quote(quoteChar + launcher + quoteChar);
+  }
   mkdirSync(base, { recursive: true });
   const directory = mkdtempSync(join(base, 'run-'));
   shim = join(directory, '.shim');
@@ -24,7 +33,8 @@ try {
     // the caller's PATH, including its absence, without private environment keys.
     process.env.PATH === undefined ? 'unset PATH' : 'PATH=' + quote(process.env.PATH) + '; export PATH',
     'if [ "$1" != test ]; then exec ' + quote(realGo) + ' "$@"; fi',
-    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' "$@"',
+    'shift',
+    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' test' + execArg + ' "$@"',
     '',
   ].join('\n'), { mode: 0o700 });
   console.error('Go test evidence: ' + directory);
