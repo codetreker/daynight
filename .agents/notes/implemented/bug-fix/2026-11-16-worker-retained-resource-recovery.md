@@ -12,8 +12,11 @@ reconciliation, leaving no explicit safe path for their surviving worktrees.
 
 ## Decision
 
-Resource observation reports a typed, claim-scoped ownership failure for every
-unproven owner and includes the scanned project-relative worktree binding.
+Resource observation reports a project-scoped ownership failure for each
+unmatched task registration. Known executions use claim-scoped failures and
+can include the project-relative worktree path. The
+[Git registration discovery decision](../simplification/2026-11-24-worker-git-worktree-discovery.md)
+owns task worktree identification.
 Repeated observations retain the failure identity; successful complete observation
 is required to clear it. Restart reconstructs the failures from retained resources.
 Capacity includes an optional complete partition of occupied identities into
@@ -38,7 +41,7 @@ command's guarantees and refusal conditions.
 This complements the [execution-capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
 and the [resource evidence decision](2026-11-10-worker-recovery-evidence.md):
 confirmed stop may release an execution slot independently of archive retention,
-but a static marker cannot establish that stop or authorize deleting a worktree.
+and the original execution evidence establishes stop and authorizes cleanup.
 
 ## Alternatives
 
@@ -60,8 +63,8 @@ The explicit command verifies and acts while holding the Worker lock instead.
 
 ## Consequences
 
-Unknown ownership remains visible and capacity-constraining until sufficient
-evidence is restored or safe recovery is confirmed. Losing every original journal
+A matching registration with unknown execution ownership remains visible and
+blocks acquisition of the task until the evidence or Git resource changes. Losing every original journal
 still requires recovering a backup; no force-adoption flag bypasses that limit.
 The command refuses dirty and ignored content and requires an observed remote
 reference containing HEAD, which can require the operator to preserve files and

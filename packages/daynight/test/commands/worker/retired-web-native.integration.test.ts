@@ -28,8 +28,6 @@ import { sqliteFilename } from "../../../src/platform/sqlite-filename.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
-import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 
 const origin = "https://daynight.example";
 const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
@@ -189,9 +187,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
   const successor = { ...owner, claimId: randomUUID(), worktreeId: randomUUID() };
   const project = { projectId: owner.projectId, repoUrl: "https://example.test/fixture.git", localPath: repository };
   gitCommand(repository, "remote", "add", "origin", project.repoUrl);
-  const git = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-tmp"), prepareFormat: async (_project, repo, operation) => {
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } });
-  } });
+  const git = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-tmp") });
   const store = openWorkerStore(path.join(root, "worker.sqlite")), webStore = openWebExecutionStore(path.join(root, "web.sqlite"));
   const leases = createControllerJobLeases();
   let original: Awaited<ReturnType<typeof nativeBoundary>> | undefined, next: Awaited<ReturnType<typeof nativeBoundary>> | undefined;
@@ -207,9 +203,6 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     const successorPath = path.join(repository, ".worktrees", "daynight", successor.worktreeId);
     gitCommand(repository, "worktree", "add", "-b", branch, worktreePath);
     gitCommand(repository, "worktree", "add", "--force", successorPath, branch);
-    const manifests = createWorktreeManifestStore(path.join(repository, ".git"));
-    manifests.publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
-    manifests.publish({ schemaVersion: 1, ...successor, directoryName: successor.worktreeId });
     const sentinel = path.join(successorPath, "successor.txt"); await writeFile(sentinel, "successor survives\n");
     await writeFile(path.join(worktreePath, "original.txt"), "old uncommitted work\n");
     const workerId = randomUUID(), userId = randomUUID(), nativeSessionId = randomUUID();

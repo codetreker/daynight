@@ -122,7 +122,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const jobLeases = createControllerJobLeases();
   disposals.push(() => jobLeases.close());
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, jobLeases, now: () => clock });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
     operation.check();
     expect(candidate).toMatchObject({ projectId: project.projectId, localPath: home });
     expect(owner).toMatchObject({ projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId, worktreeId: identity.worktreeId });

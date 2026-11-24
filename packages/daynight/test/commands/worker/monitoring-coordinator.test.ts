@@ -26,7 +26,7 @@ const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []) } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });
   const claim = vi.fn();

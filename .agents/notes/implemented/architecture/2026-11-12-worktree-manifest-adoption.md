@@ -11,6 +11,8 @@ cleanup affect another claim.
 
 ## Decision
 
+This historical decision was superseded by [Git registration discovery](../simplification/2026-11-24-worker-git-worktree-discovery.md).
+
 Repository preparation converts legacy sources before admitting file operations.
 The Worker locates resources through durable manifests, preserves migrated cwd,
 uses worktreeId directories for new claims and keeps taskId branches. Allocation

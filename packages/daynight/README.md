@@ -2560,11 +2560,11 @@ daynight worker run
 First use generates and atomically saves stable root workerId. One instance owns
 `worker/` state under the selected configuration root (default `~/.daynight/worker/`), its configuration cache, SQLite, lock, logs, temporary resources and
 local resources. Each task uses branch `daynight/<task-id>` and directory
-`<repository>/.worktrees/daynight/<worktree-id>`. Migrated claims retain their original task-id directory and cwd. Valid claims retain their dirty
-worktree; task branches and commits remain after terminal cleanup. Repository
-preparation migrates only worktrees associated with existing resource records,
-manifests or Worker Git registrations. Unrelated directories under
-`.worktrees/daynight/`, including `.tmp`, remain untouched and do not block preparation.
+`<repository>/.worktrees/daynight/<worktree-id>`. Existing executions in
+task-ID directories retain their original working directory. Valid claims
+retain their dirty worktree. Task branches and commits remain after terminal
+cleanup. Unrelated directories under `.worktrees/daynight/`, including
+`.tmp`, remain untouched and do not block preparation.
 
 The local claim index has these business fields:
 
@@ -2619,16 +2619,16 @@ queued for fresh target observation and recovery before global Git discovery, so
 a sibling checkout's filesystem error does not block an already-reserved task.
 New pending startup and new claims require complete claim inventory, target
 repository discovery and a reliable execution-capacity observation. A localized
-format failure closes that repository's file gate while independent prepared
+repository preparation failure closes that repository's file gate while independent prepared
 repositories remain eligible. Failed or partial reads are errors, not an empty
 inventory. Resources from unqueried or unmapped Projects are preserved with a
 diagnostic.
 
 Capacity follows Web claims and their original execution evidence. Confirmed
 stopping releases an execution slot independently of archive and file cleanup;
-the same-task barrier remains until cleanup finishes. Git manifests alone do not
-prove Web ownership. Unknown historical resources remain untouched; an actual
-identity or path conflict remains visible. An unknown claim response creates no
+the same-task barrier remains until cleanup finishes. The Worker preserves
+registered task worktrees whose original execution cannot be established and
+reports the conflict. An unknown claim response creates no
 resources and is reconciled from a later complete inventory without replay.
 
 Each reconciliation round acquires at most one new task across all configured
@@ -2765,27 +2765,20 @@ reconciled without rewriting its frozen source. Verify the original Session's
 content archive separately from its lifecycle. A successful retry cannot identify
 the original parse failure when its detailed cause was never saved.
 
-The Worker prepares each selected or retained repository by converting legacy
-ownership into durable manifests before admitting file operations. Conversion
-preserves existing checkouts and frozen cwd, and leaves conflicting or unknown
-resources visible. A manifest locates a worktree but does not authorize deleting
-unregistered nonempty content. The common-directory and origin inspection
-queries run from the stable primary checkout with explicit verified
-administrative and manifest-bound worktree paths, so their cwd does not prevent
-concurrent leaf removal on Windows. Git continues to interpret the linked
-worktree's configuration; a `core.worktree` redirect does not change the physical
-resource identified by its manifest. The old Worker cannot manage converted
-resources. The [Worker design](../../docs/design/daynight-worker.md#git-工作区与资源身份)
-defines the inspection and cleanup checks.
+The Worker identifies a task worktree by its Git registration. The checkout
+must be directly under the repository's `.worktrees/daynight/` directory and the
+registered branch must be `refs/heads/daynight/<task-id>`. Worktrees are created
+without Git locks. Old manifest files in the Git common directory have no effect
+on scheduling. The Worker checks Git and the checkout separately, so a
+registration can still require cleanup after the directory disappears.
 
-A fully enumerated, independently attributed damaged worktree can be quarantined
-only for static local validation failures under stable observations, while
-unrelated tasks use remaining capacity. It blocks reuse of the same task; a confirmed stopped execution does not retain
-an execution slot. Observed changes to ownership, metadata, current directory
-objects or Git pointers during inspection leave coverage unknown. A manifest and independent execution evidence must agree before a damaged
-resource can be attributed. Unreadable inventory, changing observations or
-conflicting ownership can make capacity unknown. An online heartbeat or zero remote active
-tasks does not establish that local capacity is available.
+A matching registration reserves the task until the Worker reconciles the
+resource. The current claim and original Web execution records determine which
+execution owns it and whether that execution has stopped. A damaged registration
+with independently proven ownership can be quarantined while unrelated tasks
+use remaining capacity. Incomplete Git inventory or conflicting evidence can
+make capacity unknown. The [Worker design](../../docs/design/daynight-worker.md#git-工作区与资源身份)
+defines the inspection and cleanup checks.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins their original Task writers. It sends no cleanup
@@ -3220,7 +3213,7 @@ starting an Agent; it does not add browser offline history.
 
 `worker resources recover <task-id> --project <project-id> --claim-id <claim-id>`
 previews recovery when the original completed Web execution journal remains but
-its worktree still occupies capacity. It verifies the original service, Worker,
+its worktree or registration remains. It verifies the original service, Worker,
 authenticated owner, terminal claim, unique physical Git binding, native stop and
 ready archive receipt. A second invocation with `--confirm` repeats those checks
 and removes the clean worktree without force, preserving its branch and journals.
@@ -3229,9 +3222,10 @@ journal. Modified, untracked or ignored files, index flags that hide changes,
 commits without an observed remote
 reference, missing evidence and successor claims all refuse removal. Preserve
 files and commits before making another decision. An unknown deletion result
-requires inspecting the original checkout and manifest before retrying.
+requires inspecting the original checkout and Git registration before retrying.
 
-A Git marker or completed Task alone cannot prove ownership, stop or archival.
+Git identifies the task worktree. Recovery also requires the original execution
+and evidence that it stopped and was archived.
 Restore the original Worker and Controller journals from backup if they are
 missing. Unfinished Web journals already participate in normal reconciliation;
 this command never launches an Agent or replaces a claim. Normal monitoring clears

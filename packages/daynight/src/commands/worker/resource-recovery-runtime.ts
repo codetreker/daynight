@@ -75,7 +75,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
     await ordinaryFile(paths.databaseFile);
     const webFile = path.join(paths.workerDirectory, "web-executions.sqlite");
     try { await ordinaryFile(webFile); }
-    catch (cause) { throw new Error("The original Web execution journal is unavailable. Restore the original Worker and Controller journals from backup; static Git markers cannot prove ownership, stop or archive preservation.", { cause }); }
+    catch (cause) { throw new Error("The original Web execution journal is unavailable. Restore the original Worker and Controller journals from backup; Git registration cannot prove execution ownership, stop or archive preservation.", { cause }); }
     // Recovery cannot migrate or reset the records that establish its authority.
     currentEvidence(paths.databaseFile, workerStoreFormat);
     currentEvidence(webFile, webExecutionStoreFormat);
@@ -86,11 +86,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
     const root = await lstat(project.localPath);
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("The original repository directory is unavailable.");
     const remote = createWorkerRemote({ serverUrl, serverToken });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, prepareFormat: async (_project, repository) => {
-      const file = path.join(repository.commonDirectory, "daynight/worktrees/format.json");
-      await ordinaryFile(file);
-      if (!isDeepStrictEqual(JSON.parse(await readFile(file, "utf8")), { version: 1 })) throw new Error("Resource recovery requires the current original worktree format; no migration was performed.");
-    } });
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     await git.prepareRepository(project, operation);
     const observer = createWebStopObserver({ homeDirectory: options.homeDirectory, store: web, now: Date.now });
     let originalDirectories: string[] | undefined;
@@ -106,13 +102,14 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
     };
     const result = await recoverCompletedWebResource({ request: options.request, signal: operation.signal, dependencies: {
       serverOrigin: serverUrl, workerId, project, currentUserId: remote.currentUserId, getRecord: web.getTask, readTask: remote.readTask, readProject: remote.project,
-      inspectWorktree: async owner => {
+      inspectWorktree: async (owner, originalCwd) => {
         const scan = await git!.scanWorktrees(project, operation);
-        if (!scan.enumerationComplete || scan.unknown.length > 0 || scan.quarantined.some(value => value.owner.worktreeId === owner.worktreeId || value.owner.projectId === owner.projectId && value.owner.taskId === owner.taskId && value.owner.claimId === owner.claimId)) throw new Error("Original Git resource enumeration is incomplete or conflicting.");
-        const matches = scan.validated.filter(value => value.owner.projectId === owner.projectId && value.owner.taskId === owner.taskId && value.owner.claimId === owner.claimId);
-        if (matches.length !== 1 || matches[0]!.owner.worktreeId !== owner.worktreeId) throw new Error("The original claim does not have one matching worktree.");
-        await verifyDirectories(matches[0]!.binding);
-        return matches[0]!.binding;
+        if (!scan.enumerationComplete || scan.unknown.length > 0 || scan.quarantined.some(value => value.taskId === owner.taskId)) throw new Error("Original Git resource enumeration is incomplete or conflicting.");
+        const matches = scan.validated.filter(value => value.taskId === owner.taskId);
+        if (matches.length !== 1) throw new Error("The original task does not have one matching registered worktree.");
+        const binding = await git!.verifyWorktree(project, owner, operation, originalCwd);
+        await verifyDirectories(binding);
+        return binding;
       },
       verifyStoppedArchive: async record => withWebRecordingSource(options.homeDirectory, record, () => web!.getTask(record), async () => {
         const stopped = await observer(record, operation);
@@ -135,9 +132,8 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
       removeSafely: async (owner, binding) => {
         await verifyDirectories(binding);
         await removeRecoveryGitWorktree(binding, operation);
-        if (await git!.findWorktree(project, owner, operation) !== null) throw new Error("The original worktree removal is unconfirmed; its manifest remains retained.");
+        if (await git!.findWorktree(project, owner, operation, binding.worktreePath) !== null) throw new Error("The original worktree removal is unconfirmed.");
       },
-      retireManifest: async owner => { await git!.retireWorktreeManifest(project, owner, operation); },
     } });
     options.output(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) { failures.push(error); }

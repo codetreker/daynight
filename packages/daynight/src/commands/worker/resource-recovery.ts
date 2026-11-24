@@ -13,11 +13,10 @@ export type ResourceRecoveryDependencies = {
   getRecord(identity: ClaimIdentity): LocalTask | null;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   readProject(projectId: string, signal: AbortSignal): Promise<{ id: string; repoUrl: string }>;
-  inspectWorktree(owner: ResourceOwner, signal: AbortSignal): Promise<WorktreeBinding | null>;
+  inspectWorktree(owner: ResourceOwner, originalCwd: string, signal: AbortSignal): Promise<WorktreeBinding | null>;
   verifyStoppedArchive(record: LocalTask, signal: AbortSignal): Promise<void>;
   verifyPreserved(binding: WorktreeBinding, signal: AbortSignal): Promise<void>;
   removeSafely(owner: ResourceOwner, binding: WorktreeBinding, signal: AbortSignal): Promise<void>;
-  retireManifest(owner: ResourceOwner, signal: AbortSignal): Promise<void>;
 };
 
 /** Recover only an archived, stopped execution whose original cleanup already completed. */
@@ -25,7 +24,7 @@ export const recoverCompletedWebResource = async (options: { request: ResourceRe
   const { request, dependencies: d, signal } = options;
   signal.throwIfAborted();
   const record = d.getRecord(request);
-  if (record === null) throw new Error("The original Web execution journal is missing. Restore the original Worker and Controller journals from backup; a Git marker or completed Task cannot prove stop or archive preservation.");
+  if (record === null) throw new Error("The original Web execution journal is missing. Restore the original Worker and Controller journals from backup; a Git worktree or completed Task cannot prove stop or archive preservation.");
   const owner = { projectId: record.projectId, taskId: record.taskId, claimId: record.claimId, worktreeId: record.worktreeId };
   const principal = await d.currentUserId(signal);
   if (record.projectId !== request.projectId || record.taskId !== request.taskId || record.claimId !== request.claimId || request.worktreeId !== undefined && request.worktreeId !== record.worktreeId
@@ -44,7 +43,7 @@ export const recoverCompletedWebResource = async (options: { request: ResourceRe
       || worker.state === "active" || worker.claimId !== owner.claimId || worker.worktreeId !== owner.worktreeId || worker.workerId !== d.workerId
       || worker.userId !== principal || worker.agentControlMode !== "web" || worker.agent !== record.configuration!.agent
       || worker.nativeSessionId !== (record.resources.nativeSession?.sessionId ?? null)) throw new Error("The original terminal claim is no longer retained on this Worker; replacement claims cannot authorize recovery.");
-    const binding = await d.inspectWorktree(owner, signal);
+    const binding = await d.inspectWorktree(owner, expected.worktreePath, signal);
     if (binding === null || binding.branch !== expected.branch || binding.branch !== `daynight/${owner.taskId}`
       || !await sameWorktreeLocation(binding.repositoryPath, expected.repositoryPath) || !await sameWorktreeLocation(binding.commonDirectory, expected.commonDirectory)
       || !await sameWorktreeLocation(binding.worktreePath, expected.worktreePath)) throw new Error("The current worktree does not match the complete original Git binding.");
@@ -60,6 +59,5 @@ export const recoverCompletedWebResource = async (options: { request: ResourceRe
   if (!isDeepStrictEqual(current, binding)) throw new Error("The original worktree binding changed after recovery preview.");
   await d.removeSafely(owner, binding, signal);
   signal.throwIfAborted();
-  await d.retireManifest(owner, signal);
-  return { outcome: "recovered" as const, owner, worktreePath: binding.worktreePath, message: "Original worktree removal and manifest retirement confirmed; normal Worker observation will clear its reservation." };
+  return { outcome: "recovered" as const, owner, worktreePath: binding.worktreePath, message: "Original worktree removal confirmed; normal Worker observation will clear its reservation." };
 };

@@ -23,7 +23,7 @@ flowchart LR
 
 生产者使用准入同一份完整身份集合计算 `occupied` 和可选 `breakdown`，先按 project/task/claim 去重，再将占用身份划分为活动任务与其他保留资源。共享 capacity codec 同时解析详情、存储摘要和公共摘要；拒绝负数、非安全整数、缺失分项或与 occupied 不一致的和。旧帧没有分解时保持缺席。权限投影只删除 scoped 明细，不从剩余列表重算容量；被截断的异常和资源责任仍以 partial/restricted 呈现，不能显示为完整无异常。
 
-`ownership-unconfirmed` 是受控归属判断的固定分类，不上传原始 Git 或执行日志。Failure 保留原 claim scope，复用当前权限投影与 project-relative worktree 表达；任务后继 claim 不改写旧异常身份。Web 容量卡展示活动任务占用和保留资源占用，详情展示原 claim、工作区位置及在原机器停止 Worker 后核验原证据的命令。命令仅使用可见 claim 身份，不从路径推断 worktree ID，不因任务已完成而提供盲目删除操作。后台轮询保留展开状态；权限撤销同时撤掉关联、路径和恢复命令。
+`ownership-unconfirmed` 是受控归属判断的固定分类，不上传原始 Git 或执行日志。无法关联原执行的 Git 注册使用 project scope。已关联原执行的失败保留原 claim scope 和可用的 project-relative worktree，任务后继 claim 不改写旧异常身份。Web 容量卡展示活动任务占用和保留资源占用，详情按权限显示已知原 claim、工作区位置及在原机器停止 Worker 后核验原证据的命令。命令仅使用可见 claim 身份，不从路径推断 worktree ID，不因任务已完成而提供盲目删除操作。后台轮询保留展开状态；权限撤销同时撤掉关联、路径和恢复命令。
 
 ## Redis 帧与写入
 

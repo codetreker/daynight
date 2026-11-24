@@ -15,12 +15,12 @@ The Git manager joins the admitted mutation and checks the original directory an
 registration with a fresh observation budget. The effect and observation each use
 the existing five-minute limit and inherit the outer cancellation signal. An
 absent result carries every effect error to callers for diagnostics before they
-settle backend, local, schedule and manifest responsibility. If resources remain,
+settle backend, local and scheduled cleanup responsibility. If resources remain,
 the original error propagates; if observation also fails, both errors remain in
 the cause chain. Outer cancellation prevents new observation and does not abandon
 in-flight local closure. Callers do not repeat the equivalent Git postcondition.
-The [manifest adoption decision](2026-11-12-worktree-manifest-adoption.md) owns
-resource identity and retirement order.
+The [Git registration discovery decision](../simplification/2026-11-24-worker-git-worktree-discovery.md) owns
+worktree identification.
 
 ## Alternatives
 

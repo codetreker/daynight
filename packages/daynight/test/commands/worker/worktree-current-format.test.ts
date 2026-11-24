@@ -6,14 +6,11 @@ import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { afterAll, afterEach, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
-import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
-import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import { runRepositoryGit } from "../../../src/repository/git.js";
 
 const roots: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
 const worktreePaths = (cwd: string): string[] => git(cwd, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
-const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
 const url = "https://example.com/fixture/project.git";
 const seedRoots: string[] = [];
@@ -57,7 +54,7 @@ const fixture = async (kind: "checkout" | "checkout-and-origin" = "checkout-and-
   git(repository, "config", `url.${remote}.insteadOf`, url);
   const project = { projectId: randomUUID(), repoUrl: url, localPath: repository };
   const owner = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "temp"), prepareFormat: async (_project, repo, operation) => { await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: emptySources }); } });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "temp") });
   return { root, repository, project, owner, adapter };
 };
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
@@ -67,10 +64,10 @@ afterAll(async () => {
 });
 
 // Real Git setup and repository inspection use multiple subprocesses on every platform.
-it("gates current worktrees until real migration, creates unlocked worktree, and retires only metadata after deletion", async () => {
+it("creates and removes an unlocked Git worktree without writing ownership metadata", async () => {
   const f = await fixture(), operation = createOperation();
   try {
-    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/format has not been prepared/);
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/repository has not been prepared/);
     const repository = await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
     expect(binding.worktreePath).toBe(path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId));
@@ -78,52 +75,38 @@ it("gates current worktrees until real migration, creates unlocked worktree, and
     expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain("locked");
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     expect(await f.adapter.resolveWorktreeBinding(f.project, f.owner, operation)).toEqual(binding);
-    expect(await f.adapter.listWorktrees(f.project, operation)).toEqual([{ owner: f.owner, binding }]);
+    expect(await f.adapter.listWorktrees(f.project, operation)).toEqual([{ taskId: f.owner.taskId, binding }]);
     await f.adapter.removeWorktree(f.project, f.owner, operation);
     expect(await f.adapter.findWorktree(f.project, f.owner, operation)).toBeNull();
     expect(await f.adapter.listWorktrees(f.project, operation)).toEqual([]);
-    expect(await f.adapter.listWorktreeManifests(f.project, operation)).toEqual([{ owner: f.owner, binding }]);
-    expect(createWorktreeManifestStore(repository.commonDirectory).read(f.owner.worktreeId)).not.toBeNull();
-    await f.adapter.retireWorktreeManifest(f.project, f.owner, operation);
-    expect(createWorktreeManifestStore(repository.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+    await expect(lstat(path.join(repository.commonDirectory, "daynight", "worktrees"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(git(f.repository, "show-ref", "--verify", `refs/heads/${binding.branch}`)).toContain(`refs/heads/${binding.branch}`);
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
-it("uses a migrated taskId directory without rewriting the existing checkout", async () => {
+it("uses an explicitly retained taskId directory without rewriting the existing checkout", async () => {
   const f = await fixture("checkout"), operation = createOperation();
   try {
     const old = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
     await mkdir(path.dirname(old), { recursive: true });
-    const marker = `daynight-worker:${JSON.stringify({ ...f.owner, leaf: "1:1", root: "1:1", common: "1:1" })}`;
-    git(f.repository, "worktree", "add", "--lock", "--reason", marker, "-b", `daynight/${f.owner.taskId}`, old, "HEAD");
+    git(f.repository, "worktree", "add", "-b", `daynight/${f.owner.taskId}`, old, "HEAD");
     const before = await readFile(path.join(old, ".git"));
-    const web = openWebExecutionStore(path.join(f.root, "web.sqlite"), { onMigration: () => {} });
-    const task = web.register({ ...f.owner, project: f.project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(),
-      configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
-    web.bindWorktree(task, { repositoryPath: f.repository, commonDirectory: git(f.repository, "rev-parse", "--absolute-git-dir"), worktreePath: old, branch: `daynight/${f.owner.taskId}` }, 2);
-    const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-migration"), prepareFormat: async (_project, repo, op) => {
-      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-        sources: { listSchedules: () => [f.owner], listWebTasks: () => web.listUnfinishedTasks() } });
-    } });
-    try {
-      await adapter.prepareRepository(f.project, operation);
-      const binding = await adapter.verifyWorktree(f.project, f.owner, operation);
-      expect(binding.worktreePath).toBe(old);
-      expect(await readFile(path.join(old, ".git"))).toEqual(before);
-      expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain("locked");
-      await adapter.removeWorktree(f.project, f.owner, operation);
-      await adapter.retireWorktreeManifest(f.project, f.owner, operation);
-    } finally { await adapter.dispose(); web.close(); }
+    await f.adapter.prepareRepository(f.project, operation);
+    const binding = await f.adapter.verifyWorktree(f.project, f.owner, operation, old);
+    expect(binding.worktreePath).toBe(old);
+    expect(await f.adapter.listWorktrees(f.project, operation)).toEqual([{ taskId: f.owner.taskId, binding }]);
+    expect(await readFile(path.join(old, ".git"))).toEqual(before);
+    await f.adapter.removeWorktree(f.project, f.owner, { originalCwd: old });
+    expect(await f.adapter.findWorktree(f.project, f.owner, operation, old)).toBeNull();
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
-it("retains unknown content and never treats a missing manifest as proof of absence", async () => {
+it("confirms missing paths and retains nonempty unregistered content", async () => {
   const f = await fixture("checkout"), operation = createOperation();
   try {
     await f.adapter.prepareRepository(f.project, operation);
-    await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/manifest is missing/) }) });
-    await expect(f.adapter.findWorktree(f.project, f.owner, operation)).rejects.toThrow(/manifest is missing/);
+    await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).resolves.toEqual({ kind: "absent", effectErrors: [] });
+    expect(await f.adapter.findWorktree(f.project, f.owner, operation)).toBeNull();
     const leaf = path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId);
     await mkdir(leaf, { recursive: true }); await writeFile(path.join(leaf, "important"), "keep");
     await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/no matching Git registration/);
@@ -134,7 +117,7 @@ it("retains unknown content and never treats a missing manifest as proof of abse
 it("restores a missing checkout and stale registration from its original branch", async () => {
   const f = await fixture(), operation = createOperation();
   try {
-    const repository = await f.adapter.prepareRepository(f.project, operation);
+    await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
     const commit = git(binding.worktreePath, "rev-parse", "HEAD");
     await rm(binding.worktreePath, { recursive: true });
@@ -142,12 +125,6 @@ it("restores a missing checkout and stale registration from its original branch"
     expect(git(binding.worktreePath, "rev-parse", "HEAD")).toBe(commit);
     expect(git(binding.worktreePath, "branch", "--show-current")).toBe(binding.branch);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    const store = createWorktreeManifestStore(repository.commonDirectory);
-    store.remove(store.read(f.owner.worktreeId)!);
-    await rm(binding.worktreePath, { recursive: true });
-    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation)).toEqual(binding);
-    expect(git(binding.worktreePath, "rev-parse", "HEAD")).toBe(commit);
-    expect(store.read(f.owner.worktreeId)).not.toBeNull();
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
@@ -165,24 +142,17 @@ it("does not restore a checkout that disappears after a live execution was obser
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
-it("restores a missing manifest from the exact retained legacy binding", async () => {
+it("restores a checkout at its exact retained legacy binding", async () => {
   const f = await fixture("checkout"), operation = createOperation();
   try {
-    const repository = await f.adapter.prepareRepository(f.project, operation);
+    await f.adapter.prepareRepository(f.project, operation);
     const legacy = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
-    const store = createWorktreeManifestStore(repository.commonDirectory);
-    store.publish({ schemaVersion: 1, ...f.owner, directoryName: f.owner.taskId });
     git(f.repository, "branch", `daynight/${f.owner.taskId}`);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy);
-    const original = store.read(f.owner.worktreeId)!;
-    store.remove(original);
     await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/already checked out/);
     expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy)).toEqual(binding);
-    expect(store.read(f.owner.worktreeId)).toEqual(original);
     git(f.repository, "worktree", "remove", binding.worktreePath);
-    store.remove(original);
     expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy)).toEqual(binding);
-    expect(store.read(f.owner.worktreeId)).toEqual(original);
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
@@ -213,16 +183,22 @@ it("rejects a conflicting retained binding before creating a checkout", async ()
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
-it("retires an already settled manifest without touching a later occupant", async () => {
+it("ignores an orphaned ownership file after checkout and registration removal", async () => {
   const f = await fixture(), operation = createOperation();
   try {
     const repo = await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
-    await f.adapter.removeWorktree(f.project, f.owner, operation);
-    await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "successor"), "keep");
-    await f.adapter.retireWorktreeManifest(f.project, f.owner, operation);
-    expect(await readFile(path.join(binding.worktreePath, "successor"), "utf8")).toBe("keep");
-    expect(createWorktreeManifestStore(repo.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+    const oldRecords = path.join(repo.commonDirectory, "daynight", "worktrees");
+    await mkdir(oldRecords, { recursive: true });
+    const oldRecord = path.join(oldRecords, `${f.owner.worktreeId}.json`);
+    const bytes = JSON.stringify({ schemaVersion: 1, ...f.owner, directoryName: f.owner.worktreeId });
+    await writeFile(oldRecord, bytes);
+    git(f.repository, "worktree", "remove", binding.worktreePath);
+    expect(await f.adapter.listWorktrees(f.project, operation)).toEqual([]);
+    expect(await f.adapter.findWorktree(f.project, f.owner, operation)).toBeNull();
+    expect(await readFile(oldRecord, "utf8")).toBe(bytes);
+    const replacement = { ...f.owner, claimId: randomUUID(), worktreeId: randomUUID() };
+    expect((await f.adapter.prepareWorktree(f.project, replacement, operation)).branch).toBe(binding.branch);
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
@@ -249,22 +225,25 @@ it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a workt
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
-it("serializes concurrent repository format preparation and leaves a failed gate closed", async () => {
+it("serializes concurrent repository preparation and leaves a failed gate closed", async () => {
   const f = await fixture("checkout"), operation = createOperation();
   let release!: () => void, entered!: () => void, calls = 0;
   const start = new Promise<void>(resolve => { entered = resolve; });
   const barrier = new Promise<void>(resolve => { release = resolve; });
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-gate"), prepareFormat: async () => { calls++; entered(); await barrier; throw new Error("format failure"); } });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-gate"), runGit: async (cwd, args, op, options) => {
+    if (args.includes("--is-bare-repository") && ++calls === 1) { entered(); await barrier; throw new Error("inspection failed"); }
+    return runRepositoryGit(cwd, args, op, options);
+  } });
   try {
     const first = adapter.prepareRepository(f.project, operation);
     await start;
     const second = adapter.prepareRepository(f.project, operation);
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/format has not been prepared/);
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/repository has not been prepared/);
     release();
     const outcomes = await Promise.allSettled([first, second]);
     expect(outcomes.every(value => value.status === "rejected")).toBe(true);
-    expect(calls).toBe(1);
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/format has not been prepared/);
+    expect(calls).toBe(2);
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/repository has not been prepared/);
   } finally { release(); operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
@@ -273,38 +252,28 @@ it("keeps a prepared repository available while another caller repeats preparati
   let release!: () => void, entered!: () => void, calls = 0;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const barrier = new Promise<void>(resolve => { release = resolve; });
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-repeat"), prepareFormat: async (_project, repo, scoped) => {
-    calls++;
-    if (calls > 1) { entered(); await barrier; }
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-repeat"), runGit: async (cwd, args, op, options) => {
+    if (args.includes("--is-bare-repository") && ++calls === 2) { entered(); await barrier; }
+    return runRepositoryGit(cwd, args, op, options);
   } });
   try {
     await adapter.prepareRepository(f.project, operation);
     const repeated = adapter.prepareRepository(f.project, operation);
-    const repeatedHookStarted = await Promise.race([started.then(() => true), repeated.then(() => false)]);
-    if (repeatedHookStarted) {
-      const scan = await adapter.scanWorktrees(f.project, operation);
-      expect(scan.unknown).toEqual([]);
-    }
+    await started;
+    expect((await adapter.scanWorktrees(f.project, operation)).unknown).toEqual([]);
     release(); await repeated;
-    expect(calls).toBe(1);
     expect((await adapter.scanWorktrees(f.project, operation)).unknown).toEqual([]);
   } finally { release(); operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 
 it("does not reuse a prepared gate for a different project binding", async () => {
   const f = await fixture("checkout"), operation = createOperation();
-  let calls = 0;
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-mapping"), prepareFormat: async (_project, repo, scoped) => {
-    calls++;
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
-  } });
+  const adapter = f.adapter;
   try {
     await adapter.prepareRepository(f.project, operation);
     const different = { ...f.project, projectId: randomUUID() };
     await adapter.prepareRepository(different, operation);
-    expect(calls).toBe(2);
-    expect((await adapter.scanWorktrees(f.project, operation)).unknown[0]?.error).toMatchObject({ message: expect.stringContaining("format has not been prepared") });
+    expect((await adapter.scanWorktrees(f.project, operation)).unknown[0]?.error).toMatchObject({ message: expect.stringContaining("repository has not been prepared") });
     expect((await adapter.scanWorktrees(different, operation)).unknown).toEqual([]);
   } finally { operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
 }, 30_000);
@@ -315,9 +284,9 @@ it("keeps the original preparation alive when a joined caller is canceled", asyn
   let release!: () => void, entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const barrier = new Promise<void>(resolve => { release = resolve; });
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-joined"), prepareFormat: async (_project, repo, scoped) => {
-    entered(); await barrier;
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-joined"), runGit: async (cwd, args, op, options) => {
+    if (args.includes("--is-bare-repository")) { entered(); await barrier; }
+    return runRepositoryGit(cwd, args, op, options);
   } });
   try {
     const first = adapter.prepareRepository(f.project, firstOperation);
@@ -339,15 +308,15 @@ it("settles only the exact empty unpublished reservation", async () => {
     await f.adapter.prepareRepository(f.project, operation);
     const leaf = path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId);
     await mkdir(leaf, { recursive: true });
-    await f.adapter.removeUnpublishedReservation(f.project, f.owner, operation);
+    await f.adapter.removeUnregisteredReservation(f.project, f.owner, operation);
     const { lstat } = await import("node:fs/promises");
     await expect(lstat(leaf)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(leaf); await writeFile(path.join(leaf, "keep"), "unknown");
-    await expect(f.adapter.removeUnpublishedReservation(f.project, f.owner, operation)).rejects.toThrow(/not empty/);
+    await expect(f.adapter.removeUnregisteredReservation(f.project, f.owner, operation)).rejects.toThrow(/not empty/);
     expect(await readFile(path.join(leaf, "keep"), "utf8")).toBe("unknown");
     await rm(path.join(leaf, "keep"));
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
-    await expect(f.adapter.removeUnpublishedReservation(f.project, f.owner, operation)).rejects.toThrow(/published manifest/);
+    await expect(f.adapter.removeUnregisteredReservation(f.project, f.owner, operation)).rejects.toThrow(/still has a Git worktree registration/);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);

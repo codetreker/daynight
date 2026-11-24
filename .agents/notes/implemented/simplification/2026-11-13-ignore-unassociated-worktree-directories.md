@@ -11,10 +11,10 @@ each preparation attempt, although the directory supplied no Worker ownership.
 
 ## Decision
 
-Migration validates Web-recorded worktrees without enumerating unrelated
-namespace directories. The [Web responsibility decision](../architecture/2026-11-17-web-worktree-migration.md)
-limits which records may establish a migration candidate. Unassociated directories remain untouched and do not
-block preparation, regardless of their names or contents.
+The original migration validated Web-recorded worktrees without enumerating
+unrelated namespace directories. The Worker now discovers resources from
+[Git registrations](2026-11-24-worker-git-worktree-discovery.md). Unassociated
+directories remain untouched and do not block preparation.
 
 This narrows the namespace checks introduced by the
 [resource migration decision](../architecture/2026-11-11-worktree-resource-migration.md).
@@ -31,7 +31,7 @@ migration or deletion targets that content.
 ## Consequences
 
 Scratch directories and unassociated former checkout paths no longer prevent
-format publication. Their contents and Git metadata remain unchanged. Known
+preparation. Their contents and Git metadata remain unchanged. Known
 worktrees still require their existing ownership, registration and reciprocal
 pointer checks; unreadable resource sources and conflicting ownership remain
 errors. Skipping an unknown directory grants no authority to adopt or delete it.

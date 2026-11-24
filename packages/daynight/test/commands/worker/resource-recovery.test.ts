@@ -16,7 +16,7 @@ const fixture = () => {
     readProject: vi.fn(async () => ({ id: owner.projectId, repoUrl: record.repoUrl })),
     project: { projectId: owner.projectId, localPath: root, repoUrl: record.repoUrl },
     inspectWorktree: vi.fn(async () => binding), verifyStoppedArchive: vi.fn(async () => {}),
-    verifyPreserved: vi.fn(async () => {}), removeSafely: vi.fn(async () => {}), retireManifest: vi.fn(async () => {}),
+    verifyPreserved: vi.fn(async () => {}), removeSafely: vi.fn(async () => {}),
   };
   return { owner, record, task, dependencies, signal: new AbortController().signal };
 };
@@ -35,7 +35,6 @@ describe("completed Web resource recovery", () => {
     expect(result.outcome).toBe("recovered");
     expect(f.dependencies.readTask).toHaveBeenCalledTimes(2);
     expect(f.dependencies.removeSafely).toHaveBeenCalledExactlyOnceWith(f.owner, f.record.resources.worktree, f.signal);
-    expect(f.dependencies.retireManifest).toHaveBeenCalledExactlyOnceWith(f.owner, f.signal);
   });
   it.each(["missing", "active", "worker", "user", "claim", "worktree", "repository", "shutdown", "successor"])("refuses insufficient or foreign evidence: %s", async kind => {
     const f = fixture();
@@ -58,6 +57,5 @@ describe("completed Web resource recovery", () => {
     if (kind === "task changed") f.dependencies.readTask.mockResolvedValueOnce(f.task).mockResolvedValue({ ...f.task, status: "in_progress" });
     if (kind === "delete failed") f.dependencies.removeSafely.mockRejectedValue(new Error("unconfirmed removal"));
     await expect(recoverCompletedWebResource({ ...f, request: { ...f.owner, confirmed: true } })).rejects.toThrow();
-    expect(f.dependencies.retireManifest).not.toHaveBeenCalled();
   });
 });

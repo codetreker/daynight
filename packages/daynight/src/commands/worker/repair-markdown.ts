@@ -17,7 +17,7 @@ import { repairStoppedMarkdownProjections } from "../controller/stopped-markdown
 import { resolveStoppedMarkdownImage } from "../controller/stopped-markdown-images.js";
 import { uploadStoppedControllerArchive } from "../controller/archive-upload.js";
 import { runRepositoryGit } from "../../repository/git.js";
-import { createWorktreeManifestStore } from "./worktrees/manifest.js";
+import { parseWorktreeBranches } from "./worktree-scan.js";
 import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
 import { withWebRecordingSource } from "./web-recording-source.js";
 
@@ -73,12 +73,15 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
       if (configuration.mapping.workerId !== local.workerId || controllerPayloadHash(readLocal()) !== original || controllerPayloadHash(await readLaunchTicket(context.homeDirectory(), execution.launchId)) !== controllerPayloadHash(ticket)) throw new Error("The local Worker assignment changed during repair.");
       const binding = local.resources.worktree!;
       if (!retainedWorktreePathInScope(local.repositoryPath, target, ticket.cwd)) throw new Error("The original worktree is outside its managed namespace.");
-      const manifest = createWorktreeManifestStore(binding.commonDirectory).read(target.worktreeId);
-      if (!manifest || manifest.projectId !== target.projectId || manifest.taskId !== target.taskId || manifest.claimId !== target.claimId || manifest.directoryName !== path.basename(ticket.cwd)) throw new Error("The original worktree manifest changed.");
       const top = await runRepositoryGit(ticket.cwd, ["rev-parse", "--show-toplevel"], operation);
-      const branch = await runRepositoryGit(ticket.cwd, ["branch", "--show-current"], operation);
       const common = await runRepositoryGit(ticket.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
-      if (!await sameWorktreeLocation(top.stdout.trim(), ticket.cwd) || !await sameWorktreeLocation(common.stdout.trim(), binding.commonDirectory) || branch.stdout.trim() !== binding.branch) throw new Error("The actual worktree differs from its recorded owner.");
+      const branch = `daynight/${target.taskId}`;
+      const { stdout } = await runRepositoryGit(binding.repositoryPath, ["worktree", "list", "--porcelain", "-z"], operation);
+      const matches = parseWorktreeBranches(stdout).filter(registration => registration.branch === `refs/heads/${branch}`);
+      const registeredPath = matches[0]?.worktreePath;
+      if (!await sameWorktreeLocation(top.stdout.trim(), ticket.cwd) || !await sameWorktreeLocation(common.stdout.trim(), binding.commonDirectory)
+        || branch !== binding.branch || matches.length !== 1 || registeredPath === undefined
+        || !await sameWorktreeLocation(registeredPath, ticket.cwd)) throw new Error("The actual worktree differs from its recorded owner.");
     };
     await verify();
     const coordination = new Database(journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });

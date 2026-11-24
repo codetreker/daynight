@@ -98,17 +98,11 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 资源身份、控制意图、固定期限和重试策略可持久保存；“停止做过了”“删除做过了”等步骤状态不能授权跳过观察。一次清理调用返回临时的完成结果，只有本次观察满足全部资源目标才更新本机记录；终态原执行的停止观察独立决定执行容量。设计取舍见[资源状态决策](../../.agents/notes/archived/architecture/2026-11-04-worker-resource-state.md)。
 
 
-## 归属清单与格式转换
+## 平台清理策略
 
-`worktrees/manifest.ts` 提供独立的同步清单存储，路径为 Git common 目录下的 `daynight/worktrees/<worktreeId>.json`。记录仅接受版本 1 的六个字段，按 worktreeId、完整 claim 和目录名分别拒绝冲突。发布先持久化两级命名空间，再 flush 文件并发布；重试已可见的相同记录时重新完成文件和目录屏障。读取不逐文件 flush，退休只在 expected 字段匹配后移除元数据。Worker 通过该清单定位当前资源；后端和本地责任结算后才退休元数据。平台目录同步能力的限制与现有持久文件原语相同。
+自动清理开始时从已提交的 appliedValue 与 actualSource 捕获 enableSudoCleanup 和真实 revision；缺席或尚未应用时只执行普通清理。文件系统阶段确认权限障碍后重新核验任务分支、目录身份和可访问的 Git 关联，再读取系统挂载清单并拒绝目标或其子树上的挂载；在已核验的仓库根目录通过 POSIX shell 删除原目标；root 使用 rm，其他用户使用 sudo -n，路径按单引号规则引用。普通清理的操作与句柄先收尾，shell 受原 Operation 预算与取消约束并等待关闭，再由普通 Git 清除原登记并重新观察。其他错误不触发提权；人工入口不接入该策略。整目录删除不保证最后移除 .git；部分失败后若 .git 已缺失、目录非空且原归属无法重新证明，后续重试保留错误与责任，不强行删除。进程内责任保持到命令收尾；非 root 的 sudo 在取消或超时后仍由原进程等待结束，不能以杀死父进程推断 root 子进程停止。挂载检查不能排除检查后外部并发挂载，强制重启后不提供新增跨进程互斥。取舍见[清理决策](../../.agents/notes/implemented/feature/2026-11-17-worker-sudo-cleanup.md)。
 
-`worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供当前服务和 Worker 的 Web 执行记录及相关清理调度。只有 Web 记录证明的工作树进入转换集合；Git 注册或清单不能单独证明 Web 责任。转换核对这些来源和位置，可靠发布并读回清单后才复核、解开匹配的旧 Worker 锁并移除关联 sidecar，再重枚举允许集合并发布格式标记。未知登记和目录保持原状且不阻断无关工作；真实的身份、路径及文件冲突仍报错。原 checkout 和冻结 cwd 不移动或改写，非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)及 [Web 责任决策](../../.agents/notes/implemented/architecture/2026-11-17-web-worktree-migration.md)。
-
-自动清理开始时从已提交的 appliedValue 与 actualSource 捕获 enableSudoCleanup 和真实 revision；缺席或尚未应用时只执行普通清理。文件系统阶段确认权限障碍后重新核验清单、目录身份和可访问的 Git 关联，再读取系统挂载清单并拒绝目标或其子树上的挂载；在已核验的仓库根目录通过 POSIX shell 删除原目标；root 使用 rm，其他用户使用 sudo -n，路径按单引号规则引用。普通清理的操作与句柄先收尾，shell 受原 Operation 预算与取消约束并等待关闭，再由普通 Git 清除原登记并重新观察。其他错误不触发提权；人工入口不接入该策略。整目录删除不保证最后移除 .git；部分失败后若 .git 已缺失、目录非空且原归属无法重新证明，后续重试保留错误与责任，不强行删除。进程内责任保持到命令收尾；非 root 的 sudo 在取消或超时后仍由原进程等待结束，不能以杀死父进程推断 root 子进程停止。挂载检查不能排除检查后外部并发挂载，强制重启后不提供新增跨进程互斥。取舍见[清理决策](../../.agents/notes/implemented/feature/2026-11-17-worker-sudo-cleanup.md)。
-
-Windows 的进程清理走另一条分支：普通删除耗尽忙碌重试仍为 EBUSY 时，若已应用的 enableWindowsProcessCleanup 为 true，先重新核验归属，再用 Toolhelp 快照列进程、经 NtQueryInformationProcess 与 ReadProcessMemory 读各进程 RTL_USER_PROCESS_PARAMETERS 中的工作目录，筛出落在已核验 worktree 子树内的持有者，以 `taskkill` 的 `/T /F` 连同可归属为其子进程的那些进程一并终止，重新核验归属后重跑同一套删除流程；`/T` 不保证所有后代都被终止，父进程已退出的孙进程可能不再可归属，存活者若仍持有目录则重试保留原始错误。持有者句柄从检视保持到终止，Windows 不会在句柄存在期间回收其进程标识，因此不需要事后比对出生时间来防标识重用。布局偏移在指针大小不符时直接拒绝而非猜测；被检视进程的位数与 Worker 自身无关，先用 ProcessWow64Information 判定：返回非零即为 WOW64 进程，按其 32 位 PEB 与 32 位 process parameters 读取，否则走原生 64 位布局——WOW64 进程的活动工作目录只存在于它自己维护的 32 位结构里，一律按原生读会静默漏掉 32 位持有者。普通删除解除 Git 指针后在根目录失败时，worktree 会处于已登记、空且无指针的状态，此后每次尝试都进入「指针已被中断的清理移除」那条分支，因此该分支同样接入持有者恢复；否则一次忙碌失败会永久把后续尝试引离恢复路径，重启 Worker 亦然。该分支原有的校验（leaf 身份、指针仍缺失、registration 未加锁）只够支撑「删除一个 inode 已匹配的空目录」——最坏结果也只是删掉了确实被证明过的那个目录；而终止进程不可逆、波及后代、作用对象也不是该目录，因此按主路径同等的证据准入：owner manifest、捕获的归属目录身份、以及 registration 的 gitdir/commondir 关联，并在这些异步读之后再核一次。退避期间 manifest 被移除或 registration 被改指，会在检视任何持有者之前就拒绝，并保留原始错误。捕获的证据本身也要先被证明：产生该结果的 inspect 早于这些读取解析了 registration，期间被改指的关联会被当作基线记下并此后永远自洽，因此捕获后需重新 inspect 并要求与已持有的结果一致、捕获的元数据仍读到相同内容。主路径上终止前后用的是会在异步读之后复核身份的那个验证器，而非只在读取前检查身份的那个：原持有者退出后，已空的根目录可能在这些读取期间被替换、替换体内又启动了持有者，而指针已被移除时一个空的替换体能通过余下全部检查，终止那棵无关进程树无法被随后的身份失败撤销。首次尝试与重试共用同一删除序列，Git 指针只解除一次。清单排除 Worker 自身及其祖先：终止波及目标的后代，终止祖先会连同本次清理一并结束，且发生在删除进行中、无从留下诊断，而从 worktree 内的 shell 启动的 Worker 恰有这样的祖先；祖先链按快照记录的父进程回溯，父标识回收导致回溯提前终止或成环时遇重复即停，两种偏差都只会少终止。终止记录归属整次清理尝试而非执行终止的那一步：每终止一个即刻经 sink 记入，取消或超时打断终止循环、后置观测与完备性检查失败、以及以 effect error 随「资源已不存在」返回这三类情形都在持有者消失之后结束尝试，统一由尝试边界的一次包装携带该记录；恢复自身的失败只声明「未终止任何持有者」，两者不重复；嵌套的保留目录清理共用同一记录。恢复成功时没有失败可承载记录，故每次终止在发生时经与 Git 管理器既有 pending/settled 同类的 reporter 另行上报，并携带由 FILETIME 换算的启动时间——标识会被回收而记录事后才读，仅有标识不足以定位；WorkerEvent 的 kind 为开放字符串，无需改动服务端读取的协议。该 reporter 的失败不改变清理结果——它运行在终止循环的逐持有者保护内，抛出会被记成「该持有者终止失败」，恰好反转其存在意义；诊断汇收端会另行上报自身不可用，故吞掉不等于无声。只覆盖工作目录持有，文件句柄持有不在清单内；实测由 Node 进程打开的文件并不阻塞删除（句柄允许删除），故该边界比字面窄，真正拒绝删除的是工作目录持有，此外保留原始错误与责任。两个清理成员各自携带自己的已提交版本，诊断引用授权本次动作的那个成员的版本。取舍与被实测否决的 Restart Manager、命令行匹配两条路线见[进程清理决策](../../.agents/notes/implemented/feature/2026-11-22-windows-worktree-process-cleanup.md)。
-
-历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，及其执行证据；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
+Windows 的进程清理走另一条分支：普通删除耗尽忙碌重试仍为 EBUSY 时，若已应用的 enableWindowsProcessCleanup 为 true，先重新核验归属，再用 Toolhelp 快照列进程、经 NtQueryInformationProcess 与 ReadProcessMemory 读各进程 RTL_USER_PROCESS_PARAMETERS 中的工作目录，筛出落在已核验 worktree 子树内的持有者，以 `taskkill` 的 `/T /F` 连同可归属为其子进程的那些进程一并终止，重新核验归属后重跑同一套删除流程；`/T` 不保证所有后代都被终止，父进程已退出的孙进程可能不再可归属，存活者若仍持有目录则重试保留原始错误。持有者句柄从检视保持到终止，Windows 不会在句柄存在期间回收其进程标识，因此不需要事后比对出生时间来防标识重用。布局偏移在指针大小不符时直接拒绝而非猜测；被检视进程的位数与 Worker 自身无关，先用 ProcessWow64Information 判定：返回非零即为 WOW64 进程，按其 32 位 PEB 与 32 位 process parameters 读取，否则走原生 64 位布局——WOW64 进程的活动工作目录只存在于它自己维护的 32 位结构里，一律按原生读会静默漏掉 32 位持有者。普通删除解除 Git 指针后在根目录失败时，worktree 会处于已登记、空且无指针的状态，此后每次尝试都进入「指针已被中断的清理移除」那条分支，因此该分支同样接入持有者恢复；否则一次忙碌失败会永久把后续尝试引离恢复路径，重启 Worker 亦然。该分支原有的校验（leaf 身份、指针仍缺失、registration 未加锁）只够支撑「删除一个 inode 已匹配的空目录」——最坏结果也只是删掉了确实被证明过的那个目录；而终止进程不可逆、波及后代、作用对象也不是该目录，因此按主路径同等的证据准入：任务分支、捕获的归属目录身份及 registration 的 gitdir/commondir 关联，并在这些异步读之后再核一次。退避期间任务分支变更或 registration 被改指，会在检视任何持有者之前就拒绝，并保留原始错误。捕获的证据本身也要先被证明：产生该结果的 inspect 早于这些读取解析了 registration，期间被改指的关联会被当作基线记下并此后永远自洽，因此捕获后需重新 inspect 并要求与已持有的结果一致、捕获的元数据仍读到相同内容。主路径上终止前后用的是会在异步读之后复核身份的那个验证器，而非只在读取前检查身份的那个：原持有者退出后，已空的根目录可能在这些读取期间被替换、替换体内又启动了持有者，而指针已被移除时一个空的替换体能通过余下全部检查，终止那棵无关进程树无法被随后的身份失败撤销。首次尝试与重试共用同一删除序列，Git 指针只解除一次。清单排除 Worker 自身及其祖先：终止波及目标的后代，终止祖先会连同本次清理一并结束，且发生在删除进行中、无从留下诊断，而从 worktree 内的 shell 启动的 Worker 恰有这样的祖先；祖先链按快照记录的父进程回溯，父标识回收导致回溯提前终止或成环时遇重复即停，两种偏差都只会少终止。终止记录归属整次清理尝试而非执行终止的那一步：每终止一个即刻经 sink 记入，取消或超时打断终止循环、后置观测与完备性检查失败、以及以 effect error 随「资源已不存在」返回这三类情形都在持有者消失之后结束尝试，统一由尝试边界的一次包装携带该记录；恢复自身的失败只声明「未终止任何持有者」，两者不重复；嵌套的保留目录清理共用同一记录。恢复成功时没有失败可承载记录，故每次终止在发生时经与 Git 管理器既有 pending/settled 同类的 reporter 另行上报，并携带由 FILETIME 换算的启动时间——标识会被回收而记录事后才读，仅有标识不足以定位；WorkerEvent 的 kind 为开放字符串，无需改动服务端读取的协议。该 reporter 的失败不改变清理结果——它运行在终止循环的逐持有者保护内，抛出会被记成「该持有者终止失败」，恰好反转其存在意义；诊断汇收端会另行上报自身不可用，故吞掉不等于无声。只覆盖工作目录持有，文件句柄持有不在清单内；实测由 Node 进程打开的文件并不阻塞删除（句柄允许删除），故该边界比字面窄，真正拒绝删除的是工作目录持有，此外保留原始错误与责任。两个清理成员各自携带自己的已提交版本，诊断引用授权本次动作的那个成员的版本。取舍与被实测否决的 Restart Manager、命令行匹配两条路线见[进程清理决策](../../.agents/notes/implemented/feature/2026-11-22-windows-worktree-process-cleanup.md)。
 
 ## 配置与目录
 
@@ -139,7 +133,7 @@ Windows 的进程清理走另一条分支：普通删除耗尽忙碌重试仍为
 
 项目实际换仓时，服务端在同一事务中移除批量快照已选择该项目的 Worker 云端目标配置，包括离线 Worker；配置的其他字段、其他项目及观测保留。快照后的新选择与首次导入沿普通配置合同处理。Worker 按既有同步和停止路径应用移除，应用之前仍可能领取工作，已有 claim 不参与换仓事务。
 
-候选准备失败保持错误，在后续报告周期重新准备；不以可用项目的局部集合建立云目标或授予新执行。每个 null 周期先查服务端，已有目标优先，取消并 drain 旧候选；导入响应未知也先读，再从最新事实构造新请求。原协调器保留用于已有资源核验的视图；冷启动处于 null、未读取或不支持目标时，从真实本机项目映射提供原资源覆盖。快照单独提供 retainedRecoveryLimit，来自当前/保留记录中可继承的真实已应用标量，只供原执行恢复视图使用，不进入 effective 或新准入。Task/Bot 新准入保持关闭，原冻结执行继续原权限与生命周期。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 清单属于其他 Project 时保留责任，不按新 ID 重绑。
+候选准备失败保持错误，在后续报告周期重新准备；不以可用项目的局部集合建立云目标或授予新执行。每个 null 周期先查服务端，已有目标优先，取消并 drain 旧候选；导入响应未知也先读，再从最新事实构造新请求。原协调器保留用于已有资源核验的视图；冷启动处于 null、未读取或不支持目标时，从真实本机项目映射提供原资源覆盖。快照单独提供 retainedRecoveryLimit，来自当前/保留记录中可继承的真实已应用标量，只供原执行恢复视图使用，不进入 effective 或新准入。Task/Bot 新准入保持关闭，原冻结执行继续原权限与生命周期。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，已知的执行绑定属于其他 Project 时保留责任，不按新 ID 重绑。
 
 `worker repo list` 只读本地注册。云端目标尚未建立时，setup 与 repo add/remove 仍通过现有完整 Project 清单、身份和路径计算处理本地候选。已有传输 URL、路径和兼容 native 值保留；同类型逐字段继承，切换类型清除未覆盖的 model/args，args 整体替换。repositoryRoot 与 review 独立，只为新路径展开，改变根不搬移已有仓库。
 
@@ -273,7 +267,7 @@ coordinator 的 `configurationComplete` 同时包含存储就绪与已有项目�
 
 同一个 coordinator 接收不可变的有效配置视图，后续容量判断、恢复上限、平台优先策略和 native 选择读取成功值。客户端协商 platformTaskMode 枚举；旧服务的布尔投影映射为 all 或 prefer，首次导入仍使用旧布尔。服务端投影及保值规则由[配置设计](daynight-worker-configuration.md#输入与输出边界)拥有。实际应用值来自持久化应用事实，null 表示尚无实际结果；新领取等待该配置可用。等值视图保留身份，避免无配置变化的报告确认使在途领取失效；实际视图变化仍阻止使用旧配置提交领取。降低 maxConcurrent 不抢占已有执行；pollIntervalMs 在每轮完成后的下一次等待读取当前成功值。健康原生进程不因参数更新重启；Web 新 claim 保留已冻结原生配置；Web 执行库记录尚未建立时，coordinator 仍读取主 store 在 claim 登记事务中冻结的原生元组，避免在途领取期间的模式或参数变更重解释已取得的 claim。Web 执行记录存在时使用其冻结配置；不以当前默认替换 model/args，recoveryLimit 仍沿用原有实时策略。旧已有 Session 的未知配置不回填伪造快照，恢复时省略模型和 effort 覆盖。
 
-项目目标、就绪集合与 projects 持久映射分开。只有已选且准备就绪的项目可以自动推进 active、pending 和新领取；在途领取完成后再次检查有效集合。移除先从有效集合排除并取消该项目 job，再由 stopProject 等待收尾，按 claim 串行使用 Web 的直接停止能力。停止保留任务状态、认领、工作区及会话历史；映射继续服务归属清单、资源发现及人工处置。停止未确认时保留容量，已确认停止后仅保留工作区不永久占槽。重启时保留但未选的映射也进入配置模块的项目移除责任；结果、错误和重试沿用同一提交与报告入口。本次运行在登记成功后记住已登记的映射，后续从未登记项目继续；单批报告的条数或字节预算不阻止剩余本机移除责任登记。重启后重新观察所有映射，不能用前一运行的登记代替停止证据。重新选择不能抹掉已开始的停止，后续恢复沿用任务系统原有规则。
+项目目标、就绪集合与 projects 持久映射分开。只有已选且准备就绪的项目可以自动推进 active、pending 和新领取；在途领取完成后再次检查有效集合。移除先从有效集合排除并取消该项目 job，再由 stopProject 等待收尾，按 claim 串行使用 Web 的直接停止能力。停止保留任务状态、认领、工作区及会话历史；映射继续服务 claim 清单、资源发现及人工处置。停止未确认时保留容量，已确认停止后仅保留工作区不永久占槽。重启时保留但未选的映射也进入配置模块的项目移除责任；结果、错误和重试沿用同一提交与报告入口。本次运行在登记成功后记住已登记的映射，后续从未登记项目继续；单批报告的条数或字节预算不阻止剩余本机移除责任登记。重启后重新观察所有映射，不能用前一运行的登记代替停止证据。重新选择不能抹掉已开始的停止，后续恢复沿用任务系统原有规则。
 
 本机仓库绑定复用 Project 查询、既有映射及 repositoryRoot 路径生成。仓库准入串行核对全部保留映射和并发候选路径，准备在队列外运行，成功后复验并登记；失败或取消释放候选预留。这样慢 clone 不占用配置提交队列，也不能让并发项目写入相互重叠的目录。clone 失败时仅清除本次创建且仍为空的目录，部分内容保留。项目移除会取消在途准备；迟到结果必须重新核验目标。Git 发现失败不得推断资源缺席或释放未知责任；无法读取的项目禁止 pending 启动和领取，其未完成 claim 和已知资源责任保守计入容量，直到恢复观察或确认停止。健康项目可在自身资源观察完整且容量允许时继续调度。保留路径无法解析时，准入不能证明物理路径互不重叠，新的绑定仍须等待修复。配置结果仍由 configuration.json 的原提交 owner 合并。
 
@@ -335,21 +329,21 @@ Worker 状态库以原索引结构作为版本 5 基线，版本 6 增加 cleanu
 
 每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。执行容量按 claim 去重，普通启动或恢复先预留名额；终态清理确认精确原执行停止或权威未启动后不再占槽。未知或仍运行继续计占。文件、归档、隔离及同 task 旧 claim 屏障独立核验，不能仅凭已释放的执行槽删除资源或启动同 task 后继；Web 的纯归档责任不构成后继屏障。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择，每分配一个名额就从下一项目继续，直到没有可启动项或容量已满。新领取在所有配置项目中每轮合计最多一个。all 档按原项目轮转读取兼容候选；prefer 档先轮转全部可领取项目的当前平台专用候选，耗尽该类别后才轮转不限平台候选；only 档只轮转专用候选，耗尽后继续轮询。专用候选使用独立的项目游标；不限平台候选与关闭优先模式时的混合候选沿用常规项目游标。各游标跨轮保留，在各自类别内从下一项目继续，专用候选的扫描、跳过和成功领取均不推进常规游标。项目内保留服务端 createdAt、id 顺序，不能从一个项目取得不限平台候选后忽略其他项目的专用任务。空项目和被原资源准入屏障拒绝的候选可以跳过；确认授予并登记 pending 后立即结束本轮领取，即使任务暂不能 active。真实配置变化使旧候选流失效。所有类别的候选生成器在退出时关闭；后续新领取等待下一轮，由 pollIntervalMs、有效容量变化或配置变化触发。[领取节奏决策](../../.agents/notes/archived/feature/2026-11-04-worker-single-acquisition.md)记录其吞吐代价。
 
-仍属于自己的本机 active 已占名额，先为这些任务排队，在各自串行操作内读取原 backend 并恢复；全局 Git 发现中其他工作区的文件系统错误不阻塞它们。新的 pending 启动和新 claim 分配要求完整自有清单、目标仓库的资源枚举与可证明的执行容量。可定位的其他仓库格式准备失败只关闭其文件 gate；未知执行责任或无法界定范围的观察失败仍保守计占或阻止准入。
+仍属于自己的本机 active 已占名额，先为这些任务排队，在各自串行操作内读取原 backend 并恢复；全局 Git 发现中其他工作区的文件系统错误不阻塞它们。新的 pending 启动和新 claim 分配要求完整自有清单、目标仓库的资源枚举与可证明的执行容量。可定位的其他仓库准备失败只关闭其文件 gate；未知执行责任或无法界定范围的观察失败仍保守计占或阻止准入。
 
-Git 扫描将完整枚举结果分为 validated、quarantined 与 unknown。注册索引一次收集各 admin 的 pointer、marker、common 和读取错误，并按物理目标证明注册唯一性；人工或无 marker 注册也参加目标核对，路径别名不能隐藏重复注册。
+Git 扫描将完整枚举结果分为 validated、quarantined 与 unknown。注册索引收集各 admin 的路径、分支、Git 指针和读取错误，并按物理目标核对注册唯一性。其他 Git 注册也参与目标核对，路径别名不能隐藏重复注册。
 
 正向 gitdir 和 commondir 中的相对路径以 Git admin 目录为基准，worktree 内 .git 文件的反向 gitdir: 相对路径以 worktree 目录为基准。POSIX 将原始路径交给文件系统解释，再比较物理结果，不预先折叠符号链接后的 ..。Windows 的 Node 文件系统调用会在打开前规范化路径，因此在查询完整路径前先按原始组件顺序遍历：每遇到 ..，必须以 lstat 证明它将消去的当前路径是存在的普通目录，再退回父目录；junction、symlink、缺失、非目录或 I/O 异常均保持 unknown。普通相对路径在这些证明成立后允许查询，不能仅凭原始字符串传给文件系统就认定遍历语义得到保留。
 
 Windows 的 drive-relative 路径（如 `C:foo`）和 root-relative 路径（如 `\foo`、`/foo`）不能确定目标卷，必须拒绝，不能借进程当前盘符或当前目录补全；完整盘符绝对路径、完整 UNC 路径和普通相对路径都遵守上述父目录遍历证明。缺失组件中的未验证 . 或 .. 遍历保持 unknown。两个目标均缺失且路径拼写仅大小写不同时，不能证明它们是独立目标，注册唯一性保持 unknown；该约束适用于所有平台，不能根据缺失路径猜测文件系统的大小写语义。
 
-明确指向其他目标的局部失败不污染当前目标，无法解析 pointer 或歧义关系仍保持 unknown。只有完整 owner、仓库和唯一注册位置可定位，且错误明确属于稳定观察下的静态局部校验失败时，才能成为 quarantine 候选。清单、当前目录对象或 Git 指针在观察期间变化时保持 unknown；损坏或未知清单不能当作无资源。
+明确指向其他目标的局部失败不污染当前目标，无法解析 pointer 或歧义关系仍保持 unknown。任务分支、仓库和唯一注册位置可定位，且错误属于稳定观察下的静态局部校验失败时，才形成隔离候选。当前目录对象或 Git 指针在观察期间变化时保持 unknown。
 
 读取、原生查询及响应解析失败属于观察不完整；未分类异常保持 unknown，不按错误码拼写推断可隔离。上述复核沿用受控文件系统写入前提，不提供抵御恶意同用户并发替换的原子快照保证。严格 listWorktrees 对隔离或未知结果仍抛错，不将未验证资源省略为不存在；普通未注册路径和人工注册沿既有发现规则保留。
 
-Coordinator 交叉核对隔离候选与本机持久执行、Web 原责任或本轮自有 Web claim 的完整四字段身份。工作区已关闭但进程停止未确认的原 owner 仍参与 worktreeId 冲突检查，不能仅按 claim 去重计数后忽略身份矛盾。清单本身不是 Worker 进程归属证明；LocalTask 仅有 claim 坐标，也不能单独证明 worktreeId。映射及 Web 冻结仓库路径必须与扫描的物理仓库和规范 repo identity 一致；矛盾或无法解析保持 unknown。只有不存在矛盾且归属可证明的隔离资源才能保守纳入责任并保持库存覆盖完整。隔离项不提供可用 binding，阻止同 task 后继与自身 pending 启动；精确原执行停止后不再占执行槽，文件责任仍保留。健康任务在余量内继续调度。未知项不能按一个固定名额估计，也不能以历史快照代替当前容量上界。
+Coordinator 交叉核对隔离候选与本机持久执行、Web 原责任或本轮自有 Web claim 的完整四字段身份。工作区已关闭但进程停止未确认的原 owner 仍参与 worktreeId 冲突检查，不能仅按 claim 去重计数后忽略身份矛盾。Git 注册定位任务及 checkout，Worker 进程归属由原执行资料证明。LocalTask 仅有 claim 坐标，无法单独证明 worktreeId。映射及 Web 冻结仓库路径必须与扫描的物理仓库和规范 repo identity 一致；矛盾或无法解析保持 unknown。只有不存在矛盾且归属可证明的隔离资源才能保守纳入责任并保持库存覆盖完整。隔离项不提供可用 binding，阻止同 task 后继与自身 pending 启动；精确原执行停止后不再占执行槽，文件责任仍保留。健康任务在余量内继续调度。未知项不能按一个固定名额估计，也不能以历史快照代替当前容量上界。
 
-Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 validated 与 quarantined 的全部项目身份；unknown 或外项目资源拒绝登记。映射登记只确认项目和路径，之后仍由 coordinator 重新证明资源归属及容量。缺 worktreeId 的旧责任清理继续使用严格查询，无法证明来源时保留责任。prepareRepository 先完成格式转换；转换失败只关闭该仓库的文件准入。扫描恢复后下一轮正常对账解除对应失败；监控报告具体 claim 隔离，或项目观察不完整造成的全局准入影响。
+Runtime 通过远端项目及本地仓库建立映射。协调器将仓库内的 Git 资源关联到相应任务，再核对执行归属和容量。缺 worktreeId 的旧责任清理仍需要独立的原执行证据。可定位的仓库准备失败关闭该仓库的文件准入。扫描恢复后，下一轮对账解除相应失败。
 
 终态停止观察独立于文件 gate 和退避。Web 校验原 ticket、journal 与 Controller 身份，Controller 停止后重读 journal 并验证 native 记录前缀，再检查已记录 provider 的原实例；未登记或逃逸后代不在这一观察保证内。读取失败或身份冲突为 unknown；恢复先预留并使旧观察失效，旧异步观察与旧清理通知不能覆盖新运行。运行时在轮次前捕获 wake revision，配置或有效容量事实变化请求下一串行轮次；重复事实不自唤醒。
 
@@ -365,18 +359,18 @@ coordinator 接受可选 `taskTagFilterKey`：缺失表示旧服务，null 表�
 
 ## Git 工作区与资源身份
 
-每 task 使用分支 `daynight/<task_id>`，新 claim 使用 `.worktrees/daynight/<worktree_id>`。迁移的旧 claim 使用清单记录的原 taskId 目录，不改变冻结 cwd。准备工作区先独占 mkdir、可靠发布清单，再执行 unlocked Git add；空无主预留可非递归移除，非空无关联内容不能采纳。恢复核对原归属、仓库、唯一 Git 注册和双向指针，保留现存 dirty state。有效 claim 的原 checkout 缺失时，在原绑定位置从保留分支重建，不以历史未启动证明作为前置条件；目录内已丢失的未提交内容无法恢复。原 Git mutation 仍须完成本地收尾，原 backend 的身份、停止、启动及输入准入独立生效；重建工作树不授予 Web 或 macOS 原生执行的恢复许可。
+每 task 使用分支 `daynight/<task_id>`，新 claim 使用 `.worktrees/daynight/<worktree_id>`。使用原 taskId 目录的现有执行保留其冻结 cwd。已有原 Web 执行记录但尚未绑定路径时，核对无竞争执行、服务端确认原 Session 尚未注册和唯一匹配的 Git 注册后，将旧目录绑定到原记录。已释放的原 claim 在原生清理确认后核对旧目录，并在删除前把路径写入原 Web 执行。清理中断后，重试沿用该路径处理仅剩 Git 注册或指针已删除的原 checkout。准备工作区先独占 mkdir，再执行 Git worktree add，且不加 Git worktree lock。空预留可非递归移除，非空无关联内容保留。恢复核对原归属、仓库、唯一 Git 注册和双向指针，保留现存 dirty state。有效 claim 的原 checkout 缺失时，在原绑定位置从保留分支重建，不以历史未启动证明作为前置条件；目录内已丢失的未提交内容无法恢复。原 Git mutation 仍须完成本地收尾，原 backend 的身份、停止、启动及输入准入独立生效；重建工作树不授予 Web 或 macOS 原生执行的恢复许可。
 确认任务分支不存在后，Git manager 使用受控、有期限且可取消的 Git 执行器从 origin 获取远端 HEAD 到绑定 worktreeId 的私有临时 ref，解析并固定 commit SHA，以该 SHA 创建分支和 worktree；新 clone 也执行此刷新。Fetch 禁止写入 FETCH_HEAD、额外 ref 映射、tags、递归子模块及自动 maintenance，使不同任务并发获取时不会共享基线。成功创建后以所读 SHA compare-and-delete 临时 ref；中断后同一 worktreeId 的后续尝试可覆盖并回收它，不作为旧基线复用。清理错误保持可见，不能掩盖创建错误。远端 HEAD 获取、commit 解析或 fetch 失败，以及刷新取消或超时时，不回退到本地 HEAD 或 origin/HEAD，也不创建新分支或 worktree。保留分支继续从原 tip 创建 worktree，已核验 worktree 直接复用；这两条路径不依赖网络。主 checkout 的分支、HEAD、内容及本地主线不因刷新而改变。决策及权衡见[远端默认分支基线](../../.agents/notes/implemented/bug-fix/2026-11-09-worker-remote-default-base.md)。
 
 Worker 的 clone、fetch、worktree add/remove 和临时 ref 清理使用 owned Git：有界结果报告收尾仍在途时，原 project/task gate 保留至原 Git 子进程、已创建输出流及停止 helper 的本地 close 均完成。错误和迟到的收尾错误保持可见；不能以目录缺失代替 join。普通 Git 查询仍使用有界执行器。manager 关闭时拒绝新准备和修改，取消并等待已准入的仓库准备与 Git 句柄，再删除私有 hooks。已确认停止的 Agent 执行容量仍独立释放。local-closed 不证明逃逸或脱离 stdio 的后代停止，它们可能在资源交接后继续写入；取舍见[Worker Git 收尾决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-git-mutation-closure.md)。
 
-清单以 `projectId/taskId/claimId/worktreeId` 和目录名绑定资源。清单不单独授权删除：非空目录还须具备唯一匹配的 Git 注册及双向指针。普通运行不使用旧锁或跨重启物理指纹；同次删除仍核验当前目录和元数据，外来锁保持错误。
+Git 注册同时满足两项条件时识别为任务 worktree：路径是仓库 `.worktrees/daynight/` 的直接子目录，注册的分支是 `refs/heads/daynight/<task-id>`。工作区存在时，删除非空内容还须核对唯一匹配的注册及双向指针。执行身份从原 claim 或 Web 执行得到，由 worktreeId 或原冻结路径匹配实际 Git 注册。同次删除仍核验当前目录和元数据。原执行已保存精确 cwd 且获准终态清理时，允许清理切到普通分支或 detached HEAD 的原 checkout；切到另一任务分支时保留。仓库已有的 Git worktree lock 仍由 Git 保护。旧 `.git/daynight/worktrees/` 文件不参与读取、分配或清理。取舍见[工作区识别决策](../../.agents/notes/implemented/simplification/2026-11-24-worker-git-worktree-discovery.md)。
 
-Worktree inspection 在核验清单、目录、唯一注册、common directory 和双向指针后，从稳定的主仓库 `repository.root` 运行 `rev-parse --path-format=absolute --git-common-dir` 与 `config --get-all remote.origin.url`。两条查询同时传入已经验证的绝对 `--git-dir=<admin>` 和清单绑定的绝对 `--work-tree=<leaf>`；相对查询输出以实际 runner cwd 为基准解释。这样扫描与删除交错时，Windows 的进程 cwd 不会占用待删 leaf。Git 继续解释 linked worktree 的配置、`config.worktree` 和受支持的 `includeIf worktree/onbranch` 条件；`core.worktree` 重定向不改变清单所指物理目录的归属。原只读 runner、取消、绝对期限、origin 与分支校验、错误和 unknown 分类保持各自责任；该上下文只用于上述 metadata 查询。机制依据与取舍见[稳定 inspection cwd 决策](../../.agents/notes/implemented/bug-fix/2026-11-12-worktree-inspection-cwd.md)。
+Worktree inspection 在核验目录、任务分支、唯一注册、common directory 和双向指针后，从稳定的主仓库 `repository.root` 运行 `rev-parse --path-format=absolute --git-common-dir` 与 `config --get-all remote.origin.url`。两条查询同时传入已经验证的绝对 `--git-dir=<admin>` 和注册关联的绝对 `--work-tree=<leaf>`；相对查询输出以实际 runner cwd 为基准解释。这样扫描与删除交错时，Windows 的进程 cwd 不会占用待删 leaf。Git 继续解释 linked worktree 的配置、`config.worktree` 和受支持的 `includeIf worktree/onbranch` 条件；`core.worktree` 重定向不改变注册所指物理目录的归属。原只读 runner、取消、绝对期限、origin 与分支校验、错误和 unknown 分类保持各自责任；该上下文只用于上述 metadata 查询。机制依据与取舍见[稳定 inspection cwd 决策](../../.agents/notes/implemented/bug-fix/2026-11-12-worktree-inspection-cwd.md)。
 
 仅在 backend 允许终态删除时，清理先确认原进程停止、workspace 关闭及该 backend 必需的其他条件，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。Worktree 目录和 Git 管理注册分别观察：目录消失即满足目录目标，原注册仍在时独立移除。中断留下的无指针空目录及未创建注册的空预留目录可通过非递归 rmdir 清除，非空且缺少归属证明的路径保留并报告。操作结果未知时再次观察资源，最终判定来自实际目录和注册的消失。分支和提交历史保留。
 
-`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留清单、gitdir、commondir 和 .git 内容。内容删除前后用这些只读快照核验资源；遍历期间不逐文件重读全组归属和 Git 元数据。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
+`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留已核验的 Git 注册和 .git 指针内容。内容删除前后用这些只读快照核验资源；遍历期间不逐文件重读全组归属和 Git 元数据。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
 
 `remove-worktree-contents.ts` 逐层遍历普通目录，以非递归 unlink 删除文件和链接，以 rmdir 删除空目录。POSIX 目录通过 `O_NOFOLLOW | O_DIRECTORY` 打开，核对 bigint dev/ino、有效用户 uid、设备和 owner 读取/搜索权限；缺少 owner 写权限时，仅通过已验证的 FileHandle 补充 `0o200`。0555 因而成为 0755，而 0444 文件、文件硬链接和外部 symlink 目标不需要改权限。不可读、不可搜索、异所有者、跨设备目录和底层 I/O 错误直接保留；Windows 不执行 POSIX 权限恢复，使用普通目录身份检查和非递归删除。
 
@@ -384,9 +378,9 @@ Worktree inspection 在核验清单、目录、唯一注册、common directory �
 
 每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 在确认停止和关闭后按已应用的 archiveSessions 决定是否尝试归档；任何归档失败都登记给独立维护并继续安全删除，开启归档时保留 Controller execution 目录中的源。登记或诊断失败也不能阻挡删除，真实文件错误按其阶段保留。shutdown 或调用方取消跳过后续归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
 
-资源扫描与清理 job 可交错。原 backend 所需停止及删除条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。Web 原执行与文件结算独立于归档；仅 LocalTask.done 不证明归档条件，也不能单独替代 Git 资源观察。local-closed 不排除脱离 stdio 的后代之后继续写入。
+资源扫描与清理 job 可交错。原 backend 所需停止及删除条件满足后，文件删除确认目录和对应 Git 注册缺失；随后完成 backend、本地责任和清理调度。Web 原执行与文件结算独立于归档；仅 LocalTask.done 不证明归档条件，也不能单独替代 Git 资源观察。local-closed 不排除脱离 stdio 的后代之后继续写入。
 
-资源发现结合 Web 执行证据、清单、Git 注册和目录；清单本身不证明 Worker 归属。未知旧资源保留，真正的身份和路径冲突仍报告。
+资源发现结合 Web 执行证据、Git 注册和目录。尚无法匹配到原 Web 执行的有效任务注册保留，并阻止同一任务的新领取。失去 checkout 但仍存在的 Git 注册也进入核对。
 
 ## Web backend 与执行证据
 
@@ -434,9 +428,9 @@ Web 普通终止清理在执行库保存 cleanup 的 kind、startedAt、deadline
 
 ### 遗留资源核验
 
-协调器扫描每个 Project 的 worktree 和持久清单，以原 Project、Task、claim 为监控身份；只有匹配 Web 执行证据的 owner 才参与容量和清理；未知旧资源保留，实际身份或路径冲突仍报告。异常附带扫描所得的真实相对 worktree 绑定，不从 Task ID 猜目录；同一资源的重复观察更新已有异常，完整扫描和权限观察证明资源消失或归属恢复后才解除。重启通过同一资源扫描重建异常。容量分解由生产者在全量去重后计算，再进行详情截断与服务端权限过滤，具体协议见[监控设计](daynight-worker-monitoring.md)。
+协调器扫描每个 Project 的 Git 工作区。已关联原执行的记录以原 Project、Task、claim 为监控身份，并按停止证据计算容量和清理责任。未关联的实际任务注册仍会阻止该任务重新领取。仅已确认原执行的 claim 级异常附带扫描所得的相对 worktree 绑定；同一资源的重复观察更新已有异常，完整扫描和权限观察证明资源消失或归属恢复后才解除。重启通过同一资源扫描重建异常。容量分解由生产者在全量去重后计算，再进行详情截断与服务端权限过滤，具体协议见[监控设计](daynight-worker-monitoring.md)。
 
-独立 `resource-recovery` 判定模块与运行时适配器为已完成的 Web 原执行提供显式遗留回收。运行时持有原 Worker 实例锁，读取原配置、主索引映射、Web journal、Controller ticket 与 journal；不创建替代 claim 或执行。预检与确认前复核原终态归属和完整 Git 绑定，停止观察复用 Web backend，归档核验复用原 ready receipt 的服务端 GET 校验，禁止在此入口上传或替换归档。Git 保全检查以显式 `--git-dir` 和 `--work-tree` 绑定已核验的原 gitfile 与工作目录，避免 worktree 专属 `core.worktree` 配置将检查重定向到其他目录；覆盖 tracked、untracked、ignored 文件、原分支及远端可达 HEAD，删除操作也显式绑定原 common Git 目录；确认删除前复核目录对象和绑定，以非强制 Git 删除保留并发变脏时的拒绝。只有删除读回确认后才能退休原清单，下一次正常扫描解除异常和占用。检查、删除及清单退休各有独立失败，错误不能宣称回收完成。该入口不恢复缺失证据，不重开终态任务或修改原执行 journal；取舍见[遗留资源诊断与恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-16-worker-retained-resource-recovery.md)。
+独立 `resource-recovery` 判定模块与运行时适配器为已完成的 Web 原执行提供显式遗留回收。运行时持有原 Worker 实例锁，读取原配置、主索引映射、Web journal、Controller ticket 与 journal；不创建替代 claim 或执行。预检与确认前复核原终态归属和完整 Git 绑定，停止观察复用 Web backend，归档核验复用原 ready receipt 的服务端 GET 校验，禁止在此入口上传或替换归档。Git 保全检查以显式 `--git-dir` 和 `--work-tree` 绑定已核验的原 gitfile 与工作目录，避免 worktree 专属 `core.worktree` 配置将检查重定向到其他目录；覆盖 tracked、untracked、ignored 文件、原分支及远端可达 HEAD，删除操作也显式绑定原 common Git 目录；确认删除前复核目录对象和绑定，以非强制 Git 删除保留并发变脏时的拒绝。读回核对原目录与 Git 注册都已消失后，下一次正常扫描解除对应的文件异常和占用。检查及删除失败不能宣称回收完成。该入口不恢复缺失证据，不重开终态任务或修改原执行 journal；取舍见[遗留资源诊断与恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-16-worker-retained-resource-recovery.md)。
 
 ### 正常结束
 
@@ -512,6 +506,6 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证使用受控远端与屏障，让库存读取后同一 claim 提交新版本，再验证摘要一致时无冗余写入、仍有差异时使用新版本提交；还覆盖 claim 或任务状态失效、读取后的 CAS 竞争、失败分类、下一轮对账及稳定时无重复读写。retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原首次操作不重放、claim 与容量责任保留。恢复后按当前输入流程构造本次 assignment。健康 orderly restart 保持独立；这些受控证据不替代真实 provider 和完整集成验收。
 
-迁移验证覆盖清单发布、解锁、sidecar 和格式提交各阶段的故障与重入、持久读回及原 cwd 保留，不用成功退出码替代持久状态观察。
+工作区发现验证覆盖受管路径与任务分支的组合、只剩 Git 注册、分支或路径不匹配、仅余旧 manifest，以及原 cwd 保留。以真实 checkout 和 Git 注册的读回验证清理结果。
 
 Web 冻结配置、恢复暂停及清理操作身份由独立执行库保留，操作回执和原生 generation 来自 Controller journal。完整身份的终态清理责任、原期限和退避由 cleanup_schedules 保存；身份不完整时保留索引并使用进程内退避。既有状态模型的原始理由保存在[简化决策](../../.agents/notes/archived/simplification/2026-10-27-worker-claim-records.md)中。

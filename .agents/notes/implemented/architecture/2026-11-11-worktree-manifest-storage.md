@@ -11,6 +11,8 @@ and conflicting owner or location mappings cannot safely be treated as absence.
 
 ## Decision
 
+This historical decision was superseded by [Git registration discovery](../simplification/2026-11-24-worker-git-worktree-discovery.md).
+
 The synchronous manifest store records exactly the version and five canonical
 UUID fields in the Git common directory. It rejects malformed records and
 conflicting worktree, claim, or directory identities. Publication prepares both

@@ -1498,7 +1498,7 @@ describe("worker cloud-first startup", () => {
     } finally { cancellation.abort(); release(); await running; lookup.mockRestore(); }
   }, 12_000);
 
-  it.each(["retained", "discovered", "unavailable", "absent", "foreign"] as const)("reconciles an unbound local repository against cloud selection: %s", async scenario => {
+  it.each(["retained", "discovered", "unavailable", "absent", "uninspectable"] as const)("reconciles an unbound local repository against cloud selection: %s", async scenario => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { projectId: _projectId, ...legacy } = f.repository;
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
@@ -1512,15 +1512,15 @@ describe("worker cloud-first startup", () => {
       if (projectId === undefined && scenario === "unavailable") throw new Error("Project does not exist for the configured worker repository.");
       return { id: projectId ?? uuid(1), repoUrl: projectId === undefined ? remoteUrl : second.remote };
     });
-    if (scenario === "foreign") mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) }, { scanWorktrees: scanFromList }));
+    if (scenario === "uninspectable") mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), scanWorktrees: vi.fn(async () => ({ enumerationComplete: true, validated: [], quarantined: [], unknown: [{ error: new Error("Unreadable Git registration") }] })) });
     let options: WorkerCoordinatorOptions | undefined;
     mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
       await vi.waitFor(() => expect(options).toBeDefined(), { timeout: 5000, interval: 10 });
-      if (scenario === "unavailable" || scenario === "foreign") {
+      if (scenario === "unavailable" || scenario === "uninspectable") {
         await vi.waitFor(() => expect(remote.resolveProject).toHaveBeenCalledWith({ repoUrl: remoteUrl }, expect.any(AbortSignal)), { timeout: 5000, interval: 10 });
-        if (scenario === "foreign") await vi.waitFor(() => expect(mocks.git.mock.results[0]!.value.listWorktrees).toHaveBeenCalled(), { timeout: 5000, interval: 10 });
+        if (scenario === "uninspectable") await vi.waitFor(() => expect(mocks.git.mock.results[0]!.value.scanWorktrees).toHaveBeenCalled(), { timeout: 5000, interval: 10 });
         expect(options!.configurationComplete!()).toBe(false);
         expect(options!.store.getProject({ projectId: uuid(1) })).toBeNull();
       } else {
@@ -1539,14 +1539,14 @@ describe("worker cloud-first startup", () => {
     remote.configuration.mockResolvedValue(resource(desired([uuid(2)])));
     remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: second.remote }));
     remote.resolveProject.mockImplementation(async ({ projectId }: { projectId?: string }) => ({ id: projectId ?? uuid(1), repoUrl: second.remote }));
-    const listWorktrees = vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]);
-    mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees });
+    const scanWorktrees = vi.fn(async () => { throw new Error("Invalid mappings must be rejected before Git observations."); });
+    mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), scanWorktrees });
     let options: WorkerCoordinatorOptions | undefined;
     mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
       await vi.waitFor(() => { expect(options).toBeDefined(); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 5000, interval: 10 });
-      expect(listWorktrees).not.toHaveBeenCalled();
+      expect(scanWorktrees).not.toHaveBeenCalled();
       expect(options!.configurationComplete!()).toBe(false);
       expect(options!.store.getProject({ projectId: uuid(9) })).toBeNull();
       expect(remote.resolveProject).not.toHaveBeenCalledWith({ repoUrl: remoteUrl }, expect.any(AbortSignal));
@@ -2207,11 +2207,7 @@ describe("real runtime resource isolation", () => {
     const f = await fixture(true);
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
     const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
-    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
-    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
-    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
-      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } });
-    } });
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp") });
     await mkdir(f.repository.path);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
     run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
@@ -2222,7 +2218,6 @@ describe("real runtime resource isolation", () => {
     try { await git.prepareRepository(project, operation); }
     finally { operation.dispose(); }
     run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
-    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
     f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     const savedWeb = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
     const record = savedWeb.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
@@ -2273,7 +2268,7 @@ describe("real runtime resource isolation", () => {
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
     // A missing configured repository enters the real owned clone path. The
     // target command must never be dispatched after its launcher's spawn.
-    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async () => { throw new Error("Cancelled cloning must not prepare a repository format."); } });
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp") });
     mocks.git.mockReturnValue(git);
     const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     let original: { resourceId: string; pid: number } | undefined;
@@ -2319,21 +2314,17 @@ describe("real runtime resource isolation", () => {
     }
   }, 35_000);
 
-  it.each(["unproven", "foreign", "invalid"])("reconciles an unbound mapping and its damaged registration: %s", async scenario => {
+  it.each(["unrelated", "uninspectable", "invalid"])("reconciles an unbound mapping and its damaged registration: %s", async scenario => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { projectId: _projectId, ...legacy } = f.repository;
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [{ ...legacy, ...(scenario === "invalid" ? { projectId: "invalid" } : {}) }] } }));
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
     const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
-    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
-    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
-      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation,
-        sources: { listSchedules: () => [], listWebTasks: () => [] } });
-    } });
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp") });
     await mkdir(f.repository.path);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, stdio: "pipe", timeout: 10000 });
     run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
-    const owner = { projectId: scenario === "foreign" ? uuid(9) : uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
+    const owner = { projectId: uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
     run(["branch", `daynight/${owner.taskId}`]);
     const op = createOperation();
     try {
@@ -2341,6 +2332,12 @@ describe("real runtime resource isolation", () => {
       await git.prepareRepository(project, op);
       const binding = await git.prepareWorktree(project, owner, op);
       execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, stdio: "pipe", timeout: 10000 });
+      if (scenario === "uninspectable") await writeFile(path.join(binding.commonDirectory, "worktrees", owner.worktreeId, "gitdir"), "\n");
+      if (scenario === "unrelated") {
+        const previousManifestDirectory = path.join(binding.commonDirectory, "daynight", "worktrees");
+        await mkdir(previousManifestDirectory, { recursive: true });
+        await writeFile(path.join(previousManifestDirectory, `${uuid(31)}.json`), JSON.stringify({ schemaVersion: 1, projectId: owner.projectId, taskId: uuid(30), claimId: uuid(32), worktreeId: uuid(31), directoryName: uuid(31) }));
+      }
     } finally { op.dispose(); }
     mocks.git.mockReturnValue(git);
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -2360,13 +2357,13 @@ describe("real runtime resource isolation", () => {
       actual.tick = async () => {
         await tick(); cycles++;
         configurationComplete = options.configurationComplete!();
-        if (scenario === "unproven" && configurationComplete && remote.claim.mock.calls.length > 0) cancellation.abort();
+        if (scenario === "unrelated" && configurationComplete && remote.claim.mock.calls.length > 0) cancellation.abort();
       };
       return actual;
     });
     const { running } = start(f, { signal: cancellation.signal });
     try {
-      if (scenario === "unproven") {
+      if (scenario === "unrelated") {
         await vi.waitFor(() => { expect(configurationComplete).toBe(true); expect(remote.claim).toHaveBeenCalled(); }, { timeout: 10000 });
         expect(remote.claim.mock.calls.every(([candidate]: [{ id: string }, ...unknown[]]) => candidate.id === base.id)).toBe(true);
       } else {
@@ -2376,7 +2373,7 @@ describe("real runtime resource isolation", () => {
       }
       const worktree = path.join(f.repository.path, ".worktrees", "daynight", owner.worktreeId);
       expect(await readFile(path.join(worktree, ".git"), "utf8")).toContain("gitdir:");
-      expect(execFileSync("git", ["branch", "--show-current"], { cwd: worktree, encoding: "utf8", timeout: 10000 }).trim()).toBe("changed-branch");
+      expect((await readFile(path.join(f.repository.path, ".git", "worktrees", owner.worktreeId, "HEAD"), "utf8")).trim()).toBe("ref: refs/heads/changed-branch");
     } finally { cancellation.abort(); await running; await git.dispose(); }
   }, 25000);
 });
