@@ -56,6 +56,12 @@ settlement and send preflight use the same queued content-conflict check: a new
 operation receipt cannot advance the write baseline of unsaved content over
 another tab's successor edit.
 
+The temporary read-only state during send preflight belongs to one attempt and
+its owner and authorization epoch. Invalidating that epoch releases the temporary
+state; a late completion can release only its own attempt. Persistent submission
+and execution barriers remain independent and retain their original operation
+recovery rules.
+
 An explicit successor draft permits local editing without changing the frozen
 submission. Native acceptance settles only the original draft identity and
 revision. Text and attachments switch together when the owner changes; an old
@@ -204,6 +210,10 @@ version is admitted, preserving existing image frames without authorizing new
 bindings.
 
 ## Alternatives
+
+**Clear a shared preflight flag when authorization changes.** A late completion
+from the invalidated send could also clear a newer send's flag. Attempt identity
+limits each completion to the temporary state it owns.
 
 **Reject a new consumer with the abandoned read's cancellation.** This avoids a
 drain waiter but makes scrolling an image back into view produce a read error

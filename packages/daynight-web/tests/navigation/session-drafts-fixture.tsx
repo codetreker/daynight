@@ -21,7 +21,13 @@ const identity = { target, resolver: { kind: 'task' as const, projectId: '000000
 const ownerKey = draftOwnerKey(identity), store = new SessionDraftStore();
 let live = true;
 const scope = pageImageStore.createScope({ identity: { serverOrigin: location.origin, actorUserId: draftBrowserUser, authorizationGeneration: '1', owner: { kind: 'session', fence: target.fence, nativeSessionId: target.expectedNativeSessionId } }, canRead: () => live, canDownload: () => live, read: async () => { throw new Error('Local originals do not use saved resource reads.'); } });
-const resources = createSessionResourceClient({ scope: { serverOrigin: location.origin, actorUserId: draftBrowserUser, fence: target.fence, authorizationGeneration: '1' }, baseUrl: `${location.origin}/draft-fixture-api/session`, isCurrent: () => live, transport: (url, signal, init) => fetch(url, { ...init, signal }) });
+const resourceClient = createSessionResourceClient({ scope: { serverOrigin: location.origin, actorUserId: draftBrowserUser, fence: target.fence, authorizationGeneration: '1' }, baseUrl: `${location.origin}/draft-fixture-api/session`, isCurrent: () => live, transport: (url, signal, init) => fetch(url, { ...init, signal }) });
+let capabilityBarrier: { arrivals: number; held: Promise<void>; release: () => void } | null = null;
+const resources = { ...resourceClient, capabilities: async (signal: AbortSignal) => {
+  const result = await resourceClient.capabilities(signal), barrier = capabilityBarrier;
+  if (barrier) { barrier.arrivals++; await barrier.held; }
+  return result;
+} };
 let context: ImageDraftContext = { identity, target, resources, capabilities, active: true, canEdit: true, canSend: true, mode: 'send', expectedTurnId: null, authorizationGeneration: '1' };
 let originalReadBarrier: { readonly reads: string[]; readonly held: Promise<void>; readonly release: () => void } | null = null;
 const controller = new ImageDraftController({ store, getContext: () => context,
@@ -61,11 +67,15 @@ window.sessionDraftHarness = {
   originalReads: () => [...originalReadBarrier?.reads ?? []],
   releaseOriginalRead: () => { originalReadBarrier?.release(); },
   setCapabilities: async value => { context = { ...context, capabilities: { ...capabilities, ...value } }; await controller.sync(); },
+  setAuthorizationGeneration: async value => { context = { ...context, authorizationGeneration: value }; await controller.sync(); },
+  holdCapabilities: () => { if (capabilityBarrier) throw new Error('The capability barrier is already armed.'); const held = Promise.withResolvers<void>(); capabilityBarrier = { arrivals: 0, held: held.promise, release: () => held.resolve() }; },
+  capabilityArrivals: () => capabilityBarrier?.arrivals ?? 0,
+  releaseCapabilities: () => { capabilityBarrier?.release(); capabilityBarrier = null; },
   holdWrites: () => { writesHeld = true; writesArrived = 0; }, writesArrived: () => writesArrived,
   releaseWrites: () => { writesHeld = false; writeReleases.splice(0).forEach(resolve => resolve()); },
   holdLock: async purpose => new Promise<void>(async started => { const hold = new Promise<void>(release => { releaseNativeLock = release; }); void navigator.locks.request(await lockName(purpose), async () => { started(); await hold; }); }),
   releaseLock: () => { releaseNativeLock?.(); releaseNativeLock = null; }, lockName,
-  pageErrors: [], plainCommands: [] as string[], plainMessages: [] as string[],
+  pageErrors: [], plainCommands: [] as string[], plainMessages: [] as string[], sendsFinished: 0,
   usage: () => pageImageStore.usage(),
 };
 window.addEventListener('error', event => window.sessionDraftHarness.pageErrors.push(event.message));
@@ -81,7 +91,7 @@ function Host() {
       <SessionComposer state={hydrateSession(emptySessionState(), snapshot, [])} connected active suppressKeyboardHint={previewOpen} attachments={binding}
         draft={{ text: view.active ? view.text : text, revision: view.revision, submission: null }}
         onDraftChange={value => { setText(value); controller.setText(value); }}
-        onSend={async value => { if (view.active) await controller.send(); else window.sessionDraftHarness.plainMessages.push(value); }} onCancel={async () => {}}
+        onSend={async value => { if (view.active) { try { await controller.send(); } finally { window.sessionDraftHarness.sendsFinished++; } } else window.sessionDraftHarness.plainMessages.push(value); }} onCancel={async () => {}}
         onExecuteCommand={async id => { window.sessionDraftHarness.plainCommands.push(id); }} />
     </SessionImageScope>
   </section>;
@@ -97,6 +107,7 @@ declare global {
       originals(): Promise<{ id: string; label: string; size: number | null; mediaType: string | null; sha256: string | null }[]>;
       holdOriginalRead(): void; originalReads(): string[]; releaseOriginalRead(): void;
       setCapabilities(value: Partial<ImageCapabilities>): Promise<void>; holdWrites(): void; writesArrived(): number; releaseWrites(): void;
+      setAuthorizationGeneration(value: string): Promise<void>; holdCapabilities(): void; capabilityArrivals(): number; releaseCapabilities(): void; sendsFinished: number;
       holdLock(purpose: string): Promise<void>; releaseLock(): void; lockName(purpose: string): Promise<string>;
       pageErrors: string[]; plainCommands: string[]; plainMessages: string[]; usage(): ReturnType<typeof pageImageStore.usage>;
     };

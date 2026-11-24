@@ -1103,6 +1103,96 @@ describe('durable Session image coordination', () => {
     expect(controller.getSnapshot().text).toBe('unsaved'); expect(controller.getSnapshot().items[0]!.asset).toBe(asset); await controller.flush();
     f.setContext(null); await controller.sync(); expect(controller.getSnapshot().active).toBe(false); expect(controller.getSnapshot().text).toBe(''); expect(controller.getSnapshot().items).toEqual([]);
   });
+  it.each(['generation', 'readmission'] as const)('releases an invalidated send on same-owner %s without releasing a newer send', async change => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original');
+    const originalCapabilities = vi.mocked(f.resources.capabilities).getMockImplementation()!;
+    const firstEntered = Promise.withResolvers<void>(), firstRelease = Promise.withResolvers<void>();
+    const secondEntered = Promise.withResolvers<void>(), secondRelease = Promise.withResolvers<void>();
+    vi.mocked(f.resources.capabilities)
+      .mockImplementationOnce(async signal => { firstEntered.resolve(); await firstRelease.promise; return originalCapabilities(signal); })
+      .mockImplementationOnce(async signal => { secondEntered.resolve(); await secondRelease.promise; return originalCapabilities(signal); });
+    const first = controller.send();
+    let second: Promise<void> | undefined;
+    try {
+      await firstEntered.promise; expect(controller.getSnapshot().readOnly).toBe(true);
+      if (change === 'generation') f.setContext({ ...f.context(), authorizationGeneration: '2' });
+      else { f.setContext({ ...f.context(), canEdit: false }); await controller.sync(); f.setContext({ ...f.context(), canEdit: true }); }
+      await controller.sync();
+      expect(controller.getSnapshot()).toMatchObject({ text: 'original', readOnly: false, submission: null });
+      expect(controller.getSnapshot().items.map(item => item.label)).toEqual(['a.png']); expect(f.commands).toEqual([]);
+      controller.setText('manual retry');
+      second = controller.send(); await secondEntered.promise;
+      firstRelease.resolve(); await first;
+      expect(controller.getSnapshot()).toMatchObject({ text: 'manual retry', readOnly: true, submission: null });
+      controller.setText('must remain frozen'); expect(controller.getSnapshot().text).toBe('manual retry'); expect(f.commands).toEqual([]);
+      secondRelease.resolve(); await second;
+      expect(f.commands).toHaveLength(1);
+      const command = f.commands[0]!;
+      expect(command.kind === 'send_message' && command.payload.content[0]).toMatchObject({ type: 'text', text: 'manual retry' });
+    } finally { firstRelease.resolve(); secondRelease.resolve(); await Promise.allSettled([first, ...(second ? [second] : [])]); }
+  });
+  it.each(['before', 'after'] as const)('releases a send invalidated %s its draft flush commits and preserves the edit', async boundary => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'before edit');
+    controller.setText('saved during send');
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const save = f.store.saveDraft.bind(f.store);
+    vi.spyOn(f.store, 'saveDraft').mockImplementationOnce(async (...args) => {
+      if (boundary === 'before') { entered.resolve(); await release.promise; return save(...args); }
+      const result = await save(...args); entered.resolve(); await release.promise; return result;
+    });
+    const sending = controller.send();
+    try {
+      await entered.promise; expect(controller.getSnapshot().readOnly).toBe(true);
+      f.setContext({ ...f.context(), authorizationGeneration: '2' }); await controller.sync();
+      expect(controller.getSnapshot()).toMatchObject({ text: 'saved during send', readOnly: false, submission: null });
+      expect(controller.getSnapshot().items.map(item => item.label)).toEqual(['a.png']); expect(f.commands).toEqual([]);
+      release.resolve(); await sending;
+      expect(controller.getSnapshot()).toMatchObject({ text: 'saved during send', readOnly: false, submission: null });
+      expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved during send');
+      if (boundary === 'after') {
+        // The new generation cannot know that the saved revision came from the
+        // suspended write rather than another window. Keep its explicit choice.
+        expect(controller.getSnapshot().conflict).toBe(true);
+        await controller.resolveConflict('saved');
+      }
+      expect(controller.getSnapshot()).toMatchObject({ canSend: true });
+      await controller.send(); expect(f.commands).toHaveLength(1);
+    } finally { release.resolve(); await sending; }
+  });
+  it('does not apply an invalidated capability result to a different owner', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'old owner');
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const caps = vi.mocked(f.resources.capabilities).getMockImplementation()!;
+    vi.mocked(f.resources.capabilities).mockImplementationOnce(async signal => { entered.resolve(); await release.promise; return caps(signal); });
+    const sending = controller.send();
+    try {
+      await entered.promise;
+      const nextTarget = { ...target, expectedNativeSessionId: 'native-next' };
+      f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-next' } });
+      await controller.sync(); const next = controller.getSnapshot();
+      expect(next.text).not.toBe('old owner'); expect(next.readOnly).toBe(false);
+      release.resolve(); await sending;
+      expect(controller.getSnapshot().draftId).toBe(next.draftId); expect(controller.getSnapshot().text).toBe(next.text);
+      expect((await f.store.readExisting(identity))?.editable?.text).toBe('old owner'); expect(f.commands).toEqual([]);
+    } finally { release.resolve(); await sending; }
+  });
+  it('retains the original dispatched operation when authorization changes before its response', async () => {
+    const f = fixture(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    f.dispatch.mockImplementation(async command => { f.commands.push(command); entered.resolve(); await release.promise; throw new Error('response lost'); });
+    f.query.mockRejectedValue(new Error('status unavailable'));
+    const controller = f.create(); await controller.addFiles([file()], 'original');
+    const sending = controller.send();
+    try {
+      await entered.promise; const operationId = f.commands[0]!.operationId;
+      f.setContext({ ...f.context(), authorizationGeneration: '2' }); await controller.sync();
+      expect(f.query).toHaveBeenCalledWith(target.fence, operationId, expect.any(AbortSignal));
+      expect(controller.getSnapshot()).toMatchObject({ readOnly: true, executionBlocked: true, submission: { operationId } });
+      release.resolve(); await sending;
+      expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(operationId);
+      await controller.send(); expect(f.commands).toHaveLength(1);
+      expect(controller.getSnapshot().submission?.operationId).toBe(operationId);
+    } finally { release.resolve(); await sending; }
+  });
   it('refuses a capability changed during the final refresh even when the model identifier is unchanged', async () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], '');
     const caps = vi.mocked(f.resources.capabilities).getMockImplementation()!;
