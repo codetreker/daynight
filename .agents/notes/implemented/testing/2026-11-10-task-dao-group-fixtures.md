@@ -31,7 +31,9 @@ lock barriers and cancellation remain real. A reset commits before a case
 starts; there is no enclosing rollback transaction that could replace committed
 state or hide it from another connection. Independent loop branches retain
 separate reset boundaries, while an intentional multi-step scenario keeps its
-existing state progression.
+existing state progression. The ordinary parent lifecycle matrix shares its
+schema through independent Project and Task identities. Each case waits for
+both concurrent writes to exit and verifies pool reuse before the next case.
 
 Cases that change tables, views, columns, functions, triggers or defaults retain
 independent schemas. Pure tests and explicitly tagged stress tests keep their
