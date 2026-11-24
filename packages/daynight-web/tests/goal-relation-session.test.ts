@@ -269,6 +269,59 @@ describe('Goal graph relationship session', () => {
     expect(read).toHaveBeenCalledTimes(1);
     expect(session.snapshot().sources.has(id(10))).toBe(false);
   });
+  it('cancels four terminal inspections after synchronized local dependency removal and immediately dispatches newly eligible roots', async () => {
+    const input = roots(6), terminalIds = [id(2), id(3), id(4), id(5)];
+    for (const [goalId, goal] of input) if (goalId !== id(1)) input.set(goalId, { ...goal, status: 'done' });
+    input.set(id(1), { ...input.get(id(1))!, dependsOn: terminalIds });
+    const pending = new Map<string, AbortSignal>();
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal) => {
+      if (terminalIds.includes(goalId)) return new Promise<GoalDependenciesRead>((_resolve, reject) => {
+        pending.set(goalId, signal);
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+      return Promise.resolve(page(goalId, { prerequisites: goalId === id(1) ? terminalIds.map(targetId => ({
+        target: { ...related(2, 'done'), goalId: targetId, projectId, projectName: 'Local', kind: 'internal' as const },
+      })) : [] }));
+    });
+    const { session } = await prepare(read);
+    session.setRoots(input); await settled(session);
+    for (const terminalId of terminalIds) session.inspect(terminalId);
+    await waitFor(() => expect(pending.size).toBe(4));
+    input.set(id(1), { ...input.get(id(1))!, dependsOn: [], version: 2n });
+    input.set(id(6), { ...input.get(id(6))!, status: 'todo', version: 2n });
+    session.setRoots(new Map(input));
+    expect([...pending.values()].every(signal => signal.aborted)).toBe(true);
+    expect(terminalIds.every(goalId => !session.snapshot().sources.has(goalId))).toBe(true);
+    await settled(session, id(6)); await settled(session);
+    expect(read.mock.calls.filter(([, goalId]) => goalId === id(1))).toHaveLength(2);
+    expect(read.mock.calls.filter(([, goalId]) => goalId === id(6))).toHaveLength(1);
+    expect(canvas(session, input).goals.has(id(2))).toBe(false);
+  });
+
+  it('retains terminal local and same-foreign-Project inspection sources reached through an expanded foreign source', async () => {
+    const input = roots(2);
+    input.set(id(2), { ...input.get(id(2))!, status: 'done' });
+    const local = { ...related(2, 'done'), projectId, projectName: 'Local' };
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, {
+      prerequisites: goalId === id(1) ? [{ target: related(10) }] : goalId === id(10)
+        ? [{ target: local }, { target: { ...related(11), kind: 'internal' as const } }]
+        : goalId === id(2) ? [{ target: related(12) }] : [],
+    }));
+    const { session } = await prepare(read);
+    session.setRoots(input); await settled(session);
+    session.expand(id(10)); await settled(session, id(10));
+    session.inspect(id(2)); session.inspect(id(11));
+    await settled(session, id(2)); await settled(session, id(11));
+    session.setRoots(new Map(input));
+    expect(session.snapshot().sources.get(id(2))?.projectId).toBe(projectId);
+    expect(session.snapshot().sources.get(id(11))?.projectId).toBe(externalProject);
+    expect(session.snapshot().sources.get(id(2))?.mode).toBe('inspection');
+    expect(session.snapshot().sources.get(id(11))?.mode).toBe('inspection');
+    expect(canvas(session, input).goals.has(id(2))).toBe(true);
+    expect(canvas(session, input).goals.has(id(11))).toBe(true);
+    expect(canvas(session, input).goals.has(id(12))).toBe(false);
+  });
+
   it('bounds source concurrency at four and cancels every owned request on close', async () => {
     const pending: { goalId: string; signal: AbortSignal; resolve: (page: GoalDependenciesRead) => void }[] = [];
     const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal) => new Promise<GoalDependenciesRead>((resolve, reject) => {

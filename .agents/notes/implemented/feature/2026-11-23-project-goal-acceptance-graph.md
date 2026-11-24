@@ -44,9 +44,16 @@ results and in-flight request. Inspection contributions describe direct
 relationships; explicit expansion promotes the source's contribution into the
 canvas without repeating an already covered read. Source modes distinguish roots,
 inspection and expansion. Reachability starts from synchronized roots and visible
-prerequisites and follows root/expanded contributions; disconnected inspection
-and expansion sources are removed and their reads cancelled. Earlier discovery
-or an inverse stale contribution cannot keep a branch admitted.
+prerequisites and follows legal root/expanded external contributions. Raw
+relationships whose source and target both belong to the graph's Project cannot
+establish ownership; TaskSync alone determines those local paths. An external
+source can still reach a synchronized local target through a real cross-project
+relationship. Rendering filters disconnected inspection and expansion sources,
+and session reconciliation removes them and synchronously cancels queued or
+in-flight reads. Request finalizers release slots and dispatch eligible roots
+without waiting for an abandoned response. Otherwise a cached local edge can retain
+a removed terminal inspection source and consume the four available read slots.
+Earlier discovery or an inverse stale contribution cannot keep a branch admitted.
 
 External cards retain the API's actual Project, Goal, title and status without
 invented Task versions or child progress. Graph scope is relative to its owning

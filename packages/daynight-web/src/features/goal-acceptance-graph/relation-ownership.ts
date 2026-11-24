@@ -10,17 +10,18 @@ export const reachableGoalSources = (projectId: string, baseline: GoalAcceptance
   let sources = new Map(snapshot.sources);
   while (true) {
     const reachable = new Set(baseline.goals.keys()), pending = [...reachable];
-    const discover = (goal: RelatedGoal) => {
-      if (reachable.has(goal.goalId) || goal.projectId === projectId && !baseline.availableGoals.has(goal.goalId)) return;
+    const discover = (source: GoalRelationSource, goal: RelatedGoal) => {
+      if (source.projectId === projectId && goal.projectId === projectId || reachable.has(goal.goalId) ||
+        goal.projectId === projectId && !baseline.availableGoals.has(goal.goalId)) return;
       reachable.add(goal.goalId); pending.push(goal.goalId);
     };
     for (let index = 0; index < pending.length; index++) {
       const source = sources.get(pending[index]!);
       if (source === undefined || snapshot.deniedIds.has(source.goalId) || !isCanvasSource(baseline, source) || source.contribution === null) continue;
-      for (const relation of source.contribution.prerequisites) if (relation.target !== null) discover(relation.target);
+      for (const relation of source.contribution.prerequisites) if (relation.target !== null) discover(source, relation.target);
       for (const goal of source.contribution.successors) {
         const status = goal.projectId === projectId ? baseline.availableGoals.get(goal.goalId)?.status : goal.status;
-        if (status === 'todo' || status === 'in_progress') discover(goal);
+        if (status === 'todo' || status === 'in_progress') discover(source, goal);
       }
     }
     const admitted = new Map([...sources].filter(([id]) => reachable.has(id)));

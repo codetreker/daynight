@@ -13,6 +13,7 @@ const isolatedId = '00000000-0000-4000-8000-000000000404';
 const unrelatedId = '00000000-0000-4000-8000-000000000405';
 const childId = '00000000-0000-4000-8000-000000000406';
 const secondChildId = '00000000-0000-4000-8000-000000000407';
+const fourthTerminalId = '00000000-0000-4000-8000-000000000408';
 const teamId = '00000000-0000-4000-8000-000000000701';
 const externalProjectId = '00000000-0000-4000-8000-000000000101';
 const externalId = '00000000-0000-4000-8000-000000000501';
@@ -27,7 +28,7 @@ const edge = (dialog: Locator, source: string, target: string) => dialog.locator
 const pendingFixtures = new Set<() => void>();
 test.afterEach(() => { for (const release of pendingFixtures) release(); pendingFixtures.clear(); });
 
-const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean } = {}) => {
+const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean; inspectionSaturation?: boolean } = {}) => {
   let details: TaskDetail[] = [
     detailFixture(projectId, activeId, { type: 'goal', title: 'Release client', status: 'in_progress', startedAt: time, ready: false, dependsOn: [doneId, cancelledId] }),
     detailFixture(projectId, doneId, { type: 'goal', title: 'Accepted identity', status: 'done', completedAt: time, ready: false }),
@@ -37,6 +38,11 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     detailFixture(projectId, childId, { parentId: activeId, title: 'First child' }),
     detailFixture(projectId, secondChildId, { parentId: activeId, title: 'Second child', dependsOn: [childId], blockedBy: [childId], ready: false }),
   ];
+  if (options.inspectionSaturation) {
+    details = details.map(detail => detail.id === activeId ? { ...detail, dependsOn: [doneId, cancelledId, unrelatedId, fourthTerminalId] }
+      : detail.id === isolatedId ? { ...detail, status: 'done', completedAt: time } : detail);
+    details.push(detailFixture(projectId, fourthTerminalId, { type: 'goal', title: 'Accepted storage', status: 'done', completedAt: time, ready: false }));
+  }
   if (options.cycle) details = details.map(detail => detail.id === isolatedId ? { ...detail, dependsOn: [activeId] } : detail);
   if (options.bulk) details.push(...Array.from({ length: 6 }, (_, index) => detailFixture(projectId,
     `00000000-0000-4000-8000-${String(600 + index).padStart(12, '0')}`, { type: 'goal', title: `Acceptance branch ${index + 1}`, ready: false })));
@@ -796,5 +802,37 @@ test('external Details remains clickable beside Expand and returns to the same G
   const requests = [...state.syncRequests];
   await expandRelations(dialog, 'External authentication').click();
   await expect(edge(dialog, externalSuccessorId, externalId)).toHaveCount(1);
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('removing synchronized local prerequisites cancels abandoned inspections and admits new roots before held responses finish', async ({ page }) => {
+  const state = await install(page, { inspectionSaturation: true });
+  const terminals = [doneId, cancelledId, unrelatedId, fourthTerminalId];
+  for (const id of terminals) state.holdSource(id);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await frameBranch(page, dialog);
+  for (const id of terminals) {
+    await card(dialog, id).locator('.task-node-body').click();
+    await expect.poll(() => state.sourceHeld(id)).toBe(true);
+    await expect(sourceStatus(dialog, id)).toHaveAttribute('data-mode', 'inspection');
+  }
+  state.changeEdges([]);
+  state.changeGoal(isolatedId, { status: 'todo', completedAt: null });
+  await page.clock.runFor(30_000);
+  await expect(card(dialog, isolatedId)).toBeVisible();
+  for (const id of terminals) {
+    await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${id}/goal-dependencies`))).toBe(true);
+    await expect(card(dialog, id)).toHaveCount(0);
+    await expect(sourceStatus(dialog, id)).toHaveCount(0);
+    expect(state.sourceHeld(id)).toBe(true);
+  }
+  await expect(sourceStatus(dialog, isolatedId)).toHaveAttribute('data-phase', 'ready');
+  await expect.poll(() => sourceReads(state.relationRequests, activeId).length).toBe(2);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  const requests = [...state.syncRequests];
+  for (const id of terminals) state.releaseSource(id);
+  await expect(card(dialog, isolatedId)).toBeVisible();
+  await expect(dialog.locator('.goal-acceptance-node')).toHaveCount(2);
   expect(state.syncRequests).toEqual(requests);
 });

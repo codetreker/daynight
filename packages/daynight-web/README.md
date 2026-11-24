@@ -45,7 +45,11 @@ overwriting newer local facts. Source reads are shared by uncovered inspection
 and explicit external expansion.
 Inspection does not grow the canvas; expansion adds readable branches, including
 real edges within one foreign Project, and repeated expansion deduplicates sources,
-nodes and edges. The session exposes retries,
+nodes and edges. Reachability uses synchronized roots and current direct prerequisites;
+raw local-to-local relations cannot retain a source removed from that scope.
+Real external-to-local context remains readable. Disconnected inspection and
+expansion sources are filtered out and their queued or in-flight reads cancelled,
+releasing the four-source capacity for reachable work. The session exposes retries,
 unsupported reads and inaccessible prerequisites. External cards use their
 actual Project and lifecycle data without invented summary versions or progress.
 Graph sessions have no polling loop and do not change TaskSync requests or
