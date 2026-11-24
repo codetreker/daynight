@@ -4,28 +4,18 @@ package postgres
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ReplaySchema107ForTest prepares an empty test namespace using the registered
-// historical migrations, including their original transforms and checksums.
-func ReplaySchema107ForTest(ctx context.Context, pool *pgxpool.Pool) error {
-	return replayHistoricalSchemaForTest(ctx, pool, 107)
-}
+//go:embed schema/baseline-099.sql
+var historicalBaselineSQL string
 
-// ReplaySchema114ForTest prepares the schema before active Worker claim migration.
-func ReplaySchema114ForTest(ctx context.Context, pool *pgxpool.Pool) error {
-	return replayHistoricalSchemaForTest(ctx, pool, 114)
-}
-
-// ReplaySchema122ForTest prepares the last schema before inherited Task deletion.
-func ReplaySchema122ForTest(ctx context.Context, pool *pgxpool.Pool) error {
-	return replayHistoricalSchemaForTest(ctx, pool, 122)
-}
-
-func replayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+// ReplayHistoricalSchemaForTest builds a supported checkpoint from an empty
+// namespace using the rebase baseline and the registered subsequent migrations.
+func ReplayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, version int64) error {
 	end := 0
 	for i, migration := range schemaMigrations {
 		if migration.version == version {
@@ -33,7 +23,7 @@ func replayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, vers
 			break
 		}
 	}
-	if end == 0 {
+	if end == 0 && version != 99 {
 		return fmt.Errorf("historical migration %d is not registered", version)
 	}
 	return withMigrationLock(ctx, pool, func(conn *pgxpool.Conn) error {
@@ -46,6 +36,9 @@ func replayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, vers
 		}
 		if !empty {
 			return fmt.Errorf("historical fixture requires an empty schema")
+		}
+		if err := bootstrapSchema(ctx, conn, nil, historicalBaselineSQL); err != nil {
+			return err
 		}
 		return replayMigrations(ctx, conn, schemaMigrations[:end])
 	})

@@ -133,14 +133,3 @@ func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
 		t.Fatal("reader returned shared mutable dependency slices")
 	}
 }
-
-func projectBeforeSettings(t *testing.T, database *Store, number int) model.Project {
-	t.Helper()
-	project := model.Project{ID: queryID(number), Name: "Project", RepoURL: "https://example.com/owner/repo.git"}
-	if err := database.Pool.QueryRow(context.Background(), `INSERT INTO projects (id, name, repo_url)
-		VALUES ($1, $2, $3) RETURNING created_at, updated_at`, project.ID, project.Name, project.RepoURL).
-		Scan(&project.CreatedAt, &project.UpdatedAt); err != nil {
-		t.Fatal(err)
-	}
-	return project
-}

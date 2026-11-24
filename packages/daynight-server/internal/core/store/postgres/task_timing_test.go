@@ -13,41 +13,23 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func TestTaskTimingMigrationPreservesUnknownHistoricalIntervals(t *testing.T) {
-	ctx := context.Background()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:8]); err != nil {
-		t.Fatal(err)
-	}
-	database := &Store{Pool: pool}
-	project := projectBeforeSettings(t, database, 1)
-	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	var historical []model.Task
-	for index, status := range []model.TaskStatus{model.TaskStatus("proposed"), model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+func TestTaskTimingReadsUnknownHistoricalIntervals(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	created := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	updated := created.Add(time.Hour)
+	for index, status := range []model.TaskStatus{model.TaskProposed, model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		id := queryID(index + 10)
+		version := int64(index + 17)
 		mustQueryExec(t, database, `INSERT INTO tasks (id, project_id, title, description, status, version, created_at, updated_at)
-			VALUES ($1, $2, 'Historical execution', 'Preserved', $3, $4, $5, $6)`, id, project.ID, status, index+17, stamp, stamp.Add(time.Hour))
-		historical = append(historical, snapshotTaskBeforeTiming(t, database, project.ID, id))
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
-		t.Fatal(err)
-	}
-	for _, before := range historical {
-		after := snapshotHistoricalTask(t, database, project.ID, before.ID)
-		if !reflect.DeepEqual(after, before) || after.StartedAt != nil || after.CompletedAt != nil {
-			t.Fatalf("historical timing or metadata was invented: before %#v after %#v", before, after)
+			VALUES ($1, $2, 'Historical execution', 'Preserved', $3, $4, $5, $6)`, id, project.ID, status, version, created, updated)
+		task := snapshotTask(t, database, project.ID, id)
+		if task.Title != "Historical execution" || task.Description != "Preserved" || task.Status != status ||
+			task.Version != version || !task.CreatedAt.Equal(created) || !task.UpdatedAt.Equal(updated) ||
+			task.StartedAt != nil || task.CompletedAt != nil || task.CancelledAt != nil {
+			t.Fatalf("historical timing or metadata changed: %#v", task)
 		}
-	}
-	var applied time.Time
-	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=9").Scan(&applied); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
-		t.Fatal(err)
-	}
-	var repeated time.Time
-	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=9").Scan(&repeated); err != nil || !repeated.Equal(applied) {
-		t.Fatalf("timing migration changed on restart: %v, %v", repeated, err)
 	}
 }
 

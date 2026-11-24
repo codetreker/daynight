@@ -1,9 +1,7 @@
 package postgres
 
 import (
-	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,12 +13,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestCredentialDescriptionMigrationPreservesRows(t *testing.T) {
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	ctx := t.Context()
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 105 })
 	if index < 1 {
@@ -65,6 +62,7 @@ func TestCredentialScopeActivationMigration(t *testing.T) {
 		t.Fatal("credential scope activation migration missing")
 	}
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
 	}
@@ -166,61 +164,6 @@ AND NOT EXISTS(SELECT FROM oauth_authorizations WHERE (status<>'approved' OR sco
 	}
 }
 
-func TestCredentialUsageMigration(t *testing.T) {
-	for _, upgrade := range []bool{false, true} {
-		name := "new database"
-		if upgrade {
-			name = "upgrade"
-		}
-		t.Run(name, func(t *testing.T) {
-			ctx := t.Context()
-			pool := emptyPool(t)
-			if upgrade {
-				if len(schemaMigrations) < 66 || schemaMigrations[64].version != 65 || schemaMigrations[65].version != 66 {
-					t.Fatal("credential migration is not the successor of version 65")
-				}
-				if err := migrate(ctx, pool, schemaMigrations[:65]); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
-				t.Fatal(err)
-			}
-			s := &Store{Pool: pool}
-			if upgrade {
-				mustQueryExec(t, s, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'retained',now())`, queryID(1), queryID(2), deviceStoreHash("retained"))
-			} else {
-				mustQueryExec(t, s, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,business_scopes,scope_version) VALUES($1,$2,$3,'retained',now(),ARRAY['task:read'],1)`, queryID(1), queryID(2), deviceStoreHash("retained"))
-			}
-			mustQueryExec(t, s, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at) VALUES($1,$2,'client','{}','resource','scope',now(),now()+interval '1 day',now())`, queryID(3), queryID(2))
-			if upgrade {
-				if err := migrate(ctx, pool, schemaMigrations); err != nil {
-					t.Fatal(err)
-				}
-			}
-			assertCredentialMigrationValues(t, pool)
-			if err := migrate(ctx, pool, schemaMigrations); err != nil {
-				t.Fatal(err)
-			}
-			assertCredentialMigrationValues(t, pool)
-			var version int64
-			var checksum string
-			if err := pool.QueryRow(ctx, `SELECT version,checksum FROM schema_migrations WHERE version=66`).Scan(&version, &checksum); err != nil || version != 66 || checksum != schemaMigrations[65].checksum() {
-				t.Fatalf("migration ledger: version=%d checksum=%q error=%v", version, checksum, err)
-			}
-		})
-	}
-}
-
-func assertCredentialMigrationValues(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	var patName, grantClient string
-	var patNull, grantNull, retainedRevocation bool
-	err := pool.QueryRow(t.Context(), `SELECT (SELECT name FROM personal_access_tokens WHERE id=$1), (SELECT last_used_at IS NULL FROM personal_access_tokens WHERE id=$1), (SELECT client_id FROM oauth_grants WHERE id=$2), (SELECT last_used_at IS NULL FROM oauth_grants WHERE id=$2), (SELECT revoked_at IS NOT NULL FROM oauth_grants WHERE id=$2)`, queryID(1), queryID(3)).Scan(&patName, &patNull, &grantClient, &grantNull, &retainedRevocation)
-	if err != nil || patName != "retained" || grantClient != "client" || !patNull || !grantNull || !retainedRevocation {
-		t.Fatalf("credential state: name=%q patNull=%v client=%q grantNull=%v revoked=%v error=%v", patName, patNull, grantClient, grantNull, retainedRevocation, err)
-	}
-}
-
 func TestOAuthScopePreparationMigration(t *testing.T) {
 	ctx := t.Context()
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 109 })
@@ -228,6 +171,7 @@ func TestOAuthScopePreparationMigration(t *testing.T) {
 		t.Fatal("OAuth scope migration missing")
 	}
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +208,7 @@ INSERT INTO oauth_authorizations(id,binding_hash,client_snapshot,client_id,redir
 		t.Fatalf("OAuth indexes changed: %v", err)
 	}
 	empty := emptyPool(t)
+	bootstrapBaseline(t, empty)
 	if err := migrate(ctx, empty, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
@@ -281,6 +226,7 @@ func TestPATScopePreparationMigration(t *testing.T) {
 
 	t.Run("historical startup and rollback", func(t *testing.T) {
 		pool := emptyPool(t)
+		bootstrapBaseline(t, pool)
 		if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 			t.Fatal(err)
 		}
@@ -320,6 +266,7 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 
 	t.Run("empty startup and existing writers", func(t *testing.T) {
 		pool := emptyPool(t)
+		bootstrapBaseline(t, pool)
 		if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 			t.Fatal(err)
 		}
@@ -334,46 +281,11 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 	})
 }
 
-func TestAPIOAuthMigrationPreservesFamiliesAndOnlyRelaxesFixedAPILifetime(t *testing.T) {
-	ctx, pool := t.Context(), emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:66]); err != nil {
-		t.Fatal(err)
-	}
+func TestOAuthLifetimeExemptsOnlyTheFixedAPIProfile(t *testing.T) {
+	ctx, pool := t.Context(), isolatedStore(t).Pool
 	created := time.Now().UTC().Truncate(time.Microsecond)
 	expires := created.Add(30 * 24 * time.Hour)
-	used := created.Add(time.Minute)
-	grant, access, user := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	snapshot := `{"client_id":"historical-client","client_name":"Historical tool"}`
-	if _, err := pool.Exec(ctx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at,last_used_at) VALUES($1,$2,'historical-client',$3,'https://example.test/mcp','daynight:mcp',$4,$5,$6)`, grant, user, snapshot, created, expires, used); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, access, grant, user, deviceStoreHash("historical-access"), created, created.Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var gotUser, gotClient, gotResource, gotScope, gotAccess string
-	var gotSnapshot []byte
-	var gotCreated, gotExpires, gotUsed time.Time
-	if err := pool.QueryRow(ctx, `SELECT g.user_id::text,g.client_id,g.client_snapshot,g.resource,g.scope,g.created_at,g.expires_at,g.last_used_at,a.id::text FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id WHERE g.id=$1`, grant).Scan(&gotUser, &gotClient, &gotSnapshot, &gotResource, &gotScope, &gotCreated, &gotExpires, &gotUsed, &gotAccess); err != nil {
-		t.Fatal(err)
-	}
-	var wantJSON, gotJSON any
-	if err := json.Unmarshal([]byte(snapshot), &wantJSON); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(gotSnapshot, &gotJSON); err != nil {
-		t.Fatal(err)
-	}
-	if gotUser != user || gotClient != "historical-client" || gotResource != "https://example.test/mcp" || gotScope != "daynight:mcp" || gotAccess != access || !gotCreated.Equal(created) || !gotExpires.Equal(expires) || !gotUsed.Equal(used) {
-		t.Fatalf("migration changed historical family: %s %s %s %s %s %v %v %v", gotUser, gotClient, gotResource, gotScope, gotAccess, gotCreated, gotExpires, gotUsed)
-	}
-	wantBytes, _ := json.Marshal(wantJSON)
-	gotBytes, _ := json.Marshal(gotJSON)
-	if string(wantBytes) != string(gotBytes) {
-		t.Fatalf("snapshot changed: %s", gotSnapshot)
-	}
+	user := uuid.NewString()
 	for _, test := range []struct {
 		name, client, scope string
 		accepted            bool
@@ -390,71 +302,14 @@ func TestAPIOAuthMigrationPreservesFamiliesAndOnlyRelaxesFixedAPILifetime(t *tes
 			}
 		})
 	}
-	var checksum string
-	if err := pool.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE version=67`).Scan(&checksum); err != nil || checksum != schemaMigrations[66].checksum() {
-		t.Fatalf("migration ledger: %q %v", checksum, err)
-	}
 }
 
-func TestLoginScopeMigrationProtectsLiveTransactions(t *testing.T) {
-	for _, resolution := range []string{"consume", "expire"} {
-		t.Run(resolution, func(t *testing.T) {
-			ctx := context.Background()
-			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:46]); err != nil {
-				t.Fatal(err)
-			}
-			_, err := pool.Exec(ctx, `INSERT INTO login_transactions(id,state_hash,browser_binding_hash,provider,return_path,expires_at)
- VALUES ('00000000-0000-4000-8000-000000000001',decode(repeat('01',32),'hex'),decode(repeat('02',32),'hex'),'github','/',clock_timestamp()+interval '10 minutes'),
- ('00000000-0000-4000-8000-000000000002',decode(repeat('03',32),'hex'),decode(repeat('04',32),'hex'),'github','/',clock_timestamp()-interval '1 minute')`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = migrate(ctx, pool, schemaMigrations)
-			var cause *pgconn.PgError
-			if !errors.As(err, &cause) || cause.Code != "P1047" {
-				t.Fatalf("expected active login migration failure: %v", err)
-			}
-			_, err = Open(ctx, pool.Config().ConnString())
-			if err == nil || !strings.Contains(err.Error(), "active login transactions to be consumed or expired") {
-				t.Fatalf("startup did not explain migration failure: %v", err)
-			}
-			var rows, columns, versions int
-			if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions),
- (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='login_transactions' AND column_name='scope_hash'),
- (SELECT count(*) FROM schema_migrations WHERE version=47)`).Scan(&rows, &columns, &versions); err != nil || rows != 2 || columns != 0 || versions != 0 {
-				t.Fatalf("failed migration changed data or schema: rows=%d columns=%d ledger=%d err=%v", rows, columns, versions, err)
-			}
-			if resolution == "consume" {
-				_, err = pool.Exec(ctx, `DELETE FROM login_transactions WHERE id='00000000-0000-4000-8000-000000000001' AND state_hash=decode(repeat('01',32),'hex') AND browser_binding_hash=decode(repeat('02',32),'hex')`)
-			} else {
-				_, err = pool.Exec(ctx, `UPDATE login_transactions SET expires_at=clock_timestamp()-interval '1 second' WHERE id='00000000-0000-4000-8000-000000000001'`)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := migrate(ctx, pool, schemaMigrations); err != nil {
-				t.Fatal(err)
-			}
-			if err := pool.QueryRow(ctx, `SELECT count(*) FROM login_transactions`).Scan(&rows); err != nil || rows != 0 {
-				t.Fatalf("expired transactions remain: %d %v", rows, err)
-			}
-			_, err = pool.Exec(ctx, `INSERT INTO login_transactions(id,state_hash,browser_binding_hash,provider,return_path,expires_at) VALUES ('00000000-0000-4000-8000-000000000003',decode(repeat('05',32),'hex'),decode(repeat('06',32),'hex'),'github','/',clock_timestamp()+interval '1 minute')`)
-			if err == nil {
-				t.Fatal("scope hash accepted as NULL")
-			}
-		})
-	}
-}
 func storeTokenExpiry(value time.Time) *time.Time { return &value }
 
-func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testing.T) {
-	ctx := context.Background()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:18]); err != nil {
-		t.Fatal(err)
-	}
-	s := &Store{Pool: pool}
+func TestOptionalPATExpiryPreservesSessionContract(t *testing.T) {
+	ctx := t.Context()
+	s := isolatedStore(t)
+	pool := s.Pool
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, session := identitySession(uuid.NewString(), "historical:"+uuid.NewString())
 	session.CreatedAt = now.Add(-time.Hour)
@@ -464,23 +319,8 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	finite := deviceStoreCredential(now)
 	finite.ExpiresAt = storeTokenExpiry(now.Add(30 * 24 * time.Hour))
 	finite.UserID = p.UserID
-	if _, err := pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, finite.ID, finite.UserID, finite.TokenHash, finite.Name, finite.CreatedAt, finite.ExpiresAt); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at,business_scopes,scope_version) VALUES($1,$2,$3,$4,$5,$6,ARRAY['task:read'],1)`, finite.ID, finite.UserID, finite.TokenHash, finite.Name, finite.CreatedAt, finite.ExpiresAt); err != nil {
 		t.Fatal(err)
-	}
-	var before string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var after string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
-		t.Fatalf("optional expiry changed historical credential: %v", err)
-	}
-	var descriptionNull bool
-	if err := pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=$1`, finite.ID).Scan(&descriptionNull); err != nil || !descriptionNull {
-		t.Fatalf("historical token description is not null: %v", err)
 	}
 	var patRequired, sessionRequired bool
 	if err := pool.QueryRow(ctx, `SELECT (SELECT attnotnull FROM pg_attribute WHERE attrelid='personal_access_tokens'::regclass AND attname='expires_at'),(SELECT attnotnull FROM pg_attribute WHERE attrelid='sessions'::regclass AND attname='expires_at')`).Scan(&patRequired, &sessionRequired); err != nil || patRequired || !sessionRequired {

@@ -47,13 +47,7 @@ func newWebhookDAOSuite(t *testing.T) *webhookDAOSuite {
 			t.Errorf("close shared Webhook connection: %v", err)
 		}
 	})
-	snapshot, err := os.ReadFile("../schema/current.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(ctx, string(snapshot)); err != nil {
-		t.Fatal(err)
-	}
+	loadWebhookSchema(t, ctx, conn)
 	suite := &webhookDAOSuite{conn: conn}
 	var schema string
 	if err := conn.QueryRow(ctx, "SELECT current_schema(),current_setting('application_name')").Scan(&schema, &suite.application); err != nil {
@@ -238,5 +232,16 @@ func (suite *webhookDAOSuite) reset(t *testing.T) {
 		if last != sequence.last || called != sequence.called {
 			t.Fatalf("shared Webhook sequence %s was not restored: got %d/%v, want %d/%v", sequence.name, last, called, sequence.last, sequence.called)
 		}
+	}
+}
+
+func loadWebhookSchema(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	snapshot, err := os.ReadFile("../schema/current.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, string(snapshot)); err != nil {
+		t.Fatal(err)
 	}
 }

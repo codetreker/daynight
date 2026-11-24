@@ -182,13 +182,11 @@ func TestTaskResponseAdmissionRollsBackActualWrites(t *testing.T) {
 	}
 }
 
-func TestMigratedBlockedWhitespaceSetIsNoOp(t *testing.T) {
+func TestStoredBlockedWhitespaceSetIsNoOp(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := t.Context()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
-		t.Fatal(err)
-	}
-	db := &Store{Pool: pool}
+	db := isolatedStore(t)
+	pool := db.Pool
 	project := queryProject(t, db, 1)
 	var user string
 	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM project_grants WHERE project_id=$1 AND role='admin' LIMIT 1`, project.ID).Scan(&user); err != nil {
@@ -198,10 +196,7 @@ func TestMigratedBlockedWhitespaceSetIsNoOp(t *testing.T) {
 	for i, v := range []string{"true", "false"} {
 		id := queryID(10 + i)
 		mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title,status,version,created_at,updated_at) VALUES($1,$2,'Task','todo',17,'2026-01-01T10:00:00Z','2026-01-01T11:00:00Z')`, id, project.ID)
-		mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused',$2)`, id, " \n"+v+" ")
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
+		mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked',$2)`, id, " \n"+v+" ")
 	}
 	svc := taskservice.NewTasks(db)
 	for i, v := range []string{"true", "false"} {

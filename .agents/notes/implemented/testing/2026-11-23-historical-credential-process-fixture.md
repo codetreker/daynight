@@ -11,11 +11,13 @@ changes in the supposed historical database and can invalidate upgrade evidence.
 ## Decision
 
 The startup-shutdown and webhook test builds provide a PostgreSQL fixture that
-replays the registered migration prefix through version 107 into an empty
-namespace. It uses the migration executor, including frozen Go transforms and
-ledger checksums. The credential process test checks historical structure and
-ledger before starting the candidate and retains its migration, occupied-listener
-failure and recovery checks.
+loads the 099 baseline into an empty namespace and replays the registered
+migrations through 107. It uses the migration executor and validates the
+original prefix checksums. The credential process test checks historical
+structure and ledger before starting the candidate and retains its migration,
+occupied-listener failure and recovery checks. The
+[099 baseline decision](../architecture/2026-11-24-postgres-migration-baseline.md)
+owns the preserved effects and checksums of the earlier Go transforms.
 
 ## Alternatives
 
@@ -27,6 +29,6 @@ transforms and require their registered checksum semantics.
 
 ## Consequences
 
-The fixture remains anchored to the historical registry while later migrations
-can extend the candidate. Replay costs additional database transactions and relies
-on the immutable migration history; it refuses a nonempty target namespace.
+The fixture stays anchored to the 107 checkpoint while later migrations extend
+the candidate. It refuses a nonempty target namespace. Replay retains the
+original version decisions for the steps after the baseline.

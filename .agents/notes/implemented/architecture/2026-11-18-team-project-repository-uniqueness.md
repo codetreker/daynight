@@ -22,11 +22,12 @@ Projects retain the original address and a nullable, byte-compared persistent
 identity. Transactional migration 083 freezes the existing RepositoryIdentity
 rules in `repositoryidentity/v1`, checksums that source and its `migration083`
 transform, backfills in batches and rejects same-Team active duplicates before
-commit. The transform and original SQL share the version directory
-`postgres/schema/migrations/083/`; a separate registration file exposes the SQL
-while preserving the frozen transformation and SQL bytes. The
-[PostgreSQL ownership decision](2026-11-05-server-postgres-ownership.md) owns the
-unified schema/history layout and checksum-preserving relocation. The repository
+commit. The original transform and SQL remain available in the
+[pinned 099 source](https://github.com/codetreker/daynight/tree/2060f6d2059055f2abcc2086ceebed81752a7982/packages/daynight-server/internal/core/store/postgres/schema/migrations/083).
+A separate registration file preserved the frozen bytes when the
+[PostgreSQL ownership decision](2026-11-05-server-postgres-ownership.md)
+unified their layout. The [099 baseline decision](2026-11-24-postgres-migration-baseline.md)
+retains their original checksum and uses that source for older upgrades. The repository
 transform was assigned version 083 before publication because the Worker tag
 filter had already taken version 082. Its version-specific diagnostics give the
 083 transform a new checksum; the identity rules and SQL algorithm are unchanged.

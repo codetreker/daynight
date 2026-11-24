@@ -33,7 +33,7 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer pool.Close()
-			if err := postgres.ReplaySchema114ForTest(ctx, pool); err != nil {
+			if err := postgres.ReplayHistoricalSchemaForTest(ctx, pool, 114); err != nil {
 				t.Fatal(err)
 			}
 			observer, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])

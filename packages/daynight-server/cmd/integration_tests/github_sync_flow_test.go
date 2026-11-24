@@ -32,7 +32,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The process uses its production fixed-origin client through a controlled TLS
@@ -317,8 +316,6 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("re-enable: %+v", status)
 	}
 	waitTitle("Updated while off")
-	// With every old process drained, restore the version 76 schema, ledger
-	// and a real legacy binding before restarting Server.
 	origin, callback := f.origin, f.callbackURL
 	f.restart(func() {
 		if f.origin != origin || f.callbackURL != callback || callback != origin+"/api/v1/auth/callback" {
@@ -337,218 +334,22 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if response.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("restart routed to old backend: %d", response.StatusCode)
 		}
-		db, err := pgxpool.New(f.context, f.databaseURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		tx, err := db.Begin(f.context)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(f.context)
-		if _, err = tx.Exec(f.context, `UPDATE project_github SET enabled=true, sync_enabled=true, app_id=13, installation_id=99, app_resource_id=NULL, team_grant_id=NULL, credential_version=NULL, installation_account_login='example', access_state='available' WHERE project_id=$1`, project.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_inbox_receipts, assistant_task_inboxes;
-			DROP INDEX assistant_task_events_inbound_settled;
-			ALTER TABLE assistant_task_events DROP COLUMN settled_at`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity, DROP COLUMN repository_version`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_state_number, project_pull_requests_author_number;
-			ALTER TABLE project_pull_requests DROP CONSTRAINT project_pull_requests_pkey;
-			ALTER TABLE project_pull_requests DROP COLUMN repository_id;
-			ALTER TABLE project_pull_requests ADD PRIMARY KEY (project_id,number);
-			CREATE INDEX project_pull_requests_state_number ON project_pull_requests (project_id,state,number DESC);
-			ALTER TABLE project_github DROP COLUMN legacy_repository_id, DROP COLUMN repository_default_branch;
-			DROP TABLE project_github_repositories`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE usage_records`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `UPDATE task_properties SET name='paused' WHERE name='blocked'`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE project_github_coverage`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE session_archive_retention`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE goal_dependency_revisions; DROP INDEX goal_dependencies_predecessor, goal_dependencies_edge_id`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE task_dependencies DROP COLUMN dependency_type, DROP COLUMN goal_edge_id`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE bot_recovery_operations, bot_recovery`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_task_records DROP COLUMN outcome, DROP COLUMN action_record_id`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE webhook_events DROP COLUMN actor_kind, DROP COLUMN actor_user_id, DROP COLUMN actor_bot_id`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_item_closures; ALTER TABLE assistant_task_items DROP COLUMN opened_at, DROP COLUMN closed_at`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP INDEX webhook_endpoints_live_client_key_idx; ALTER TABLE webhook_endpoints DROP COLUMN client_key`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP INDEX task_properties_worker_active_claim_idx`); err != nil {
-			t.Fatal(err)
-		}
-		// This isolated legacy fixture must not discard a real recovery receipt
-		// or tombstone when reconstructing the pre-127 schema.
-		var recoveriesPresent bool
-		if err := tx.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM session_source_recoveries)`).Scan(&recoveriesPresent); err != nil || recoveriesPresent {
-			t.Fatalf("legacy fixture contains recovery identities: %t %v", recoveriesPresent, err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE session_source_recoveries; ALTER TABLE task_sessions DROP COLUMN source_recovery_count`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode; DROP INDEX sessions_user_created_id; ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `CREATE OR REPLACE VIEW task_resource_rows AS
-			SELECT t.id, t.project_id, t.title, t.description, t.status, t.version,
-			       t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents,
-			       t.required_platform, t.deleted_at, t.assigned_to, t.cancelled_at,
-			       t.type, t.parent_id, p.type AS parent_type, p.deleted_at AS parent_deleted_at,
-			       COALESCE(t.deleted_at, CASE WHEN t.type = 'task' AND p.type = 'goal' THEN p.deleted_at END) AS effective_deleted_at
-			FROM tasks t
-			LEFT JOIN tasks p ON p.project_id = t.project_id AND p.id = t.parent_id;
-			ALTER TABLE tasks DROP COLUMN ancestor_deleted_at`); err != nil {
-			t.Fatal(err)
-		}
-		// Restore the original 030 table before replaying its later retirement.
-		stepsSQL, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations", "030_task_steps.sql"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, string(stepsSQL)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE bot_history_windows, bot_history_reclaims`); err != nil {
-			t.Fatal(err)
-		}
-		// The ledger must stay an ordered prefix, so a later data-only backfill
-		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 50 {
-			t.Fatalf("restore migration boundary: %v %v", result, err)
-		}
-		if err := tx.Commit(f.context); err != nil {
-			t.Fatal(err)
-		}
 	})
 	if f.origin != origin || f.callbackURL != callback {
 		t.Fatal("public origin or gateway callback changed after restart")
 	}
-	db, err := pgxpool.New(f.context, f.databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var repositoryVersion int64
-	var migrationCount int
-	var windowTable, reclaimTable bool
-	if err := db.QueryRow(f.context, `SELECT to_regclass('bot_history_windows') IS NOT NULL, to_regclass('bot_history_reclaims') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=128)`).Scan(&windowTable, &reclaimTable, &migrationCount); err != nil || !windowTable || !reclaimTable || migrationCount != 1 {
-		t.Fatalf("upgraded Bot history window: window=%t reclaim=%t migration count=%d error=%v", windowTable, reclaimTable, migrationCount, err)
-	}
-	var descriptionColumns int
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('personal_access_tokens','oauth_grants') AND column_name='description'`).Scan(&descriptionColumns); err != nil || descriptionColumns != 2 {
-		t.Fatalf("credential description migration: columns=%d error=%v", descriptionColumns, err)
-	}
-	if err := db.QueryRow(f.context, `SELECT repository_version,(SELECT count(*) FROM schema_migrations WHERE version=95) FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion, &migrationCount); err != nil || repositoryVersion != 1 || migrationCount != 1 {
-		t.Fatalf("upgraded repository version: version=%d migration count=%d error=%v", repositoryVersion, migrationCount, err)
-	}
-	var recoverySchema bool
-	if err := db.QueryRow(f.context, `SELECT to_regclass('session_source_recoveries') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='source_recovery_count') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=127)`).Scan(&recoverySchema); err != nil || !recoverySchema {
-		t.Fatalf("source recovery migration missing after restart: %t %v", recoverySchema, err)
-	}
-	var activityColumn bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at'), (SELECT count(*) FROM schema_migrations WHERE version=118)`).Scan(&activityColumn, &migrationCount); err != nil || !activityColumn || migrationCount != 1 {
-		t.Fatalf("upgraded browser session activity: column=%t migration count=%d error=%v", activityColumn, migrationCount, err)
-	}
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&migrationCount); err != nil || migrationCount != 1 {
-		t.Fatalf("upgraded Step Webhook retirement: migration count=%d error=%v", migrationCount, err)
-	}
-	var managementColumns int
-	var managementIndex bool
-	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=120)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
-		t.Fatalf("upgraded browser session management: columns=%d index=%t migration count=%d error=%v", managementColumns, managementIndex, migrationCount, err)
-	}
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=121`).Scan(&migrationCount); err != nil || migrationCount != 1 {
-		t.Fatalf("upgraded Worker platform task mode: migration count=%d error=%v", migrationCount, err)
-	}
-	var ancestorVisibilityColumn bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='ancestor_deleted_at'), (SELECT count(*) FROM schema_migrations WHERE version=123)`).Scan(&ancestorVisibilityColumn, &migrationCount); err != nil || !ancestorVisibilityColumn || migrationCount != 1 {
-		t.Fatalf("upgraded Task ancestor visibility: column=%t migration count=%d error=%v", ancestorVisibilityColumn, migrationCount, err)
-	}
-	var historyPolicyColumn bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {
-		t.Fatalf("upgraded Session history policy: column=%t migration count=%d error=%v", historyPolicyColumn, migrationCount, err)
-	}
-	var archiveUploadColumns int
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name IN ('upload_version','successor_file_id','terminal_error')`).Scan(&archiveUploadColumns); err != nil || archiveUploadColumns != 3 {
-		t.Fatalf("upgraded archive upload columns: count=%d error=%v", archiveUploadColumns, err)
-	}
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=116`).Scan(&migrationCount); err != nil || migrationCount != 1 {
-		t.Fatalf("archive upload migration ledger: count=%d error=%v", migrationCount, err)
-	}
-	var stagingMigration bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=122) AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&stagingMigration); err != nil || !stagingMigration {
-		t.Fatalf("single staging migration: applied=%t error=%v", stagingMigration, err)
-	}
-	var onlineModeColumn bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='online_mode'), (SELECT count(*) FROM schema_migrations WHERE version=117)`).Scan(&onlineModeColumn, &migrationCount); err != nil || !onlineModeColumn || migrationCount != 1 {
-		t.Fatalf("upgraded Session online mode: column=%t migration count=%d error=%v", onlineModeColumn, migrationCount, err)
-	}
-	var assignmentTable bool
-	if err := db.QueryRow(f.context, `SELECT to_regclass('project_pr_review_assignments') IS NOT NULL,(SELECT count(*) FROM schema_migrations WHERE version=96)`).Scan(&assignmentTable, &migrationCount); err != nil || !assignmentTable || migrationCount != 1 {
-		t.Fatalf("upgraded review assignment: table=%t migration count=%d error=%v", assignmentTable, migrationCount, err)
-	}
-	var assignmentIndex, pullIndex bool
-	if err := db.QueryRow(f.context, `SELECT to_regclass('project_pr_review_assignments_worker_cursor') IS NOT NULL, to_regclass('project_pull_requests_open_github_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=107)`).Scan(&assignmentIndex, &pullIndex, &migrationCount); err != nil || !assignmentIndex || !pullIndex || migrationCount != 1 {
-		t.Fatalf("upgraded review polling indexes: assignment=%t pull=%t migration count=%d error=%v", assignmentIndex, pullIndex, migrationCount, err)
-	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
-	if !status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.Repository == nil || status.Repository.ID != "42" {
-		t.Fatalf("upgraded state: %+v", status)
+	if !status.SyncEnabled || status.Connection != "connected" || status.App == nil || status.App.ID != appID ||
+		status.GrantID == nil || *status.GrantID != currentGrant.ID || status.Repository == nil || status.Repository.ID != "42" {
+		t.Fatalf("GitHub connection after restart: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
 	if len(page.Items) != 2 || page.Items[1].Title != "Updated while off" {
-		t.Fatalf("upgrade lost PR: %+v", page)
+		t.Fatalf("restart lost PR: %+v", page)
 	}
-	change("Updated after upgrade")
-	status = connect(project.Ownership.Version, status, currentGrant, "42")
-	if !status.SyncEnabled || status.Connection != "connected" {
-		t.Fatalf("upgraded reconnect: %+v", status)
-	}
-	waitTitle("Updated after upgrade")
+	change("Updated after restart")
+	sendPullWebhook(t, f, appBase, 1)
+	waitTitle("Updated after restart")
 	impact := requestJSON[api.GitHubAppImpact](t, f, http.MethodGet, appBase+"/team-grants/"+currentGrant.ID+"/revocation-preview", nil, http.StatusOK)
 	if impact.TotalProjects != "1" {
 		t.Fatalf("revocation impact: %+v", impact)
@@ -562,7 +363,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("after revocation: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
-	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after restart" {
 		t.Fatalf("revocation lost PR: %+v", page)
 	}
 	currentGrant = grant(project.Ownership.TeamID)
@@ -586,7 +387,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("after transfer: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
-	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after restart" {
 		t.Fatalf("transfer lost PR: %+v", page)
 	}
 	status = connect(receipt.Ownership.Version, status, targetGrant, "42")

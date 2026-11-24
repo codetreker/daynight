@@ -29,7 +29,7 @@ func TestTaskAncestorMigrationCommittedStartupFailureAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err := postgres.ReplaySchema122ForTest(ctx, pool); err != nil {
+	if err := postgres.ReplayHistoricalSchemaForTest(ctx, pool, 122); err != nil {
 		t.Fatal(err)
 	}
 	project, goal, child := uuid.NewString(), uuid.NewString(), uuid.NewString()

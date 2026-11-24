@@ -199,8 +199,21 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		+ (SELECT count(*) FROM oauth_authorization_cleanup_cursor WHERE singleton)`).Scan(&seedRows); err != nil || seedRows != 3 {
 		t.Fatalf("concurrent initialization lost system records: count=%d error=%v", seedRows, err)
 	}
-	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations")
+	schemaRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema")
+	legacy, err := os.ReadFile(filepath.Join(schemaRoot, "legacy-checksums.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wantVersions []int64
+	for _, line := range strings.Split(strings.TrimSuffix(string(legacy), "\n"), "\n") {
+		versionText, _, found := strings.Cut(line, "\t")
+		version, err := strconv.ParseInt(versionText, 10, 64)
+		if !found || err != nil || version < 1 || version > 99 {
+			t.Fatalf("invalid frozen migration version %q", versionText)
+		}
+		wantVersions = append(wantVersions, version)
+	}
+	migrationRoot := filepath.Join(schemaRoot, "migrations")
 	if err := filepath.WalkDir(migrationRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -210,8 +223,8 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		}
 		prefix, _, found := strings.Cut(entry.Name(), "_")
 		version, err := strconv.ParseInt(prefix, 10, 64)
-		if !found || err != nil || version < 1 {
-			return fmt.Errorf("invalid migration filename %q", path)
+		if !found || err != nil || version < 100 {
+			return fmt.Errorf("invalid post-baseline migration filename %q", path)
 		}
 		wantVersions = append(wantVersions, version)
 		return nil

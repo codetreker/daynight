@@ -541,19 +541,53 @@ format snapshot and prepares the target PostgreSQL schema before accepting
 requests. One pinned connection holds the migration advisory lock while
 inspecting the target namespace and initializing or upgrading its format.
 
-An empty namespace receives the current snapshot, required initial rows and the
-complete original migration-checksum ledger in one transaction. Historical SQL
-and Go transforms do not execute on that path. SQL, initial-data, ledger and
-deferred-constraint commit failures roll back the complete initialization. A
-lost commit acknowledgment preserves an unknown outcome and the original error;
-initialization remains all-or-nothing, and the next startup inspects the actual
-namespace and ledger. A namespace containing user objects follows the existing
-ordered migration path, even when it has no
-migration ledger; objects in another schema do not affect that choice. Unknown
-versions, gaps and checksum mismatches stop startup. Reopening an initialized
-schema preserves its existing data and ledger timestamps. The
-[initialization decision](../../.agents/notes/implemented/architecture/2026-11-06-postgres-schema-bootstrap.md)
-owns the namespace, transaction and concurrency guarantees.
+An empty namespace receives the current snapshot, required initial rows and
+the complete original migration-checksum ledger in one transaction. SQL,
+initial-data, ledger and deferred-constraint commit failures roll back the
+complete initialization. A lost commit acknowledgment retains the original
+error and an unknown outcome. The next startup inspects the actual namespace
+and ledger under the lock. Objects in other schemas do not affect emptiness.
+
+The direct upgrade floor is migration 099. For a nonempty target namespace,
+startup validates the entire ordered ledger, including the original versions
+and checksums through 099, before executing any pending migration from 100
+onward. Existing ledger rows and timestamps survive, and each later
+migration commits with its own ledger row. Unknown versions, gaps and
+checksum mismatches stop startup. A valid older prefix, or a nonempty target
+with a missing or empty ledger, stops before writing. Backup and offline
+storage tools validate the same history and require the complete current
+ledger. See [the upgrade procedure](#upgrading-databases-older-than-099) and
+[the initialization decision](../../.agents/notes/implemented/architecture/2026-11-06-postgres-schema-bootstrap.md).
+
+### Upgrading databases older than 099
+
+Use the Server built from [the version-099 source](https://github.com/codetreker/daynight/tree/2060f6d2059055f2abcc2086ceebed81752a7982/packages/daynight-server).
+Build it with the [build instructions at that revision](https://github.com/codetreker/daynight/blob/2060f6d2059055f2abcc2086ceebed81752a7982/packages/daynight-server/README.md)
+and retain the exact build source or image digest for recovery. The entry
+point is the regular Server startup with that build's configuration and
+dependencies. It applies the original SQL and Go transformations up to its
+own head and may start background services.
+
+1. Stop other writers and drain all replicas, then take and verify a restorable
+   paired database and storage backup. Inspect the target namespace and
+   ledger. Diagnose a damaged or lost ledger before proceeding. A nonempty
+   namespace with no recorded migrations requires confirmation that it is
+   an old installation eligible for original replay.
+2. Follow the [migration prerequisites at version 099](https://github.com/codetreker/daynight/blob/2060f6d2059055f2abcc2086ceebed81752a7982/packages/daynight-server/README.md),
+   including the data and stopped-writer conditions for the versions being
+   crossed. Start one 099 Server with ingress closed and the correct database
+   namespace and storage root. Wait for successful readiness and confirm the
+   original ledger through 099. On failure diagnose the reported migration
+   with the old build and inspect the actual committed prefix before retrying.
+3. Stop the 099 Server, then start the target Server. The target validates
+   original checksums, applies 100 and later migrations, and confirms readiness.
+   Reopen ingress only after verification. Preserve the ledger for recovery
+   and use the matching database backup if rolling back across a migration
+   with incompatible storage.
+
+The upgrade executes the original transformations for existing data. The
+099 SQL baseline represents the initial state for verification and snapshot
+generation.
 
 Migration `032_personal_project_ownership.sql` creates the Personal Team/member
 and Project ownership records and renames the existing member table, sequence,
@@ -639,15 +673,11 @@ mixed old/new writing can violate the new occupancy rule.
 
 Migration 083 adds `projects.repository_identity text COLLATE "C"`, backfills in
 bounded batches using the frozen `repositoryidentity/v1` transform, and checks
-active occupancy within each Team before committing its ledger entry. Its frozen
-Go source and SQL live under
-`internal/core/store/postgres/schema/migrations/083/`; the SQL retains its
-`migrations/083_project_repository_identity.sql` relative path within that leaf
-package. A separate `register.go` exposes SQL without changing frozen content.
-The checksum includes the identity source and `migration083` transform source,
-including its version-specific diagnostics. Changing those diagnostics changes
-the checksum; relocating unchanged files does not. The published Worker task-tag
-filter migration retains version 082 and its existing ledger checksum.
+active occupancy within each Team before committing its ledger entry. The
+[frozen SQL and transform](https://github.com/codetreker/daynight/tree/2060f6d2059055f2abcc2086ceebed81752a7982/packages/daynight-server/internal/core/store/postgres/schema/migrations/083)
+execute in the 099 bridge build. The retained checksum includes the identity
+source and the transform's version-specific diagnostics. The Worker task-tag
+filter retains its published version 082 and checksum.
 Original addresses, business timestamps, versions, grants and history survive.
 Equivalent active identities or duplicate active unparseable raw addresses in
 one Team abort the migration with Team and Project IDs and roll back all changes
@@ -2960,28 +2990,31 @@ records the proof allocation and alternatives.
 
 ### Schema snapshot maintenance
 
-`internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
-format produced by the complete embedded migration history in
-`internal/core/store/postgres/schema/migrations/`. Migrations with frozen Go
-transforms retain their independent packages and internal layouts in the
-`026/` and `083/` version directories under that same history root. Their
-registration files expose the original SQL and transformation checksums without
-rewriting frozen content. The snapshot includes the
-migration-ledger table definition, required initial rows and sequence state;
-it does not freeze migration-ledger rows or their application timestamps.
-Runtime startup uses the snapshot for an empty target namespace and retains
-historical migrations for existing namespaces. A stale snapshot version stops
-startup before initialization or upgrade, exposing an incomplete format update.
+The PostgreSQL format lives in `internal/core/store/postgres/schema/`.
+`baseline-099.sql` captures the catalog, initial rows and sequence state after
+the historical chain reached 099. `legacy-checksums.tsv` freezes the original
+ordered version and checksum pairs through 099, including the original Go
+transforms and the historical gaps at 084 and 085. The original executable
+chain is available in the pinned 099 source in the
+[upgrade procedure](#upgrading-databases-older-than-099). The
+[pre-baseline test suite](https://github.com/codetreker/daynight/tree/e0608ee41f915d8de13405be43be881818909ba5/packages/daynight-server)
+retains the checks for historical transitions below the direct upgrade floor.
 
-The ordinary module check compares a fresh historical database with a fresh
-snapshot database through PostgreSQL catalogs and initial table data. It checks
-visible column order, types, defaults, nullability, constraints, indexes,
-sequence definitions, ownership and state, and the routines, views and triggers
-present in the format. Only instance identifiers and schema qualification are
-normalized. Parity and comparator faults share one historical replay and one
-snapshot; fault mutations roll back, with explicit restoration of nontransactional
-sequence state. The snapshot version must match the latest migration, so every
-migration change requires refreshing and verifying the snapshot.
+`current.sql` records the final format produced by applying the executable
+migrations in `migrations/` from 100 onward to that baseline. Both SQL artifacts
+include the ledger table definition. Initialization stamps the expected
+version and checksum pairs in the same transaction, with fresh timestamps.
+The current SQL version must match the latest migration. A mismatch stops
+startup before catalog or ledger changes.
+
+The ordinary module check independently builds a baseline-plus-migrations
+database and a fresh current-snapshot database. It compares PostgreSQL catalogs
+and initial table data, including visible column order, types, defaults,
+nullability, constraints, indexes, sequence definitions, ownership and state,
+and all routines, views and triggers. Only instance identifiers and schema
+qualification are normalized. Comparator fault mutations roll back, with
+explicit restoration of nontransactional sequence state. Refresh and verify the
+current snapshot for every migration change.
 
 The PostgreSQL root groups its tests by domain and the mechanism each file
 verifies. Independent parents share a management pool, which closes after all
@@ -3008,7 +3041,7 @@ catalog faults and custom concurrent lifetimes keep their independent fixtures.
 The [Webhook grouping decision](../../.agents/notes/implemented/testing/2026-11-10-webhook-dao-group-fixtures.md)
 records reset ownership and failure behavior.
 
-Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
+Regenerate from the 099 baseline and subsequent migrations using a PostgreSQL 18 `pg_dump` client.
 
 ```bash
 source scripts/env.sh
@@ -3019,7 +3052,7 @@ go test -count=1 ./internal/core/store/postgres \
 ```
 
 The update flags belong to this package's test binary. Regeneration captures
-final definitions and initial data, rather than concatenating historical SQL.
+final definitions, initial data and sequence state from PostgreSQL.
 Routine validation needs only the configured PostgreSQL service; it does not
 invoke `pg_dump`. The [snapshot decision](../../.agents/notes/implemented/testing/2026-11-06-postgres-schema-snapshot.md)
 records the equivalence and maintenance requirements.
@@ -4073,8 +4106,9 @@ The [resource requirements](../../docs/spec/daynight-task-steps.md) and
 [design](../../docs/design/daynight-task-steps.md) own this retirement and the
 remaining storage boundary. Legacy and scoped Steps application services, domain
 candidates, dedicated codec and input-policy entries are removed. Steps PostgreSQL interfaces, models and DAO code are removed; migration 124 drops
-the table and all its rows, including those under soft-deleted Tasks. Migration 030
-and its checksum remain unchanged. The shared
+the table and all its rows, including those under soft-deleted Tasks. The
+099 baseline includes the original Step table and the ledger retains the
+original migration 030 checksum. The shared
 Thread codec, TaskHeader, TouchTask and errors keep their ordinary consumers.
 The migration preserves parent Tasks and their materials and emits no per-row events. MCP, CLI and Web
 also expose no Steps entry point. The

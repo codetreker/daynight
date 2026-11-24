@@ -18,21 +18,12 @@ func TestCoverageSameSecondTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	loadCoverageSchema(t, ctx, conn)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	if _, err = tx.Exec(ctx, `CREATE TABLE project_github(project_id uuid, repository_id bigint, enabled boolean, sync_enabled boolean, revision bigint, last_full_generation bigint, access_state text, next_poll_at timestamptz, updated_at timestamptz)`); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := os.ReadFile("../schema/migrations/088_github_coverage.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = tx.Exec(ctx, string(schema)); err != nil {
-		t.Fatal(err)
-	}
 	id := uuid.NewString()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	change := func(enabled bool, at time.Time) {
@@ -78,16 +69,7 @@ func TestCoverageWriteFailuresRemainTransactional(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if _, err = conn.Exec(ctx, `CREATE TABLE project_github(project_id uuid, repository_id bigint, enabled boolean, sync_enabled boolean, revision bigint, last_full_generation bigint, access_state text, next_poll_at timestamptz, updated_at timestamptz)`); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := os.ReadFile("../schema/migrations/088_github_coverage.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = conn.Exec(ctx, string(schema)); err != nil {
-		t.Fatal(err)
-	}
+	loadCoverageSchema(t, ctx, conn)
 	project := uuid.NewString()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err = conn.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,9,$2)`, project, start); err != nil {
@@ -125,5 +107,16 @@ func TestCoverageWriteFailuresRemainTransactional(t *testing.T) {
 				t.Fatalf("failed transition changed period: %v %v", intact, err)
 			}
 		})
+	}
+}
+
+func loadCoverageSchema(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	snapshot, err := os.ReadFile("../schema/current.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, string(snapshot)); err != nil {
+		t.Fatal(err)
 	}
 }

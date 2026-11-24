@@ -528,7 +528,7 @@ CREATE TABLE "personal_access_tokens" (
     "business_scopes" "text"[] NOT NULL,
     "scope_version" bigint NOT NULL,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
-    CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
+    CONSTRAINT "personal_access_tokens_name_check" CHECK ((("char_length"("name") >= 1) AND ("char_length"("name") <= 100) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
 );
 
