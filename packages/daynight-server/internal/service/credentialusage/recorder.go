@@ -307,11 +307,10 @@ func (r *Recorder) writeBatch(batch usage.Batch) {
 		if validSQLState(state) {
 			failure.SQLState = state
 		}
-		var transaction *store.TransactionError
-		cleanupFailed := errors.As(err, &transaction) && transaction.CleanupFailed
 		// Only a confirmed rollback of the NOWAIT conflict can recover without
 		// leaving a sticky failure. Cancellation and cleanup failures remain fatal.
-		if outcome != usage.NotCommitted || failure.Cause != usage.CauseDatabase || state != "55P03" || cleanupFailed || !onlyLockConflict(err, "") {
+		failure.RecoverableLockConflict = outcome == usage.NotCommitted && failure.Cause == usage.CauseDatabase && state == "55P03" && onlyLockConflict(err, "")
+		if !failure.RecoverableLockConflict {
 			r.rememberCause(err)
 		}
 	}
@@ -366,6 +365,9 @@ func validSQLState(s string) bool {
 // errors, while accepting the driver's repeated report of the same SQLSTATE.
 func onlyLockConflict(err error, inherited string) bool {
 	if err == nil {
+		return false
+	}
+	if transaction, ok := err.(*store.TransactionError); ok && transaction.CleanupFailed {
 		return false
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {

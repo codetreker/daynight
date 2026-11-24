@@ -61,6 +61,10 @@ type Failure struct {
 	Code     Code
 	Cause    Cause
 	SQLState string
+	// RecoverableLockConflict confirms a pure NOWAIT conflict after rollback,
+	// without cancellation, timeout or cleanup failure. Only retained retries
+	// may omit its diagnostic; abandoning the observation still reports it.
+	RecoverableLockConflict bool
 }
 
 // Snapshot is an instantaneous view of bounded state, not a persistence receipt.
@@ -242,6 +246,9 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 	if outcome < Committed || outcome > Unknown {
 		return ErrInvalidFault
 	}
+	if failure.RecoverableLockConflict && (outcome != NotCommitted || failure.Code != CodeWriteFailed || failure.Cause != CauseDatabase || failure.SQLState != "55P03") {
+		return ErrInvalidFault
+	}
 	if outcome != Committed {
 		if failure.Code != CodeWriteTimeout && failure.Code != CodeWriteFailed && failure.Code != CodeWriteOutcomeUnknown || outcome == Unknown && failure.Code != CodeWriteOutcomeUnknown || outcome == NotCommitted && failure.Code == CodeWriteOutcomeUnknown {
 			return ErrInvalidFault
@@ -277,7 +284,10 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 		if f.PendingAge < 0 {
 			f.PendingAge = 0
 		}
-		s.addFault(e, cloneFault(f))
+		willRetry := outcome == NotCommitted && old.attempts < MaxAttempts
+		if !failure.RecoverableLockConflict || !willRetry {
+			s.addFault(e, cloneFault(f))
+		}
 		e.failNotBefore = now.Add(RetryInterval)
 		if outcome == Unknown {
 			// The old snapshot may already have committed; never schedule it again.
@@ -290,7 +300,7 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 			continue
 		}
 		if e.pending == nil {
-			if old.attempts >= MaxAttempts {
+			if !willRetry {
 				e.exhausted = true
 				s.abandoned++
 				continue
@@ -300,7 +310,7 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 			if old.born.Before(e.pending.born) {
 				e.pending.born = old.born
 			}
-			if old.attempts >= MaxAttempts {
+			if !willRetry {
 				e.exhausted = true
 				s.abandoned++
 			}
