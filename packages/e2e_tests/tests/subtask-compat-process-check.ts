@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { sourceFingerprint } from '../src/build.ts';
 import { runCommand } from '../src/command.ts';
-import { candidateHandoffHash, combinationPassed, compatibilityPlans, executedScenario, goalWorkerName, mixedCombinationPassed, mixedVersionName, recoveryPassed, repairArguments, runCombination, workerCombinationPassed } from '../src/subtask-compat-process.ts';
+import { candidateHandoffHash, combinationPassed, compatibilityPlans, executedScenario, goalWorkerName, mixedCombinationPassed, mixedVersionName, recordStoppedSequence, recoveryCleanupConfirmed, recoveryPassed, repairArguments, runCombination, runCompatibilityPlans, workerCombinationPassed } from '../src/subtask-compat-process.ts';
 import { migrationManifestHash } from '../src/subtask-compat-recovery-migrations.ts';
 import { revisionFingerprint } from '../src/subtask-compat-source.ts';
 
@@ -15,6 +15,60 @@ test('a passing child cannot substitute a different source revision or incomplet
   assert.equal(combinationPassed(result, manifest, 'different', 'baseline'), false);
   assert.equal(combinationPassed(result, manifest, 'candidate', 'different'), false);
   assert.equal(combinationPassed(result, { ...manifest, cleanup: { completed: false } }, 'candidate', 'baseline'), false);
+});
+
+test('unconfirmed combination cleanup prevents every later combination from starting', async () => {
+  const plans = compatibilityPlans();
+  const failedResult = { exitCode: 1, signal: null, interrupted: false, cleanupUnconfirmed: false };
+  for (const manifest of [null, {}, { cleanup: {} }, { cleanup: { completed: false } }]) {
+    const started: string[] = [];
+    const report: { status: string; combinations: Record<string, unknown>; recovery: Record<string, unknown> } = { status: 'running', combinations: {}, recovery: { status: 'not-run' } };
+    const outcome = await runCompatibilityPlans(plans, async plan => {
+      started.push(plan.key);
+      report.combinations[plan.key] = { ...failedResult, manifest };
+      return { kind: 'finished', result: failedResult, manifest, passed: false };
+    });
+    assert.deepEqual(started, ['candidate']);
+    assert.deepEqual(outcome, { failed: true, interrupted: false, unconfirmed: true, stoppedAfter: 'candidate' });
+    recordStoppedSequence(report, plans, outcome);
+    assert.equal(report.status, 'unconfirmed');
+    assert.deepEqual(report.combinations.candidate, { ...failedResult, manifest });
+    for (const plan of plans.slice(1)) assert.deepEqual(report.combinations[plan.key], { status: 'not-run', reason: 'prior-cleanup-unconfirmed' });
+    assert.deepEqual(report.recovery, { status: 'not-run', reason: 'prior-cleanup-unconfirmed' });
+  }
+  const started: string[] = [];
+  const outcome = await runCompatibilityPlans(plans, async plan => {
+    started.push(plan.key);
+    return plan.key === 'baseline' ? { kind: 'runner-error' } : { kind: 'finished', result: { ...failedResult, exitCode: 0 }, manifest: { cleanup: { completed: true } }, passed: true };
+  });
+  assert.deepEqual(started, ['candidate', 'baseline']);
+  assert.deepEqual(outcome, { failed: true, interrupted: false, unconfirmed: true, stoppedAfter: 'baseline' });
+});
+
+test('confirmed cleanup permits subsequent combinations after a test failure, while interruption stops them', async () => {
+  const plans = compatibilityPlans(), started: string[] = [];
+  const result = { exitCode: 1, signal: null, interrupted: false, cleanupUnconfirmed: false };
+  const outcome = await runCompatibilityPlans(plans, async plan => {
+    started.push(plan.key);
+    return { kind: 'finished', result, manifest: { cleanup: { completed: true } }, passed: false };
+  });
+  assert.deepEqual(started, plans.map(plan => plan.key));
+  assert.deepEqual(outcome, { failed: true, interrupted: false, unconfirmed: false });
+  const interrupted = await runCompatibilityPlans(plans, async () => ({ kind: 'finished', result: { ...result, interrupted: true }, manifest: { cleanup: { completed: true } }, passed: false }));
+  assert.deepEqual(interrupted, { failed: true, interrupted: true, unconfirmed: false, stoppedAfter: 'candidate' });
+  const deadline = await runCompatibilityPlans(plans, async () => ({ kind: 'finished', result: { ...result, cleanupUnconfirmed: true }, manifest: { cleanup: { completed: true } }, passed: true }));
+  assert.deepEqual(deadline, { failed: true, interrupted: false, unconfirmed: true, stoppedAfter: 'candidate' });
+});
+
+test('recovery requires its own confirmed cleanup receipt even when the child exits', () => {
+  const result = { exitCode: 1, signal: null, interrupted: false, cleanupUnconfirmed: false };
+  const receipt = { cleanup: { verified: true, quiescent: true, originQuiescent: true, usersStopped: true, pendingDocker: 0, pendingProcesses: 0 } };
+  assert.equal(recoveryCleanupConfirmed(result, receipt), true);
+  assert.equal(recoveryCleanupConfirmed(result, null), false);
+  assert.equal(recoveryCleanupConfirmed(result, { cleanup: { ...receipt.cleanup, verified: false } }), false);
+  assert.equal(recoveryCleanupConfirmed(result, { cleanup: { ...receipt.cleanup, pendingProcesses: 1 } }), false);
+  assert.equal(recoveryCleanupConfirmed({ ...result, cleanupUnconfirmed: true }, receipt), false);
+  assert.equal(recoveryCleanupConfirmed(undefined, receipt), false);
 });
 
 test('only the successful candidate combination can hand its exact built Server to recovery', () => {

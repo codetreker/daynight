@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { runCommand } from './command.ts';
-import { candidateHandoffHash, compatibilityPlans, mixedCombinationPassed, recoveryPassed, repairArguments, runCombination, workerCombinationPassed, type CombinationManifest, type CombinationResult, type RecoveryReceipt } from './subtask-compat-process.ts';
+import { candidateHandoffHash, combinationCleanupConfirmed, compatibilityPlans, mixedCombinationPassed, recordStoppedSequence, recoveryCleanupConfirmed, recoveryPassed, repairArguments, runCombination, runCompatibilityPlans, workerCombinationPassed, type CombinationManifest, type CombinationResult, type RecoveryReceipt } from './subtask-compat-process.ts';
 import { verifyCandidateArtifact } from './subtask-compat-artifact.ts';
 import { revisionFingerprint } from './subtask-compat-source.ts';
 
@@ -118,9 +118,6 @@ async function main(): Promise<void> {
     report.recovery = { status: 'not-run', reason: 'repair-source-unverified', category: error instanceof Error ? error.name : 'unknown' };
     report.status = 'failed'; await save(); throw error;
   }
-  let failed = false;
-  let interrupted = false;
-  let unconfirmed = false;
   type CandidateCombination = CombinationResult & { manifestPath?: string | null; manifest?: CombinationManifest };
   const verifiedCandidate = async (): Promise<{ hash: string; manifestPath: string; sourceFingerprint: string; baselineFingerprint: string } | undefined> => {
     const combination = report.combinations.candidate as CandidateCombination | undefined;
@@ -130,12 +127,13 @@ async function main(): Promise<void> {
     if (!hash || !combination?.manifestPath || !sourceFingerprint || !/^[a-f0-9]{64}$/.test(sourceFingerprint) || !baselineFingerprint || !/^[a-f0-9]{64}$/.test(baselineFingerprint) || !await verifyCandidateArtifact(candidateArtifact, hash, candidateSha, runnerRepository)) return undefined;
     return { hash, manifestPath: combination.manifestPath, sourceFingerprint, baselineFingerprint };
   };
-  for (const plan of compatibilityPlans()) {
+  const plans = compatibilityPlans();
+  const sequence = await runCompatibilityPlans(plans, async plan => {
     console.log(`Compatibility combination: ${plan.key}`);
     const candidateInput = plan.workerVariant === undefined ? undefined : await verifiedCandidate();
     if (plan.workerVariant !== undefined && candidateInput === undefined) {
       report.combinations[plan.key] = { status: 'not-run', reason: 'candidate-artifact-unverified' };
-      failed = true; await save(); continue;
+      await save(); return { kind: 'not-run' };
     }
     const runnerArgs = [path.join(import.meta.dirname, 'subtask-compat-run.ts'), '--server', plan.server, '--candidate-sha', candidateSha,
       '--baseline', baselineSha, '--baseline-source', baseline, '--baseline-web', webPath, '--old-server', inputPath(parsed.values['old-server']!),
@@ -148,10 +146,9 @@ async function main(): Promise<void> {
     try { result = await runCombination({ command: process.execPath, args: runnerArgs, cwd: runnerRepository,
       env: { ...process.env, DAYNIGHT_E2E_RUN_POINTER: pointer }, timeoutMs: 1_800_000, cleanupTimeoutMs: 180_000 }); }
     catch (error) {
-      report.combinations[plan.key] = { phase: 'spawn', category: error instanceof Error ? error.name : 'unknown', pointer };
-      failed = true;
+      report.combinations[plan.key] = { phase: 'spawn', category: error instanceof Error ? error.name : 'unknown', pointer, cleanupEvidence: 'unconfirmed' };
       await save();
-      continue;
+      return { kind: 'runner-error' };
     }
     let manifest: CombinationManifest | null = null, manifestPath: string | null = null;
     try {
@@ -160,18 +157,22 @@ async function main(): Promise<void> {
       manifestPath = path.join(location.runDirectory, 'results', 'manifest.json');
       manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     } catch { /* Missing evidence is reported separately from the child exit. */ }
-    report.combinations[plan.key] = { ...result, pointer, manifestPath, manifest };
+    report.combinations[plan.key] = { ...result, pointer, manifestPath, manifest, cleanupEvidence: combinationCleanupConfirmed(result, manifest) ? 'confirmed' : 'unconfirmed' };
     await save();
     const passed = plan.workerVariant === undefined
       ? mixedCombinationPassed(result, manifest, candidateSha, baselineSha, plan.server)
       : candidateInput !== undefined && workerCombinationPassed(result, manifest, candidateSha, baselineSha, plan.workerVariant, candidateInput.hash);
     if (!passed) {
-      failed = true;
       console.error(`Compatibility combination ${plan.key} failed or cleanup is unconfirmed; pointer ${pointer}`);
-      if (result.interrupted || result.cleanupUnconfirmed) { interrupted = result.interrupted; unconfirmed = result.cleanupUnconfirmed; break; }
     }
+    return { kind: 'finished', result, manifest, passed };
+  });
+  let { failed, interrupted, unconfirmed } = sequence;
+  if (sequence.stoppedAfter !== undefined) {
+    recordStoppedSequence(report, plans, sequence);
+    await save();
   }
-  if (!interrupted) {
+  if (!interrupted && !unconfirmed) {
     const recoveryDirectory = path.join(reportDirectory, 'recovery');
     await mkdir(recoveryDirectory, { mode: 0o700 });
     const candidateInput = await verifiedCandidate();
@@ -187,8 +188,10 @@ async function main(): Promise<void> {
     }
     let recovery: RecoveryReceipt | null = null;
     try { recovery = JSON.parse(await readFile(path.join(recoveryDirectory, 'recovery.json'), 'utf8')); } catch { /* Missing receipt is an incomplete result. */ }
-    if (result !== undefined) report.recovery = { ...result, receipt: recovery, path: recoveryDirectory };
-    if (result?.cleanupUnconfirmed) unconfirmed = true;
+    const cleanupConfirmed = recoveryCleanupConfirmed(result, recovery);
+    if (result !== undefined) report.recovery = { ...result, receipt: recovery, path: recoveryDirectory, cleanupEvidence: cleanupConfirmed ? 'confirmed' : 'unconfirmed' };
+    else report.recovery.cleanupEvidence = 'unconfirmed';
+    if (!cleanupConfirmed) unconfirmed = true;
     if (result?.interrupted) interrupted = true;
     if (result === undefined || !recoveryPassed(result, recovery, candidateSha, baselineSha, candidateInput.hash, repair, { candidate: candidateInput.sourceFingerprint, baseline: candidateInput.baselineFingerprint, repair: repairFingerprint })) failed = true;
     }

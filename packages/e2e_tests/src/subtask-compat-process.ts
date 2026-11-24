@@ -11,6 +11,37 @@ export const compatibilityPlans = (): CompatibilityPlan[] => [
 ];
 export type CombinationManifest = { status?: string; combination?: { server?: string; baseline?: string; workerVariant?: string }; artifacts?: { sourceRevision?: string; sourceFingerprint?: string; hashes?: { server?: string } }; baselineArtifacts?: { sourceRevision?: string; sourceFingerprint?: string }; selectedArtifacts?: { server?: string }; candidateHandoff?: { path?: string; sha256?: string; sourceRevision?: string }; scenarios?: { name?: string; status?: string }[]; harnessSHA256?: string; cleanup?: { completed?: boolean } };
 
+export type CompatibilityStep =
+  | { kind: 'not-run' }
+  | { kind: 'runner-error' }
+  | { kind: 'finished'; result: CombinationResult; manifest: CombinationManifest | null; passed: boolean };
+export type CompatibilitySequence = { failed: boolean; interrupted: boolean; unconfirmed: boolean; stoppedAfter?: string };
+
+export const combinationCleanupConfirmed = (result: CombinationResult, manifest: CombinationManifest | null): boolean =>
+  !result.cleanupUnconfirmed && manifest?.cleanup?.completed === true;
+
+// Every later run depends on the previous run having proved its own cleanup.
+export const runCompatibilityPlans = async (plans: CompatibilityPlan[], run: (plan: CompatibilityPlan) => Promise<CompatibilityStep>): Promise<CompatibilitySequence> => {
+  let failed = false;
+  for (const plan of plans) {
+    const step = await run(plan);
+    if (step.kind === 'not-run') { failed = true; continue; }
+    if (step.kind === 'runner-error') return { failed: true, interrupted: false, unconfirmed: true, stoppedAfter: plan.key };
+    const unconfirmed = !combinationCleanupConfirmed(step.result, step.manifest);
+    failed ||= !step.passed || unconfirmed;
+    if (step.result.interrupted || unconfirmed) return { failed, interrupted: step.result.interrupted, unconfirmed, stoppedAfter: plan.key };
+  }
+  return { failed, interrupted: false, unconfirmed: false };
+};
+
+export const recordStoppedSequence = (report: { combinations: Record<string, unknown>; recovery: Record<string, unknown>; status: string }, plans: CompatibilityPlan[], sequence: CompatibilitySequence): void => {
+  if (sequence.stoppedAfter === undefined) return;
+  const reason = sequence.unconfirmed ? 'prior-cleanup-unconfirmed' : 'prior-run-interrupted';
+  for (const plan of plans) if (!(plan.key in report.combinations)) report.combinations[plan.key] = { status: 'not-run', reason };
+  report.recovery = { status: 'not-run', reason };
+  report.status = sequence.unconfirmed ? 'unconfirmed' : 'interrupted';
+};
+
 export const combinationPassed = (result: CombinationResult, manifest: CombinationManifest | null, candidate: string, baseline: string): boolean =>
   result.exitCode === 0 && result.signal === null && !result.interrupted && !result.cleanupUnconfirmed &&
   manifest?.status === 'passed' && manifest.artifacts?.sourceRevision === candidate && manifest.baselineArtifacts?.sourceRevision === baseline && manifest.cleanup?.completed === true;
@@ -65,6 +96,9 @@ export type RecoveryReceipt = {
 };
 export type RepairIdentity = { revision: string; artifact: string; sha256: string };
 export type RecoveryFingerprints = { candidate: string; baseline: string; repair: string };
+export const recoveryCleanupConfirmed = (result: CombinationResult | undefined, receipt: RecoveryReceipt | null): boolean =>
+  result !== undefined && !result.cleanupUnconfirmed && receipt?.cleanup?.verified === true && receipt.cleanup.quiescent === true &&
+  receipt.cleanup.originQuiescent === true && receipt.cleanup.usersStopped === true && receipt.cleanup.pendingDocker === 0 && receipt.cleanup.pendingProcesses === 0;
 export const repairArguments = (repair: RepairIdentity): string[] => {
   if (!/^[a-f0-9]{40}$/.test(repair.revision) || !/^[a-f0-9]{64}$/.test(repair.sha256) || !repair.artifact) throw new Error('Repair revision, artifact and SHA-256 are required.');
   return ['--repair-revision', repair.revision, '--repair-artifact', repair.artifact, '--repair-artifact-sha256', repair.sha256];
