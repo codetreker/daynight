@@ -96,6 +96,8 @@ original process-group identity are persisted separately, so a failed Playwright
 run can verify that the recorded browser group stopped without relying on
 `browser.close()` alone. A missing or conflicting proof keeps the responsibility
 visible instead of turning process absence into a guessed successful cleanup.
+The [fixture ownership lock decision](2026-11-24-fixture-owner-lock.md) covers
+concurrent ownership operations within and across processes.
 The guarded authentication bootstrap records a prepared launch against its
 original launcher. That launcher can record a cancellation before submission as
 never started; after submission, a missing browser proof remains unconfirmed.
