@@ -583,3 +583,67 @@ test('manual resync withdraws peer details and an unsummarized attachment while 
     expect(requests.filter(query => query === '')).toEqual(['', '']); expect(writes).toEqual([]);
   } finally { finish.resolve(); await peer.close(); await attachment.close(); await delayed.close(); }
 });
+
+test('same-history rebuild retains the standalone attachment workspace during Task revalidation', async ({ page, context }) => {
+  await install(page);
+  const taskId = '00000000-0000-4000-8000-000000000224';
+  const first = detailFixture(projectId, taskId, { title: 'Original task', version: 1n });
+  const updated = { ...first, title: 'Updated task', version: 2n, updatedAt: '2026-10-23T00:00:00Z' };
+  const epoch = taskSyncEpoch(projectId), taskRoot = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+  let changed = false;
+  const detailStarted = Promise.withResolvers<void>(), finishDetail = Promise.withResolvers<void>();
+  const writeStarted = Promise.withResolvers<void>(), finishWrite = Promise.withResolvers<void>();
+  const attachment = { path: 'interactive.html', contentType: 'text/html', sizeBytes: 27, createdAt: time, updatedAt: time };
+  await context.route(`**/api/v1/projects/${projectId}/task-sync**`, route => {
+    const current = changed ? updated : first;
+    const graph = { ...graphFixture([current]), project };
+    return route.fulfill({ status: 200, body: stringifyWireJson(taskSyncFixture(graph, { epoch, query: taskSyncQuery(new URL(route.request().url())), actorAccess: access, versionForTask: () => current.version, propertiesForTask: () => current.properties })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await context.route(`**/api/v1/projects/${projectId}/tasks/${taskId}/**`, async route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+    if (path === `${taskRoot}/attachments`) return send({ items: [attachment], nextCursor: null });
+    if (path === `${taskRoot}/sessions`) return send({ items: [], nextCursor: null });
+    if (path === `${taskRoot}/preview/interactive.html`) return route.fulfill({ contentType: 'text/html', body: '<p>Retained preview</p>', headers: { 'Daynight-User-ID': actorId } });
+    if (path === `${taskRoot}/attachments/files/draft.txt` && request.method() === 'PUT') {
+      writeStarted.resolve(); await finishWrite.promise;
+      return send({ path: 'draft.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }, 201);
+    }
+    return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
+  });
+  const peer = await context.newPage();
+  await peer.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, async route => {
+    if (changed) { detailStarted.resolve(); await finishDetail.promise; }
+    return route.fulfill({ status: 200, body: stringifyWireJson(changed ? updated : first), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId, 'Daynight-Task-Epoch': epoch } });
+  });
+  try {
+    await page.goto(`${base}?tab=management`);
+    const card = page.getByRole('region', { name: 'Task sync' }), sync = card.locator('button');
+    await expect(sync).toBeEnabled(); await sync.click(); await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    await peer.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+    const panel = peer.locator('.task-attachments');
+    await panel.getByRole('button', { name: /^interactive\.html/ }).click();
+    const frame = panel.locator('iframe'); await expect(frame.contentFrame().getByText('Retained preview')).toBeVisible();
+    await panel.locator('.attachment-upload-disclosure summary').click();
+    const input = panel.locator('input[type=file]');
+    await input.setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+    await panel.getByRole('button', { name: 'Upload file', exact: true }).click(); await writeStarted.promise;
+    const panelHandle = await panel.elementHandle(), inputHandle = await input.elementHandle(), frameHandle = await frame.elementHandle();
+    changed = true; await sync.click(); await expect(card.getByText('Tasks synced.', { exact: true })).toBeVisible();
+    await detailStarted.promise;
+    expect(await panelHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await inputHandle!.evaluate(element => element.isConnected && (element as HTMLInputElement).files?.[0]?.name === 'draft.txt')).toBe(true);
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await frame.elementHandle()).not.toBeNull();
+    await expect(panel.getByRole('button', { name: 'Uploading…' })).toBeDisabled();
+    await expect(frame.contentFrame().getByText('Retained preview')).toBeVisible();
+    finishDetail.resolve();
+    await expect(peer.getByRole('heading', { name: 'Updated task' })).toBeVisible();
+    expect(await panelHandle!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+    finishWrite.resolve();
+    await expect(panel.getByText('The attachment operation succeeded. Refresh the attachment list to see the current result.')).toBeVisible();
+    await expect(panel.getByLabel('Target relative path')).toHaveValue('');
+    expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+  } finally { finishDetail.resolve(); finishWrite.resolve(); await peer.close(); }
+});

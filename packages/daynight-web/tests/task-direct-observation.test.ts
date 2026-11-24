@@ -3,11 +3,12 @@ import { waitForState as waitFor } from "./helpers/waitForState";
 import { assertResponsePrincipal, getTaskObservation, pauseAuthRequests } from "../src/api/client";
 import * as taskApi from "../src/api/client";
 import { createTaskCacheScope, TaskCacheLifecycleChanged, type TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { executeTaskSync } from "../src/features/task-cache/task-sync-execution";
 import { TaskCacheError, TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from "../src/features/task-cache/database";
 import { openDB } from "idb";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
-import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph, taskSyncResponse, directAccessFixture } from "./helpers/taskSync";
 import { wireResponse } from "./helpers/wireJson";
 
 const project = "10000000-0000-4000-8000-000000000001";
@@ -1252,6 +1253,48 @@ it('retains the write lock when an ambiguous early response is confirmed as the 
   write.resolve(response({ error: { code: 'forbidden', message: 'denied', requestId: 'refused' } }, null, 403));
   await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
   expect(writes).toBe(1);
+});
+
+it.each(['same', 'replacement'] as const)('handles a closed dispatched write after manual confirmation of %s history', async history => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const graph = graphFixture([body()]);
+  const options = { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties };
+  const initial = await scope.beginSync(project, signal());
+  await scope.observeHistory(initial, epoch, signal());
+  await scope.applySync(initial, taskSyncFromGraph(graph, options), signal());
+  const write = deferred<Response>(); let writes = 0; let syncs = 0; let currentEpoch = epoch;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === 'PUT') {
+      writes++;
+      return writes === 1 ? write.promise : Promise.resolve(response({ error: { code: 'forbidden', message: 'denied', requestId: 'next' } }, null, 403));
+    }
+    if (url.includes('/task-sync')) { syncs++; expect(new URL(url, 'http://localhost').search).toBe(''); return Promise.resolve(taskSyncResponse(graph, { ...options, epoch: currentEpoch, viewerId: TEST_VIEWER_ID })); }
+    return Promise.resolve(response(body(), currentEpoch));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(1));
+  unsubscribe(); sessions.releaseRead(project, task);
+  scope.fenceTaskHistory(project, epoch);
+  if (history === 'replacement') currentEpoch = replacement;
+  expect((await executeTaskSync({ scope, projectId: project, signal: signal(), trigger: 'manual-rebuild' })).history).toBe('current');
+  expect(syncs).toBe(1);
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  if (history === 'same') {
+    expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+    sessions.setStatus(project, task, 'done', 1n);
+    await new Promise(resolve => setTimeout(resolve, 0)); expect(writes).toBe(1);
+    write.resolve(response({ error: { code: 'forbidden', message: 'denied', requestId: 'old' } }, null, 403));
+    await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+    sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(2));
+  } else {
+    await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+    sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(2));
+    write.resolve(response({ error: { code: 'forbidden', message: 'denied', requestId: 'old' } }, null, 403));
+  }
+  reopen();
 });
 
 it.each([404, 410] as const)('handles a fresh parent %s after an ambiguous retired 404 without admitting the earlier positive read', async status => {

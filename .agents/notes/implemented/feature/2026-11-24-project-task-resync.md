@@ -33,6 +33,12 @@ original history cannot yet be established retains its owner and blocks another
 dispatch until a read-only observation resolves it; a different history or lost
 access retires the old view.
 
+Confirming the same epoch after an uncertain observation keeps the original
+ownership of dispatched operations while retiring their old read qualifications.
+An open direct Task retained by a same-history rebuild keeps its reading subtree
+while its detail is revalidated; deletion, access loss and real history changes
+still withdraw the affected content.
+
 The [atomic cache decision](../architecture/2026-11-24-task-sync-atomic-deletions.md)
 owns durable ordering and the [read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)
 owns independent readers. The [sync design](../../../../docs/design/daynight-task-sync.md)

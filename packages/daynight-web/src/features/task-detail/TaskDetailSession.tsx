@@ -182,7 +182,16 @@ export class TaskDetailSessions {
             else if (entry.source === "direct" && qualification.rebuildRevision !== null) {
               const receipt = entry.receipt;
               const valid = receipt !== null && await this.scope.verifyTaskRead(receipt.fence, this.scope.signal);
-              if (!this.disposed && opening === entry.openingGeneration && entry.receipt === receipt && !valid) this.requireResourceRecheck(entry);
+              if (this.disposed || opening !== entry.openingGeneration || entry.receipt !== receipt || valid) return;
+              const current = await this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal);
+              if (this.disposed || opening !== entry.openingGeneration || entry.receipt !== receipt) return;
+              if (current.removed) {
+                const generation = this.entryGeneration(entry);
+                if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
+              } else {
+                const retain = receipt !== null && current.inBaseline && current.epoch === receipt.epoch && this.scope.isTaskHistoryConfirmedCurrent(receipt.fence);
+                this.requireResourceRecheck(entry, retain);
+              }
             }
           }).catch(error => {
             if (!this.disposed && opening === entry.openingGeneration && !isAbortError(error)) this.failRead(entry, error, false);
@@ -245,12 +254,13 @@ export class TaskDetailSessions {
     });
     scope.signal.addEventListener("abort", this.onScopeRetired, { once: true });
   }
-  private requireResourceRecheck(entry: Entry): void {
+  private requireResourceRecheck(entry: Entry, retainReading = false): void {
     if (entry.state.status === "deleted") return;
     this.retireMutation(entry, true);
     this.cancelRead(entry.projectId, entry.taskId);
     entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.pending = null;
-    this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "loading", requiresFreshRead: true, refreshing: false });
+    const detail = retainReading ? entry.state.detail : null;
+    this.publish(entry, { ...entry.state, detail, loadedRevision: null, status: detail === null ? "loading" : "ready", requiresFreshRead: true, refreshing: false });
     if (entry.listeners.size > 0) queueMicrotask(() => {
       if (!this.disposed && entry.listeners.size > 0 && entry.state.status !== "deleted")
         void this.read(entry.projectId, entry.taskId, entry.state.revision, false, true);

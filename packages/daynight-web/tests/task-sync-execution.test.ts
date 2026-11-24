@@ -248,11 +248,19 @@ it('confirms an uncertain peer history on an explicit retry using one fresh snap
 
 it('confirms a still-current epoch after a fresh manual retry', async () => {
   const cache = scope(); await seed(cache);
+  const operation = await cache.beginTaskRead(projectId, taskId, 1, 1, signal());
   const before = await cache.beginSync(projectId, signal()); cache.fenceTaskHistory(projectId, before.epoch);
+  expect(cache.isTaskReadCurrent(operation)).toBe(false);
+  expect(cache.isTaskOperationHistoryPossiblyCurrent(operation)).toBe(true);
   vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response()));
   const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
   expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
   expect((await cache.beginSync(projectId, signal())).epoch).toBe(before.epoch);
+  expect(cache.isTaskReadCurrent(operation)).toBe(false);
+  expect(cache.isTaskOperationHistoryConfirmedCurrent(operation)).toBe(true);
+  const next = await cache.beginTaskRead(projectId, taskId, 2, 1, signal());
+  expect(await cache.observeHistory(next, crypto.randomUUID(), signal())).toBe('retired');
+  expect(cache.isTaskOperationHistoryPossiblyCurrent(operation)).toBe(false);
 });
 
 it('confirms the original live history when a conflicting peer baseline is stale', async () => {

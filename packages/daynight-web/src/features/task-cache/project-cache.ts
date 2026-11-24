@@ -1690,7 +1690,8 @@ export class TaskCacheScope {
           ticket.scopeRevision === this.getProjectRevision(projectId) && !this.isProjectAccessBlocked(projectId) && this.uncertainHistories.has(projectId) === confirming &&
           currentHistory?.epoch === observedEpoch && (this.historyVersions.get(projectId) ?? 0) === historyVersion;
         if (current && confirming) {
-          this.uncertainHistories.delete(projectId); this.uncertainDirectRevisions.delete(projectId);
+          this.uncertainHistories.delete(projectId);
+          if (response.epoch !== observedEpoch) this.uncertainDirectRevisions.delete(projectId);
           this.conflictingManifests.delete(projectId);
         }
         if (current && response.epoch !== observedEpoch) {
