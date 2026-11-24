@@ -39,6 +39,37 @@ private ingress bridge. Its container removes the default route before services
 start, retaining only local runtime connections. Runtime services and authentication dependencies are all started by
 this package.
 
+## Ordinary subtask compatibility
+
+The separate compatibility entry accepts full candidate and baseline checkouts,
+their exact commit IDs, the baseline Web build and Server binary, and the npm
+`@codetreker/daynight@0.72.0` tarball. It also requires a repair Server binary,
+its source commit and SHA-256. The candidate must be this checkout; its
+product sources and the baseline product sources must match their commits. The
+entry checks the old CLI integrity and Server build identity, rebuilds baseline
+artifacts for comparison, and records the selected identities for each run. The
+repair artifact must be reproducible from its declared commit and accept the
+candidate's complete migration ledger.
+
+```bash
+pnpm --filter @codetreker/daynight-e2e test:subtask-compat \
+  --candidate "$PWD" --candidate-sha "$(git rev-parse HEAD)" \
+  --baseline "$baseline_checkout" --baseline-sha "$baseline_commit" \
+  --baseline-web "$baseline_web" --old-server "$baseline_server" \
+  --old-server-sha256 "$baseline_server_sha256" --old-cli "$old_cli_tarball" \
+  --repair-sha "$repair_commit" --repair-artifact "$repair_server" \
+  --repair-artifact-sha256 "$repair_server_sha256"
+```
+
+An optional `--auth-source` supplies the pinned UniAuth source as for the normal
+entry. `--check-inputs` checks the supplied identities without running the matrix.
+Full runs use separate isolated systems for each Server selection and a recovery
+case. The Web gateway serves the selected bundle at the same origin while
+forwarding API traffic to the selected Server. Run reports and cleanup receipts
+remain under `.tmp/product-e2e-compat/`; a failed or unconfirmed run is not a
+passing compatibility result. The [compatibility decision](../../.agents/notes/implemented/testing/2026-11-24-ordinary-subtask-compatibility.md)
+records the matrix and its boundaries.
+
 ## Runtime topology
 
 Each run owns a dedicated internal database network, private ingress bridge,
@@ -172,6 +203,13 @@ management edits, then reads and updates the same tasks through REST and MCP
 before and after removing `task:write`. A separate credential of each kind remains
 usable, and a real refresh retains the edited grant's policy. Detailed admission
 and concurrency matrices remain with their owning module and store tests.
+
+The ordinary subtask journey creates a repair task from Web under an in-progress
+acceptance task, reads the same relationship through CLI and MCP, and verifies
+that the parent cannot finish while the repair remains open. It records and
+completes the repair, returns to the original task for reverification, and checks
+Goal progress. Separate tasks exercise confirmed cancellation and deletion, with
+cross-client readback and a new Web snapshot after deletion.
 
 Framework verification is separate from product journeys:
 
