@@ -3,8 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { browserNavigation } from '../../src/app/navigation';
 import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import { OrdinaryTaskRelations } from '../../src/features/task-detail/OrdinaryTaskRelations';
+import { ClockInputProvider } from '../../src/features/task-execution/TaskExecutionClock';
 import type { TaskDetail, TaskStatus } from '../../src/api/types';
-import '../../src/styles/typography.css';
+import '../../src/styles/app.css';
 import '../../src/styles/task-detail.css';
 import '../../src/features/task-detail/task-organization.css';
 
@@ -12,6 +13,12 @@ const project = '10000000-0000-4000-8000-000000000001';
 const id = (n: number) => `20000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const task = (n: number, status: TaskStatus = 'todo'): TaskDetail => ({ id: id(n), projectId: project, type: 'task', parentId: null, parentTaskId: n > 1 && n <= 6 ? id(n - 1) : n > 6 ? id(1) : null, title: `Task ${n}`, description: '', status, version: 1n, properties: {}, tags: [], dependsOn: [], externalDependsOn: [], blockedBy: [], ready: status === 'todo', allowAgents: false, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: status === 'cancelled' ? '2026-01-01T00:00:00Z' : null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
 const tasks = [task(1), task(2, 'proposed'), task(3), task(4, 'in_progress'), task(5, 'done'), task(6, 'cancelled'), task(7, 'todo'), task(8, 'in_progress'), task(9, 'done'), task(10, 'cancelled')];
+if (new URLSearchParams(location.search).has('long')) Object.assign(tasks[1]!, {
+  title: '很长的子任务标题 Long child title without truncation '.repeat(12),
+  tags: [{ id: '50000000-0000-4000-8000-000000000001', name: 'LongTag'.repeat(9) }],
+  assignedTo: '30000000-0000-4000-8000-000000000001', requiredPlatform: 'windows', allowAgents: true,
+  properties: { paused: true }, blockedBy: [id(1)],
+});
 let fail = new URLSearchParams(location.search).has('fail');
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value, (_k, v) => typeof v === 'bigint' ? Number(v) : v), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': '30000000-0000-4000-8000-000000000001', 'Daynight-Task-Epoch': '40000000-0000-4000-8000-000000000001' } });
 window.fetch = async (input, init) => {
@@ -30,6 +37,6 @@ const navigation = browserNavigation();
 const App = () => {
   const location = useSyncExternalStore(navigation.subscribe, navigation.snapshot);
   const selected = tasks.find(item => location.pathname.endsWith(item.id)) ?? tasks[0]!;
-  return <main><h1>{selected.title}</h1><p>A long description for the parent Task.</p><OrdinaryTaskRelations key={selected.id} projectId={project} detail={selected} history={1} active onRefreshGraph={() => {}} /></main>;
+  return <ClockInputProvider input={{ observedAt: '2026-01-01T00:02:00Z', receivedMonotonic: performance.now(), warningMinutes: 60 }}><main className="content"><h1>{selected.title}</h1><p>A long description for the parent Task.</p><OrdinaryTaskRelations key={selected.id} projectId={project} detail={selected} history={1} active onRefreshGraph={() => {}} /></main></ClockInputProvider>;
 };
 createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: new URLSearchParams(location.search).has('zh') ? 'zh-CN' : 'en', issue: null }}><App /></LocaleProvider>);

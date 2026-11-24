@@ -1,12 +1,4 @@
 .ordinary-task-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .ordinary-task-heading h4 { margin: 0; }
-.ordinary-task-list { margin: 12px 0; padding: 0; list-style: none; }
-.ordinary-task-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
-.ordinary-task-list li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
-.ordinary-task-status { flex: none; font-size: var(--text-sm); }
-.ordinary-task-status-proposed { color: var(--task-proposed-ink); }
-.ordinary-task-status-todo { color: var(--task-todo-ink); }
-.ordinary-task-status-in_progress { color: var(--task-in_progress-ink); }
-.ordinary-task-status-done { color: var(--task-done-ink); }
-.ordinary-task-status-cancelled { color: var(--task-cancelled-ink); }
+.ordinary-task-list { display: grid; gap: 8px; min-width: 0; margin: 12px 0; padding: 0; list-style: none; }
 .ordinary-task-relations nav { display: flex; gap: 8px; }

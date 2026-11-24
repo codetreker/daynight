@@ -16,6 +16,9 @@ import { pollingInterval } from '../../app/polling';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import './ordinary-task-relations.css';
 import { TaskLifecycleBlockers, taskLifecycleReason } from './TaskLifecycleBlockers';
+import { OrdinarySubtaskRow } from './OrdinarySubtaskRow';
+import type { GraphSnapshot } from '../projects/useTaskGraph';
+import { TaskExecutionClockProvider, useTaskExecutionClock } from '../task-execution/TaskExecutionClock';
 
 // Relation pages use their own epoch-qualified Task read, independently of the
 // detail source. A project graph is not an authoritative child list.
@@ -23,6 +26,7 @@ export type OrdinaryTaskRelationsProps = {
   readonly projectId: string;
   readonly detail: TaskDetail | null;
   readonly taskId?: string;
+  readonly snapshot?: GraphSnapshot | null;
   readonly subtasksActive?: boolean;
   readonly history: number;
   readonly active: boolean;
@@ -33,9 +37,10 @@ export type OrdinaryTaskRelationsProps = {
 type View = { readonly owner: object; readonly page: TaskChildrenPage | null; readonly parent: TaskDetail | null; readonly error: unknown; readonly parentError: unknown; readonly pending: boolean; readonly fence: TaskReadFence | null; readonly current: TaskDetail | null };
 const denied = (error: unknown) => error instanceof ApiError && error.kind === 'server' && [401, 403, 404, 410].includes(error.status ?? 0);
 
-export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskId, subtasksActive = true, history, active, onRefreshGraph, render }: OrdinaryTaskRelationsProps) => {
-  const { locale, messages } = useI18n(); const zh = locale === 'zh-CN';
+export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskId, snapshot, subtasksActive = true, history, active, onRefreshGraph, render }: OrdinaryTaskRelationsProps) => {
+  const { locale } = useI18n(); const zh = locale === 'zh-CN';
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
+  const inheritedClock = useTaskExecutionClock();
   const taskId = explicitTaskId ?? detail?.id ?? '';
   const subscribeScope = useCallback((listener: () => void) => {
     const unsubscribe = scope.subscribe(listener); scope.signal.addEventListener('abort', listener);
@@ -129,6 +134,7 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
     return () => { live = false; controller.abort(); };
   }, [scope, projectId, detail?.id, detail?.version, detail?.parentTaskId, active, owner, cursor, attempt]);
   const visible = active && detail !== null && view.owner === owner && !revoked ? view : { owner, page: null, parent: null, error: null, parentError: null, pending: false, fence: null, current: null };
+  const rowsActive = active && subtasksActive && !revoked && access.status === 'ready' && !authRequestsPaused();
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault(); browserNavigation().navigate(event.currentTarget.getAttribute('href')!);
@@ -136,11 +142,13 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
   const link = (item: TaskDetail) => <a href={taskDetailUrl(projectId, item.id, { tab: 'overview', path: null })} onClick={follow}>{item.title}</a>;
   const canCreate = visible.page !== null && visible.fence !== null && visible.current !== null && access.ready && !authRequestsPaused() && visible.current.status !== 'done' && visible.current.status !== 'cancelled' && active;
   const parentSlot = visible.parent !== null || visible.parentError !== null ? <section className="task-detail-section" aria-label={zh ? '父 Task' : 'Parent Task'}><h4>{zh ? '父 Task' : 'Parent Task'}</h4>{visible.parent !== null && link(visible.parent)}{visible.parentError !== null && <div role="alert"><p>{zh ? '无法读取父 Task。' : 'Could not load parent Task.'}</p><button className="button" type="button" onClick={retry}>{zh ? '重试' : 'Retry'}</button></div>}</section> : null;
+  const rows = visible.page === null ? null : <ul className="ordinary-task-list">{visible.page.items.map(item => <OrdinarySubtaskRow key={item.id} projectId={projectId} parentTaskId={taskId} task={item} active={rowsActive} />)}</ul>;
+  const clockedRows = snapshot === undefined && inheritedClock !== null ? rows : <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot ?? null}>{rows}</TaskExecutionClockProvider>;
   const childrenSlot = <section className="task-detail-section ordinary-task-relations" aria-label={zh ? '子任务' : 'Subtasks'}>
       <div className="ordinary-task-heading"><h4>{zh ? '子任务' : 'Subtasks'}</h4><button ref={opener} className="button" type="button" disabled={!canCreate} onClick={() => { const token = Symbol(); presentation.current = token; setCreating(token); }}>{zh ? '新建子任务' : 'New subtask'}</button></div>
       {visible.error !== null && <div role="alert"><p>{zh ? '无法读取子任务。' : 'Could not load subtasks.'} {visible.error instanceof ApiError ? visible.error.serverMessage ?? visible.error.message : visible.error instanceof Error ? visible.error.message : ''}</p><button className="button" type="button" onClick={retry}>{zh ? '重试' : 'Retry'}</button></div>}
       {visible.page === null && visible.error === null && <p role="status">{zh ? '正在读取子任务…' : 'Loading subtasks…'}</p>}
-      {visible.page !== null && <>{visible.page.items.length === 0 ? <p>{zh ? '暂无子任务' : 'No subtasks'}</p> : <ul className="ordinary-task-list">{visible.page.items.map(item => <li key={item.id}><span>{link(item)}</span><span className={`ordinary-task-status ordinary-task-status-${item.status}`}>{messages.common.status[item.status]}</span></li>)}</ul>}
+      {visible.page !== null && <>{visible.page.items.length === 0 ? <p>{zh ? '暂无子任务' : 'No subtasks'}</p> : clockedRows}
         {(previous.length > 0 || visible.page.nextCursor !== null) && <nav aria-label={zh ? '子任务分页' : 'Subtask pages'}><button className="button" type="button" disabled={visible.pending || previous.length === 0} onClick={() => { setCursor(previous[previous.length - 1] ?? null); setPrevious(previous.slice(0, -1)); }}>{zh ? '上一页' : 'Previous'}</button><button className="button" type="button" disabled={visible.pending || visible.page.nextCursor === null} onClick={() => { setPrevious([...previous, cursor]); setCursor(visible.page!.nextCursor); }}>{zh ? '下一页' : 'Next'}</button></nav>}</>}
     </section>;
   if (!subtasksActive || !active || revoked || authRequestsPaused() || detail === null) presentation.current = null;

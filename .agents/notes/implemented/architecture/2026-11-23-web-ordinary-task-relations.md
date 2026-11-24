@@ -17,7 +17,9 @@ between a missing `parentTaskId` and an explicit null. Direct child pages use th
 authorized parent filter and current Task and project-history admission. The
 ordinary relation controls share a detail component with separate parent and child
 slots, mounted across the production Task reading surface. The [subtask tab decision](2026-11-24-web-subtask-tab.md) owns their current presentation and independent publication. Links target the ordinary Task's
-independent detail URL and use the existing draft-aware browser navigation.
+independent detail URL and use the existing draft-aware browser navigation. Child
+presentation uses the [shared-row integration](2026-11-24-detail-subtask-shared-row.md)
+with authorized Task details; relation scope and pagination remain with this host.
 
 The initial relationship delivery kept production composition inactive until
 lifecycle feedback and cache withdrawal could be integrated. The
