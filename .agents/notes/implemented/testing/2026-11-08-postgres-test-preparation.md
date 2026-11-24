@@ -391,7 +391,7 @@ search fixture keeps its complete description and constructs its expected
 snippet independently.
 
 [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
-[Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
+[Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/member_scope_test.go),
 and [Profile Patch](../../../../packages/daynight-server/internal/core/store/postgres/user_profile_mechanism_test.go)
 use a short window based on the PostgreSQL clock after the holder takes the
 target row lock and the waiter and observer connections are warm. The observer
