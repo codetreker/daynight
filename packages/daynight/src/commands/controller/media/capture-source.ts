@@ -12,7 +12,7 @@ export class ImageCapturePositionError extends Error {}
 export class ImageCapturePendingAckError extends Error {}
 
 /** A retry can only reuse the original durable occurrence and locator. */
-export const createImageCaptureSource = (db: Database.Database, transactions: Transactions, snapshot: () => ControllerSnapshot, timeline?: () => TimelineStore) => {
+export const createImageCaptureSource = (db: Database.Database, transactions: Transactions, snapshot: () => ControllerSnapshot, timeline?: () => TimelineStore, onReceipt?: (receipt: ImageCaptureReceipt) => void) => {
   const key = (captureId: string) => `capture:${imageId(captureId)}`;
   const load = (captureId: string): Capture => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key(captureId)) as { value: string } | undefined;
@@ -127,7 +127,9 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
         // connection. It cannot revive a previous attempt or roll back revision.
         capture.attemptId = receipt.attemptId; capture.attempts.push(receipt.attemptId);
       }
-      capture.receipt = receipt; save(capture); return receipt;
+      capture.receipt = receipt; save(capture);
+      onReceipt?.(receipt);
+      return receipt;
     }),
   };
 };

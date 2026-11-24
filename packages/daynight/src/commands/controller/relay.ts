@@ -9,12 +9,15 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { SESSION_PROTOCOL, type SessionCommand, type SessionOperation, type ControllerFence } from "../../session/protocol.js";
 import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type ControllerMessage, type ControllerGrantResponse, type SourceEvent, type Reconciliation, type ControllerState, type ContentResponse, type ContentRequest, type ImageRequest, type ImageResponse, parseImageCaptureMessage, type ImageCaptureAction, type ImageCaptureBody, type ImageCaptureMessage } from "../../session/controller-protocol.js";
-import type { ControllerLaunchTicket } from "./launch-ticket.js";
+import { isBotHistoryTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 import { CONTENT_READ_VERSION_HEADER, SessionHistoryError } from "../../session/history.js";
 import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
+import { BOT_HISTORY_WINDOW_VERSION } from "../../session/bot-history-window.js";
+import { publishBotHistoryWindow, readPublishedBotHistoryPage, type BotHistoryWindowSnapshot, type PublishedBotHistory } from "./bot-history-relay.js";
 
 const ONLINE_RELAY_VERSION_HEADER = "Daynight-Online-Relay-Version";
+type BotCheckpointDraft = { sourceThrough: string; revision: string; snapshot: BotHistoryWindowSnapshot | null; previous: PublishedBotHistory | null };
 export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" || operation.kind === "worker_input" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
 export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promise<ControllerGrantResponse> => {
   const metadata = await lstat(ticket.credentialFile);
@@ -40,6 +43,7 @@ export const waitForImageHistory = async (work: () => Promise<void>, signal?: Ab
   } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
 };
 export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(error: unknown): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
+  const botHistory = isBotHistoryTicket(ticket);
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
@@ -47,6 +51,12 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let supportsDirectCapture = false;
   let onlineMode: "legacy" | "relay" | null = null;
   let connectionAcknowledged: string | null = null;
+  let publishedHistory: PublishedBotHistory | null = null;
+  let checkpointWork: Promise<void> | null = null;
+  let checkpointAbort = new AbortController();
+  let acknowledgedDraft: BotCheckpointDraft | null = null;
+  let nextCheckpointAttempt = 0;
+  let nextResourceRetirement = 0;
   const contentRequests: { request: ContentRequest; response: ContentResponse | null }[] = [];
   let reconciliation: ControllerOperation[][] = [];
   const mediaRequests = new Map<string, { key: string; promise: Promise<void>; controller: AbortController }>();
@@ -124,7 +134,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     })();
     mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(error));
   };
-  let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
+  let pendingBatch: { id: string; through: string; draft: BotCheckpointDraft | null } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
   const authorization = new Map<string, { resolve(value: ImageCapabilities | undefined): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   const settleDispatchRefusal = (operation: SessionOperation, required = false, currentConnection = false): void => {
     const local = journal.getOperation(operation.operationId);
@@ -133,6 +143,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     journal.recordOperation(operation.operationId, operation.state, null, operation.error?.message ?? "Operation no longer has current permission or state.");
   };
   const clearConnection = () => { fence = null; onlineMode = null; connectionAcknowledged = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; for (const work of mediaRequests.values()) work.controller.abort(new Error("Image request connection changed.")); mediaRequests.clear();
+    checkpointAbort.abort(new Error("Bot history connection changed.")); checkpointAbort = new AbortController(); publishedHistory = null; acknowledgedDraft = null; nextCheckpointAttempt = 0;
     for (const request of captureRequests.values()) { clearTimeout(request.timer); request.reject(new Error("Image capture outcome is unknown after relay disconnect; query the original capture.")); } captureRequests.clear(); pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
   const send = (message: ControllerMessage, target = socket) => { if (!target || target.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); target.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
@@ -140,26 +151,86 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     const batch = reconciliation.shift() ?? [];
     send({ ...prefix(), type: "reconcile", final: reconciliation.length === 0, operations: batch.map(o => ({ operationId: o.operationId, state: o.state === "accepted" ? "not_submitted" : ["confirmed", "failed", "rejected", "expired", "provider_accepted"].includes(o.state) ? o.state as Reconciliation["state"] : "unknown", providerResult: publicOperation(ticket, o).providerResult, error: publicOperation(ticket, o).error })) });
   };
+  const botCheckpointReady = (): boolean => publishedHistory !== null && !pendingBatch && publishedHistory.sourceThrough === connectionAcknowledged;
+  const botCheckpointCurrent = (): boolean => botCheckpointReady() && checkpointWork === null
+    && (connectionAcknowledged !== journal.getLastSourceSequence() || publishedHistory?.boundary.windowRevision === journal.getBotHistoryWindowRevision());
+  const botCheckpointFailed = (error: unknown): void => {
+    nextCheckpointAttempt = Date.now() + 1000;
+    callbacks.onError(error);
+  };
+  const retirePublishedResources = (): void => {
+    if (publishedHistory === null) return;
+    nextResourceRetirement = Date.now() + 5000;
+    try { journal.retireBotHistoryResources(new Set(publishedHistory.checkpointEntries.flatMap(entry => entry.resourceIds))); }
+    catch (error) { callbacks.onError(error); }
+  };
+  const draftBotCheckpoint = (sourceThrough: string, revision = journal.getBotHistoryWindowRevision()): BotCheckpointDraft => {
+    if (revision === null) throw new Error("The original Bot has no local history window.");
+    const previous = publishedHistory?.boundary.windowRevision === revision ? publishedHistory : null;
+    const snapshot = previous ? null : journal.readBotHistoryWindow();
+    return { sourceThrough, revision, snapshot, previous };
+  };
+  const startBotCheckpoint = (activeFence: ControllerFence, token: string): void => {
+    const sourceThrough = connectionAcknowledged;
+    if (!botHistory || !synchronized || sourceThrough === null || Date.now() < nextCheckpointAttempt) return;
+    const atLocalHead = sourceThrough === journal.getLastSourceSequence();
+    const revision = atLocalHead ? journal.getBotHistoryWindowRevision() : null;
+    if (atLocalHead && revision === null) throw new Error("The original Bot has no local history window.");
+    if (publishedHistory?.sourceThrough === sourceThrough && (revision === null || publishedHistory.boundary.windowRevision === revision)) return;
+    const draft = revision !== null && acknowledgedDraft?.revision !== revision ? draftBotCheckpoint(sourceThrough, revision) : acknowledgedDraft;
+    if (!draft || draft.sourceThrough !== sourceThrough) return;
+    const connectionSignal = checkpointAbort.signal;
+    // Keep source advancement behind this bounded request. The server requires
+    // the checkpoint's source watermark to equal the current acknowledged one.
+    checkpointWork = publishBotHistoryWindow({
+      serverOrigin: ticket.serverOrigin, token, fence: activeFence, historyEpoch, sourceEpoch: ticket.executionId,
+      ...draft, signal: AbortSignal.any([connectionSignal, AbortSignal.timeout(5000)]),
+    }).then(window => {
+      if (fence !== activeFence || connectionSignal.aborted) return;
+      publishedHistory = window;
+      acknowledgedDraft = null;
+      retirePublishedResources();
+    }).catch(error => {
+      if (fence !== activeFence || connectionSignal.aborted) return;
+      botCheckpointFailed(error);
+    }).finally(() => { checkpointWork = null; });
+  };
+  const waitForBotCheckpoint = async (signal?: AbortSignal): Promise<void> => {
+    if (!botHistory) return;
+    const activeFence = fence;
+    const connectionSignal = checkpointAbort.signal;
+    const deadline = Date.now() + 10_000;
+    while (activeFence !== null && fence === activeFence && synchronized && !signal?.aborted && !connectionSignal.aborted && Date.now() < deadline) {
+      if (botCheckpointCurrent()) return;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new ImageCaptureNotDispatchedError("The current Bot history checkpoint was unavailable before image dispatch.");
+  };
   const connect = async () => {
     if (stopped || connecting || socket) return; connecting = true;
     try {
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const bodyOnly = journal.getHistoryContentPolicy?.() === "task_body";
-      let supportsBodyHistory = false, supportsOnlineRelay = false, invalidOnlineRelay = false;
+      let supportsBodyHistory = false, supportsOnlineRelay = false, invalidOnlineRelay = false, offeredBotHistory = false;
       const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1", [ONLINE_RELAY_VERSION_HEADER]: "1", ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}) }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
       supportsDirectCapture = false;
       ws.on("upgrade", response => { if (socket === ws) { supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; supportsBodyHistory = response.headers[TASK_BODY_HISTORY_VERSION_HEADER.toLowerCase()] === "1"; const version = response.headers[ONLINE_RELAY_VERSION_HEADER.toLowerCase()]; supportsOnlineRelay = version === "1"; invalidOnlineRelay = version !== undefined && version !== "1"; } });
       ws.on("error", error => callbacks.onError(error.message));
-      ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
-      ws.on("open", () => { if (stopped || socket !== ws) return; if (invalidOnlineRelay || bodyOnly && !supportsBodyHistory || journal.getOnlineMode?.() === "relay" && !supportsOnlineRelay) { callbacks.onError(new Error("upgrade_required: The service does not support the original Session protocol.")); ws.close(1008, "Session requires a compatible service"); return; } send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
+      ws.on("close", () => { if (socket !== ws) return; if (offeredBotHistory && fence === null) callbacks.onError(new Error("The service closed the connection before negotiating the Bot history window.")); socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
+      ws.on("open", () => { if (stopped || socket !== ws) return; if (invalidOnlineRelay || bodyOnly && !supportsBodyHistory || journal.getOnlineMode?.() === "relay" && !supportsOnlineRelay) { callbacks.onError(new Error("upgrade_required: The service does not support the original Session protocol.")); ws.close(1008, "Session requires a compatible service"); return; }
+        offeredBotHistory = botHistory;
+        send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...(botHistory ? { botHistoryWindowVersion: BOT_HISTORY_WINDOW_VERSION } : {}), ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) });
+      });
       ws.on("message", data => {
         if (stopped || socket !== ws) return;
         try {
           const message = parseRelayMessage(JSON.parse(data.toString()));
           if (message.type === "welcome") {
             if (fence !== null) throw new Error("Duplicate relay welcome.");
+            offeredBotHistory = false;
             if (message.session.sessionId !== ticket.sessionId || message.session.claimId !== ticket.claimId || message.session.testExecutionId !== ticket.testExecutionId || message.session.executionGeneration !== ticket.executionGeneration || message.session.identity.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Relay identity mismatch.");
+            if (botHistory !== (message.botHistoryWindowVersion === BOT_HISTORY_WINDOW_VERSION)) throw new Error("upgrade_required: The service did not negotiate the original Session history capability.");
             if (supportsOnlineRelay !== (message.onlineMode !== undefined)) throw new Error("Relay welcome capability mismatch.");
             const mode = message.onlineMode ?? "legacy";
             journal.bindOnlineMode?.(mode, message.historyContentPolicy ?? null);
@@ -212,7 +283,12 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
               waiter.reject(new Error(operation.error?.message ?? "Operation no longer has current permission or state."));
             }
           }
-          else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through) || connectionAcknowledged === null || BigInt(message.lastAckedSourceSeq) < BigInt(connectionAcknowledged)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); connectionAcknowledged = message.lastAckedSourceSeq; pendingBatch = null; callbacks.onAcknowledged?.(); }
+          else if (message.type === "events_ack") {
+            if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through) || connectionAcknowledged === null || BigInt(message.lastAckedSourceSeq) < BigInt(connectionAcknowledged)) throw new Error("Invalid event ACK.");
+            journal.acknowledgeEvents(message.lastAckedSourceSeq); connectionAcknowledged = message.lastAckedSourceSeq;
+            acknowledgedDraft = pendingBatch.draft?.sourceThrough === connectionAcknowledged ? pendingBatch.draft : null;
+            pendingBatch = null; callbacks.onAcknowledged?.();
+          }
           else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(error)); }
           else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(message.imageAuthorization); } }
           else if (message.type === "error") { callbacks.onError(`${message.code}: ${message.message}`); ws.close(); }
@@ -246,21 +322,27 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         if (!sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() })) return;
         syncPending = true; return;
       }
+      if (checkpointWork) return;
       const request = contentRequests[0];
       if (request && !request.response) {
         let result: ContentResponse["result"] = null, error: ContentResponse["error"] = null;
         try {
           const query = request.request;
           if (query.kind !== "resource" && query.historyEpoch !== historyEpoch) throw new SessionHistoryError("reset_required", "The history cursor belongs to another connection.");
+          if (botHistory && (query.kind === "timeline" || query.kind === "inspect_page" || query.kind === "entry_chunk")) throw new SessionHistoryError("upgrade_required", "This Bot provides a bounded history window.");
           switch (query.kind) {
             case "timeline": result = journal.readTimeline(query); break;
             case "resource": result = journal.readResource(query.resourceId, query.offset, query.limit); break;
             case "inspect_page": result = journal.readInspection(query); break;
             case "entry_chunk": result = journal.readEntryChunk(query); break;
-            case "bot_history_window": throw new SessionHistoryError("upgrade_required", "This Controller does not provide Bot history windows.");
+            case "bot_history_window":
+              if (!botHistory) throw new SessionHistoryError("upgrade_required", "This Controller does not provide Bot history windows.");
+              if (!publishedHistory || !botCheckpointReady()) throw new SessionHistoryError("reset_required", "The Bot history checkpoint changed before the read.");
+              result = readPublishedBotHistoryPage(publishedHistory, query); break;
           }
         } catch (failure) { error = { code: failure instanceof SessionHistoryError ? failure.code : "content_unavailable", message: failure instanceof Error ? failure.message.slice(0, 4096) : "Local content is unavailable." }; }
-        request.response = { requestId: request.request.requestId, sourceThrough: journal.getLastSourceSequence(), result, error };
+        const sourceThrough = request.request.kind === "bot_history_window" ? connectionAcknowledged ?? journal.getLastSourceSequence() : journal.getLastSourceSequence();
+        request.response = { requestId: request.request.requestId, sourceThrough, result, error };
       }
       const response = request?.response;
       if (response && BigInt(journal.getLastAcknowledgedSequence()) >= BigInt(response.sourceThrough)) {
@@ -268,6 +350,10 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         // remain queued until after the server has captured this page's cursor.
         if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "content_response", ...response })) contentRequests.shift(); return;
       }
+      try { startBotCheckpoint(tickFence, currentToken); }
+      catch (error) { botCheckpointFailed(error); }
+      if (checkpointWork) return;
+      if (Date.now() >= nextResourceRetirement) retirePublishedResources();
       journal.drainProjectionGap();
       const events: SourceEvent[] = []; let bytes = 1024;
       for (const row of journal.pendingEvents(RELAY_LIMITS.maxBatchEvents)) {
@@ -281,7 +367,17 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         if (bytes + size > RELAY_LIMITS.maxFrameBytes) break;
         events.push(event); bytes += size;
       }
-      if (events.length) { const id = randomUUID(); if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "events", batchId: id, sourceEpoch: ticket.executionId, events })) pendingBatch = { id, through: events.at(-1)!.sourceSeq }; }
+      if (events.length) {
+        const id = randomUUID(), through = events.at(-1)!.sourceSeq;
+        // Freeze at the complete local source barrier so continuous projection
+        // cannot keep a ready checkpoint perpetually ahead of every server ACK.
+        let draft: BotCheckpointDraft | null = null;
+        if (botHistory && through === journal.getLastSourceSequence() && Date.now() >= nextCheckpointAttempt) {
+          try { draft = draftBotCheckpoint(through); }
+          catch (error) { botCheckpointFailed(error); }
+        }
+        if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "events", batchId: id, sourceEpoch: ticket.executionId, events })) pendingBatch = { id, through, draft };
+      }
     } catch (error) { if (!tickSocket || current()) { callbacks.onError(error); tickSocket?.close(); } }
     finally { polling = false; }
   };
@@ -297,6 +393,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     currentFence: (): ControllerFence | null => fence ? { ...fence } : null,
     currentOnlineMode: (): "legacy" | "relay" | null => fence ? onlineMode : null,
     currentAcknowledgedSequence: (): string | null => fence ? connectionAcknowledged : null,
+    botHistoryWindowSupported: (): boolean => botHistory && fence !== null,
+    waitForBotCheckpoint,
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
       if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
@@ -308,7 +406,10 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       // Check and enqueue without yielding. The server's controller-channel
       // loop handles frames in order, so later source events cannot invalidate
       // this complete checkpoint before the capture identity is established.
-      if (action === "submit" && onlineMode === "legacy" && (pendingBatch || journal.pendingEvents(1).length || !journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence()))) {
+      if (botHistory && (action === "register" || action === "submit") && !botCheckpointCurrent()) {
+        reject(new ImageCaptureNotDispatchedError("Image capture is waiting for its current Bot history checkpoint.")); return;
+      }
+      if (!botHistory && action === "submit" && onlineMode === "legacy" && (pendingBatch || journal.pendingEvents(1).length || !journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence()))) {
         reject(new ImageCaptureNotDispatchedError("Image capture is waiting for its complete current history checkpoint.")); return;
       }
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
@@ -326,6 +427,6 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     }),
     receipt: (operation: ControllerOperation) => { if (operation.kind !== "worker_input" && synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
     async flush(timeoutMs = 5000): Promise<void> { const end = Date.now() + timeoutMs; while (journal.pendingEvents(1).length && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50)); if (journal.pendingEvents(1).length) throw new Error("Session events remain in the durable outbox."); },
-    close: async (): Promise<void> => { stop(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
+    close: async (): Promise<void> => { stop(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork, ...(checkpointWork ? [checkpointWork] : [])]); },
   };
 };

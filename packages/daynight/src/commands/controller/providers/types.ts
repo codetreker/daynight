@@ -31,7 +31,7 @@ export type NativeReadPolicy = {
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null; images?: Omit<ProviderImageCapabilities, "revision"> };
 export type NativeImageRuntime = {
   /** Patch one original image on the current committed entry, preserving late associations. */
-  patchNativeImagePart?(occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry;
+  patchNativeImagePart?(occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry | null;
   /** Commit and query by the original accepted identity; unknown never authorizes another native send. */
   publishNativeInputAssociation?(request: NativeInputPublicationRequest): NativeInputPublicationResult;
   queryNativeInputAssociation?(identity: NativeInputPublicationIdentity): NativeInputPublicationQuery;
@@ -43,6 +43,7 @@ export type NativeImageRuntime = {
   acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  botHistoryWindow?: true;
   copilotBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
   claudeBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
   codexBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };

@@ -17,7 +17,7 @@ import { openResourceFiles } from "../../../src/commands/controller/content/reso
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
-const journalVersion = 20;
+const journalVersion = 21;
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
@@ -135,7 +135,7 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
-test.each([17, 18, 19] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v20", async version => {
+test.each([17, 18, 19, 20] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to the current format", async version => {
   const f = await windowsStopFixture();
   const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
   const old = new Database(f.file); restoreControllerJournalVersion(old, version);
@@ -374,11 +374,11 @@ test("reads a live shipped v19 journal without mutation, blocks its upgrade and 
     await once(owner.stdout, "data", { signal: AbortSignal.timeout(5000) });
     if (owner.pid === undefined) throw new Error("Journal owner fixture has no PID.");
     const db = new Database(f.file);
-    const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
+    const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as { name: string }[];
     try {
       restoreControllerJournalVersion(db, 19);
       db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(owner.pid);
-      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name != 'worker_lifecycle_bindings' ORDER BY name").all()).toEqual(ddl);
+      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name != 'worker_lifecycle_bindings' ORDER BY name").all()).toEqual(ddl.filter(row => !row.name.startsWith("bot_history_") && row.name !== "bot_resource_retirement"));
     } finally { db.close(); }
     const original = await readFile(f.file);
     expect(readCompatibleControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);

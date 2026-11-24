@@ -54,6 +54,8 @@ export type NativeInputPublicationView = {
   /** Current committed content and durable capture progress can differ after a capture-only commit. */
   readonly entry: NativePublicationEntry;
   readonly slots: readonly CommittedImageProjectionSlot[];
+  /** The entry carries only the original positions needed for recovery. */
+  readonly retired?: true;
 };
 export type NativeInputPublicationError = {
   readonly code: "publication_conflict" | "publication_unavailable" | "publication_unknown";

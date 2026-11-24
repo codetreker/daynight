@@ -16,7 +16,7 @@ import { canonicalImageJson, type DirectCaptureSubmission } from "../../../src/s
 import { createMarkdownTimelinePipeline } from "../../../src/commands/controller/markdown/pipeline.js";
 import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../src/commands/controller/markdown/projection.js";
 import type { ImageOccurrence } from "../../../src/session/image-values.js";
-import type { SessionCommand, SessionResource } from "../../../src/session/protocol.js";
+import { sessionBinding, type SessionCommand, type SessionResource } from "../../../src/session/protocol.js";
 
 const timelineRows = (db: Database.Database): unknown[] => db.prepare("SELECT id,CAST(entry_seq AS TEXT) AS entry_seq,CAST(revision AS TEXT) AS revision,kind,value,content_hash,byte_length FROM timeline_entries ORDER BY timeline_entries.entry_seq").all();
 const timelineTotals = (db: Database.Database): unknown[] => db.prepare("SELECT id,entry_count,byte_length FROM timeline_totals ORDER BY id").all();
@@ -27,11 +27,17 @@ const candidateFiles = async (file: string): Promise<string[]> => {
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
-const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question", origin?: "user" | "daynight") => {
+const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question", origin?: "user" | "daynight", bot = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/native-publication-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: root, nativeHome: path.join(root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
-  const file = path.join(root, "journal.sqlite"), db = new Database(file), journal = openControllerLifecycleStore(file, ticket, { database: db, contentOwnedLocally: true });
+  const user = randomUUID(), executionId = randomUUID();
+  const owner = bot ? { testExecutionId: executionId, botId: randomUUID(), ownerUserId: user, initialInput: "none" as const } : { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: user };
+  const ticket: ControllerLaunchTicket = { ...owner, schemaVersion: 1, launchId: randomUUID(), executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", provider: "copilot", cwd: root, nativeHome: path.join(root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: bot ? "" : "original", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const botHistoryBudget = bot ? { entries: 1, bytes: 4096 } : undefined;
+  const file = path.join(root, "journal.sqlite"), db = new Database(file);
+  let journal: ReturnType<typeof openControllerLifecycleStore>;
+  try { journal = openControllerLifecycleStore(file, ticket, { database: db, contentOwnedLocally: true, ...(botHistoryBudget ? { botHistoryBudget } : {}) }); }
+  catch (error) { if (db.open) db.close(); throw error; }
   const nativeSessionId = "native", nativeMessageId = "message", operationId = randomUUID(), imageId = randomUUID(), resourceId = randomUUID();
   journal.patchSnapshot({ nativeSessionId });
   // These bytes exercise persistence and identity, not image decoding.
@@ -39,8 +45,8 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
   const resource: SessionResource = { resourceId, revision: "1", status: "available", name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256, width: 1, height: 1, frameCount: 1, error: null, ...resourceMetadata };
   journal.saveResource(resource, bytes);
   const images = Array.from({ length: imageCount }, (_, index) => ({ type: "image" as const, imageId: index === 0 ? imageId : randomUUID(), uploadId: randomUUID(), resourceId, byteLength: String(bytes.length), sha256 }));
-  const payload = { ...(origin ? { origin } : {}), content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
-  const command: SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId, sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1", kind: "send_message", payload };
+  const payload = { ...(origin ? { origin } : {}), content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: user, fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
+  const command: SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId, sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: "1", kind: "send_message", payload };
   journal.prepareOperation({ operationId, kind: "send_message", payload, intent: command }); journal.markDispatching(operationId);
   const entryId = nativeEntryId(nativeSessionId, `:user:${nativeMessageId}`);
   const nativeStates = images.map((_, ordinal) => {
@@ -484,5 +490,75 @@ test("a capture patches its own slot in the latest committed entry while an olde
     const updated = f.journal.patchNativeImagePart(f.state.request.occurrence, part);
     expect(updated).toMatchObject({ revision: "3", content: [before.content[0], part, result.view.entry.content[2]] });
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toMatchObject({ state: "committed", receipt: result.receipt, view: { entry: updated } });
+  } finally { f.journal.close(); }
+});
+
+test.each(["after association", "before association", "after journal upgrade"])("Bot recovery preserves the original publication with eviction %s", async when => {
+  const f = await fixture({}, 1, "original private body", "daynight", true);
+  let journal = f.journal;
+  try {
+    f.publishNative();
+    journal.acknowledgeEvents(journal.getLastSourceSequence());
+    const request = f.state.request;
+    journal.registerImageCaptureRequest(request);
+    const evict = () => {
+      journal.projectTimeline({ kind: "user_message", entryId: randomUUID(), revision: "1", content: [{ type: "text", text: "later turn" }] });
+      expect(journal.getTimelineEntry(f.request.identity.entryId)).toBeUndefined();
+    };
+    const originalSequence = journal.getLastSourceSequence();
+    if (when === "before association") evict();
+    const published = journal.publishNativeInputAssociation(f.request);
+    expect(published.state, JSON.stringify(published)).toBe("committed");
+    if (published.state !== "committed") return;
+    if (when === "after journal upgrade") {
+      journal.close();
+      const previous = new Database(f.file);
+      try {
+        previous.exec("DROP INDEX bot_history_image_positions; DROP INDEX bot_history_capture_entry; DROP TABLE bot_history_identity; DROP TABLE bot_history_state; DROP TABLE bot_resource_retirement; PRAGMA user_version=20");
+      } finally { previous.close(); }
+      journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true, botHistoryBudget: { entries: 1, bytes: 4096 } });
+      expect(journal.queryNativeInputAssociation(f.request.identity)).toMatchObject({ state: "committed", receipt: published.receipt });
+    }
+    if (when === "before association") expect(published.receipt.sourceSequence).toBe(originalSequence);
+    else evict();
+    const sequence = journal.getLastSourceSequence();
+    const failed = { captureId: request.captureId, attemptId: request.attemptId, occurrence: request.occurrence, revision: "1", state: "failed" as const, resourceId: null, resource: null, error: { code: "source_missing", message: "Original is missing." } };
+    journal.observeImageCaptureReceipt(failed);
+    journal.applyNativeImageReceipt(request, failed);
+    const part = { type: "image_unavailable" as const, imageId: request.occurrence.imageId, label: "Native image", error: failed.error };
+    expect(journal.patchNativeImagePart(request.occurrence, part)).toBeNull();
+    expect(journal.registerImageOccurrence(request.occurrence, request.nativeSource)).toMatchObject({ acknowledged: true });
+    expect(journal.getLastSourceSequence()).toBe(sequence);
+    journal.retireBotHistoryResources();
+    journal.close();
+
+    journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true, botHistoryBudget: { entries: 1, bytes: 4096 } });
+    const recovered = journal.queryNativeInputAssociation(f.request.identity);
+    expect(recovered).toMatchObject({ state: "committed", receipt: published.receipt, view: { retired: true } });
+    if (recovered.state !== "committed") return;
+    expect(recovered.view.entry.content).toContainEqual(part);
+    expect(recovered.view.entry.content).not.toContainEqual({ type: "text", text: "original private body" });
+    expect(recovered.view.slots.find(slot => slot.state.request.captureId === request.captureId)?.state.phase).toBe("settled");
+    expect(journal.readResource(f.resourceId, "0", 50).resource).toEqual(f.resource);
+    expect(journal.publishNativeInputAssociation(f.request)).toEqual(recovered);
+    expect(journal.getTimelineEntry(f.request.identity.entryId)).toBeUndefined();
+    expect(journal.getLastSourceSequence()).toBe(sequence);
+  } finally { journal.close(); }
+});
+
+test("a delayed native registration uses the retired entry's actual source event and exact provider slot", async () => {
+  const f = await fixture({}, 1, "question", undefined, true);
+  try {
+    const { request } = f.state;
+    f.journal.writeNativeImageState(f.key, f.state);
+    f.journal.projectTimeline({ ...f.request.seed.entry, imageProjectionError: null, revision: "1" });
+    const sourceSequence = f.journal.getLastSourceSequence();
+    f.journal.acknowledgeEvents(sourceSequence);
+    f.journal.projectTimeline({ kind: "user_message", entryId: randomUUID(), revision: "1", content: [{ type: "text", text: "later turn" }] });
+    expect(f.journal.getTimelineEntry(request.occurrence.entryId)).toBeUndefined();
+    expect(() => f.journal.registerImageOccurrence({ ...request.occurrence, imageId: randomUUID() }, request.nativeSource)).toThrow("evidence differs from its original position");
+    expect(f.journal.registerImageOccurrence(request.occurrence, request.nativeSource)).toEqual({ occurrence: request.occurrence, sourceSequence, acknowledged: true });
+    f.journal.registerImageCaptureRequest(request);
+    expect(() => f.journal.imageCaptureProof(request.captureId, request.attemptId)).toThrow("original position is unavailable");
   } finally { f.journal.close(); }
 });

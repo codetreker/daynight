@@ -379,7 +379,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) });
     imageInputs = new CodexImageInputs(options, nativeId);
     imageProjection = new CodexImageProjection(nativeId, options, imageInputs, imageProjector);
-    projection = new CodexProjection(nativeId, (entry, metadata) => imageProjector.publish(entry, [], metadata), imageProjection);
+    projection = new CodexProjection(nativeId, (entry, metadata) => imageProjector.publish(entry, [], metadata), imageProjection, options.botHistoryWindow);
     if (options.resumeNativeSessionId && recovery) {
       // The verified legacy history profile exposes complete turns through
       // thread/read; its paginated item endpoints are unavailable.

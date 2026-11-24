@@ -63,7 +63,7 @@ test.each(["recovery", "shutdown"] as const)("reconciles an exited ordinary v16 
   }
   expect(f.reconcile).toHaveBeenCalledOnce();
   const db = new Database(sqliteFilename(f.original.journalPath), { readonly: true });
-  try { expect(db.pragma("user_version", { simple: true })).toBe(20); }
+  try { expect(db.pragma("user_version", { simple: true })).toBe(21); }
   finally { db.close(); }
   expect(f.leases.release).toHaveBeenCalledWith(f.ticket.launchId);
 });
