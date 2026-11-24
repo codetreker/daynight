@@ -1,0 +1,305 @@
+name: Temporary macOS 3/4 concurrency evidence
+on:
+  push:
+    branches: [daynight/79dd4b93-3711-4f3c-9fa6-d3f8fb276fc4]
+permissions:
+  contents: read
+jobs:
+  three_1:
+    name: macOS concurrency three-1
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 707c1e4add7a8b782a80118a9af9f64567d30c80
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare comparison evidence
+        id: prepare
+        run: |
+          test "$(git rev-parse HEAD)" = '707c1e4add7a8b782a80118a9af9f64567d30c80'
+          test "$(git rev-parse HEAD^{tree})" = 'f313bddf29bcacabc52908336f96cb82aa35fbf2'
+          test -z "$(git status --porcelain)"
+          mkdir -p .tmp/concurrency
+          git rev-parse HEAD HEAD^{tree} > .tmp/concurrency/source.txt
+          node --version > .tmp/concurrency/node.txt
+          pnpm --version > .tmp/concurrency/pnpm.txt
+          pnpm --filter @codetreker/daynight exec vitest --version > .tmp/concurrency/vitest.txt
+          sysctl -n hw.logicalcpu hw.physicalcpu hw.memsize > .tmp/concurrency/hardware.txt
+          sw_vers > .tmp/concurrency/os.txt
+          node --input-type=module -e 'import os from "node:os"; console.log(JSON.stringify({ availableParallelism: os.availableParallelism(), cpus: os.cpus().length }))' > .tmp/concurrency/parallelism.json
+          find .tmp -maxdepth 1 -name 'cli-tests-*' -print | sort > .tmp/concurrency/roots-before.txt
+          cat > packages/daynight/experiment.config.ts <<'EOF'
+          import { fileURLToPath } from "node:url";
+          import { writeFileSync } from "node:fs";
+          import { defineConfig } from "vitest/config";
+          import ordinary from "./vitest.config.js";
+          if (!Array.isArray(ordinary.test?.reporters)) throw new Error("ordinary reporters missing");
+          const meta = { onInit(ctx: any) { writeFileSync(fileURLToPath(new URL("../../.tmp/concurrency/resolved-config.json", import.meta.url)), JSON.stringify({ maxWorkers: ctx.config.maxWorkers, pool: ctx.config.pool, fileParallelism: ctx.config.fileParallelism, watch: ctx.config.watch })); } };
+          export default defineConfig({ ...ordinary, test: { ...ordinary.test, reporters: [...ordinary.test.reporters, meta, ["json", { outputFile: fileURLToPath(new URL("../../.tmp/concurrency/results.json", import.meta.url)) }]] } });
+          EOF
+          cat > .tmp/concurrency/sampler.mjs <<'EOF'
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync } from "node:fs";
+          const root = Number(process.argv[2]);
+          for (;;) {
+            const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,rss=,%cpu=,command="], { encoding: "utf8" }).trim().split("\n").map(line => {
+              const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/);
+              if (!m) return null;
+              const cmd = m[5];
+              const kind = /(?:vitest\s+\d+|workers\/forks|tinypool)/i.test(cmd) ? "fork-marker" : /vitest/i.test(cmd) ? "vitest-marker" : "other";
+              const marker = cmd.match(/(?:node \(vitest \d+\)|vitest\/dist\/workers\/forks(?:\.js)?|tinypool)/i)?.[0] ?? null;
+              return { pid: +m[1], ppid: +m[2], rssKiB: +m[3], cpuPercent: +m[4], kind, marker };
+            }).filter(Boolean);
+            const ids = new Set([root]); let changed = true;
+            while (changed) { changed = false; for (const row of rows) if (ids.has(row.ppid) && !ids.has(row.pid)) { ids.add(row.pid); changed = true; } }
+            appendFileSync(".tmp/concurrency/processes.jsonl", JSON.stringify({ at: new Date().toISOString(), root, processes: rows.filter(row => ids.has(row.pid)) }) + "\n");
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          EOF
+          pnpm --filter @codetreker/daynight exec vitest list --config experiment.config.ts --filesOnly --json=../../.tmp/concurrency/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        id: tests
+        shell: bash
+        run: |
+          node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config experiment.config.ts --maxWorkers=3 &
+          observed=$!
+          node .tmp/concurrency/sampler.mjs "$observed" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
+          set +e
+          wait "$observed"
+          result=$?
+          set -e
+          if ! kill -0 "$sampler" 2>/dev/null || ! test -s .tmp/concurrency/processes.jsonl; then
+            echo "Process sampler failed or produced no evidence" >&2
+            exit 1
+          fi
+          exit "$result"
+      - name: Verify isolation cleanup
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          rm -f packages/daynight/experiment.config.ts
+          find .tmp -maxdepth 1 -name 'cli-tests-*' -print | sort > .tmp/concurrency/roots-after.txt
+          diff -u .tmp/concurrency/roots-before.txt .tmp/concurrency/roots-after.txt
+          test -z "$(git status --porcelain)"
+          ps -axo pid=,ppid=,command= | awk '/node \(vitest [0-9]|workers\/forks/ && !/awk/ { print $1, $2 }' > .tmp/concurrency/remaining-workers.txt
+          test ! -s .tmp/concurrency/remaining-workers.txt
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-three-1
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-probes-three-1
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-failures-three-1
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-termination-three-1
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: concurrency-three-1
+          path: .tmp/concurrency/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  four_1:
+    name: macOS concurrency four-1
+    needs: three_1
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 707c1e4add7a8b782a80118a9af9f64567d30c80
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare comparison evidence
+        id: prepare
+        run: |
+          test "$(git rev-parse HEAD)" = '707c1e4add7a8b782a80118a9af9f64567d30c80'
+          test "$(git rev-parse HEAD^{tree})" = 'f313bddf29bcacabc52908336f96cb82aa35fbf2'
+          test -z "$(git status --porcelain)"
+          mkdir -p .tmp/concurrency
+          git rev-parse HEAD HEAD^{tree} > .tmp/concurrency/source.txt
+          node --version > .tmp/concurrency/node.txt
+          pnpm --version > .tmp/concurrency/pnpm.txt
+          pnpm --filter @codetreker/daynight exec vitest --version > .tmp/concurrency/vitest.txt
+          sysctl -n hw.logicalcpu hw.physicalcpu hw.memsize > .tmp/concurrency/hardware.txt
+          sw_vers > .tmp/concurrency/os.txt
+          node --input-type=module -e 'import os from "node:os"; console.log(JSON.stringify({ availableParallelism: os.availableParallelism(), cpus: os.cpus().length }))' > .tmp/concurrency/parallelism.json
+          find .tmp -maxdepth 1 -name 'cli-tests-*' -print | sort > .tmp/concurrency/roots-before.txt
+          cat > packages/daynight/experiment.config.ts <<'EOF'
+          import { fileURLToPath } from "node:url";
+          import { writeFileSync } from "node:fs";
+          import { defineConfig } from "vitest/config";
+          import ordinary from "./vitest.config.js";
+          if (!Array.isArray(ordinary.test?.reporters)) throw new Error("ordinary reporters missing");
+          const meta = { onInit(ctx: any) { writeFileSync(fileURLToPath(new URL("../../.tmp/concurrency/resolved-config.json", import.meta.url)), JSON.stringify({ maxWorkers: ctx.config.maxWorkers, pool: ctx.config.pool, fileParallelism: ctx.config.fileParallelism, watch: ctx.config.watch })); } };
+          export default defineConfig({ ...ordinary, test: { ...ordinary.test, reporters: [...ordinary.test.reporters, meta, ["json", { outputFile: fileURLToPath(new URL("../../.tmp/concurrency/results.json", import.meta.url)) }]] } });
+          EOF
+          cat > .tmp/concurrency/sampler.mjs <<'EOF'
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync } from "node:fs";
+          const root = Number(process.argv[2]);
+          for (;;) {
+            const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,rss=,%cpu=,command="], { encoding: "utf8" }).trim().split("\n").map(line => {
+              const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/);
+              if (!m) return null;
+              const cmd = m[5];
+              const kind = /(?:vitest\s+\d+|workers\/forks|tinypool)/i.test(cmd) ? "fork-marker" : /vitest/i.test(cmd) ? "vitest-marker" : "other";
+              const marker = cmd.match(/(?:node \(vitest \d+\)|vitest\/dist\/workers\/forks(?:\.js)?|tinypool)/i)?.[0] ?? null;
+              return { pid: +m[1], ppid: +m[2], rssKiB: +m[3], cpuPercent: +m[4], kind, marker };
+            }).filter(Boolean);
+            const ids = new Set([root]); let changed = true;
+            while (changed) { changed = false; for (const row of rows) if (ids.has(row.ppid) && !ids.has(row.pid)) { ids.add(row.pid); changed = true; } }
+            appendFileSync(".tmp/concurrency/processes.jsonl", JSON.stringify({ at: new Date().toISOString(), root, processes: rows.filter(row => ids.has(row.pid)) }) + "\n");
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          EOF
+          pnpm --filter @codetreker/daynight exec vitest list --config experiment.config.ts --filesOnly --json=../../.tmp/concurrency/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        id: tests
+        shell: bash
+        run: |
+          node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config experiment.config.ts --maxWorkers=4 &
+          observed=$!
+          node .tmp/concurrency/sampler.mjs "$observed" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
+          set +e
+          wait "$observed"
+          result=$?
+          set -e
+          if ! kill -0 "$sampler" 2>/dev/null || ! test -s .tmp/concurrency/processes.jsonl; then
+            echo "Process sampler failed or produced no evidence" >&2
+            exit 1
+          fi
+          exit "$result"
+      - name: Verify isolation cleanup
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          rm -f packages/daynight/experiment.config.ts
+          find .tmp -maxdepth 1 -name 'cli-tests-*' -print | sort > .tmp/concurrency/roots-after.txt
+          diff -u .tmp/concurrency/roots-before.txt .tmp/concurrency/roots-after.txt
+          test -z "$(git status --porcelain)"
+          ps -axo pid=,ppid=,command= | awk '/node \(vitest [0-9]|workers\/forks/ && !/awk/ { print $1, $2 }' > .tmp/concurrency/remaining-workers.txt
+          test ! -s .tmp/concurrency/remaining-workers.txt
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-four-1
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-probes-four-1
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-failures-four-1
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-termination-four-1
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: concurrency-four-1
+          path: .tmp/concurrency/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
