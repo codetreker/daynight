@@ -325,7 +325,25 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const aliasOverrides = options.agentCliEnvironment
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
-    const startParams = { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } };
+    const { resumeNativeSessionId, unattended } = options;
+    const permissions = unattended
+      ? { sandbox: "danger-full-access", approvalPolicy: "never" }
+      : resumeNativeSessionId ? {} : {
+        ...(config.sandbox ? { sandbox: config.sandbox } : {}),
+        ...(config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}),
+      };
+    const startParams = {
+      ...(resumeNativeSessionId ? { threadId: resumeNativeSessionId, excludeTurns: true } : {}),
+      cwd: options.cwd,
+      ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}),
+      ...(!resumeNativeSessionId && options.model ? { model: options.model } : {}),
+      ...permissions,
+      config: {
+        "features.default_mode_request_user_input": true,
+        ...(!resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}),
+        ...aliasOverrides,
+      },
+    };
     if (!options.resumeNativeSessionId && options.usageRuntime && recoveryVersion === "0.169.0") Object.assign(startParams, { experimentalRawEvents: true });
     if (resumePath !== undefined) Object.assign(startParams, { path: resumePath });
     if (recovery && !options.resumeNativeSessionId) Object.assign(startParams, { historyMode: "legacy" });
