@@ -1423,7 +1423,7 @@ test('narrow task tabs preserve reading state across dialog, fullscreen and shor
   await page.locator(`#standalone-task-${taskId}`).click();
   const dialog = page.locator('.task-detail-dialog');
   const bar = dialog.locator('.ordinary-task-tabs-wrap [role=tablist]');
-  await expect(bar.getByRole('tab')).toHaveCount(7);
+  await expect(bar.getByRole('tab')).toHaveCount(6);
   await expect(dialog.getByRole('button', { name: 'Dismiss notification' })).toHaveCount(2);
   await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
   await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
@@ -1473,7 +1473,7 @@ test('narrow task tabs preserve reading state across dialog, fullscreen and shor
   await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
   await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
   const pageBar = page.locator('.task-detail-page .ordinary-task-tabs-wrap [role=tablist]');
-  await expect(pageBar.getByRole('tab')).toHaveCount(7);
+  await expect(pageBar.getByRole('tab')).toHaveCount(6);
   await expect.poll(() => pageBar.evaluate(element => {
     const box = element.getBoundingClientRect();
     const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
