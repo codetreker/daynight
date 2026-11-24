@@ -68,7 +68,8 @@ vi.mock("../../../src/commands/controller/process-proof.js", async importOrigina
     },
   };
 });
-vi.mock("../../../src/commands/controller/launch-observation.js", () => ({
+vi.mock("../../../src/commands/controller/launch-observation.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../../../src/commands/controller/launch-observation.js")>(),
   reconcileSubmittedControllerLaunch: async ({ spawnProof }: { spawnProof: unknown }) => {
     const child = native.children.at(-1)!;
     if (child.exitCode === null) await new Promise<void>(resolve => child.once("exit", () => resolve()));
