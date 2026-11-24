@@ -117,7 +117,7 @@ func LifecycleGet(ctx context.Context, d store.WorkerLifecycleReader, user, work
 		r.Capability = "supported"
 	}
 	if s.InstanceID != nil {
-		r.Instance = &model.LifecycleInstance{InstanceID: *s.InstanceID, InstanceEpoch: lifecycleDecimal(s.InstanceEpoch)}
+		r.Instance = &model.LifecycleInstance{InstanceID: *s.InstanceID}
 	}
 	o, err := d.Observation(ctx, user, worker)
 	if errors.Is(err, model.ErrNotFound) {
@@ -126,9 +126,9 @@ func LifecycleGet(ctx context.Context, d store.WorkerLifecycleReader, user, work
 	if err != nil {
 		return r, err
 	}
-	if s.InstanceID != nil && o.Envelope.InstanceID == *s.InstanceID && o.Envelope.InstanceEpoch == lifecycleDecimal(s.InstanceEpoch) && o.Envelope.IntentVersion == lifecycleDecimal(s.IntentVersion) {
+	if s.InstanceID != nil && o.Envelope.InstanceID == *s.InstanceID && o.Envelope.IntentVersion == lifecycleDecimal(s.IntentVersion) {
 		e := o.Envelope
-		r.Observation = &model.LifecycleObservedEnvelope{ProtocolVersion: 1, InstanceID: e.InstanceID, InstanceEpoch: e.InstanceEpoch, IntentVersion: e.IntentVersion, OperationID: e.OperationID, LocalEpoch: e.LocalEpoch, ScopeGeneration: e.ScopeGeneration, ReportSequence: e.ReportSequence, Observation: model.LifecycleObservedObservation{LifecycleObservation: e.Observation, ReceivedAt: o.ReceivedAt, FreshUntil: o.ReceivedAt.Add(LifecycleFreshness)}}
+		r.Observation = &model.LifecycleObservedEnvelope{ProtocolVersion: 1, InstanceID: e.InstanceID, IntentVersion: e.IntentVersion, OperationID: e.OperationID, LocalEpoch: e.LocalEpoch, ScopeGeneration: e.ScopeGeneration, ReportSequence: e.ReportSequence, Observation: model.LifecycleObservedObservation{LifecycleObservation: e.Observation, ReceivedAt: o.ReceivedAt, FreshUntil: o.ReceivedAt.Add(LifecycleFreshness)}}
 	}
 	return r, nil
 }
@@ -176,20 +176,13 @@ func LifecycleRegister(ctx context.Context, d store.WorkerLifecycleDAO, user, wo
 	} else if err != nil {
 		return receipt, err
 	}
-	if (s.InstanceEpoch == 0 && r.PreviousInstanceEpoch != nil) || (s.InstanceEpoch != 0 && (r.PreviousInstanceEpoch == nil || *r.PreviousInstanceEpoch != lifecycleDecimal(s.InstanceEpoch))) {
-		return receipt, lifecycleFault("stale_instance")
-	}
-	if s.InstanceEpoch == math.MaxInt64 {
-		return receipt, lifecycleFault("lifecycle_unavailable")
-	}
-	s.ReconnectAllowed = s.Admission == "open" && s.Desired == "enabled"
-	s.InstanceEpoch++
+	s.ReconnectAllowed = s.Desired == "enabled" && (s.Admission == "open" || s.ReconnectAllowed)
 	s.InstanceID = &r.InstanceID
 	s.Admission = "closed"
 	capability := 1
 	s.CapabilityVersion = &capability
 	s.UpdatedAt = now
-	receipt = model.LifecycleInstanceReceipt{ProtocolVersion: 1, WorkerID: worker, InstanceID: r.InstanceID, InstanceEpoch: lifecycleDecimal(s.InstanceEpoch), IntentVersion: lifecycleDecimal(s.IntentVersion), Desired: s.Desired, Admission: "closed", OperationID: r.OperationID, ReconnectAllowed: s.ReconnectAllowed, ObservedAt: now}
+	receipt = model.LifecycleInstanceReceipt{ProtocolVersion: 1, WorkerID: worker, InstanceID: r.InstanceID, IntentVersion: lifecycleDecimal(s.IntentVersion), Desired: s.Desired, Admission: "closed", OperationID: r.OperationID, ReconnectAllowed: s.ReconnectAllowed, ObservedAt: now}
 	if err = d.SaveLifecycle(ctx, s); err != nil {
 		return receipt, err
 	}
@@ -234,7 +227,7 @@ func LifecycleIntent(ctx context.Context, d store.WorkerLifecycleDAO, user, work
 		return receipt, lifecycleFault("lifecycle_unavailable")
 	}
 	if r.Action == "resume" {
-		if s.InstanceEpoch != lifecycleNumber(*r.InstanceEpoch) {
+		if s.InstanceID == nil || *s.InstanceID != *r.InstanceID {
 			return receipt, lifecycleFault("stale_instance")
 		}
 		o, e := d.Observation(ctx, user, worker)
@@ -286,7 +279,7 @@ func LifecycleIntent(ctx context.Context, d store.WorkerLifecycleDAO, user, work
 
 func lifecycleFresh(s model.WorkerLifecycle, o model.LifecycleStoredObservation, now time.Time) bool {
 	e := o.Envelope
-	return s.InstanceID != nil && e.InstanceID == *s.InstanceID && e.InstanceEpoch == lifecycleDecimal(s.InstanceEpoch) && e.IntentVersion == lifecycleDecimal(s.IntentVersion) && lifecycleSamePointer(e.OperationID, s.CurrentOperationID) && !now.Before(o.ReceivedAt) && now.Before(o.ReceivedAt.Add(LifecycleFreshness))
+	return s.InstanceID != nil && e.InstanceID == *s.InstanceID && e.IntentVersion == lifecycleDecimal(s.IntentVersion) && lifecycleSamePointer(e.OperationID, s.CurrentOperationID) && !now.Before(o.ReceivedAt) && now.Before(o.ReceivedAt.Add(LifecycleFreshness))
 }
 
 // An interrupted local handshake needs a new explicit intent, while its
@@ -356,7 +349,7 @@ func LifecycleActivate(ctx context.Context, d store.WorkerLifecycleDAO, user, wo
 	if err != nil {
 		return receipt, err
 	}
-	if s.InstanceID == nil || *s.InstanceID != r.InstanceID || lifecycleDecimal(s.InstanceEpoch) != r.InstanceEpoch {
+	if s.InstanceID == nil || *s.InstanceID != r.InstanceID {
 		return receipt, lifecycleFault("stale_instance")
 	}
 	if lifecycleDecimal(s.IntentVersion) != r.IntentVersion {
@@ -374,7 +367,7 @@ func LifecycleActivate(ctx context.Context, d store.WorkerLifecycleDAO, user, wo
 		if e != nil {
 			return receipt, e
 		}
-		if original.LocalEpoch == nil || *original.LocalEpoch != r.LocalEpoch || original.InstanceEpoch == nil || *original.InstanceEpoch != r.InstanceEpoch {
+		if original.LocalEpoch == nil || *original.LocalEpoch != r.LocalEpoch || original.InstanceID == nil || *original.InstanceID != r.InstanceID {
 			return receipt, lifecycleFault("stale_report")
 		}
 	case "bootstrap":
@@ -404,7 +397,7 @@ func LifecycleActivate(ctx context.Context, d store.WorkerLifecycleDAO, user, wo
 	if action == "" {
 		action = "resume"
 	}
-	receipt = model.LifecycleActivationReceipt{ProtocolVersion: 1, WorkerID: worker, OperationID: r.OperationID, Action: action, InstanceEpoch: r.InstanceEpoch, IntentVersion: r.IntentVersion, LocalEpoch: r.LocalEpoch, ScopeGeneration: r.ScopeGeneration, Admission: "open", ObservedAt: now}
+	receipt = model.LifecycleActivationReceipt{ProtocolVersion: 1, WorkerID: worker, OperationID: r.OperationID, Action: action, InstanceID: r.InstanceID, IntentVersion: r.IntentVersion, LocalEpoch: r.LocalEpoch, ScopeGeneration: r.ScopeGeneration, Admission: "open", ObservedAt: now}
 	s.Admission = "open"
 	s.ReconnectAllowed = false
 	if action == "bootstrap" {
@@ -440,7 +433,7 @@ func LifecycleObserve(ctx context.Context, d store.WorkerLifecycleDAO, user, wor
 	if err != nil {
 		return receipt, err
 	}
-	if s.InstanceID == nil || r.InstanceID != *s.InstanceID || r.InstanceEpoch != lifecycleDecimal(s.InstanceEpoch) {
+	if s.InstanceID == nil || r.InstanceID != *s.InstanceID {
 		return receipt, lifecycleFault("stale_instance")
 	}
 	if r.IntentVersion != lifecycleDecimal(s.IntentVersion) || !lifecycleSamePointer(r.OperationID, s.CurrentOperationID) {
@@ -458,7 +451,7 @@ func LifecycleObserve(ctx context.Context, d store.WorkerLifecycleDAO, user, wor
 			if !bytes.Equal(lifecycleMarshal(r), lifecycleMarshal(previous.Envelope)) {
 				return receipt, lifecycleFault("stale_report")
 			}
-			return model.LifecycleObservationReceipt{ProtocolVersion: 1, Accepted: true, IntentVersion: r.IntentVersion, InstanceEpoch: r.InstanceEpoch, ReportSequence: r.ReportSequence, ReceivedAt: previous.ReceivedAt}, nil
+			return model.LifecycleObservationReceipt{ProtocolVersion: 1, Accepted: true, IntentVersion: r.IntentVersion, InstanceID: r.InstanceID, ReportSequence: r.ReportSequence, ReceivedAt: previous.ReceivedAt}, nil
 		}
 		if lifecycleNumber(r.LocalEpoch) < lifecycleNumber(previous.Envelope.LocalEpoch) || lifecycleNumber(r.ScopeGeneration) < lifecycleNumber(previous.Envelope.ScopeGeneration) || lifecycleNumber(r.Observation.InventoryRevision) < lifecycleNumber(previous.Envelope.Observation.InventoryRevision) {
 			return receipt, lifecycleFault("stale_report")
@@ -488,7 +481,7 @@ func LifecycleObserve(ctx context.Context, d store.WorkerLifecycleDAO, user, wor
 			}
 		}
 	}
-	return model.LifecycleObservationReceipt{ProtocolVersion: 1, Accepted: true, IntentVersion: r.IntentVersion, InstanceEpoch: r.InstanceEpoch, ReportSequence: r.ReportSequence, ReceivedAt: now}, nil
+	return model.LifecycleObservationReceipt{ProtocolVersion: 1, Accepted: true, IntentVersion: r.IntentVersion, InstanceID: r.InstanceID, ReportSequence: r.ReportSequence, ReceivedAt: now}, nil
 }
 
 func LifecycleResolve(ctx context.Context, d store.WorkerLifecycleDAO, user, worker, id string, r model.LifecycleResolveRequest, now time.Time) (model.LifecycleOperationResult, error) {
@@ -524,7 +517,7 @@ func LifecycleResolve(ctx context.Context, d store.WorkerLifecycleDAO, user, wor
 			if parseErr != nil {
 				return result, parseErr
 			}
-			if intent.InstanceEpoch == nil || intent.LocalEpoch == nil || request.InstanceEpoch != *intent.InstanceEpoch || request.LocalEpoch != *intent.LocalEpoch || request.IntentVersion != lifecycleDecimal(op.IntentVersion) {
+			if intent.InstanceID == nil || intent.LocalEpoch == nil || request.InstanceID != *intent.InstanceID || request.LocalEpoch != *intent.LocalEpoch || request.IntentVersion != lifecycleDecimal(op.IntentVersion) {
 				return result, lifecycleFault("operation_conflict")
 			}
 			if len(op.ActivationHash) > 0 {

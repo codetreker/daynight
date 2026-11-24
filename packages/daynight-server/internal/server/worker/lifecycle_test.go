@@ -58,13 +58,13 @@ const lifecycleWorkerURL = "/api/v1/me/workers/22222222-2222-4222-8222-222222222
 const lifecycleOperationID = "33333333-3333-4333-8333-333333333333"
 const lifecycleInstanceID = "44444444-4444-4444-8444-444444444444"
 const lifecycleDisableJSON = `{"protocolVersion":1,"operationId":"33333333-3333-4333-8333-333333333333","action":"disable","expectedVersion":"1","source":"web","localEpoch":null,"originOperationId":null}`
-const lifecycleInstanceJSON = `{"protocolVersion":1,"operationId":"33333333-3333-4333-8333-333333333333","instanceId":"44444444-4444-4444-8444-444444444444","previousInstanceEpoch":null,"capabilities":{"disable":true,"resume":true,"inventory":1,"dispatchFence":1},"platform":"macos"}`
-const lifecycleActivationJSON = `{"protocolVersion":1,"operationId":"33333333-3333-4333-8333-333333333333","instanceId":"44444444-4444-4444-8444-444444444444","instanceEpoch":"1","intentVersion":"3","localEpoch":"2","scopeGeneration":"2","reportSequence":"5"}`
+const lifecycleInstanceJSON = `{"protocolVersion":1,"operationId":"33333333-3333-4333-8333-333333333333","instanceId":"44444444-4444-4444-8444-444444444444","capabilities":{"disable":true,"resume":true,"inventory":1,"dispatchFence":1},"platform":"macos"}`
+const lifecycleActivationJSON = `{"protocolVersion":1,"operationId":"33333333-3333-4333-8333-333333333333","instanceId":"44444444-4444-4444-8444-444444444444","intentVersion":"3","localEpoch":"2","scopeGeneration":"2","reportSequence":"5"}`
 
 func lifecycleObservationJSON(t *testing.T) string {
 	t.Helper()
 	zero := int64(0)
-	b, e := json.Marshal(model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lifecycleInstanceID, InstanceEpoch: "1", IntentVersion: "2", OperationID: ptrLifecycle(lifecycleOperationID), LocalEpoch: "2", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}})
+	b, e := json.Marshal(model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lifecycleInstanceID, IntentVersion: "2", OperationID: ptrLifecycle(lifecycleOperationID), LocalEpoch: "2", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}})
 	if e != nil {
 		t.Fatal(e)
 	}

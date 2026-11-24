@@ -30,7 +30,7 @@ export const controllerLaunchNeedsReplacement = (homeDirectory: string, ticket: 
     const resource = store.getResource(ticket.launchId);
     if (resource === null) return false;
     if (resource.ownerKind !== "controller" || resource.operationId !== ticket.launchId
-      || resource.instanceId !== binding.instanceId || resource.instanceEpoch !== binding.instanceEpoch || resource.scopeGeneration !== binding.scopeGeneration
+      || resource.instanceId !== binding.instanceId || resource.scopeGeneration !== binding.scopeGeneration
       || resource.identity.kind !== "launch" || resource.identity.launchId !== ticket.launchId
       || resource.identity.executionId !== ticket.executionId || resource.identity.sessionId !== ticket.sessionId
       || resource.identity.executionGeneration !== ticket.executionGeneration || resource.identity.controllerInstanceId !== ticket.controllerInstanceId

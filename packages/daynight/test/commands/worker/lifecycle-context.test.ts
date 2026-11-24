@@ -5,7 +5,7 @@ import { assistantTaskClaimFingerprint } from "../../../src/api/assistant-task-p
 const userId = "11111111-1111-4111-8111-111111111111", workerId = "22222222-2222-4222-8222-222222222222", operationId = "33333333-3333-4333-8333-333333333333", botId = "44444444-4444-4444-8444-444444444444", taskId = "55555555-5555-4555-8555-555555555555";
 const fixture = () => {
   const reserveExecution = vi.fn(), recordResource = vi.fn(), failed = vi.fn();
-  const context: LifecycleContext = { store: { reserveExecution, recordResource } as unknown as LifecycleContext["store"], binding: { serverOrigin: "http://localhost:8787", userId, workerId, instanceId: workerId, instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" }, failed };
+  const context: LifecycleContext = { store: { reserveExecution, recordResource } as unknown as LifecycleContext["store"], binding: { serverOrigin: "http://localhost:8787", userId, workerId, instanceId: workerId, localEpoch: "1", intentVersion: "1", scopeGeneration: "1" }, failed };
   return { context, reserveExecution, recordResource, failed };
 };
 describe("external results and local producer joins", () => {

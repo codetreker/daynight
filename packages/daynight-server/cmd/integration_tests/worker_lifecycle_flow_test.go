@@ -30,7 +30,7 @@ func serverAPIWorkerLifecycleFlow(t *testing.T, f *fixture) {
 	base += "/lifecycle"
 	headers := http.Header{"X-Daynight-Worker-Lifecycle": {"1"}}
 	registered := requestJSON[model.LifecycleInstanceReceipt](t, f, http.MethodPost, base+"/instances", model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: uuid.NewString(), InstanceID: instanceID, Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "linux"}, http.StatusOK, headers)
-	if registered.InstanceEpoch != "1" || registered.IntentVersion != "1" || registered.Admission != "closed" {
+	if registered.InstanceID != instanceID || registered.IntentVersion != "1" || registered.Admission != "closed" {
 		t.Fatalf("registered: %+v", registered)
 	}
 	disableID := uuid.NewString()
@@ -39,7 +39,7 @@ func serverAPIWorkerLifecycleFlow(t *testing.T, f *fixture) {
 		t.Fatalf("disable receipt: %+v", disabled)
 	}
 	zero := int64(0)
-	observation := model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: instanceID, InstanceEpoch: "1", IntentVersion: "2", OperationID: &disableID, LocalEpoch: "2", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("0", 64), ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
+	observation := model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: instanceID, IntentVersion: "2", OperationID: &disableID, LocalEpoch: "2", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("0", 64), ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
 	requestJSON[model.LifecycleObservationReceipt](t, f, http.MethodPost, base+"/observations", observation, http.StatusOK, headers)
 	state := requestJSON[model.LifecycleResource](t, f, http.MethodGet, base, nil, http.StatusOK, headers)
 	if state.Observation == nil || state.Observation.Observation.Phase != "disabled" || state.Observation.Observation.ReceivedAt.IsZero() || !state.Observation.Observation.FreshUntil.After(state.Observation.Observation.ReceivedAt) {
@@ -56,8 +56,8 @@ func serverAPIWorkerLifecycleFlow(t *testing.T, f *fixture) {
 	}
 	observation.ReportSequence = "2"
 	requestJSON[model.LifecycleObservationReceipt](t, f, http.MethodPost, base+"/observations", observation, http.StatusOK, headers)
-	resumeID, localEpoch, instanceEpoch := uuid.NewString(), "2", "1"
-	resumed := requestJSON[model.LifecycleIntentReceipt](t, f, http.MethodPost, base+"/operations", model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: resumeID, Action: "resume", ExpectedVersion: "2", Source: "web", LocalEpoch: &localEpoch, InstanceEpoch: &instanceEpoch}, http.StatusAccepted, headers)
+	resumeID, localEpoch := uuid.NewString(), "2"
+	resumed := requestJSON[model.LifecycleIntentReceipt](t, f, http.MethodPost, base+"/operations", model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: resumeID, Action: "resume", ExpectedVersion: "2", Source: "web", LocalEpoch: &localEpoch, InstanceID: &instanceID}, http.StatusAccepted, headers)
 	if resumed.IntentVersion != "3" || resumed.Admission != "closed" {
 		t.Fatalf("resume prematurely opened: %+v", resumed)
 	}
@@ -67,7 +67,7 @@ func serverAPIWorkerLifecycleFlow(t *testing.T, f *fixture) {
 	observation.ReportSequence = "3"
 	observation.Observation.Phase = "resuming"
 	requestJSON[model.LifecycleObservationReceipt](t, f, http.MethodPost, base+"/observations", observation, http.StatusOK, headers)
-	active := requestJSON[model.LifecycleActivationReceipt](t, f, http.MethodPost, base+"/activations", model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: resumeID, InstanceID: instanceID, InstanceEpoch: "1", IntentVersion: "3", LocalEpoch: "2", ScopeGeneration: "2", ReportSequence: "3"}, http.StatusOK, headers)
+	active := requestJSON[model.LifecycleActivationReceipt](t, f, http.MethodPost, base+"/activations", model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: resumeID, InstanceID: instanceID, IntentVersion: "3", LocalEpoch: "2", ScopeGeneration: "2", ReportSequence: "3"}, http.StatusOK, headers)
 	if active.Admission != "open" || active.Action != "resume" || active.IntentVersion != "3" {
 		t.Fatalf("activation: %+v", active)
 	}

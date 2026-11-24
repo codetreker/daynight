@@ -14,8 +14,9 @@ never committed.
 ## Decision
 
 Worker lifecycle has an independent persistent resource and operation ledger,
-with separate intent versions, management-instance epochs and received observation
-sequences. Lifecycle and business admission serialize on the existing Worker row.
+with separate intent versions, management-instance UUIDs and received observation
+sequences. The [registration decision](../simplification/2026-11-24-remove-worker-instance-epoch.md)
+replaces the original requirement to supply the previous instance epoch. Lifecycle and business admission serialize on the existing Worker row.
 The lifecycle transaction never locks Tasks, Bots or Sessions in reverse order.
 Credentials retain their original transaction-bound authorization before Worker
 admission, including the existing scoped-service policy when enabled. Same-host,

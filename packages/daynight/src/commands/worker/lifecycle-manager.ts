@@ -52,8 +52,8 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
   };
   const binding = (): LifecycleBinding => {
     const state = store.readState();
-    if (state.instanceId === null || state.instanceEpoch === null || state.intentVersion === null) throw new Error("Worker lifecycle has no registered instance authority.");
-    return { serverOrigin: state.serverOrigin, userId: state.userId, workerId: state.workerId, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, localEpoch: state.localEpoch, intentVersion: state.intentVersion, scopeGeneration: state.scopeGeneration };
+    if (state.instanceId === null || state.intentVersion === null) throw new Error("Worker lifecycle has no registered instance authority.");
+    return { serverOrigin: state.serverOrigin, userId: state.userId, workerId: state.workerId, instanceId: state.instanceId, localEpoch: state.localEpoch, intentVersion: state.intentVersion, scopeGeneration: state.scopeGeneration };
   };
   const assertLocalEpoch = (localEpoch: string): void => {
     if (store.readState().localEpoch !== localEpoch) throw new Error("Worker lifecycle execution binding is stale.");
@@ -88,13 +88,13 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const matches = (result: LifecycleOperationResult): boolean => {
       if (result.kind === "not_committed") return result.receipt.requestKind === request.requestKind && result.receipt.requestHash === lifecycleRequestHash(request.requestKind, request.request);
       switch (request.requestKind) {
-        case "instance": return result.kind === "instance" && result.receipt.instanceId === request.request.instanceId && BigInt(result.receipt.instanceEpoch) === BigInt(request.request.previousInstanceEpoch ?? "0") + 1n;
+        case "instance": return result.kind === "instance" && result.receipt.instanceId === request.request.instanceId;
         case "intent": return result.kind === "intent" && result.receipt.action === request.request.action && BigInt(result.receipt.intentVersion) === BigInt(request.request.expectedVersion) + 1n;
         case "activation": {
           const receipt = result.kind === "activation" ? result.receipt : result.kind === "intent" ? result.activation : null;
           if (result.kind === "intent" && result.activationOutcome === "not_committed") return original.phase === "activation" && result.receipt.action === "resume" && result.receipt.intentVersion === request.request.intentVersion;
           return receipt !== null && receipt.action === ("action" in request.request ? request.request.action : "resume")
-            && receipt.instanceEpoch === request.request.instanceEpoch && receipt.intentVersion === request.request.intentVersion && receipt.localEpoch === request.request.localEpoch && receipt.scopeGeneration === request.request.scopeGeneration;
+            && receipt.instanceId === request.request.instanceId && receipt.intentVersion === request.request.intentVersion && receipt.localEpoch === request.request.localEpoch && receipt.scopeGeneration === request.request.scopeGeneration;
         }
       }
     };
@@ -141,17 +141,17 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const authority = await readAuthority();
     for (const original of pending) {
       const observed = authority.observation, instance = authority.instance;
-      if (instance !== null && (BigInt(instance.instanceEpoch) > BigInt(original.instanceEpoch)
-        || instance.instanceEpoch === original.instanceEpoch && (BigInt(authority.intentVersion) > BigInt(original.intentVersion)
-          || authority.intentVersion === original.intentVersion && observed !== null && BigInt(observed.reportSequence) > BigInt(original.reportSequence)))) {
-        store.coverOutbox(original.id, { instanceEpoch: instance.instanceEpoch, intentVersion: authority.intentVersion, reportSequence: observed?.reportSequence ?? null, receivedAt: observed?.observation.receivedAt ?? authority.observedAt });
+      if (instance !== null && instance.instanceId === store.readState().instanceId
+        && (instance.instanceId !== original.instanceId || BigInt(authority.intentVersion) > BigInt(original.intentVersion)
+          || authority.intentVersion === original.intentVersion && observed !== null && BigInt(observed.reportSequence) > BigInt(original.reportSequence))) {
+        store.coverOutbox(original.id, { instanceId: instance.instanceId, intentVersion: authority.intentVersion, reportSequence: observed?.reportSequence ?? null, receivedAt: observed?.observation.receivedAt ?? authority.observedAt });
         continue;
       }
       const request = parseLifecycleObservationEnvelope(original.payload);
-      if (observed !== null && observed.instanceEpoch === original.instanceEpoch && observed.intentVersion === original.intentVersion && observed.reportSequence === original.reportSequence) {
+      if (observed !== null && observed.instanceId === original.instanceId && observed.intentVersion === original.intentVersion && observed.reportSequence === original.reportSequence) {
         const { receivedAt, freshUntil: _freshUntil, ...observation } = observed.observation;
         if (!isDeepStrictEqual(json({ ...observed, observation }), json(request))) throw new Error("Original report sequence has different saved content.");
-        store.ackOutbox(original.id, "confirmed", { protocolVersion: 1, accepted: true, instanceEpoch: observed.instanceEpoch, intentVersion: observed.intentVersion, reportSequence: observed.reportSequence, receivedAt });
+        store.ackOutbox(original.id, "confirmed", { protocolVersion: 1, accepted: true, instanceId: observed.instanceId, intentVersion: observed.intentVersion, reportSequence: observed.reportSequence, receivedAt });
       } else {
         // Observation POST is idempotent at this exact sequence and payload. Its
         // original receipt never refreshes the server's observation freshness.
@@ -165,11 +165,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     await reconcileReports();
     const snapshot = store.snapshot(128), state = snapshot.state, current = binding();
     const recovery = [...options.recovery?.() ?? []].sort((a, b) => a.resourceId.localeCompare(b.resourceId));
-    const previous = store.listOutbox().filter(row => row.instanceEpoch === current.instanceEpoch);
+    const previous = store.listOutbox().filter(row => row.instanceId === current.instanceId);
     const sequence = String(previous.reduce((max, row) => BigInt(row.reportSequence) > max ? BigInt(row.reportSequence) : max, 0n) + 1n);
     const identityValue = (identity: Record<string, LifecycleJson>, key: string): string | null => typeof identity[key] === "string" ? identity[key] as string : null;
     const envelope: LifecycleObservationEnvelope = {
-      protocolVersion: 1, instanceId: current.instanceId, instanceEpoch: current.instanceEpoch, intentVersion: current.intentVersion,
+      protocolVersion: 1, instanceId: current.instanceId, intentVersion: current.intentVersion,
       operationId: authorityOperationId, localEpoch: current.localEpoch, scopeGeneration: current.scopeGeneration, reportSequence: sequence,
       observation: {
         phase: state.phase, stop: state.stop, save: state.save, sync: state.sync, inventoryComplete: snapshot.inventoryComplete, detailsComplete: snapshot.detailsComplete && recovery.length <= 128,
@@ -184,7 +184,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       },
     };
     const id = randomUUID();
-    store.appendOutbox({ id, instanceEpoch: current.instanceEpoch, intentVersion: current.intentVersion, reportSequence: sequence, payload: json(envelope) });
+    store.appendOutbox({ id, instanceId: current.instanceId, intentVersion: current.intentVersion, reportSequence: sequence, payload: json(envelope) });
     let receipt;
     try { receipt = await api.report(envelope, signal); }
     catch (error) { store.ackOutbox(id, "unknown"); throw error; }
@@ -193,7 +193,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     return envelope;
   };
   const retireSupersededActivation = async (activation: LifecycleActivation, authority: CloudResource): Promise<boolean> => {
-    if (authority.instance?.instanceId !== activation.binding.instanceId || authority.instance.instanceEpoch !== activation.binding.instanceEpoch
+    if (authority.instance?.instanceId !== activation.binding.instanceId
       || BigInt(authority.intentVersion) <= BigInt(activation.binding.intentVersion) || authority.desired !== "disabled" || authority.admission !== "closed") return false;
     // Newer closed authority retires the continuation, not its original outcome.
     // An unknown activation remains in the ledger for independent reconciliation.
@@ -219,7 +219,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       let request: LifecycleActivationRequest;
       if (original === null) {
         const observation = await report();
-        request = { protocolVersion: 1, operationId, instanceId: activation.binding.instanceId, instanceEpoch: activation.binding.instanceEpoch, intentVersion: activation.binding.intentVersion, localEpoch: activation.binding.localEpoch,
+        request = { protocolVersion: 1, operationId, instanceId: activation.binding.instanceId, intentVersion: activation.binding.intentVersion, localEpoch: activation.binding.localEpoch,
           scopeGeneration: activation.binding.scopeGeneration, reportSequence: observation.reportSequence, ...(action === "resume" ? {} : { action }) };
       } else request = parseLifecycleActivationRequest(original.request);
       // Reporting can outlive a local disable; do not dispatch its old activation.
@@ -229,7 +229,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     else { store.markBlocked("resume_interrupted"); throw new Error("Original activation did not commit; an explicit new resume is required."); }
     const authority = await readAuthority();
     if (await retireSupersededActivation(activation, authority)) return;
-    if (authority.intentVersion !== receipt.intentVersion || authority.desired !== "enabled" || authority.admission !== "open" || authority.instance?.instanceId !== activation.binding.instanceId || authority.instance.instanceEpoch !== receipt.instanceEpoch) throw new Error("Worker authority changed after activation.");
+    if (authority.intentVersion !== receipt.intentVersion || authority.desired !== "enabled" || authority.admission !== "open" || authority.instance?.instanceId !== activation.binding.instanceId) throw new Error("Worker authority changed after activation.");
     signal.throwIfAborted();
     store.commitActivation({ ...activation, receipt: json(receipt) });
     authorityOperationId = authority.operationId;
@@ -253,7 +253,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (pending === undefined) return;
     const matches = (): boolean => {
       const current = binding();
-      return current.instanceId === pending.binding.instanceId && current.instanceEpoch === pending.binding.instanceEpoch
+      return current.instanceId === pending.binding.instanceId
         && current.localEpoch === pending.binding.localEpoch && current.intentVersion === pending.binding.intentVersion;
     };
     if (!matches() || cloud.operationId !== pending.operationId || cloud.intentVersion !== pending.binding.intentVersion || cloud.desired !== "enabled") {
@@ -291,7 +291,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     // A newly observed explicit resume must be checked before the same veto can
     // issue a competing disable. A later local epoch never inherits this pause.
     if (pendingResume?.operationId === cloud.operationId && pendingResume.binding.intentVersion === cloud.intentVersion
-      && pendingResume.binding.instanceId === state.instanceId && pendingResume.binding.instanceEpoch === state.instanceEpoch
+      && pendingResume.binding.instanceId === state.instanceId
       && pendingResume.binding.localEpoch === state.localEpoch) return;
     const local = store.listOperations().find(operation => operation.kind === "local_disable" && operation.localEpoch === state.localEpoch);
     if (local === undefined) throw new Error("Local veto has lost its original operation.");
@@ -339,10 +339,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     }
     if (initialization === undefined) {
       if (!registrationVerified) await options.ensureWorkerRegistered?.();
-      // A new management instance settles older unknown registrations before advancing its epoch.
-      const recoveredInstances = store.listOperations().filter(operation => operation.kind === "instance" && operation.status === "confirmed").map(operation => operation.receipt).filter((value): value is { [key: string]: LifecycleJson } => value !== null && typeof value === "object" && !Array.isArray(value));
-      const previousEpoch = recoveredInstances.reduce((max, receipt) => typeof receipt.instanceEpoch === "string" && (max === null || BigInt(receipt.instanceEpoch) > BigInt(max)) ? receipt.instanceEpoch : max, before.instanceEpoch);
-      initialization = { before, request: { protocolVersion: 1, operationId: randomUUID(), instanceId: randomUUID(), previousInstanceEpoch: previousEpoch,
+      initialization = { before, request: { protocolVersion: 1, operationId: randomUUID(), instanceId: randomUUID(),
         capabilities: { disable: true, resume: true, inventory: 1, dispatchFence: 1 }, platform: options.platform } };
     }
     const pending = initialization;
@@ -353,11 +350,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       else throw new Error("Original management registration remains unresolved or was refused.");
     }
     const receipt = pending.receipt;
-    if (store.readState().instanceId !== receipt.instanceId || store.readState().instanceEpoch !== receipt.instanceEpoch) store.bindInstance(receipt);
+    if (store.readState().instanceId !== receipt.instanceId) store.bindInstance(receipt);
     await stopForObservation();
     const observationEpoch = store.readState().localEpoch;
     const cloud = await readAuthority();
-    if (cloud.instance?.instanceId !== receipt.instanceId || cloud.instance.instanceEpoch !== receipt.instanceEpoch) throw new Error("Original Worker management instance was replaced.");
+    if (cloud.instance?.instanceId !== receipt.instanceId) throw new Error("Original Worker management instance was replaced.");
     store.observeAuthority(cloud);
     store.confirmManagementAuthority(binding());
     // A new Web resume may arrive after registration while startup reconciliation
@@ -375,8 +372,8 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const executionReady = stoppedInventory() && unresolvedExecutionOperations().length === 0;
     const internalActivationAllowed = executionReady && !current.localVeto && current.desired === "enabled" && cloud.desired === "enabled"
       && current.intentVersion === cloud.intentVersion && current.errorCode === null;
-    if (internalActivationAllowed && normalReconnect(before) && receipt.reconnectAllowed && before.intentVersion === cloud.intentVersion) await activate(randomUUID(), "reconnect");
-    else if (internalActivationAllowed && !before.bootstrapConsumed && !before.localVeto && before.instanceEpoch === null && before.activation === null && cloud.operationId === null
+    if (internalActivationAllowed && receipt.reconnectAllowed && !before.localVeto && receipt.intentVersion === cloud.intentVersion) await activate(randomUUID(), "reconnect");
+    else if (internalActivationAllowed && !before.bootstrapConsumed && !before.localVeto && before.instanceId === null && before.activation === null && cloud.operationId === null
       && !store.listOperations().some(operation => operation.kind === "activation")) await activate(randomUUID(), "bootstrap");
     else await report();
     if (executionReady) { initialized = true; initialization = undefined; }
@@ -389,7 +386,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (local.admission === "closed" && local.phase !== "disabled" && local.phase !== "resuming") await stopForObservation();
     const cloud = await readAuthority();
     authorityOperationId = cloud.operationId;
-    if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
+    if (cloud.instance?.instanceId !== binding().instanceId) throw new Error("Original Worker management instance was replaced.");
     store.confirmManagementAuthority(binding());
     const current = store.readState();
     if (current.admission === "closed" && cloud.admission === "open" && cloud.desired === "enabled" && cloud.intentVersion === current.intentVersion && normalReconnect(current)) {
@@ -484,12 +481,12 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
         await stop(); assertLocalEpoch(localEpoch);
         const cloud = await readAuthority(); authorityOperationId = cloud.operationId;
         assertLocalEpoch(localEpoch);
-        if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
+        if (cloud.instance?.instanceId !== binding().instanceId) throw new Error("Original Worker management instance was replaced.");
         store.observeAuthority(cloud); store.confirmManagementAuthority(binding());
         await stop(); assertLocalEpoch(localEpoch);
         await report(); assertLocalEpoch(localEpoch);
         const current = binding();
-        const request = { protocolVersion: 1 as const, operationId, action: "resume" as const, expectedVersion: cloud.intentVersion, source: "local" as const, localEpoch, instanceEpoch: current.instanceEpoch };
+        const request = { protocolVersion: 1 as const, operationId, action: "resume" as const, expectedVersion: cloud.intentVersion, source: "local" as const, localEpoch, instanceId: current.instanceId };
         pendingResume = { operationId, binding: { ...current, localEpoch, intentVersion: String(BigInt(cloud.intentVersion) + 1n) } };
         const receipt: LifecycleIntentReceipt = await send({ protocolVersion: 1, requestKind: "intent", request }, () => api.intent(request, signal));
         authorityOperationId = receipt.operationId; store.observeAuthority(receipt);

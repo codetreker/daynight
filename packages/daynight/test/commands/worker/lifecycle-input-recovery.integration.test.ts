@@ -27,13 +27,13 @@ const fixture = async (adoptReservation: boolean) => {
   const paths = resolveWorkerPaths(homeDirectory); await mkdir(paths.workerDirectory, { recursive: true, mode: 0o700 });
   const identity = { serverOrigin: "https://daynight.example", userId: randomUUID(), workerId: randomUUID() };
   const lifecycle = openLifecycleStore({ file: path.join(paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true }); stores.push(lifecycle);
-  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
+  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
   lifecycle.bindInstance({ ...binding, desired: "enabled" });
   lifecycle.markStopped({ localEpoch: "1", inventoryRevision: lifecycle.readState().inventoryRevision });
   const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
   lifecycle.prepareActivation(activation);
   lifecycle.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId,
-    operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
+    operationId: activation.operationId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
   const first: ControllerLaunchTicket = { schemaVersion: 2, lifecycleBinding: binding, launchId: randomUUID(), executionId: randomUUID(),
     controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", ...identity,
     projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID(), provider: "codex", cwd: homeDirectory,

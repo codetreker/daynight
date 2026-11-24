@@ -73,12 +73,12 @@ describe("local lifecycle command boundaries", () => {
     const request: WorkerLifecycleCommandDependencies["request"] = async options => {
       const store = openLifecycleStore({ file: f.file, identity });
       try {
-        store.bindInstance({ instanceId: identity.userId, instanceEpoch: "1", intentVersion: "2", desired: "enabled" });
+        store.bindInstance({ instanceId: identity.userId, intentVersion: "2", desired: "enabled" });
         const state = store.readState(); store.markStopped({ localEpoch: state.localEpoch, inventoryRevision: state.inventoryRevision });
-        const activation = { binding: { ...identity, instanceId: identity.userId, instanceEpoch: "1", intentVersion: "2", localEpoch: state.localEpoch, scopeGeneration: "2" }, operationId: options.operationId!, action: "resume" as const };
+        const activation = { binding: { ...identity, instanceId: identity.userId, intentVersion: "2", localEpoch: state.localEpoch, scopeGeneration: "2" }, operationId: options.operationId!, action: "resume" as const };
         store.prepareActivation(activation);
         store.commitActivation({ ...activation, receipt: { protocolVersion: 1, workerId: identity.workerId, operationId: activation.operationId,
-          action: "resume", instanceEpoch: "1", intentVersion: "2", localEpoch: state.localEpoch, scopeGeneration: "2", admission: "open" } });
+          action: "resume", instanceId: activation.binding.instanceId, intentVersion: "2", localEpoch: state.localEpoch, scopeGeneration: "2", admission: "open" } });
         store.closeForRestart();
       } finally { store.close(); }
     };

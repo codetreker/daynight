@@ -104,7 +104,7 @@ func exactKeys(data []byte, keys ...string) (map[string]json.RawMessage, error) 
 }
 
 func ValidateLifecycleInstance(v model.LifecycleInstanceRequest) error {
-	if v.ProtocolVersion != 1 || !validLifecycleID(v.OperationID) || !validLifecycleID(v.InstanceID) || !optionalVersion(v.PreviousInstanceEpoch) || !oneOf(v.Platform, "windows", "linux", "macos") {
+	if v.ProtocolVersion != 1 || !validLifecycleID(v.OperationID) || !validLifecycleID(v.InstanceID) || !oneOf(v.Platform, "windows", "linux", "macos") {
 		return lifecycleInvalid()
 	}
 	if !v.Capabilities.Disable || !v.Capabilities.Resume || v.Capabilities.Inventory != 1 || v.Capabilities.DispatchFence != 1 {
@@ -126,7 +126,7 @@ func ValidateLifecycleIntent(v model.LifecycleIntentRequest) error {
 	}
 	switch v.Action {
 	case "disable":
-		if v.InstanceEpoch != nil {
+		if v.InstanceID != nil {
 			return lifecycleInvalid()
 		}
 		if v.Source == "web" {
@@ -137,7 +137,7 @@ func ValidateLifecycleIntent(v model.LifecycleIntentRequest) error {
 			return lifecycleInvalid()
 		}
 	case "resume":
-		if v.OriginOperationID != nil || v.LocalEpoch == nil || v.InstanceEpoch == nil || !validLifecycleVersion(*v.LocalEpoch) || !validLifecycleVersion(*v.InstanceEpoch) {
+		if v.OriginOperationID != nil || v.LocalEpoch == nil || v.InstanceID == nil || !validLifecycleVersion(*v.LocalEpoch) || !validLifecycleID(*v.InstanceID) {
 			return lifecycleInvalid()
 		}
 	default:
@@ -157,7 +157,7 @@ func ParseLifecycleIntent(data []byte) (model.LifecycleIntentRequest, error) {
 	if selector.Action == "disable" {
 		keys = append(keys, "originOperationId")
 	} else {
-		keys = append(keys, "instanceEpoch")
+		keys = append(keys, "instanceId")
 	}
 	m, e := exactKeys(data, keys...)
 	if e != nil {
@@ -177,7 +177,7 @@ func ValidateLifecycleActivation(v model.LifecycleActivationRequest) error {
 	if v.ProtocolVersion != 1 || !validLifecycleID(v.OperationID) || !validLifecycleID(v.InstanceID) || !oneOf(v.Action, "", "bootstrap", "reconnect") {
 		return lifecycleInvalid()
 	}
-	for _, s := range []string{v.InstanceEpoch, v.IntentVersion, v.LocalEpoch, v.ScopeGeneration, v.ReportSequence} {
+	for _, s := range []string{v.IntentVersion, v.LocalEpoch, v.ScopeGeneration, v.ReportSequence} {
 		if !validLifecycleVersion(s) {
 			return lifecycleInvalid()
 		}
@@ -186,7 +186,7 @@ func ValidateLifecycleActivation(v model.LifecycleActivationRequest) error {
 }
 func ParseLifecycleActivation(data []byte) (model.LifecycleActivationRequest, error) {
 	var v model.LifecycleActivationRequest
-	keys := []string{"protocolVersion", "operationId", "instanceId", "instanceEpoch", "intentVersion", "localEpoch", "scopeGeneration", "reportSequence"}
+	keys := []string{"protocolVersion", "operationId", "instanceId", "intentVersion", "localEpoch", "scopeGeneration", "reportSequence"}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(data, &fields) != nil {
 		return v, lifecycleInvalid()
@@ -272,7 +272,7 @@ func ValidateLifecycleObservation(v model.LifecycleObservationEnvelope) error {
 	if v.ProtocolVersion != 1 || !validLifecycleID(v.InstanceID) || !optionalID(v.OperationID) {
 		return lifecycleInvalid()
 	}
-	for _, s := range []string{v.InstanceEpoch, v.IntentVersion, v.LocalEpoch, v.ScopeGeneration, v.ReportSequence, v.Observation.InventoryRevision} {
+	for _, s := range []string{v.IntentVersion, v.LocalEpoch, v.ScopeGeneration, v.ReportSequence, v.Observation.InventoryRevision} {
 		if !validLifecycleVersion(s) {
 			return lifecycleInvalid()
 		}

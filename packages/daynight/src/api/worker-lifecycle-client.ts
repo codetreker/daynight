@@ -16,13 +16,13 @@ import {
 
 const confirm = (valid: boolean): void => { if (!valid) throw new ProtocolError("The Worker lifecycle receipt does not match the original request."); };
 const sameInstance = (receipt: LifecycleInstanceReceipt, input: LifecycleInstanceRequest): void => {
-  confirm(receipt.instanceId === input.instanceId && BigInt(receipt.instanceEpoch) === BigInt(input.previousInstanceEpoch ?? "0") + 1n);
+  confirm(receipt.instanceId === input.instanceId);
 };
 const sameIntent = (receipt: LifecycleIntentReceipt, input: LifecycleIntentRequest): void => {
   confirm(receipt.action === input.action && receipt.desired === (input.action === "disable" ? "disabled" : "enabled") && BigInt(receipt.intentVersion) === BigInt(input.expectedVersion) + 1n);
 };
 const sameActivation = (receipt: LifecycleActivationReceipt, input: LifecycleActivationRequest): void => {
-  confirm(receipt.action === ("action" in input ? input.action : "resume") && receipt.instanceEpoch === input.instanceEpoch && receipt.intentVersion === input.intentVersion && receipt.localEpoch === input.localEpoch && receipt.scopeGeneration === input.scopeGeneration);
+  confirm(receipt.action === ("action" in input ? input.action : "resume") && receipt.instanceId === input.instanceId && receipt.intentVersion === input.intentVersion && receipt.localEpoch === input.localEpoch && receipt.scopeGeneration === input.scopeGeneration);
 };
 
 export type WorkerLifecycleClientOptions = { serverUrl: string; serverToken?: string; userId: string; workerId: string; fetch?: typeof globalThis.fetch };
@@ -132,7 +132,7 @@ export const createWorkerLifecycleClient = (options: WorkerLifecycleClientOption
     },
     report: (request: LifecycleObservationEnvelope, signal?: AbortSignal) => {
       const input = parseLifecycleObservationEnvelope(request);
-      return exchange("/observations", "POST", value => { const receipt = parseLifecycleObservationReceipt(value); confirm(receipt.instanceEpoch === input.instanceEpoch && receipt.intentVersion === input.intentVersion && receipt.reportSequence === input.reportSequence); return receipt; }, signal, input);
+      return exchange("/observations", "POST", value => { const receipt = parseLifecycleObservationReceipt(value); confirm(receipt.instanceId === input.instanceId && receipt.intentVersion === input.intentVersion && receipt.reportSequence === input.reportSequence); return receipt; }, signal, input);
     },
     activate: (request: LifecycleActivationRequest, signal?: AbortSignal) => {
       const input = parseLifecycleActivationRequest(request);

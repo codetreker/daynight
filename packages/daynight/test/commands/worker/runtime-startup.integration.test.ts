@@ -270,7 +270,7 @@ describe("worker cloud-first startup", () => {
     const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
     const saved = openLifecycleStore({ file, identity, allowCreate: true });
-    saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" }); saved.close();
+    saved.bindInstance({ instanceId: uuid(72), intentVersion: "1", desired: "disabled" }); saved.close();
     mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
     const messages: string[] = [];
     mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => createWorkerCoordinator({ ...settings, emit: event => {
@@ -282,15 +282,15 @@ describe("worker cloud-first startup", () => {
     remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
     const time = "2026-11-21T00:00:00Z";
     let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
-      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+      instance: { instanceId: uuid(72) }, capability: "supported", observation: null, observedAt: time };
     const unexpected = vi.fn(async () => { throw new Error("Unexpected management business request."); });
     const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
       read: async () => cloud,
       register: async request => {
-        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
-        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+        cloud = { ...cloud, instance: { instanceId: request.instanceId } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
       },
-      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceId: request.instanceId, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
       intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
     });
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
@@ -322,8 +322,8 @@ describe("worker cloud-first startup", () => {
     const taskIdentity = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71) };
     f.store!.registerProject({ projectId: taskIdentity.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
     const saved = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-    const state = saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
-    const binding = { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    const state = saved.bindInstance({ instanceId: uuid(72), intentVersion: "1", desired: "disabled" });
+    const binding = { ...identity, instanceId: state.instanceId!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
     saved.importResource({ binding, resourceId: uuid(73), operationId: taskIdentity.claimId, ownerKind: "task",
       identity: { kind: "task_claim", ...taskIdentity, worktreeId: uuid(74), candidateVersion: "1", frozenConfiguration: { agent: "codex", model: "cloud-model", args: [] } } });
     const journalFile = path.join(f.homeDirectory, "original-journal.sqlite");
@@ -391,15 +391,15 @@ describe("worker cloud-first startup", () => {
     mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
     const time = "2026-11-21T00:00:00Z";
     let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
-      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+      instance: { instanceId: uuid(72) }, capability: "supported", observation: null, observedAt: time };
     const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle write."); });
     const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
       read: async () => cloud,
       register: async request => {
-        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
-        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+        cloud = { ...cloud, instance: { instanceId: request.instanceId } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
       },
-      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceId: request.instanceId, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
       intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
     });
     const messages: string[] = [];
@@ -441,17 +441,17 @@ describe("worker cloud-first startup", () => {
       read: vi.fn(async () => structuredClone(cloud)),
       register: vi.fn(async request => {
         const receipt = { protocolVersion: 1 as const, workerId, operationId: request.operationId, instanceId: request.instanceId,
-          instanceEpoch: "1", intentVersion: "1", desired: "enabled" as const, admission: "closed" as const, reconnectAllowed: false, observedAt: time };
-        cloud = { ...cloud, instance: { instanceId: receipt.instanceId, instanceEpoch: receipt.instanceEpoch } };
+          intentVersion: "1", desired: "enabled" as const, admission: "closed" as const, reconnectAllowed: false, observedAt: time };
+        cloud = { ...cloud, instance: { instanceId: receipt.instanceId } };
         return receipt;
       }),
       activate: vi.fn(async request => {
         cloud = { ...cloud, admission: "open" };
         return { protocolVersion: 1 as const, workerId, operationId: request.operationId, action: "action" in request ? request.action : "resume",
-          instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, localEpoch: request.localEpoch,
+          instanceId: request.instanceId, intentVersion: request.intentVersion, localEpoch: request.localEpoch,
           scopeGeneration: request.scopeGeneration, admission: "open" as const, observedAt: time };
       }),
-      report: vi.fn(async envelope => ({ protocolVersion: 1 as const, accepted: true as const, instanceEpoch: envelope.instanceEpoch,
+      report: vi.fn(async envelope => ({ protocolVersion: 1 as const, accepted: true as const, instanceId: envelope.instanceId,
         intentVersion: envelope.intentVersion, reportSequence: envelope.reportSequence, receivedAt: time })),
       intent: vi.fn(async request => {
         expect(request).toMatchObject({ action: "disable", source: "local", originOperationId: uuid(81) });
@@ -526,7 +526,7 @@ describe("worker cloud-first startup", () => {
         // its original ownership only for teardown, after the assertions above.
         if (lifecycle !== undefined) for (const probe of retainedBotCliProbes()) {
           const state = lifecycle.readState();
-          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!,
+          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!,
             intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
           resourceId: probe.launchId, operationId: probe.launchId, ownerKind: "repository", identity: { kind: "owned_command" } });
           await reconcileBotCliProbe(probe.launchId);

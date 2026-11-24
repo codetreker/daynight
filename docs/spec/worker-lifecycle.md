@@ -10,7 +10,7 @@ Worker 所有者可以保存持久停用意图，并查询原操作和本机报�
 
 资源归当前认证账号的 Worker，路径为 `/api/v1/me/workers/{workerId}/lifecycle`。项目权限不授予其他账号 Worker 的控制权。没有资源返回 `404 not_found`，不能解释为允许执行。
 
-身份使用小写非零 UUID。所有版本、epoch、generation、sequence 为正 int64 十进制字符串，未知值为 `null`。`instanceEpoch` 由服务端递增，`intentVersion` 仅在用户意图改变时递增；本机 `localEpoch` 和 `scopeGeneration` 不与云端版本混用。所有成功响应带 `X-Daynight-Worker-Lifecycle: 1`，缺少该 Header 的 GET 仍返回 v1 独立表示；显式不支持的协商版本拒绝。旧 list、detail 和 report 形状保持兼容。
+身份使用小写非零 UUID。所有版本、epoch、generation、sequence 为正 int64 十进制字符串，未知值为 `null`。`instanceId` 是每次新注册使用的 UUID，`intentVersion` 仅在用户意图改变时递增；本机 `localEpoch` 和 `scopeGeneration` 不与云端版本混用。所有成功响应带 `X-Daynight-Worker-Lifecycle: 1`，缺少该 Header 的 GET 仍返回 v1 独立表示；显式不支持的协商版本拒绝。旧 list、detail 和 report 形状保持兼容。
 
 当前凭据和所有者授权保留。启用 scoped service 时，读取需要 `worker:read`；意图修改需要 `worker:configure` 和 `worker:read`；实例、观察及激活需要 `worker:report` 和 `worker:read`；resolve 按原请求类别使用同样的权限。权限检查与写入绑定同一事务。
 
@@ -28,17 +28,17 @@ Worker 所有者可以保存持久停用意图，并查询原操作和本机报�
 | `POST /observations` | 接收当前实例、意图和递增序号的观察；返回原始或新接收回执 |
 | `POST /activations` | 普通 resume 激活绑定原 resume ID；内部 bootstrap/reconnect 使用独立 ID，返回准确激活回执 |
 
-disable 绑定 `expectedVersion`，web 来源的 `localEpoch` 和 `originOperationId` 必须显式为 null；local 来源携带本地 epoch 和原本地停用 ID。resume 绑定最新版本、实例 epoch 及新鲜已停止观察中的本地 epoch。
+disable 绑定 `expectedVersion`，web 来源的 `localEpoch` 和 `originOperationId` 必须显式为 null；local 来源携带本地 epoch 和原本地停用 ID。resume 绑定最新版本、实例 ID 及新鲜已停止观察中的本地 epoch。
 
-实例注册绑定 `previousInstanceEpoch`，首次为 null。新注册关闭云端门禁并撤销旧观察，不改变意图版本，也不代表旧实例的进程已停止。同 operationId 和相同请求返回原回执，不重新注册或执行。
+实例注册只提交本次实例 ID。新注册关闭云端门禁并撤销旧观察，保留原意图版本。旧实例进程是否停止以进程证据为准。同 operationId 和相同请求返回原回执。
 
 ## 停用、恢复与观察
 
 停用在 Worker 行锁内递增意图版本、保存原请求和回执、关闭准入并清除旧观察。离线且历史上支持完整能力的 Worker 可以接受停用，但只能表示等待本机确认。
 
-resume 仅接受当前新鲜的 disabled 观察：完整库存、停止 confirmed、保存 durable，全部资源已停止，pending 和 blocked 均为零。受理后 `desired=enabled`、`admission=closed`。本机准备新 scope 并报送同意图的安全 resuming 观察后，activation 才能原子开门。服务端激活不等于本机已开门；本机仍须核验原 epoch、持久状态及最新意图。
+resume 仅接受当前新鲜的 disabled 观察：完整库存、停止 confirmed、保存 durable，全部资源已停止，pending 和 blocked 均为零。受理后 `desired=enabled`、`admission=closed`。本机准备新 scope 并报送同意图的安全 resuming 观察后，activation 才能原子开门。服务端激活不等于本机已开门；本机仍须核验原实例 ID、本地 epoch、持久状态及最新意图。
 
-没有停用或恢复历史的首次启用可以 bootstrap 一次。正常已开放状态注册新实例时可获得 `reconnectAllowed`，完成同实例的新鲜安全观察后 reconnect。新的停用、恢复或已关闭状态下注册均不能保留这项许可。中断握手需要重新核对并显式恢复。即使当前 desired=enabled，准入关闭且已有匹配当前意图、实例和操作的新鲜完整 disabled 观察时，Web 仍须提供显式恢复入口，不要求先提交另一次停用。
+没有停用或恢复历史的首次启用可以 bootstrap 一次。已开放且启用的 Worker 注册新实例时获得 `reconnectAllowed`。许可随启用状态保留到 reconnect 成功或新的意图提交，重建本机状态后仍可使用既有 reconnect 流程。完成同实例的新鲜安全观察后才重新开放准入。显式恢复握手中断后仍须显式恢复。即使当前 desired=enabled，准入关闭且已有匹配当前意图、实例和操作的新鲜完整 disabled 观察时，Web 仍须提供显式恢复入口，不要求先提交另一次停用。
 
 观察分别保存 phase、stop、save、sync、完整库存摘要、全量计数、有限资源明细和逐执行恢复资格。接收时间由服务端生成，`freshUntil=receivedAt+30s`。同序号相同内容返回原接收时间，不能刷新时效；旧实例、旧意图、旧序号及相同序号的不同内容拒绝。
 

@@ -325,15 +325,15 @@ test.each(["grant failure", "disable during grant", "disable during reauthorizat
   const activate = (action: "bootstrap" | "resume", generation: string): LifecycleBinding => {
     const state = authority.readState();
     authority.markStopped({ localEpoch: state.localEpoch, inventoryRevision: state.inventoryRevision, owners: [] });
-    const binding = { ...identity, instanceId: id(80), instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: generation };
+    const binding = { ...identity, instanceId: id(80), intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: generation };
     const activation = { binding, action, operationId: id(action === "bootstrap" ? 81 : 82) };
     authority.prepareActivation(activation);
     authority.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action, operationId: activation.operationId,
-      workerId: identity.workerId, instanceEpoch: "1", intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration: generation } });
+      workerId: identity.workerId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration: generation } });
     return binding;
   };
   try {
-    authority.bindInstance({ instanceId: id(80), instanceEpoch: "1", intentVersion: "1", desired: "enabled" });
+    authority.bindInstance({ instanceId: id(80), intentVersion: "1", desired: "enabled" });
     const originalBinding = activate("bootstrap", "1"), cancel = new AbortController();
     const run = (binding: LifecycleBinding, signal = f.signal) => withWorkerLifecycle({ store: authority, binding, failed: error => { throw error; } }, () => f.restart().advance(f.current(), signal));
     const grant = f.grant.getMockImplementation()!;

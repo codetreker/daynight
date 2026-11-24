@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { openLifecycleStore, type LifecycleJson, type LifecycleResource } from "../worker/lifecycle-store.js";
 import { resolveWorkerPaths } from "../worker/paths.js";
-import { controllerExecutionDirectory, controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, projectControllerLifecycleBinding, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerOperation } from "./lifecycle-store.js";
 import { freezeNativeLifecycleFence } from "./native-lifecycle.js";
 import type { ProcessProof } from "./process-proof.js";
@@ -31,7 +31,7 @@ export const assertRecoveredInitialReservation = (homeDirectory: string, current
   if (current.claimId === undefined || original.claimId === undefined || current.initialOperationId !== original.initialOperationId
     || resource.operationId !== current.initialOperationId || resource.ownerKind !== "controller"
     || resource.stage !== allowedStage || resource.processProof !== null || resource.stopProof !== null || resource.saveState !== "durable" || resource.error !== null
-    || original.lifecycleBinding === undefined || resource.instanceId !== original.lifecycleBinding.instanceId || resource.instanceEpoch !== original.lifecycleBinding.instanceEpoch
+    || original.lifecycleBinding === undefined || resource.instanceId !== original.lifecycleBinding.instanceId
     || resource.scopeGeneration !== original.lifecycleBinding.scopeGeneration
     || controllerPayloadHash(resource.identity) !== controllerPayloadHash({ ...controllerIdentity(homeDirectory, original, storageStateDirectory), kind: "input", operationKind: "initial", nativeSessionId: current.resumeNativeSessionId }))
     throw new Error("Recovered initial reservation conflicts with its original ticket.");
@@ -40,11 +40,11 @@ export const assertRecoveredInitialReservation = (homeDirectory: string, current
 export const openControllerWorkerLifecycle = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string) => {
   parseLaunchTicket(ticket);
   const file = path.join(resolveWorkerPaths(homeDirectory).workerDirectory, "lifecycle.sqlite");
-  const binding = ticket.lifecycleBinding;
-  if (binding === undefined) {
+  if (ticket.lifecycleBinding === undefined) {
     if (ticket.usageScope !== "standalone_test" && existsSync(file)) throw new Error("Legacy Controller has no persistent Worker lifecycle binding; its original boundary must stop before migration.");
     return null;
   }
+  const binding = projectControllerLifecycleBinding(ticket.lifecycleBinding);
   const store = openLifecycleStore({ file, identity: { serverOrigin: binding.serverOrigin, userId: binding.userId, workerId: binding.workerId }, allowCreate: false });
   const identity = controllerIdentity(homeDirectory, ticket, storageStateDirectory);
   const reservations = new Map<string, string>();

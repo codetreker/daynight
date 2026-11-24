@@ -22,28 +22,28 @@ export type LifecycleObservation = {
   readonly recovery: readonly LifecycleRecoveryObservation[]; readonly errorCode: LifecycleDiagnostic | null; readonly receivedAt: string; readonly freshUntil: string;
 };
 export type LifecycleObservedEnvelope = {
-  readonly protocolVersion: 1; readonly instanceId: string; readonly instanceEpoch: string; readonly intentVersion: string; readonly operationId: string | null;
+  readonly protocolVersion: 1; readonly instanceId: string; readonly intentVersion: string; readonly operationId: string | null;
   readonly localEpoch: string; readonly scopeGeneration: string; readonly reportSequence: string; readonly observation: LifecycleObservation;
 };
 export type LifecycleResource = {
   readonly protocolVersion: 1; readonly workerId: string; readonly intentVersion: string; readonly desired: Desired; readonly admission: Admission;
-  readonly operationId: string | null; readonly instance: { readonly instanceId: string; readonly instanceEpoch: string } | null;
+  readonly operationId: string | null; readonly instance: { readonly instanceId: string } | null;
   readonly capability: 'supported' | 'unsupported'; readonly observation: LifecycleObservedEnvelope | null; readonly observedAt: string;
 };
 export type LifecycleIntentRequest = {
   readonly protocolVersion: 1; readonly operationId: string; readonly expectedVersion: string; readonly source: 'web';
 } & ({ readonly action: 'disable'; readonly localEpoch: null; readonly originOperationId: null }
-  | { readonly action: 'resume'; readonly localEpoch: string; readonly instanceEpoch: string });
+  | { readonly action: 'resume'; readonly localEpoch: string; readonly instanceId: string });
 export type LifecycleIntentReceipt = {
   readonly protocolVersion: 1; readonly workerId: string; readonly operationId: string; readonly action: 'disable' | 'resume'; readonly intentVersion: string;
   readonly desired: Desired; readonly admission: 'closed'; readonly state: 'accepted' | 'applied' | 'blocked' | 'superseded'; readonly errorCode: string | null; readonly observedAt: string;
 };
 export type LifecycleActivationReceipt = {
-  readonly protocolVersion: 1; readonly workerId: string; readonly operationId: string; readonly action: 'resume' | 'bootstrap' | 'reconnect'; readonly instanceEpoch: string;
+  readonly protocolVersion: 1; readonly workerId: string; readonly operationId: string; readonly action: 'resume' | 'bootstrap' | 'reconnect'; readonly instanceId: string;
   readonly intentVersion: string; readonly localEpoch: string; readonly scopeGeneration: string; readonly admission: 'open'; readonly observedAt: string;
 };
 export type LifecycleInstanceReceipt = {
-  readonly protocolVersion: 1; readonly workerId: string; readonly instanceId: string; readonly instanceEpoch: string; readonly intentVersion: string; readonly desired: Desired;
+  readonly protocolVersion: 1; readonly workerId: string; readonly instanceId: string; readonly intentVersion: string; readonly desired: Desired;
   readonly admission: 'closed'; readonly operationId: string; readonly reconnectAllowed: boolean; readonly observedAt: string;
 };
 export type LifecycleResolutionReceipt = {
@@ -85,7 +85,7 @@ const resourceObservation = (value: unknown): LifecycleResourceObservation => {
     stop: choice(data.stop, ['pending', 'confirmed', 'unknown']), save: choice(data.save, ['pending', 'durable', 'failed']), errorCode: diagnostic(data.errorCode) };
 };
 export const parseLifecycleObservedEnvelope = (value: unknown): LifecycleObservedEnvelope => {
-  const data = fields(value, ['protocolVersion', 'instanceId', 'instanceEpoch', 'intentVersion', 'operationId', 'localEpoch', 'scopeGeneration', 'reportSequence', 'observation']);
+  const data = fields(value, ['protocolVersion', 'instanceId', 'intentVersion', 'operationId', 'localEpoch', 'scopeGeneration', 'reportSequence', 'observation']);
   const raw = fields(data.observation, ['phase', 'stop', 'save', 'sync', 'inventoryComplete', 'detailsComplete', 'inventoryRevision', 'inventoryDigest', 'resourceCount', 'stoppedCount', 'pendingCount', 'blockedCount', 'resources', 'recovery', 'errorCode', 'receivedAt', 'freshUntil']);
   const observation: LifecycleObservation = { phase: choice(raw.phase, ['accepting', 'disabling', 'disabled', 'blocked', 'resuming']), stop: choice(raw.stop, ['not_started', 'stopping', 'confirmed', 'unknown']),
     save: choice(raw.save, ['pending', 'durable', 'failed']), sync: choice(raw.sync, ['pending', 'complete', 'failed']), inventoryComplete: boolean(raw.inventoryComplete), detailsComplete: boolean(raw.detailsComplete),
@@ -100,26 +100,26 @@ export const parseLifecycleObservedEnvelope = (value: unknown): LifecycleObserve
     || o.save === 'durable' && (!o.inventoryComplete || o.resources.some(r => r.save !== 'durable'))
     || o.phase === 'disabled' && (o.stop !== 'confirmed' || o.save !== 'durable') || o.detailsComplete && (o.resourceCount === null || o.resources.length !== o.resourceCount)
     || new TextEncoder().encode(JSON.stringify(value)).length > 256 * 1024 + 128) return malformed();
-  return { protocolVersion: version(data.protocolVersion), instanceId: uuid(data.instanceId), instanceEpoch: revision(data.instanceEpoch), intentVersion: revision(data.intentVersion), operationId: nullable(data.operationId, uuid),
+  return { protocolVersion: version(data.protocolVersion), instanceId: uuid(data.instanceId), intentVersion: revision(data.intentVersion), operationId: nullable(data.operationId, uuid),
     localEpoch: revision(data.localEpoch), scopeGeneration: revision(data.scopeGeneration), reportSequence: revision(data.reportSequence), observation };
 };
 export const parseLifecycleResource = (value: unknown, workerId?: string): LifecycleResource => {
   const data = fields(value, ['protocolVersion', 'workerId', 'intentVersion', 'desired', 'admission', 'operationId', 'instance', 'capability', 'observation', 'observedAt']);
   const result: LifecycleResource = { protocolVersion: version(data.protocolVersion), workerId: uuid(data.workerId), intentVersion: revision(data.intentVersion), desired: desired(data.desired), admission: choice(data.admission, ['open', 'closed']),
-    operationId: nullable(data.operationId, uuid), instance: nullable(data.instance, value => { const instance = fields(value, ['instanceId', 'instanceEpoch']); return { instanceId: uuid(instance.instanceId), instanceEpoch: revision(instance.instanceEpoch) }; }),
+    operationId: nullable(data.operationId, uuid), instance: nullable(data.instance, value => { const instance = fields(value, ['instanceId']); return { instanceId: uuid(instance.instanceId) }; }),
     capability: choice(data.capability, ['supported', 'unsupported']), observation: nullable(data.observation, parseLifecycleObservedEnvelope), observedAt: timestamp(data.observedAt) };
   if (workerId !== undefined && result.workerId !== uuid(workerId) || result.desired === 'disabled' && result.admission !== 'closed') return malformed();
   return result;
 };
 export const parseLifecycleIntentRequest = (value: unknown): LifecycleIntentRequest => {
   const data = record(value), action = choice(data.action, ['disable', 'resume']);
-  fields(data, ['protocolVersion', 'operationId', 'expectedVersion', 'source', 'action', 'localEpoch', action === 'disable' ? 'originOperationId' : 'instanceEpoch']);
+  fields(data, ['protocolVersion', 'operationId', 'expectedVersion', 'source', 'action', 'localEpoch', action === 'disable' ? 'originOperationId' : 'instanceId']);
   const common = { protocolVersion: version(data.protocolVersion), operationId: uuid(data.operationId), expectedVersion: revision(data.expectedVersion), source: choice(data.source, ['web']) };
   if (action === 'disable') {
     if (data.localEpoch !== null || data.originOperationId !== null) return malformed();
     return { ...common, action, localEpoch: null, originOperationId: null };
   }
-  return { ...common, action, localEpoch: revision(data.localEpoch), instanceEpoch: revision(data.instanceEpoch) };
+  return { ...common, action, localEpoch: revision(data.localEpoch), instanceId: uuid(data.instanceId) };
 };
 const baseReceipt = (data: Record<string, unknown>) => ({ protocolVersion: version(data.protocolVersion), workerId: uuid(data.workerId), operationId: uuid(data.operationId), observedAt: timestamp(data.observedAt) });
 export const parseLifecycleIntentReceipt = (value: unknown): LifecycleIntentReceipt => {
@@ -129,8 +129,8 @@ export const parseLifecycleIntentReceipt = (value: unknown): LifecycleIntentRece
   return result;
 };
 const activationReceipt = (value: unknown): LifecycleActivationReceipt => {
-  const data = fields(value, ['protocolVersion', 'workerId', 'operationId', 'action', 'instanceEpoch', 'intentVersion', 'localEpoch', 'scopeGeneration', 'admission', 'observedAt']);
-  return { ...baseReceipt(data), action: choice(data.action, ['resume', 'bootstrap', 'reconnect']), instanceEpoch: revision(data.instanceEpoch), intentVersion: revision(data.intentVersion), localEpoch: revision(data.localEpoch), scopeGeneration: revision(data.scopeGeneration), admission: choice(data.admission, ['open']) };
+  const data = fields(value, ['protocolVersion', 'workerId', 'operationId', 'action', 'instanceId', 'intentVersion', 'localEpoch', 'scopeGeneration', 'admission', 'observedAt']);
+  return { ...baseReceipt(data), action: choice(data.action, ['resume', 'bootstrap', 'reconnect']), instanceId: uuid(data.instanceId), intentVersion: revision(data.intentVersion), localEpoch: revision(data.localEpoch), scopeGeneration: revision(data.scopeGeneration), admission: choice(data.admission, ['open']) };
 };
 export const parseLifecycleOperationResult = (value: unknown, workerId?: string, operationId?: string): LifecycleOperationResult => {
   const data = record(value), kind = choice(data.kind, ['intent', 'instance', 'activation', 'not_committed']);
@@ -142,8 +142,8 @@ export const parseLifecycleOperationResult = (value: unknown, workerId?: string,
     result = { kind, receipt, activation, activationOutcome };
   } else if (kind === 'activation') result = { kind, receipt: activationReceipt(data.receipt) };
   else if (kind === 'instance') {
-    const raw = fields(data.receipt, ['protocolVersion', 'workerId', 'instanceId', 'instanceEpoch', 'intentVersion', 'desired', 'admission', 'operationId', 'reconnectAllowed', 'observedAt']);
-    result = { kind, receipt: { ...baseReceipt(raw), instanceId: uuid(raw.instanceId), instanceEpoch: revision(raw.instanceEpoch), intentVersion: revision(raw.intentVersion), desired: desired(raw.desired), admission: choice(raw.admission, ['closed']), reconnectAllowed: boolean(raw.reconnectAllowed) } };
+    const raw = fields(data.receipt, ['protocolVersion', 'workerId', 'instanceId', 'intentVersion', 'desired', 'admission', 'operationId', 'reconnectAllowed', 'observedAt']);
+    result = { kind, receipt: { ...baseReceipt(raw), instanceId: uuid(raw.instanceId), intentVersion: revision(raw.intentVersion), desired: desired(raw.desired), admission: choice(raw.admission, ['closed']), reconnectAllowed: boolean(raw.reconnectAllowed) } };
   } else {
     const raw = fields(data.receipt, ['protocolVersion', 'workerId', 'operationId', 'requestKind', 'requestHash', 'outcome', 'observedAt']);
     result = { kind, receipt: { ...baseReceipt(raw), requestKind: choice(raw.requestKind, ['instance', 'intent', 'activation']), requestHash: hash(raw.requestHash), outcome: choice(raw.outcome, ['not_committed']) } };

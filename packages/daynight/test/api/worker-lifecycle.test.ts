@@ -5,12 +5,12 @@ import { lifecycleRequestHash, parseLifecycleObservationEnvelope, parseLifecycle
 
 const workerId = "11111111-1111-4111-8111-111111111111", userId = "22222222-2222-4222-8222-222222222222", operationId = "33333333-3333-4333-8333-333333333333", instanceId = "44444444-4444-4444-8444-444444444444";
 const observedAt = "2026-11-21T01:00:00.000Z";
-const resource = { protocolVersion: 1, workerId, intentVersion: "9007199254740993", desired: "disabled", admission: "closed", operationId, instance: { instanceId, instanceEpoch: "1" }, capability: "supported", observation: null, observedAt };
+const resource = { protocolVersion: 1, workerId, intentVersion: "9007199254740993", desired: "disabled", admission: "closed", operationId, instance: { instanceId }, capability: "supported", observation: null, observedAt };
 const intent: LifecycleIntentRequest = { protocolVersion: 1, operationId, action: "disable", expectedVersion: "9007199254740993", source: "local", localEpoch: "4", originOperationId: workerId };
 const intentReceipt = { protocolVersion: 1, workerId, operationId, action: "disable", intentVersion: "9007199254740994", desired: "disabled", admission: "closed", state: "accepted", errorCode: null, observedAt };
-const activation: LifecycleActivationRequest = { protocolVersion: 1, operationId, instanceId, instanceEpoch: "1", intentVersion: "4", localEpoch: "4", scopeGeneration: "2", reportSequence: "3" };
-const activationReceipt = { protocolVersion: 1, workerId, operationId, action: "resume", instanceEpoch: "1", intentVersion: "4", localEpoch: "4", scopeGeneration: "2", admission: "open", observedAt };
-const report: LifecycleObservationEnvelope = { protocolVersion: 1, instanceId, instanceEpoch: "1", intentVersion: "4", operationId, localEpoch: "4", scopeGeneration: "2", reportSequence: "3", observation: { phase: "disabled", stop: "confirmed", save: "durable", sync: "complete", inventoryComplete: true, detailsComplete: true, inventoryRevision: "1", inventoryDigest: "a".repeat(64), resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [], recovery: [], errorCode: null } };
+const activation: LifecycleActivationRequest = { protocolVersion: 1, operationId, instanceId, intentVersion: "4", localEpoch: "4", scopeGeneration: "2", reportSequence: "3" };
+const activationReceipt = { protocolVersion: 1, workerId, operationId, action: "resume", instanceId, intentVersion: "4", localEpoch: "4", scopeGeneration: "2", admission: "open", observedAt };
+const report: LifecycleObservationEnvelope = { protocolVersion: 1, instanceId, intentVersion: "4", operationId, localEpoch: "4", scopeGeneration: "2", reportSequence: "3", observation: { phase: "disabled", stop: "confirmed", save: "durable", sync: "complete", inventoryComplete: true, detailsComplete: true, inventoryRevision: "1", inventoryDigest: "a".repeat(64), resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [], recovery: [], errorCode: null } };
 const json = (value: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "X-Daynight-Worker-Lifecycle": "1", ...headers } });
 const client = (fetch: typeof globalThis.fetch) => createWorkerLifecycleClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", userId, workerId, fetch });
 
@@ -31,7 +31,7 @@ describe("Worker lifecycle protocol and original identities", () => {
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual(intent);
   });
 
-  it.each([{ source: "web" }, { localEpoch: null }, { originOperationId: null }, { instanceEpoch: "1" }, { expectedVersion: "01" }, { expectedVersion: "9223372036854775808" }, { operationId: "00000000-0000-0000-0000-000000000000" }])("refuses invalid local intent before HTTP: %j", changes => {
+  it.each([{ source: "web" }, { localEpoch: null }, { originOperationId: null }, { instanceId }, { expectedVersion: "01" }, { expectedVersion: "9223372036854775808" }, { operationId: "00000000-0000-0000-0000-000000000000" }])("refuses invalid local intent before HTTP: %j", changes => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     expect(() => client(fetch).intent({ ...intent, ...changes } as LifecycleIntentRequest)).toThrow();
     expect(fetch).not.toHaveBeenCalled();
@@ -54,15 +54,15 @@ describe("Worker lifecycle protocol and original identities", () => {
     await expect(client(fetch).intent(intent)).rejects.toMatchObject({ outcomeUnconfirmed: true });
   });
 
-  it("accepts instance registration only at the original next epoch", async () => {
-    const input = { protocolVersion: 1 as const, operationId, instanceId, previousInstanceEpoch: "2", capabilities: { disable: true as const, resume: true as const, inventory: 1 as const, dispatchFence: 1 as const }, platform: "macos" as const };
-    const receipt = { protocolVersion: 1, workerId, operationId, instanceId, instanceEpoch: "3", intentVersion: "4", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt };
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(receipt)).mockResolvedValueOnce(json({ ...receipt, instanceEpoch: "4" }));
+  it("accepts instance registration only for the submitted instance", async () => {
+    const input = { protocolVersion: 1 as const, operationId, instanceId, capabilities: { disable: true as const, resume: true as const, inventory: 1 as const, dispatchFence: 1 as const }, platform: "macos" as const };
+    const receipt = { protocolVersion: 1, workerId, operationId, instanceId, intentVersion: "4", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(receipt)).mockResolvedValueOnce(json({ ...receipt, instanceId: userId }));
     expect(await client(fetch).register(input)).toEqual(receipt);
     await expect(client(fetch).register(input)).rejects.toMatchObject({ outcomeUnconfirmed: true });
   });
 
-  it("matches every activation epoch and generation before confirming the open receipt", async () => {
+  it("matches the activation identity, intent and local scope before confirming the open receipt", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(activationReceipt)).mockResolvedValueOnce(json({ ...activationReceipt, localEpoch: "5" }));
     expect(await client(fetch).activate(activation)).toEqual(activationReceipt);
     await expect(client(fetch).activate(activation)).rejects.toMatchObject({ outcomeUnconfirmed: true });
@@ -70,7 +70,7 @@ describe("Worker lifecycle protocol and original identities", () => {
   });
 
   it("validates the observation receipt's exact instance, intent and report sequence", async () => {
-    const receipt = { protocolVersion: 1, accepted: true, instanceEpoch: "1", intentVersion: "4", reportSequence: "3", receivedAt: observedAt };
+    const receipt = { protocolVersion: 1, accepted: true, instanceId, intentVersion: "4", reportSequence: "3", receivedAt: observedAt };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(receipt)).mockResolvedValueOnce(json({ ...receipt, reportSequence: "2" }));
     expect(await client(fetch).report(report)).toEqual(receipt);
     await expect(client(fetch).report(report)).rejects.toMatchObject({ outcomeUnconfirmed: true });

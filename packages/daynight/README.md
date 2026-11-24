@@ -3183,7 +3183,9 @@ one specified claim without a background request queue.
 ### Disable and resume a Worker
 
 Run these commands on the original Worker machine with its original
-`DN_CONFIG_DIR`, configured service and Worker ID:
+`DN_CONFIG_DIR`, configured service and Worker ID. When a Worker starts with a
+fresh runtime directory and the same configured identity, its server lifecycle
+state determines reconnect eligibility and preserves any accepted disable intent.
 
 ```bash
 daynight worker disable --worker-id <uuid> --local --confirm --json

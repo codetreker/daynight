@@ -9,9 +9,9 @@ import { WORKER_TIME, WORKER_USER, workerId, workerResponse, workerSummary } fro
 
 const worker = workerId(1), original: LifecycleIntentRequest = { protocolVersion: 1, operationId: workerId(2), action: 'disable', expectedVersion: '1', source: 'web', localEpoch: null, originOperationId: null };
 const resource = (): LifecycleResource => ({ protocolVersion: 1, workerId: worker, intentVersion: '1', desired: 'enabled', admission: 'open', operationId: null,
-  instance: { instanceId: workerId(3), instanceEpoch: '1' }, capability: 'supported', observation: null, observedAt: WORKER_TIME });
+  instance: { instanceId: workerId(3) }, capability: 'supported', observation: null, observedAt: WORKER_TIME });
 const stoppedResource = (desired: 'enabled' | 'disabled'): LifecycleResource => ({ ...resource(), desired, admission: 'closed', operationId: workerId(4),
-  observation: { protocolVersion: 1, instanceId: workerId(3), instanceEpoch: '1', intentVersion: '1', operationId: workerId(4), localEpoch: '2', scopeGeneration: '3', reportSequence: '4',
+  observation: { protocolVersion: 1, instanceId: workerId(3), intentVersion: '1', operationId: workerId(4), localEpoch: '2', scopeGeneration: '3', reportSequence: '4',
     observation: { phase: 'disabled', stop: 'confirmed', save: 'durable', sync: 'complete', inventoryComplete: true, detailsComplete: true, inventoryRevision: '1', inventoryDigest: 'a'.repeat(64),
       resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [], recovery: [], errorCode: desired === 'enabled' ? 'resume_interrupted' : null,
       receivedAt: WORKER_TIME, freshUntil: new Date(Date.parse(WORKER_TIME) + 5_000).toISOString() } },
@@ -118,7 +118,7 @@ describe('Worker lifecycle publication fences', () => {
     expect(fetch.mock.calls.every(([, init]) => init.method !== 'POST')).toBe(true);
   });
 
-  it('submits explicit recovery from a fresh interrupted resume using its current epochs', async () => {
+  it('submits explicit recovery from a fresh interrupted resume using the current instance and local epoch', async () => {
     const snapshot = stoppedResource('enabled');
     let submitted: LifecycleIntentRequest | null = null;
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
@@ -134,14 +134,16 @@ describe('Worker lifecycle publication fences', () => {
     expect(screen.queryByText(/You can restart this computer/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Resume service' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(submitted).toMatchObject({ action: 'resume', expectedVersion: '1', localEpoch: '2', instanceEpoch: '1', source: 'web' }));
+    await waitFor(() => expect(submitted).toMatchObject({ action: 'resume', expectedVersion: '1', localEpoch: '2', instanceId: workerId(3), source: 'web' }));
     expect(fetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
   });
 
-  it('rejects older intent and instance observations even if delivered later', () => {
-    const current = { ...resource(), intentVersion: '3', instance: { instanceId: workerId(3), instanceEpoch: '4' } };
+  it('orders lifecycle snapshots by intent version and server observation time across instance changes', () => {
+    const current = { ...resource(), intentVersion: '3' };
     expect(lifecycleAdvances(current, { ...current, intentVersion: '2' })).toBe(false);
-    expect(lifecycleAdvances(current, { ...current, instance: { instanceId: workerId(4), instanceEpoch: '3' } })).toBe(false);
+    const replacement = { ...current, instance: { instanceId: workerId(4) }, observedAt: '2026-10-29T12:01:00Z' };
+    expect(lifecycleAdvances(current, replacement)).toBe(true);
+    expect(lifecycleAdvances(replacement, current)).toBe(false);
     expect(lifecycleAdvances(current, { ...current, instance: null })).toBe(false);
     expect(lifecycleAdvances(current, { ...current, observedAt: '2026-10-29T11:59:00Z' })).toBe(false);
     expect(lifecycleAdvances(current, { ...current, intentVersion: '4' })).toBe(true);

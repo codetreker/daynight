@@ -78,7 +78,7 @@ func TestLifecycleResolveSerializesWithOriginalRegistration(t *testing.T) {
 				}
 				state, readErr := s.LifecycleDAO().Lifecycle(ctx, user, id)
 				if originalFirst {
-					if readErr != nil || state.InstanceEpoch != 1 || op.State != "applied" {
+					if readErr != nil || state.InstanceID == nil || *state.InstanceID != request.InstanceID || op.State != "applied" {
 						t.Fatalf("registration changed more than once: %+v %+v %v", state, op, readErr)
 					}
 				} else if !errors.Is(readErr, model.ErrNotFound) || op.State != "not_committed" {
@@ -122,9 +122,9 @@ func TestLifecycleIntentCASAndActivationResolutionPersist(t *testing.T) {
 	resume := model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: resumeID, Action: "resume", ExpectedVersion: "2", Source: "web"}
 	epoch := "1"
 	resume.LocalEpoch = &epoch
-	resume.InstanceEpoch = &epoch
+	resume.InstanceID = &request.InstanceID
 	zero := int64(0)
-	obs := model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: request.InstanceID, InstanceEpoch: "1", IntentVersion: "2", OperationID: &disable.OperationID, LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: "0000000000000000000000000000000000000000000000000000000000000000", ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
+	obs := model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: request.InstanceID, IntentVersion: "2", OperationID: &disable.OperationID, LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: "0000000000000000000000000000000000000000000000000000000000000000", ResourceCount: &zero, StoppedCount: &zero, PendingCount: &zero, BlockedCount: &zero, Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
 	lifecycleWrite(t, db, func(s store.WorkerLifecycleScope) error {
 		_, err := core.LifecycleObserve(t.Context(), s.LifecycleDAO(), user, id, obs, now)
 		return err
@@ -133,7 +133,7 @@ func TestLifecycleIntentCASAndActivationResolutionPersist(t *testing.T) {
 		_, err := core.LifecycleIntent(t.Context(), s.LifecycleDAO(), user, id, resume, now)
 		return err
 	})
-	activation := model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: resumeID, InstanceID: request.InstanceID, InstanceEpoch: "1", IntentVersion: "3", LocalEpoch: "1", ScopeGeneration: "2", ReportSequence: "2"}
+	activation := model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: resumeID, InstanceID: request.InstanceID, IntentVersion: "3", LocalEpoch: "1", ScopeGeneration: "2", ReportSequence: "2"}
 	raw, err := json.Marshal(activation)
 	if err != nil {
 		t.Fatal(err)

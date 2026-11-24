@@ -68,11 +68,11 @@ const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<
     const workerDirectory = resolveWorkerPaths(home).workerDirectory; await mkdir(workerDirectory, { recursive: true, mode: 0o700 });
     const identity = { serverOrigin: ticket.serverOrigin, userId: ticket.userId!, workerId: ticket.workerId! };
     lifecycle = openLifecycleStore({ file: path.join(workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-    const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
+    const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
     lifecycle.bindInstance({ ...binding, desired: "enabled" }); lifecycle.markStopped({ localEpoch: "1", inventoryRevision: lifecycle.readState().inventoryRevision });
     const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
     lifecycle.prepareActivation(activation);
-    lifecycle.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId, operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
+    lifecycle.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId, operationId: activation.operationId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
     ticket = { ...ticket, schemaVersion: 2, lifecycleBinding: binding };
   }
   if (options.recovery) {
@@ -98,7 +98,7 @@ const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<
       const binding = { ...ticket.lifecycleBinding!, scopeGeneration: "2" };
       const activation = { binding, operationId: randomUUID(), action: "reconnect" as const };
       store.prepareActivation(activation);
-      store.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "reconnect", workerId: ticket.workerId!, operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "2" } });
+      store.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "reconnect", workerId: ticket.workerId!, operationId: activation.operationId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "2" } });
       ticket = { ...ticket, lifecycleBinding: binding };
     }
     if (options.interruption) {

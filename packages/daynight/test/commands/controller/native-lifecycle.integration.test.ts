@@ -140,11 +140,11 @@ const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/native-lifecycle"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-")), file = path.join(root, "lifecycle.sqlite");
   const identity = { serverOrigin: "https://daynight.example", userId: randomUUID(), workerId: randomUUID() };
-  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
+  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
   const store = openLifecycleStore({ file, identity, allowCreate: true });
   store.bindInstance({ ...binding, desired: "enabled" }); store.markStopped({ localEpoch: "1", inventoryRevision: store.readState().inventoryRevision });
   const activation = { binding, action: "bootstrap" as const, operationId: randomUUID() };
-  store.prepareActivation(activation); store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId, workerId: identity.workerId, instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" } });
+  store.prepareActivation(activation); store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId, workerId: identity.workerId, instanceId: binding.instanceId, localEpoch: "1", intentVersion: "1", scopeGeneration: "1" } });
   cleanups.push(() => settleCleanups([async () => { store.close(); }, () => rm(root, { recursive: true, force: true })]));
   return { root, store, fence: freezeNativeLifecycleFence({ file, binding }), disable: () => store.closeAdmission({ operationId: randomUUID(), local: true }) };
 };

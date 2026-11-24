@@ -183,8 +183,8 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     let lifecycleBinding: LifecycleBinding | undefined;
     if (state === "incomplete" || recovered) {
       lifecycle = openLifecycleStore({ file: path.join(root, "lifecycle.sqlite"), identity: { serverOrigin: origin, workerId, userId }, allowCreate: true });
-      const instanceId = randomUUID(), bound = lifecycle.bindInstance({ instanceId, instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
-      lifecycleBinding = { serverOrigin: origin, workerId, userId, instanceId, instanceEpoch: "1", intentVersion: "1", localEpoch: bound.localEpoch, scopeGeneration: bound.scopeGeneration };
+      const instanceId = randomUUID(), bound = lifecycle.bindInstance({ instanceId, intentVersion: "1", desired: "disabled" });
+      lifecycleBinding = { serverOrigin: origin, workerId, userId, instanceId, intentVersion: "1", localEpoch: bound.localEpoch, scopeGeneration: bound.scopeGeneration };
     }
     const retainBoundary = (ticket: ControllerLaunchTicket, boundary: Awaited<ReturnType<typeof nativeBoundary>>) => {
       if (lifecycle === undefined || lifecycleBinding === undefined) return;
@@ -295,8 +295,8 @@ it("stops every retained real generation without a journal and retries from dura
   const owner = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
   const identity = { serverOrigin: origin, workerId: randomUUID(), userId: randomUUID() };
   const lifecycle = openLifecycleStore({ file: path.join(root, "lifecycle.sqlite"), identity, allowCreate: true }), leases = createControllerJobLeases();
-  const instanceId = randomUUID(), bound = lifecycle.bindInstance({ instanceId, instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
-  const binding: LifecycleBinding = { ...identity, instanceId, instanceEpoch: "1", intentVersion: "1", localEpoch: bound.localEpoch, scopeGeneration: bound.scopeGeneration };
+  const instanceId = randomUUID(), bound = lifecycle.bindInstance({ instanceId, intentVersion: "1", desired: "disabled" });
+  const binding: LifecycleBinding = { ...identity, instanceId, intentVersion: "1", localEpoch: bound.localEpoch, scopeGeneration: bound.scopeGeneration };
   const executionId = randomUUID(), sessionId = randomUUID(), journalFile = path.join(controllerExecutionDirectory(home, executionId), "journal.sqlite");
   const boundaries: Awaited<ReturnType<typeof nativeBoundary>>[] = [], tickets: { file: string; contents: string }[] = [];
   let failure: unknown, failed = false;

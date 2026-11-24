@@ -16,7 +16,7 @@ export class LifecycleAdmissionError extends Error {
 
 export type LifecycleJson = null | boolean | number | string | LifecycleJson[] | { [key: string]: LifecycleJson };
 export type LifecycleIdentity = { serverOrigin: string; userId: string; workerId: string };
-export type LifecycleBinding = LifecycleIdentity & { instanceId: string; instanceEpoch: string; localEpoch: string; intentVersion: string; scopeGeneration: string };
+export type LifecycleBinding = LifecycleIdentity & { instanceId: string; localEpoch: string; intentVersion: string; scopeGeneration: string };
 export type LifecycleStage = "reserved" | "running" | "stopped" | "not_dispatched" | "confirmed" | "unknown";
 export type LifecycleOperation = {
   phase: "primary" | "activation";
@@ -26,7 +26,7 @@ export type LifecycleOperation = {
 };
 export type LifecycleResource = {
   resourceId: string; ownerKind: ExecutionOwnerKind; identity: { [key: string]: LifecycleJson };
-  instanceId: string; instanceEpoch: string; scopeGeneration: string; operationId: string;
+  instanceId: string; scopeGeneration: string; operationId: string;
   stage: LifecycleStage; processProof: LifecycleJson | null; stopProof: LifecycleJson | null;
   saveState: "pending" | "durable" | "failed"; error: string | null;
 };
@@ -34,7 +34,7 @@ export type LifecycleActivation = { binding: LifecycleBinding; operationId: stri
 export type LifecycleState = LifecycleIdentity & {
   formatVersion: 1; localEpoch: string; localVeto: boolean; intentVersion: string | null;
   desired: "enabled" | "disabled" | null; admission: "open" | "closed";
-  instanceId: string | null; instanceEpoch: string | null; scopeGeneration: string;
+  instanceId: string | null; scopeGeneration: string;
   phase: "accepting" | "disabling" | "disabled" | "blocked" | "resuming";
   operationId: string | null; inventoryRevision: string; inventoryComplete: boolean; bootstrapConsumed: boolean;
   stop: "not_started" | "stopping" | "confirmed" | "unknown";
@@ -43,7 +43,7 @@ export type LifecycleState = LifecycleIdentity & {
   stopProof: LifecycleJson | null;
 };
 export type LifecycleOutbox = {
-  id: string; instanceEpoch: string; intentVersion: string; reportSequence: string; payload: LifecycleJson; hash: string;
+  id: string; instanceId: string; intentVersion: string; reportSequence: string; payload: LifecycleJson; hash: string;
   uploadState: "pending" | "unknown" | "confirmed" | "covered" | "failed"; receipt: LifecycleJson | null;
 };
 export type LifecycleSnapshot = {
@@ -52,15 +52,6 @@ export type LifecycleSnapshot = {
   counts: { total: number; stopped: number; pending: number; blocked: number };
 };
 
-const steps = loadSqliteSequence(new URL("./lifecycle-sqlite/", import.meta.url));
-const schema = sqliteSchemaSnapshots(steps).get(1)!;
-export const lifecycleStoreFormat: SqliteFormat = {
-  name: "Worker lifecycle", baseline: { version: 1, create: db => { db.exec(steps[0].sql); } }, migrations: [],
-  validateVersioned: (db, version) => {
-    const objects = db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
-    if (version !== 1 || JSON.stringify(objects) !== JSON.stringify(schema)) throw new Error("Worker lifecycle SQLite schema is invalid.");
-  },
-};
 const invalid = (message: string): never => { throw new Error(`Worker lifecycle ${message}.`); };
 const uuid = (value: unknown): string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) && value !== "00000000-0000-0000-0000-000000000000" ? value : invalid("identity must be a canonical nonzero UUID");
 const serial = (value: unknown): string => typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n ? value : invalid("sequence must be a positive int64 string");
@@ -74,7 +65,7 @@ const identityValue = (value: LifecycleIdentity): LifecycleIdentity => {
   if (new URL(value.serverOrigin).origin !== value.serverOrigin || !/^https?:$/.test(new URL(value.serverOrigin).protocol)) invalid("service origin is not canonical");
   return { serverOrigin: value.serverOrigin, userId: uuid(value.userId), workerId: uuid(value.workerId) };
 };
-const bindingValue = (value: LifecycleBinding): LifecycleBinding => ({ ...identityValue(value), instanceId: uuid(value.instanceId), instanceEpoch: serial(value.instanceEpoch), localEpoch: serial(value.localEpoch), intentVersion: serial(value.intentVersion), scopeGeneration: serial(value.scopeGeneration) });
+const bindingValue = (value: LifecycleBinding): LifecycleBinding => ({ ...identityValue(value), instanceId: uuid(value.instanceId), localEpoch: serial(value.localEpoch), intentVersion: serial(value.intentVersion), scopeGeneration: serial(value.scopeGeneration) });
 const jsonValue = (value: unknown, depth = 0): LifecycleJson => {
   if (depth > 64) invalid("JSON nesting exceeds its bound");
   if (value === null || typeof value === "boolean" || typeof value === "string") return value;
@@ -103,7 +94,7 @@ const parseActivation = (value: unknown): LifecycleActivation => {
   const parsed = objectValue(value);
   if (Object.keys(parsed).sort().join() !== "action,binding,operationId") return invalid("activation has invalid fields");
   const binding = objectValue(parsed.binding);
-  if (Object.keys(binding).sort().join() !== "instanceEpoch,instanceId,intentVersion,localEpoch,scopeGeneration,serverOrigin,userId,workerId") invalid("activation binding has invalid fields");
+  if (Object.keys(binding).sort().join() !== "instanceId,intentVersion,localEpoch,scopeGeneration,serverOrigin,userId,workerId") invalid("activation binding has invalid fields");
   return { binding: bindingValue(binding as LifecycleBinding), operationId: uuid(parsed.operationId), action: choice(parsed.action, ["resume", "bootstrap", "reconnect"]) };
 };
 const stateValue = (row: Record<string, unknown> | undefined, expected: LifecycleIdentity): LifecycleState => {
@@ -112,12 +103,12 @@ const stateValue = (row: Record<string, unknown> | undefined, expected: Lifecycl
   if (encode(identity) !== encode(expected) || row.format_version !== 1n || row.singleton !== 1n) invalid("authority belongs to another identity or format");
   const state: LifecycleState = { ...identity, formatVersion: 1, localEpoch: integer(row.local_epoch), localVeto: boolean(row.local_veto),
     intentVersion: optional(row.intent_version, integer), desired: optional(row.desired, value => choice(value, ["enabled", "disabled"])),
-    admission: choice(row.admission, ["open", "closed"]), instanceId: optional(row.instance_id, uuid), instanceEpoch: optional(row.instance_epoch, integer),
+    admission: choice(row.admission, ["open", "closed"]), instanceId: optional(row.instance_id, uuid),
     scopeGeneration: integer(row.scope_generation), phase: choice(row.phase, ["accepting", "disabling", "disabled", "blocked", "resuming"]),
     operationId: optional(row.active_operation_id, uuid), inventoryRevision: integer(row.inventory_revision), inventoryComplete: boolean(row.inventory_complete),
     bootstrapConsumed: boolean(row.bootstrap_consumed), stop: choice(row.stop, ["not_started", "stopping", "confirmed", "unknown"]), save: choice(row.save, ["pending", "durable", "failed"]),
     sync: choice(row.sync, ["pending", "complete", "failed"]), errorCode: optional(row.error_code, text), activation: optional(row.activation_json, value => parseActivation(decode(value))), stopProof: optional(row.stop_proof_json, decode) };
-  if ((state.instanceId === null) !== (state.instanceEpoch === null) || (state.desired === null) !== (state.intentVersion === null)
+  if ((state.desired === null) !== (state.intentVersion === null)
     || state.admission === "open" && (state.localVeto || state.desired !== "enabled" || state.instanceId === null || state.phase !== "accepting" || state.activation === null)
     || state.inventoryComplete && state.stopProof === null
     || state.phase === "disabled" && (state.admission !== "closed" || !state.inventoryComplete || state.stop !== "confirmed" || state.save !== "durable")) invalid("authority invariants are inconsistent");
@@ -125,7 +116,7 @@ const stateValue = (row: Record<string, unknown> | undefined, expected: Lifecycl
 };
 const resourceValue = (row: Record<string, unknown>): LifecycleResource => {
   const result: LifecycleResource = { resourceId: uuid(row.resource_id), ownerKind: choice(row.owner_kind, ["task", "bot", "assistant", "probe", "repository", "configuration", "controller"]),
-    identity: objectValue(decode(row.identity_json)), instanceId: uuid(row.instance_id), instanceEpoch: integer(row.instance_epoch), scopeGeneration: integer(row.scope_generation),
+    identity: objectValue(decode(row.identity_json)), instanceId: uuid(row.instance_id), scopeGeneration: integer(row.scope_generation),
     operationId: uuid(row.admission_operation_id), stage: choice(row.stage, ["reserved", "running", "stopped", "not_dispatched", "confirmed", "unknown"]),
     processProof: optional(row.process_proof_json, decode), stopProof: optional(row.stop_proof_json, decode), saveState: choice(row.save_state, ["pending", "durable", "failed"]), error: optional(row.last_error, text) };
   if (result.stage === "stopped" && result.stopProof === null || result.processProof !== null && ["confirmed", "not_dispatched"].includes(result.stage)) invalid("resource stop evidence is inconsistent");
@@ -138,11 +129,104 @@ const historicalJson = (row: Record<string, unknown>): LifecycleJson => {
   if (hash(source) !== row.content_hash) invalid("compressed history digest is invalid");
   return decode(source);
 };
+const migrateInstanceIdentity = (db: Database.Database, sql: string): void => {
+  const authority = db.prepare("SELECT instance_epoch, instance_id, activation_json, stop_proof_json FROM lifecycle_state").safeIntegers().get() as Record<string, unknown> | undefined;
+  const owners = db.prepare("SELECT resource_id, instance_epoch, instance_id, stop_proof_json FROM resource_owners").safeIntegers().all() as Record<string, unknown>[];
+  const operations = db.prepare("SELECT * FROM lifecycle_operations").all() as Record<string, unknown>[];
+  const outbox = db.prepare("SELECT * FROM lifecycle_outbox").safeIntegers().all() as Record<string, unknown>[];
+  const history = (table: "resource_history" | "outbox_history", id: "resource_id" | "id") =>
+    (db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]).map(row => ({ id: uuid(row[id]), value: objectValue(historicalJson(row)) }));
+  const resources = history("resource_history", "resource_id"), reports = history("outbox_history", "id");
+  const instanceIds = new Map<string, string>();
+  const remember = (epoch: unknown, id: unknown): void => {
+    const key = serial(epoch), instanceId = uuid(id), previous = instanceIds.get(key);
+    if (previous !== undefined && previous !== instanceId) invalid("legacy instance epoch has conflicting identities");
+    instanceIds.set(key, instanceId);
+  };
+  if (authority !== undefined && authority.instance_epoch !== null) remember(integer(authority.instance_epoch), authority.instance_id);
+  for (const owner of owners) remember(integer(owner.instance_epoch), owner.instance_id);
+  for (const { value } of resources) remember(value.instanceEpoch, value.instanceId);
+  const receipts = ["receipt_json", "activation_receipt_json"] as const;
+  for (const row of operations) {
+    const receipt = optional(row.receipt_json, decode);
+    if (row.kind === "instance" && receipt !== null && typeof receipt === "object" && !Array.isArray(receipt)
+      && Object.hasOwn(receipt, "instanceEpoch")) remember(receipt.instanceEpoch, receipt.instanceId);
+  }
+  for (const row of outbox) {
+    const payload = decode(row.payload);
+    if (hash(encode(payload)) !== row.hash) invalid("outbox digest is invalid");
+    remember(integer(row.instance_epoch), objectValue(payload).instanceId);
+  }
+  for (const { value } of reports) remember(value.instanceEpoch, objectValue(value.payload).instanceId);
+
+  const migrate = (value: LifecycleJson): LifecycleJson => {
+    if (Array.isArray(value)) return value.map(migrate);
+    if (value === null || typeof value !== "object") return value;
+    const { instanceEpoch, previousInstanceEpoch: _previousInstanceEpoch, ...fields } = value;
+    if (instanceEpoch !== undefined && !Object.hasOwn(fields, "instanceId")) {
+      fields.instanceId = instanceIds.get(serial(instanceEpoch)) ?? invalid("legacy instance epoch has no recorded identity");
+    }
+    return Object.fromEntries(Object.entries(fields).map(([key, item]) => [key, migrate(item)]));
+  };
+  const migratedJson = (source: unknown): string | null => source === null ? null : encode(migrate(decode(source)));
+  const migrateReportReceipt = (value: LifecycleJson, status: unknown): LifecycleJson => {
+    // Older coverage could come from a server instance with no retained local record.
+    if (status === "covered" && value !== null && typeof value === "object" && !Array.isArray(value)
+      && !instanceIds.has(serial(value.instanceEpoch))) return null;
+    return migrate(value);
+  };
+
+  db.exec(sql);
+  if (authority !== undefined) db.prepare("UPDATE lifecycle_state SET activation_json=?, stop_proof_json=?")
+    .run(migratedJson(authority.activation_json), migratedJson(authority.stop_proof_json));
+  const ownerProof = db.prepare("UPDATE resource_owners SET stop_proof_json=? WHERE resource_id=?");
+  for (const row of owners) ownerProof.run(migratedJson(row.stop_proof_json), row.resource_id);
+  const updateOperation = db.prepare("UPDATE lifecycle_operations SET request_json=?, request_hash=?, receipt_json=?, activation_request_json=?, activation_request_hash=?, activation_receipt_json=? WHERE operation_id=?");
+  for (const row of operations) {
+    for (const prefix of ["", "activation_"]) {
+      const request = row[`${prefix}request_json`], digest = row[`${prefix}request_hash`];
+      if (request === null ? digest !== null : hash(text(request)) !== digest) invalid("operation payload digest is invalid");
+    }
+    const request = migratedJson(row.request_json), activation = migratedJson(row.activation_request_json);
+    const [receipt, activationReceipt] = receipts.map(column => migratedJson(row[column]));
+    updateOperation.run(request, request === null ? null : hash(request), receipt, activation, activation === null ? null : hash(activation), activationReceipt, row.operation_id);
+  }
+  const insertReport = db.prepare("INSERT INTO lifecycle_outbox VALUES (?,?,?,?,?,?,?,?)");
+  for (const row of outbox) {
+    const payload = encode(migrate(decode(row.payload))), receipt = migrateReportReceipt(decode(row.receipt_json ?? "null"), row.upload_state);
+    insertReport.run(row.id, instanceIds.get(integer(row.instance_epoch)), row.intent_version, row.report_sequence, payload, hash(payload), row.upload_state, receipt === null ? null : encode(receipt));
+  }
+  const writeHistory = (table: "resource_history" | "outbox_history", idColumn: "resource_id" | "id", id: string, value: LifecycleJson): void => {
+    const payload = encode(value);
+    db.prepare(`UPDATE ${table} SET content_hash=?, payload=? WHERE ${idColumn}=?`).run(hash(payload), deflateRawSync(payload), id);
+  };
+  for (const { id, value } of resources) writeHistory("resource_history", "resource_id", id, migrate(value));
+  for (const { id, value } of reports) {
+    const { receipt, ...rest } = value;
+    const updated = objectValue(migrate(rest));
+    updated.hash = hash(encode(updated.payload));
+    updated.receipt = migrateReportReceipt(receipt!, value.uploadState);
+    writeHistory("outbox_history", "id", id, updated);
+  }
+};
+
+const steps = loadSqliteSequence(new URL("./lifecycle-sqlite/", import.meta.url));
+const [baseline, instanceIdentity] = steps;
+const schemas = sqliteSchemaSnapshots(steps);
+export const lifecycleStoreFormat: SqliteFormat = {
+  name: "Worker lifecycle", baseline: { version: baseline.version, create: db => { db.exec(baseline.sql); } },
+  migrations: [{ toVersion: instanceIdentity!.version, up: db => { migrateInstanceIdentity(db, instanceIdentity!.sql); } }],
+  validateVersioned: (db, version) => {
+    const objects = db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
+    if (JSON.stringify(objects) !== JSON.stringify(schemas.get(version))) throw new Error("Worker lifecycle SQLite schema is invalid.");
+  },
+};
+
 const historicalResource = (row: Record<string, unknown>): LifecycleResource => {
   const value = objectValue(historicalJson(row));
-  if (Object.keys(value).sort().join() !== "error,identity,instanceEpoch,instanceId,operationId,ownerKind,processProof,resourceId,saveState,scopeGeneration,stage,stopProof" || row.resource_id !== value.resourceId) return invalid("compressed resource history has invalid fields");
+  if (Object.keys(value).sort().join() !== "error,identity,instanceId,operationId,ownerKind,processProof,resourceId,saveState,scopeGeneration,stage,stopProof" || row.resource_id !== value.resourceId) return invalid("compressed resource history has invalid fields");
   const resource = resourceValue({ resource_id: value.resourceId, owner_kind: value.ownerKind, identity_json: encode(value.identity), instance_id: value.instanceId,
-    instance_epoch: BigInt(serial(value.instanceEpoch)), scope_generation: BigInt(serial(value.scopeGeneration)), admission_operation_id: value.operationId, stage: value.stage,
+    scope_generation: BigInt(serial(value.scopeGeneration)), admission_operation_id: value.operationId, stage: value.stage,
     process_proof_json: value.processProof === null ? null : encode(value.processProof), stop_proof_json: value.stopProof === null ? null : encode(value.stopProof), save_state: value.saveState, last_error: value.error });
   if (!terminal(resource)) invalid("compressed history contains unresolved resource responsibility");
   return resource;
@@ -160,7 +244,7 @@ const snapshot = (db: Database.Database, identity: LifecycleIdentity, limit = 51
   const state = readState(db, identity), resources = allResources(db).filter(resource => !terminal(resource) || BigInt(resource.scopeGeneration) >= BigInt(state.scopeGeneration)), stopped = resources.filter(terminal).length;
   const blocked = resources.filter(resource => resource.stage === "unknown" || resource.saveState === "failed").length;
   if (state.inventoryComplete && stopped !== resources.length) invalid("closed inventory contains unresolved responsibility");
-  const digest = createHash("sha256").update("daynight.lifecycle.inventory.v1\n").update(encode({ identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration, inventoryRevision: state.inventoryRevision })).update("\n");
+  const digest = createHash("sha256").update("daynight.lifecycle.inventory.v1\n").update(encode({ identity, instanceId: state.instanceId, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration, inventoryRevision: state.inventoryRevision })).update("\n");
   for (const resource of resources) digest.update(encode(resource)).update("\n");
   return { state, resources: allDetails ? resources : resources.slice(0, limit), detailsComplete: allDetails || resources.length <= limit, inventoryComplete: state.inventoryComplete,
     inventoryRevision: state.inventoryRevision, inventoryDigest: digest.digest("hex"), counts: { total: resources.length, stopped, pending: resources.length - stopped - blocked, blocked } };
@@ -208,12 +292,16 @@ export const readLifecycleIdentity = (options: { file: string; serverOrigin: str
   const original = privateFile(options.file), db = new Database(options.file, { readonly: true, fileMustExist: true, timeout: 1000 });
   try {
     return db.transaction(() => {
-      if (inspectSqlite(db, lifecycleStoreFormat).kind !== "current" || encode(privateFile(options.file)) !== encode(original)) invalid("authority changed during identity query");
+      const source = inspectSqlite(db, lifecycleStoreFormat);
+      if ((source.kind !== "current" && source.kind !== "outdated") || encode(privateFile(options.file)) !== encode(original)) invalid("authority changed during identity query");
       const row = db.prepare("SELECT server_origin,user_id,worker_id FROM lifecycle_state").get() as Record<string, unknown> | undefined;
       if (row === undefined) return invalid("authority identity is missing");
       const identity = identityValue({ serverOrigin: text(row.server_origin), userId: uuid(row.user_id), workerId: uuid(row.worker_id) });
       if (identity.serverOrigin !== options.serverOrigin || identity.workerId !== options.workerId) invalid("authority belongs to another service or Worker");
-      db.defaultSafeIntegers(true); stateValue(db.prepare("SELECT * FROM lifecycle_state").get() as Record<string, unknown>, identity);
+      if (source.kind === "current") {
+        db.defaultSafeIntegers(true);
+        readState(db, identity);
+      }
       return identity;
     }).deferred();
   } finally { db.close(); }
@@ -231,7 +319,13 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
   }
   const original = privateFile(options.file);
   const db = openSqliteDatabase({ file: options.file, format: lifecycleStoreFormat, allowCreate: false, timeoutMs: 1000,
-    assertMigrationAllowed: (_db, source) => { if (!created || source.kind !== "empty") invalid("missing or unrecognized authority cannot be initialized"); } });
+    assertMigrationAllowed: (migrationDb, source) => {
+      if (encode(privateFile(options.file)) !== encode(original)) invalid("authority file was replaced");
+      if (source.kind === "outdated") {
+        const row = migrationDb.prepare("SELECT server_origin, user_id, worker_id FROM lifecycle_state").get() as Record<string, unknown> | undefined;
+        if (row === undefined || row.server_origin !== identity.serverOrigin || row.user_id !== identity.userId || row.worker_id !== identity.workerId) invalid("authority belongs to another identity");
+      } else if (!created || source.kind !== "empty") invalid("missing or unrecognized authority cannot be initialized");
+    } });
   const check = (): void => {
     if (encode(privateFile(options.file)) !== encode(original)) invalid("authority file was replaced");
     assertCurrentSqlite(db, lifecycleStoreFormat);
@@ -262,14 +356,14 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
   };
   const assertBinding = (binding: LifecycleBinding, current: LifecycleState, scope = true): void => {
     const frozen = bindingValue(binding);
-    if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId || current.instanceEpoch !== frozen.instanceEpoch
+    if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId
       || current.localEpoch !== frozen.localEpoch || current.intentVersion !== frozen.intentVersion || scope && current.scopeGeneration !== frozen.scopeGeneration) invalid("execution binding is stale");
   };
   const assertAdmission = (binding: LifecycleBinding): void => {
     const current = state();
     // Validate authority before classifying a request as definitely unreserved.
     const frozen = bindingValue(binding);
-    if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId || current.instanceEpoch !== frozen.instanceEpoch
+    if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId
       || current.localEpoch !== frozen.localEpoch || current.intentVersion !== frozen.intentVersion || current.scopeGeneration !== frozen.scopeGeneration) throw new LifecycleAdmissionError("Worker lifecycle execution binding is stale.");
     if (current.admission !== "open" || current.localVeto || current.desired !== "enabled" || current.phase !== "accepting") throw new LifecycleAdmissionError();
   };
@@ -277,7 +371,7 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
     db.pragma("foreign_keys=ON");
     if (db.pragma("foreign_keys", { simple: true }) !== 1) invalid("foreign keys could not be enabled");
     if (created) atomic(() => {
-      db.prepare("INSERT INTO lifecycle_state VALUES (1,?,?,?,1,1,0,NULL,NULL,'closed',NULL,NULL,1,'disabling',NULL,1,0,0,'not_started','pending','pending',NULL,NULL,NULL)").run(identity.serverOrigin, identity.userId, identity.workerId);
+      db.prepare("INSERT INTO lifecycle_state VALUES (1,?,?,?,1,1,0,NULL,NULL,'closed',NULL,1,'disabling',NULL,1,0,0,'not_started','pending','pending',NULL,NULL,NULL)").run(identity.serverOrigin, identity.userId, identity.workerId);
     });
     db.defaultSafeIntegers(true);
     // Statement-level safe integers preserve domain serials without changing PRAGMA's framework representation.
@@ -306,12 +400,12 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
     readResource: (resourceId: string): LifecycleResource | null => read(() => getResource(resourceId)),
     getResource: (resourceId: string): LifecycleResource | null => read(() => getResource(resourceId)),
     listResources: (): LifecycleResource[] => read(() => allResources(db)),
-    bindInstance: (input: { instanceId: string; instanceEpoch: string; intentVersion: string; desired: "enabled" | "disabled" }): LifecycleState => atomic(() => {
-      const current = state(); uuid(input.instanceId); serial(input.instanceEpoch); serial(input.intentVersion); choice(input.desired, ["enabled", "disabled"]);
-      if (current.instanceEpoch !== null && BigInt(input.instanceEpoch) <= BigInt(current.instanceEpoch) || current.intentVersion !== null && BigInt(input.intentVersion) < BigInt(current.intentVersion)) invalid("instance registration is stale");
+    bindInstance: (input: { instanceId: string; intentVersion: string; desired: "enabled" | "disabled" }): LifecycleState => atomic(() => {
+      const current = state(); uuid(input.instanceId); serial(input.intentVersion); choice(input.desired, ["enabled", "disabled"]);
+      if (current.intentVersion !== null && BigInt(input.intentVersion) < BigInt(current.intentVersion)) invalid("instance registration is stale");
       const completed = current.bootstrapConsumed && !current.localVeto && current.phase !== "resuming" && current.errorCode !== "resume_interrupted" && current.activation !== null && current.intentVersion === input.intentVersion && input.desired === "enabled";
       const errorCode = current.phase === "resuming" || current.errorCode === "resume_interrupted" ? "resume_interrupted" : current.errorCode === "authority_unavailable" ? null : current.errorCode;
-      db.prepare("UPDATE lifecycle_state SET instance_id=?,instance_epoch=?,intent_version=?,desired=?,admission='closed',phase='disabling',inventory_complete=0,stop='not_started',save='pending',error_code=?,activation_json=?").run(input.instanceId, BigInt(input.instanceEpoch), BigInt(input.intentVersion), input.desired, errorCode, completed ? encode(current.activation) : null);
+      db.prepare("UPDATE lifecycle_state SET instance_id=?,intent_version=?,desired=?,admission='closed',phase='disabling',inventory_complete=0,stop='not_started',save='pending',error_code=?,activation_json=?").run(input.instanceId, BigInt(input.intentVersion), input.desired, errorCode, completed ? encode(current.activation) : null);
       bump(); return state();
     }),
     observeAuthority: (input: { intentVersion: string; desired: "enabled" | "disabled"; admission: "open" | "closed" }): LifecycleState => atomic(() => {
@@ -342,7 +436,7 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       assertAdmission(input.binding);
       const resourceId = uuid(input.resourceId), operationId = uuid(input.operationId), ownerKind = choice(input.ownerKind, ["task", "bot", "assistant", "probe", "repository", "configuration", "controller"]), originalIdentity = encode(objectValue(input.identity));
       if (getResource(resourceId) !== null) invalid("resource already has an original reservation");
-      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), operationId);
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.scopeGeneration), operationId);
       bump(); return getResource(resourceId)!;
     }),
     adoptPreparedControllerInput: (input: { binding: LifecycleBinding; previous: LifecycleResource; identity: { [key: string]: LifecycleJson } }): LifecycleResource => atomic(() => {
@@ -353,8 +447,8 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
         || previous.processProof !== null || previous.stopProof !== null || previous.saveState !== "durable" || previous.error !== null)
         invalid("prepared Controller input reservation changed or may have dispatched");
       if (db.prepare("SELECT resource_id FROM resource_history WHERE resource_id=?").get(previous.resourceId) !== undefined) invalid("archived input reservation cannot be adopted");
-      db.prepare("UPDATE resource_owners SET identity_json=?,instance_id=?,instance_epoch=?,scope_generation=? WHERE resource_id=?")
-        .run(encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), previous.resourceId);
+      db.prepare("UPDATE resource_owners SET identity_json=?,instance_id=?,scope_generation=? WHERE resource_id=?")
+        .run(encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.scopeGeneration), previous.resourceId);
       bump(); return getResource(previous.resourceId)!;
     }),
     settlePreparedControllerInput: (expected: LifecycleResource): LifecycleResource => atomic(() => {
@@ -377,17 +471,17 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       const resourceId = uuid(input.resourceId);
       if (getResource(resourceId) !== null || allResources(db).some(resource => resource.operationId === previous.operationId && resource.stage !== "not_dispatched"))
         return invalid("Controller input has conflicting lifecycle responsibility");
-      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)")
-        .run(resourceId, "controller", encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), previous.operationId);
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)")
+        .run(resourceId, "controller", encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.scopeGeneration), previous.operationId);
       bump(); return getResource(resourceId)!;
     }),
     reserveCleanupCommand: (input: { binding: LifecycleBinding; task: ClaimIdentity; resourceId: string }): LifecycleResource => atomic(() => {
       const current = state(), frozen = bindingValue(input.binding);
-      if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId || current.instanceEpoch !== frozen.instanceEpoch
+      if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId
         || current.localEpoch !== frozen.localEpoch || current.intentVersion !== frozen.intentVersion || current.scopeGeneration !== frozen.scopeGeneration) throw new LifecycleAdmissionError("Worker lifecycle cleanup binding is stale.");
       const resourceId = uuid(input.resourceId), task = { projectId: uuid(input.task.projectId), taskId: uuid(input.task.taskId), claimId: uuid(input.task.claimId) };
       if (getResource(resourceId) !== null) invalid("cleanup command already has an original reservation");
-      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, "repository", encode({ kind: "cleanup_command", ...task }), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), resourceId);
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, "repository", encode({ kind: "cleanup_command", ...task }), input.binding.instanceId, BigInt(input.binding.scopeGeneration), resourceId);
       bump(); return getResource(resourceId)!;
     }),
     importResource: (input: { binding: LifecycleBinding; resourceId: string; ownerKind: ExecutionOwnerKind; identity: { [key: string]: LifecycleJson }; operationId: string; stage?: LifecycleStage; processProof?: LifecycleJson | null; stopProof?: LifecycleJson | null; saveState?: LifecycleResource["saveState"]; error?: string | null }): LifecycleResource => atomic(() => {
@@ -403,7 +497,7 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       const stage = choice(input.stage ?? "unknown", ["reserved", "running", "stopped", "not_dispatched", "confirmed", "unknown"]), proof = input.processProof == null ? null : encode(input.processProof), stopProof = input.stopProof == null ? null : encode(input.stopProof);
       const save = choice(input.saveState ?? "durable", ["pending", "durable", "failed"]), error = input.error == null ? null : text(input.error);
       if (proof !== null && ["not_dispatched", "confirmed"].includes(stage) || stage === "stopped" && stopProof === null) invalid("retained resource lacks original stopping evidence");
-      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), operationId, stage, proof, stopProof, save, error);
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.scopeGeneration), operationId, stage, proof, stopProof, save, error);
       bump(); return getResource(resourceId)!;
     }),
     recordResource: (input: { resourceId: string; stage: LifecycleStage; processProof?: LifecycleJson | null; stopProof?: LifecycleJson | null; saveState?: LifecycleResource["saveState"]; error?: string | null }): LifecycleResource => atomic(() => {
@@ -424,7 +518,7 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       if (!allResources(db).every(terminal)) invalid("stop inventory retains unresolved responsibility");
       if (input.owners?.some(owner => owner.stop !== "confirmed" || owner.save !== "durable")) invalid("scope owners retain unresolved responsibility");
       const currentInventory = snapshot(db, identity, 0);
-      const stopProof = { identity, instanceId: current.instanceId, instanceEpoch: current.instanceEpoch, intentVersion: current.intentVersion, localEpoch: current.localEpoch, scopeGeneration: current.scopeGeneration,
+      const stopProof = { identity, instanceId: current.instanceId, intentVersion: current.intentVersion, localEpoch: current.localEpoch, scopeGeneration: current.scopeGeneration,
         inventoryRevision: current.inventoryRevision, inventoryDigest: currentInventory.inventoryDigest,
         owners: (input.owners ?? []).map(owner => ({ resourceId: owner.resourceId, ownerKind: owner.ownerKind, generation: owner.generation, stop: owner.stop, save: owner.save, ...(owner.identity === undefined ? {} : { identity: owner.identity }) })) };
       db.prepare("UPDATE lifecycle_state SET phase='disabled',stop='confirmed',save='durable',inventory_complete=1,error_code=CASE WHEN error_code IN ('stop_unknown','stop_timeout','save_failed','persistence_failed') THEN NULL ELSE error_code END,stop_proof_json=?").run(encode(stopProof));
@@ -467,7 +561,7 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       if (current.phase !== "resuming" || current.admission !== "closed" || current.desired !== "enabled" || encode(current.activation) !== encode(activation)
         || !current.inventoryComplete || !allResources(db).every(terminal)) invalid("activation receipt does not match the current closed scope");
       const receipt = objectValue(input.receipt);
-      for (const [key, expected] of Object.entries({ protocolVersion: 1, admission: "open", action: activation.action, workerId: identity.workerId, operationId: activation.operationId, instanceEpoch: activation.binding.instanceEpoch, intentVersion: activation.binding.intentVersion, localEpoch: activation.binding.localEpoch, scopeGeneration: activation.binding.scopeGeneration })) if (receipt[key] !== expected) invalid("activation receipt binding is invalid");
+      for (const [key, expected] of Object.entries({ protocolVersion: 1, admission: "open", action: activation.action, workerId: identity.workerId, operationId: activation.operationId, instanceId: activation.binding.instanceId, intentVersion: activation.binding.intentVersion, localEpoch: activation.binding.localEpoch, scopeGeneration: activation.binding.scopeGeneration })) if (receipt[key] !== expected) invalid("activation receipt binding is invalid");
       db.prepare("UPDATE lifecycle_state SET local_veto=0,admission='open',phase='accepting',bootstrap_consumed=1,error_code=NULL").run();
       return state();
     }),
@@ -496,14 +590,14 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
     readOperation: (operationId: string, phase: LifecycleOperation["phase"] = "primary"): LifecycleOperation | null => read(() => operation(operationId, choice<LifecycleOperation["phase"]>(phase, ["primary", "activation"]))),
     listOperations: (): LifecycleOperation[] => read(() => (db.prepare("SELECT * FROM lifecycle_operations ORDER BY operation_id").all() as Record<string, unknown>[]).flatMap(row => [operationValue(row), ...(row.activation_status === null ? [] : [operationValue(row, "activation")])])),
     appendOutbox: (input: Omit<LifecycleOutbox, "hash" | "uploadState" | "receipt">): void => atomic(() => {
-      const id = uuid(input.id), payload = encode(input.payload), instanceEpoch = serial(input.instanceEpoch), intentVersion = serial(input.intentVersion), sequence = serial(input.reportSequence);
+      const id = uuid(input.id), payload = encode(input.payload), instanceId = uuid(input.instanceId), intentVersion = serial(input.intentVersion), sequence = serial(input.reportSequence);
       const old = db.prepare("SELECT * FROM lifecycle_outbox WHERE id=?").get(id) as Record<string, unknown> | undefined;
       if (db.prepare("SELECT id FROM outbox_history WHERE id=?").get(id) !== undefined) invalid("outbox ID already belongs to compressed history");
       if (old !== undefined) {
-        if (old.payload !== payload || integer(old.instance_epoch) !== instanceEpoch || integer(old.intent_version) !== intentVersion || integer(old.report_sequence) !== sequence) invalid("outbox conflicts with its frozen original report");
+        if (old.payload !== payload || uuid(old.instance_id) !== instanceId || integer(old.intent_version) !== intentVersion || integer(old.report_sequence) !== sequence) invalid("outbox conflicts with its frozen original report");
         return;
       }
-      db.prepare("INSERT INTO lifecycle_outbox VALUES (?,?,?,?,?,?,'pending',NULL)").run(id, BigInt(instanceEpoch), BigInt(intentVersion), BigInt(sequence), payload, hash(payload));
+      db.prepare("INSERT INTO lifecycle_outbox VALUES (?,?,?,?,?,?,'pending',NULL)").run(id, instanceId, BigInt(intentVersion), BigInt(sequence), payload, hash(payload));
     }),
     ackOutbox: (id: string, status: Exclude<LifecycleOutbox["uploadState"], "covered">, receipt?: LifecycleJson): void => atomic(() => {
       uuid(id); choice(status, ["pending", "unknown", "confirmed", "failed"]);
@@ -511,31 +605,31 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       if (old === undefined || old.upload_state === "confirmed" && status !== "confirmed" || old.upload_state === "covered") invalid("outbox receipt cannot be changed");
       if (status === "confirmed") {
         const confirmed = objectValue(receipt);
-        if (confirmed.protocolVersion !== 1 || confirmed.accepted !== true || confirmed.instanceEpoch !== integer(old!.instance_epoch)
+        if (confirmed.protocolVersion !== 1 || confirmed.accepted !== true || confirmed.instanceId !== uuid(old!.instance_id)
           || confirmed.intentVersion !== integer(old!.intent_version) || confirmed.reportSequence !== integer(old!.report_sequence)
           || typeof confirmed.receivedAt !== "string" || !Number.isFinite(Date.parse(confirmed.receivedAt))) invalid("outbox receipt does not identify its original report");
       }
       db.prepare("UPDATE lifecycle_outbox SET upload_state=?,receipt_json=? WHERE id=?").run(status, receipt === undefined ? null : encode(receipt), id);
       const current = state();
-      const reports = db.prepare("SELECT upload_state FROM lifecycle_outbox WHERE instance_epoch=? AND intent_version=?").all(current.instanceEpoch === null ? null : BigInt(current.instanceEpoch), current.intentVersion === null ? null : BigInt(current.intentVersion)) as { upload_state: string }[];
+      const reports = db.prepare("SELECT upload_state FROM lifecycle_outbox WHERE instance_id=? AND intent_version=?").all(current.instanceId, current.intentVersion === null ? null : BigInt(current.intentVersion)) as { upload_state: string }[];
       db.prepare("UPDATE lifecycle_state SET sync=?").run(reports.some(report => report.upload_state === "failed") ? "failed" : reports.length > 0 && reports.every(report => ["confirmed", "covered"].includes(report.upload_state)) ? "complete" : "pending");
     }),
-    coverOutbox: (id: string, authority: { instanceEpoch: string; intentVersion: string; reportSequence: string | null; receivedAt: string }): void => atomic(() => {
+    coverOutbox: (id: string, authority: { instanceId: string; intentVersion: string; reportSequence: string | null; receivedAt: string }): void => atomic(() => {
       const row = db.prepare("SELECT * FROM lifecycle_outbox WHERE id=?").get(uuid(id)) as Record<string, unknown> | undefined;
       if (row === undefined) invalid("outbox coverage has no original report");
       const original = row!;
-      serial(authority.instanceEpoch); serial(authority.intentVersion); if (authority.reportSequence !== null) serial(authority.reportSequence);
+      uuid(authority.instanceId); serial(authority.intentVersion); if (authority.reportSequence !== null) serial(authority.reportSequence);
       if (!Number.isFinite(Date.parse(authority.receivedAt))) invalid("outbox coverage has no authority observation time");
-      const newer = BigInt(authority.instanceEpoch) > BigInt(integer(original.instance_epoch))
-        || authority.instanceEpoch === integer(original.instance_epoch) && (BigInt(authority.intentVersion) > BigInt(integer(original.intent_version))
-          || authority.intentVersion === integer(original.intent_version) && authority.reportSequence !== null && BigInt(authority.reportSequence) > BigInt(integer(original.report_sequence)));
+      const newer = authority.instanceId === state().instanceId && (authority.instanceId !== uuid(original.instance_id)
+        || BigInt(authority.intentVersion) > BigInt(integer(original.intent_version))
+        || authority.intentVersion === integer(original.intent_version) && authority.reportSequence !== null && BigInt(authority.reportSequence) > BigInt(integer(original.report_sequence)));
       if (!newer) invalid("outbox coverage does not supersede its original report");
       if (original.upload_state === "confirmed" || original.upload_state === "covered") return;
       db.prepare("UPDATE lifecycle_outbox SET upload_state='covered',receipt_json=? WHERE id=?").run(encode(authority), id);
     }),
-    listOutbox: (): LifecycleOutbox[] => read(() => (db.prepare("SELECT * FROM lifecycle_outbox ORDER BY instance_epoch,report_sequence").all() as Record<string, unknown>[]).map(row => {
+    listOutbox: (): LifecycleOutbox[] => read(() => (db.prepare("SELECT * FROM lifecycle_outbox ORDER BY instance_id,report_sequence").all() as Record<string, unknown>[]).map(row => {
       const payload = decode(row.payload), digest = text(row.hash); if (hash(encode(payload)) !== digest) invalid("outbox digest is invalid");
-      return { id: uuid(row.id), instanceEpoch: integer(row.instance_epoch), intentVersion: integer(row.intent_version), reportSequence: integer(row.report_sequence), payload, hash: digest, uploadState: choice(row.upload_state, ["pending", "unknown", "confirmed", "covered", "failed"]), receipt: optional(row.receipt_json, decode) };
+      return { id: uuid(row.id), instanceId: uuid(row.instance_id), intentVersion: integer(row.intent_version), reportSequence: integer(row.report_sequence), payload, hash: digest, uploadState: choice(row.upload_state, ["pending", "unknown", "confirmed", "covered", "failed"]), receipt: optional(row.receipt_json, decode) };
     })),
     readOutboxHistory: (id: string): LifecycleJson | null => read(() => {
       const row = db.prepare("SELECT * FROM outbox_history WHERE id=?").get(uuid(id)) as Record<string, unknown> | undefined;
@@ -553,10 +647,10 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
           db.prepare("DELETE FROM resource_owners WHERE resource_id=?").run(resource.resourceId); resources++;
         }
       }
-      const latest = db.prepare("SELECT id FROM lifecycle_outbox WHERE instance_epoch=? ORDER BY report_sequence DESC LIMIT 1").get(current.instanceEpoch === null ? null : BigInt(current.instanceEpoch)) as { id: string } | undefined;
-      for (const row of db.prepare("SELECT * FROM lifecycle_outbox WHERE upload_state IN ('confirmed','covered') ORDER BY instance_epoch,report_sequence").all() as Record<string, unknown>[]) {
+      const latest = db.prepare("SELECT id FROM lifecycle_outbox WHERE instance_id=? ORDER BY report_sequence DESC LIMIT 1").get(current.instanceId) as { id: string } | undefined;
+      for (const row of db.prepare("SELECT * FROM lifecycle_outbox WHERE upload_state IN ('confirmed','covered') ORDER BY instance_id,report_sequence").all() as Record<string, unknown>[]) {
         if (row.id === latest?.id) continue;
-        const value = { id: uuid(row.id), instanceEpoch: integer(row.instance_epoch), intentVersion: integer(row.intent_version), reportSequence: integer(row.report_sequence), payload: decode(row.payload), hash: text(row.hash), uploadState: row.upload_state, receipt: optional(row.receipt_json, decode) };
+        const value = { id: uuid(row.id), instanceId: uuid(row.instance_id), intentVersion: integer(row.intent_version), reportSequence: integer(row.report_sequence), payload: decode(row.payload), hash: text(row.hash), uploadState: row.upload_state, receipt: optional(row.receipt_json, decode) };
         const source = encode(value);
         db.prepare("INSERT INTO outbox_history VALUES (?,?,?)").run(value.id, hash(source), deflateRawSync(source));
         db.prepare("DELETE FROM lifecycle_outbox WHERE id=?").run(value.id); outbox++;

@@ -76,7 +76,7 @@ Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁�
 
 ## 持久停用与恢复
 
-`lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、实例 epoch 与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
+`lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例 UUID 和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、注册实例与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
 
 业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原 Task 终态清理命令使用独立预约，不要求业务门禁开放；它刷新当前 localEpoch 与 intentVersion，同时严格保留原管理实例和 scopeGeneration，并在副作用前持久保存精确 claim 的 cleanup_command 责任。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
 
@@ -90,7 +90,7 @@ Task Web 与 Bot 的票据均可在启动提交前保存。若后续 Worker 生�
 
 `daynight worker lifecycle show --worker-id <uuid> --local --json` 只读完整私有库存。`phase`、`stop`、`save`、`sync` 是独立事实：仅库存完整、原责任全部闭合且保存完成，才能确认本机停止；云端未收到观测仍单独报告同步未完成。云端明细可按条数限制截断，但总数、库存摘要与 `detailsComplete` 保留该区别，本机查询不使用展示截断证明完整。outbox 固定原序列及正文；原回执或更高权威覆盖后才能退休，重传同序列不刷新原观测时间。
 
-`daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 与首次 bootstrap 各有独立资格，不能清除本机否决。 注册和原请求核对跨越异步等待后，激活选择还须核对当前持久 veto、desired 与 intentVersion；开始初始化时的快照不能抵消等待期间新增的停用意图。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
+`daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 使用服务端保存的资格，包括重新创建本机状态的启动。首次 bootstrap 使用独立资格。两者都保留本机否决。注册和原请求核对跨越异步等待后，激活选择还须核对当前持久 veto、desired 与 intentVersion；开始初始化时的快照不能抵消等待期间新增的停用意图。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
 
 当前管理实例独立保留恢复的后续激活责任，不以 `intentVersion` 是否再次变化作为唯一入口。恢复意图响应丢失时，先查询或 resolve 原 operationId；已有本地账本保留完整冻结请求，仅首次从远端发现的操作使用无请求账本。操作查询、停止或观察上报暂时失败后，仍可核对同一恢复并继续激活。activation 续接前及提交后的权威读取，若确认同一实例已有更高版本的停用意图，均清除旧激活的续接资格并收敛、上报新停用；这也覆盖旧观察因版本过期被拒绝、尚无 activation 回执的情况。原操作账本中的已确认回执和未知结果独立保留。普通管理循环先上报当前停用，再按原身份自动核对被替代的未知激活；查询暂时失败时继续报告停止，且禁止新激活，恢复可查后才继续后续显式恢复。读取暂时失败不构成意图替代或原操作未提交的证明。本地 resume 在受理时、进入管理队列前冻结 `localEpoch`；初始化、原操作核对、停止、权威读取及上报完成后均验证该 epoch，才能发送恢复意图。activation 的原结果核对及上报等待后也验证冻结的 epoch，再发送激活请求；已发送请求仍按原身份保存和核对结果，失效不能改写其 unknown 语义。该责任绑定接受时的本地 epoch 和管理实例，新的本机停用使旧责任失效，不能读取后来的 binding 来采用新 veto 的 epoch；进程重启不重建这一自动续接资格，中断的恢复仍须再次显式请求。
 

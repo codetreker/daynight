@@ -15,7 +15,7 @@ import (
 
 func executionLifecycle(t *testing.T, tx pgx.Tx, user, worker, admission string) {
 	t.Helper()
-	execute(t, tx, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at) VALUES($1,$2,1,1,'enabled',$3,0,now())`, user, worker, admission)
+	execute(t, tx, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,updated_at) VALUES($1,$2,1,1,'enabled',$3,now())`, user, worker, admission)
 }
 func TestWorkerExecutionAdmissionLegacyAndLifecycle(t *testing.T) {
 	db := workerStorage(t)

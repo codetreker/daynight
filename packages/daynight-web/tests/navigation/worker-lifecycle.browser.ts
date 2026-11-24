@@ -6,8 +6,8 @@ import { installTools, targetWorker } from './worker-tool-paths-fixture';
 const resourceId = workerId(41), instanceId = workerId(42);
 const initialResource = (): LifecycleResource => ({
   protocolVersion: 1, workerId: targetWorker, intentVersion: '1', desired: 'enabled', admission: 'open', operationId: null,
-  instance: { instanceId, instanceEpoch: '1' }, capability: 'supported', observedAt: WORKER_TIME,
-  observation: { protocolVersion: 1, instanceId, instanceEpoch: '1', intentVersion: '1', operationId: null, localEpoch: '1', scopeGeneration: '1', reportSequence: '1',
+  instance: { instanceId }, capability: 'supported', observedAt: WORKER_TIME,
+  observation: { protocolVersion: 1, instanceId, intentVersion: '1', operationId: null, localEpoch: '1', scopeGeneration: '1', reportSequence: '1',
     observation: { phase: 'accepting', stop: 'not_started', save: 'pending', sync: 'pending', inventoryComplete: true, detailsComplete: true, inventoryRevision: '1', inventoryDigest: 'a'.repeat(64),
       resourceCount: 1, stoppedCount: 0, pendingCount: 1, blockedCount: 0,
       resources: [{ resourceId, ownerKind: 'task', projectId: workerId(51), taskId: workerId(52), botId: null, executionId: workerId(53), sessionId: workerId(54), executionGeneration: '1', stage: 'running', stop: 'pending', save: 'pending', errorCode: null }],

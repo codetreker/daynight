@@ -52,7 +52,9 @@ it("ships exact SQL resources and executes installed stores and canonical timeli
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("017-stopped-generations.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("018-online-mode.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("019-codex-response-usage.sql");
-  expect(expectedResources.find(({ directory }) => directory === "commands/worker/lifecycle-sqlite")!.source).toHaveProperty("001-lifecycle.sql");
+  const lifecycleResources = expectedResources.find(({ directory }) => directory === "commands/worker/lifecycle-sqlite")!.source;
+  expect(lifecycleResources).toHaveProperty("001-lifecycle.sql");
+  expect(lifecycleResources).toHaveProperty("002-instance-identity.sql");
   expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
@@ -74,7 +76,7 @@ const { controllerJournalWriteOptions } = await load("commands/controller/storag
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
-  ["commands/worker/lifecycle-store.js", "lifecycleStoreFormat", 1, ["lifecycle_operations", "lifecycle_outbox", "lifecycle_state", "outbox_history", "resource_history", "resource_owners"]],
+  ["commands/worker/lifecycle-store.js", "lifecycleStoreFormat", 2, ["lifecycle_operations", "lifecycle_outbox", "lifecycle_state", "outbox_history", "resource_history", "resource_owners"]],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 5, ["executions", "orchestration_blockers"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 19, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "online_entries", "online_totals", "operations", "outbox", "outbox_totals", "stopped_generations", "timeline_entries", "timeline_source_revisions", "timeline_totals", "usage_meta", "usage_outbox", "usage_sources", "worker_lifecycle_bindings"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
@@ -128,5 +130,5 @@ try {
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 1, 5, 19, 1, 19]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 2, 5, 19, 1, 19]);
 });

@@ -67,8 +67,8 @@ func TestScopedBotRecoveryRenewsDisabledExecutionWithCurrentParent(t *testing.T)
 	if _, err = svc.RegisterBotRecovery(ctx, f.owner, registered.Bot.WorkerID, registered.Bot.ID, core.BotRecoveryRegistration{BotRecoveryIdentity: identity, BotRecoveryBinding: binding, OperationID: uuid.NewString(), BotVersion: registered.Bot.Version}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at)
-VALUES($1,$2,1,1,'disabled','closed',0,now())`, f.owner.UserID, registered.Bot.WorkerID); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,updated_at)
+VALUES($1,$2,1,1,'disabled','closed',now())`, f.owner.UserID, registered.Bot.WorkerID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET grant_expires_at=now()-interval '1 second' WHERE id=$1`, v.SessionID); err != nil {

@@ -4,7 +4,7 @@ import type { LifecycleResource } from "../../../src/commands/worker/lifecycle-s
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const task: LifecycleTaskRecoveryEvidence = { projectId: id(1), taskId: id(2), claimId: id(3), executionId: id(4), sessionId: id(5), executionGeneration: "2", recoverability: "eligible", reasonCode: null };
-const resource = (overrides: Partial<LifecycleResource> = {}): LifecycleResource => ({ resourceId: id(6), ownerKind: "task", identity: { projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, executionId: task.executionId, sessionId: task.sessionId, executionGeneration: task.executionGeneration }, instanceId: id(7), instanceEpoch: "1", scopeGeneration: "2", operationId: id(8), stage: "stopped", processProof: null, stopProof: null, saveState: "durable", error: null, ...overrides });
+const resource = (overrides: Partial<LifecycleResource> = {}): LifecycleResource => ({ resourceId: id(6), ownerKind: "task", identity: { projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, executionId: task.executionId, sessionId: task.sessionId, executionGeneration: task.executionGeneration }, instanceId: id(7), scopeGeneration: "2", operationId: id(8), stage: "stopped", processProof: null, stopProof: null, saveState: "durable", error: null, ...overrides });
 
 describe("original execution lifecycle recovery", () => {
   it("does not infer eligibility without an observed original execution", () => {

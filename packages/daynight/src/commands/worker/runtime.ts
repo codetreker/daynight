@@ -428,9 +428,9 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
   let reconcileClaimRequests: () => Promise<void>;
   const importTask = (task: ClaimIdentity): void => {
     const state = lifecycle.readState();
-    if (state.instanceId === null || state.instanceEpoch === null || state.intentVersion === null) return;
+    if (state.instanceId === null || state.intentVersion === null) return;
     const resourceId = retainedResourceId(["task", task.claimId, state.scopeGeneration]);
-    const resource = lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
+    const resource = lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
       resourceId, operationId: task.claimId, ownerKind: "task", identity: { kind: "retained_task", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId } });
     if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId: resource.resourceId, group: "task" });
   };
@@ -568,8 +568,8 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
         paths, owner: { serverOrigin: identity.serverOrigin, ownerUserId: identity.userId, workerId: identity.workerId }, serverToken: local.serverToken, managementOnly: true,
         configuration: () => null, canAdmitNewExecution: () => false, pollIntervalMs: () => null, recoveryLimit: () => null, emit });
       const state = lifecycle.readState();
-      if (state.instanceId !== null && state.instanceEpoch !== null && state.intentVersion !== null) {
-        const binding = { ...identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+      if (state.instanceId !== null && state.intentVersion !== null) {
+        const binding = { ...identity, instanceId: state.instanceId, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
         for (const task of root.store!.listUnfinishedTasks()) {
           importTask(task);
         }

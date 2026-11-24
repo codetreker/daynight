@@ -3,7 +3,7 @@ import type { LifecycleResource } from '../../api/worker-lifecycle';
 export const lifecycleFacts = (resource: LifecycleResource | null, now: number | null, stale: boolean) => {
   const envelope = resource?.observation ?? null, observation = envelope?.observation ?? null;
   const current = resource !== null && envelope !== null && resource.instance !== null
-    && envelope.instanceId === resource.instance.instanceId && envelope.instanceEpoch === resource.instance.instanceEpoch
+    && envelope.instanceId === resource.instance.instanceId
     && envelope.intentVersion === resource.intentVersion && envelope.operationId === resource.operationId;
   const fresh = current && !stale && now !== null && observation !== null
     && now >= Date.parse(observation.receivedAt) && now < Date.parse(observation.freshUntil);

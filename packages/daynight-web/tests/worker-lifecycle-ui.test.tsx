@@ -11,8 +11,8 @@ vi.mock('../src/features/workers/useWorkerLifecycle', () => ({ useWorkerLifecycl
 const now = Date.parse(WORKER_TIME);
 const resource = (): LifecycleResource => ({
   protocolVersion: 1, workerId: workerId(1), intentVersion: '2', desired: 'disabled', admission: 'closed', operationId: workerId(4),
-  instance: { instanceId: workerId(2), instanceEpoch: '3' }, capability: 'supported', observedAt: WORKER_TIME,
-  observation: { protocolVersion: 1, instanceId: workerId(2), instanceEpoch: '3', intentVersion: '2', operationId: workerId(4), localEpoch: '1', scopeGeneration: '2', reportSequence: '4',
+  instance: { instanceId: workerId(2) }, capability: 'supported', observedAt: WORKER_TIME,
+  observation: { protocolVersion: 1, instanceId: workerId(2), intentVersion: '2', operationId: workerId(4), localEpoch: '1', scopeGeneration: '2', reportSequence: '4',
     observation: { phase: 'disabled', stop: 'confirmed', save: 'durable', sync: 'complete', inventoryComplete: true, detailsComplete: true, inventoryRevision: '1', inventoryDigest: 'a'.repeat(64),
       resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [], recovery: [], errorCode: null, receivedAt: WORKER_TIME, freshUntil: '2026-10-29T12:01:00Z' } },
 });
@@ -29,7 +29,7 @@ describe('Worker lifecycle evidence presentation', () => {
     expect(lifecycleFacts(resource(), now, false).disabled).toBe(true);
     const original = resource();
     for (const change of [
-      { instanceId: workerId(99) }, { instanceEpoch: '2' }, { intentVersion: '1' }, { operationId: workerId(99) },
+      { instanceId: workerId(99) }, { intentVersion: '1' }, { operationId: workerId(99) },
     ]) expect(lifecycleFacts({ ...original, observation: { ...original.observation!, ...change } }, now, false).disabled).toBe(false);
     for (const change of [{ inventoryComplete: false }, { stop: 'unknown' as const }, { save: 'failed' as const }, { resourceCount: null }, { stoppedCount: 1 }, { pendingCount: 1 }, { blockedCount: 1 }]) {
       expect(lifecycleFacts({ ...original, observation: { ...original.observation!, observation: { ...original.observation!.observation, ...change } } }, now, false).disabled).toBe(false);
@@ -130,7 +130,7 @@ describe('Worker lifecycle evidence presentation', () => {
   });
 
   it('withdraws the old disabled conclusion while a resume operation is pending or accepted', () => {
-    state.pending = { protocolVersion: 1, operationId: workerId(8), action: 'resume', expectedVersion: '2', source: 'web', localEpoch: '1', instanceEpoch: '3' };
+    state.pending = { protocolVersion: 1, operationId: workerId(8), action: 'resume', expectedVersion: '2', source: 'web', localEpoch: '1', instanceId: workerId(2) };
     state.operationError = 'accepted';
     const view = show();
     expect(screen.getByText('Resuming', { exact: true })).toBeVisible();
