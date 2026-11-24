@@ -153,7 +153,7 @@ test.skipIf(process.platform !== "linux")("Linux resume consumes the ticket-boun
     const snapshot = JSON.parse(row.snapshot); snapshot.nativeSessionId = randomUUID();
     corrupt.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify(snapshot), row.ticket_hash);
   } finally { corrupt.close(); }
-  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow(/evidence changed/);
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow(/stopped history conflicts/);
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
