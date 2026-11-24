@@ -2,6 +2,11 @@
 
 Status: implemented
 
+[Default image send](2026-11-24-default-session-image-send.md) changes ordinary Codex and Copilot
+admission. The decision below records the original exact-qualification
+policy and its evidence. Runtime observations and applicable tighter
+limits still inform current capabilities.
+
 ## Problem
 
 An exact image qualification cannot match a running native process when its

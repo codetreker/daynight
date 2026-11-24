@@ -19,24 +19,24 @@ const fixture = () => {
   const controls = new CopilotControls(native as unknown as CopilotSession, () => {});
   return { first, models, native, controls };
 };
-test("Copilot image admission intersects the exact native model limits and requires a pinned runtime profile", async () => {
+test("Copilot default send still intersects reported model limits", async () => {
   const f = fixture(); await f.controls.refresh();
   try {
     expect(f.controls.imageCapabilities(controlledProfile, "native")).toMatchObject({ send: "supported", steer: "unsupported", inputMediaTypes: ["image/png", "image/jpeg"], maxImageBytes: "1024", maxImagesPerMessage: 2 });
-    expect(f.controls.imageCapabilities(null, "native").send).toBe("unknown");
+    expect(f.controls.imageCapabilities(null, "native")).toMatchObject({ send: "supported", steer: "unknown", inputMediaTypes: ["image/png", "image/jpeg"], maxImageBytes: "1024", maxImagesPerMessage: 2 });
     expect(f.controls.imageCapabilities(controlledProfile, null).send).toBe("unknown");
     f.first.capabilities.supports.vision = false; await f.controls.refresh(false);
     expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unsupported");
   } finally { f.controls.close(); }
 });
-test.each(["missing_mime", "bad_count", "duplicate", "non_boolean"])("Copilot model evidence %s fails closed", async mode => {
+test.each(["missing_mime", "bad_count", "duplicate", "non_boolean"])("Copilot can send when optional model capability metadata is unusable (%s)", async mode => {
   const f = fixture();
   if (mode === "missing_mime") delete f.first.capabilities.limits.vision.supported_media_types;
   else if (mode === "bad_count") f.first.capabilities.limits.vision.max_prompt_images = 1.5;
   else if (mode === "duplicate") f.models.push(structuredClone(f.first));
   else f.first.capabilities.supports.vision = "true";
   await f.controls.refresh();
-  try { expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unknown"); }
+  try { expect(f.controls.imageCapabilities(null, "native")).toMatchObject({ send: "supported", steer: "unknown" }); }
   finally { f.controls.close(); }
 });
 test("a timed-out model mutation cannot restore image admission from an old-model readback", async () => {
@@ -48,7 +48,7 @@ test("a timed-out model mutation cannot restore image admission from an old-mode
     await vi.advanceTimersByTimeAsync(30_001); await rejected;
     await f.controls.refresh(false); expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unknown");
     f.native.rpc.model.getCurrent.mockResolvedValue({ modelId: "second" }); await f.controls.refresh(false);
-    expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unknown");
+    expect(f.controls.imageCapabilities(controlledProfile, "native")).toMatchObject({ modelId: "second", send: "supported", steer: "unknown" });
   } finally { f.controls.close(); }
 });
 
@@ -60,7 +60,7 @@ test("Copilot capability publication survives the real journal boundary and neve
   const journal = openControllerLifecycleStore(path.join(cwd, "capabilities.sqlite"), ticket, { database });
   try {
     const first = journal.providerImageCapabilities(f.controls.imageCapabilities(copilotImageProfile("1.0.11", "1.0.105"), "native"));
-    expect(first).toMatchObject({ send: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
+    expect(first).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null, geometry: { known: true } });
     expect(journal.providerImageCapabilities(f.controls.imageCapabilities(copilotImageProfile("1.0.11", "1.0.105"), "native"))).toEqual(first);
     f.first.capabilities.supports.vision = false; await f.controls.refresh(false);
     const unsupported = journal.providerImageCapabilities(f.controls.imageCapabilities(copilotImageProfile("1.0.11", "1.0.105"), "native"));
@@ -68,18 +68,18 @@ test("Copilot capability publication survives the real journal boundary and neve
     f.first.capabilities.supports.vision = true; await f.controls.refresh(false);
     const supported = journal.providerImageCapabilities(f.controls.imageCapabilities(controlledProfile, "native"));
     expect(supported).toMatchObject({ send: "supported", steer: "unsupported", reasonCode: null, revision: "3", geometry: { known: true } });
-    const disabled = journal.providerImageCapabilities(f.controls.imageCapabilities(null, "native"));
-    expect(disabled).toMatchObject({ send: "unknown", reasonCode: "profile_disabled", revision: "4" });
+    const defaultSend = journal.providerImageCapabilities(f.controls.imageCapabilities(null, "native"));
+    expect(defaultSend).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null, revision: "4" });
   } finally { journal.close(); if (database.open) database.close(); f.controls.close(); await rm(cwd, { recursive: true, force: true }); }
 });
 
- test("qualified Copilot limits intersect catalog and send/steer independently", async () => {
+test("qualified Copilot limits intersect catalog and send/steer independently", async () => {
   const f = fixture(); await f.controls.refresh();
   try {
     const qualification = controlledImageQualification("copilot", "first", { send: false, steer: true, inputMediaTypes: ["image/png"], maxImageBytes: "512", maxMessageImageBytes: "700", maxImagesPerMessage: 1 });
     const profile = { modelId: "first", geometry: qualification.geometry, qualification };
     expect(f.controls.imageCapabilities(profile, "native")).toMatchObject({ send: "unsupported", steer: "supported", reasonCode: null, inputMediaTypes: ["image/png"], maxImageBytes: "512", maxMessageImageBytes: "700", maxImagesPerMessage: 1 });
     f.native.rpc.model.getCurrent.mockResolvedValue({ modelId: "second" }); await f.controls.refresh(false);
-    expect(f.controls.imageCapabilities(profile, "native")).toMatchObject({ send: "unknown", steer: "unknown", geometry: { known: false } });
+    expect(f.controls.imageCapabilities(profile, "native")).toMatchObject({ send: "supported", steer: "unknown", geometry: { known: true } });
   } finally { f.controls.close(); }
 });

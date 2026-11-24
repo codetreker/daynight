@@ -36,7 +36,7 @@ const lifecycle = async () => {
   return fixture;
 };
 
-test.each([false, true])("Codex startup with resume=%s journals unknown geometry and rejects image dispatch without native calls", async resumed => {
+test.each([false, true])("Codex startup with resume=%s leaves images unavailable without image storage", async resumed => {
   const f = await lifecycle(), capabilities: ProviderImageCapabilities[] = [], log = path.join(f.root, "requests.jsonl");
   let child: ChildProcess | undefined;
   const provider = await openCodexProvider({ cwd: f.root, model: null, args: [], resumeNativeSessionId: resumed ? "images-thread" : null,
@@ -45,8 +45,8 @@ test.each([false, true])("Codex startup with resume=%s journals unknown geometry
     onState: state => { if (state.images) capabilities.push(f.journal.providerImageCapabilities(state.images)); },
   }).catch(async error => { await f.cleanup(); throw error; });
   try {
-    // Version compatibility alone supplies no profile without a verified observation.
-    expect(capabilities.at(-1)).toMatchObject({ modelId: "fixture-vision", expectedNativeSessionId: "images-thread", send: "unknown", steer: "unknown", reasonCode: "profile_disabled", geometry: { known: false } });
+    // Version compatibility alone does not supply the image storage component.
+    expect(capabilities.at(-1)).toMatchObject({ modelId: "fixture-vision", expectedNativeSessionId: "images-thread", send: "unknown", steer: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
     await expect(provider.send({ content: [{ type: "image", imageId: randomUUID(), resourceId: randomUUID(), localPath: path.join(f.root, "unopened.png"), mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) }] }, randomUUID(), null)).rejects.toThrow("capability is unknown or unsupported");
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(calls.filter(call => ["turn/start", "turn/steer"].includes(call.method))).toEqual([]);
@@ -64,16 +64,16 @@ test("Codex capabilities pass the real lifecycle codec and retain revisions afte
   const profile = codexImageProfile({ userAgent: "daynight/0.167.0 (Mac OS)", platformOs: "macos" }, native, "darwin");
   const controlled: CodexImageProfile = { qualification: controlledImageQualification("codex", native.model), modelId: native.model, modelProvider: native.modelProvider, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } };
   try {
-    controls.seed(native); await controls.refresh();
-    const unknown = f.journal.providerImageCapabilities(controls.imageCapabilities(profile));
-    expect(unknown).toMatchObject({ revision: "1", send: "unknown", steer: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
+    controls.seed(native); await controls.refresh(native.modelProvider);
+    const defaultSend = f.journal.providerImageCapabilities(controls.imageCapabilities(profile));
+    expect(defaultSend).toMatchObject({ revision: "1", send: "supported", steer: "unknown", reasonCode: null, geometry: { known: true } });
     await f.reopen();
-    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(profile))).toEqual(unknown);
+    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(profile))).toEqual(defaultSend);
     const supported = f.journal.providerImageCapabilities(controls.imageCapabilities(controlled));
     expect(supported).toMatchObject({ revision: "2", send: "supported", steer: "supported", reasonCode: null, geometry: { known: true } });
     controls.observe({ model: "text" });
-    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(profile))).toMatchObject({ revision: "3", send: "unsupported", reasonCode: "model_unsupported" });
-    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(null))).toMatchObject({ revision: "4", send: "unknown", reasonCode: "profile_disabled" });
+    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(profile, true, native.modelProvider))).toMatchObject({ revision: "3", send: "unsupported", reasonCode: "model_unsupported" });
+    expect(f.journal.providerImageCapabilities(controls.imageCapabilities(null))).toMatchObject({ revision: "4", send: "supported", steer: "unknown", reasonCode: null });
     controls.observe(native);
     const restored = f.journal.providerImageCapabilities(controls.imageCapabilities(profile));
     await f.reopen(); expect(f.journal.providerImageCapabilities(controls.imageCapabilities(profile))).toEqual(restored);
