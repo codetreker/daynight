@@ -76,7 +76,7 @@ export async function repairStoppedMarkdownProjections(options: {
     snapshotText = row.snapshot;
     if (!existsSync(`${journalPath}.pending-content/manifest.json`)) return failure("source_missing");
     if (existsSync(`${journalPath}.archive-intent-${ticket.executionGeneration}.json`) || existsSync(`${journalPath}.archive-receipt-${ticket.executionGeneration}.json`)
-      || db.prepare("SELECT 1 FROM image_runtime_state WHERE key IN ('stopped_source_tail','archive_history_checkpoint') LIMIT 1").get()) return failure("archive_already_started");
+      || db.prepare("SELECT 1 FROM image_runtime_state WHERE key IN ('stopped_source_tail','stopped_source_recovery','archive_history_checkpoint') LIMIT 1").get()) return failure("archive_already_started");
     return snapshot;
   };
   const local = <T>(action: (db: Database.Database) => T): T => {

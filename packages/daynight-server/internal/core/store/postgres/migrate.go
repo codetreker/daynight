@@ -386,6 +386,9 @@ var dropTaskStepsSQL string
 //go:embed schema/migrations/125_worker_instance_identity.sql
 var workerInstanceIdentitySQL string
 
+//go:embed schema/migrations/127_source_recovery.sql
+var sourceRecoverySQL string
+
 //go:embed schema/migrations/126_drop_worker_lifecycle.sql
 var dropWorkerLifecycleSQL string
 
@@ -521,6 +524,7 @@ var schemaMigrations = []migration{
 	{version: 124, sql: dropTaskStepsSQL},
 	{version: 125, sql: workerInstanceIdentitySQL},
 	{version: 126, sql: dropWorkerLifecycleSQL},
+	{version: 127, sql: sourceRecoverySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

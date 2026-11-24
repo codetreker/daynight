@@ -19,7 +19,7 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 	}
 	ctx, cancelGate := op.GateContext(ctx)
 	defer cancelGate()
-	if _, err = sp.DecodeArchiveSourceTail(encode(in)); err != nil {
+	if err = sp.ValidateArchiveSourceTail(in); err != nil {
 		return out, fault("invalid_input", "Invalid archive source tail.")
 	}
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
@@ -69,6 +69,75 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 				ledger.FinalSourceThrough = out.LastAckedSourceSeq
 			} else {
 				ledger.SourceThrough = out.LastAckedSourceSeq
+			}
+			bundle.Ledger = encode(ledger)
+			return dao.SaveSessionArchiveBundle(ctx, bundle)
+		}
+		return nil
+	})
+	op.markCommit(err)
+	return
+}
+
+// RecoverArchiveSourceTail verifies a frozen segment under the original stopped writer.
+func (op *ArchiveOperation) RecoverArchiveSourceTail(ctx context.Context, in sp.ArchiveSourceRecoveryRequest) (out sp.ArchiveSourceRecoveryReceipt, err error) {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if err = op.check(ArchiveV1Upload); err != nil {
+		return out, err
+	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
+	if err = sp.ValidateArchiveSourceRecovery(in); err != nil {
+		return out, fault("invalid_input", "Invalid archive source tail.")
+	}
+	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
+		if r.Owner != op.owner {
+			return conflict()
+		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
+		if e := archiveWriter(op.principal, r, in.Fence, in.ControllerID, in.ControllerInstanceID); e != nil {
+			return e
+		}
+		if e := archiveStopped(r, t); e != nil {
+			return e
+		}
+		dao, e := archiveDAO(tx)
+		if e != nil {
+			return e
+		}
+		bundle, e := dao.SessionArchiveBundle(ctx, op.id)
+		exists := e == nil
+		if e != nil && !errors.Is(e, model.ErrNotFound) {
+			return e
+		}
+		if exists && bundle.Phase == "active" {
+			identity := sp.ArchivePrepareRequest{Fence: in.Fence, ControllerID: in.ControllerID, ControllerInstanceID: in.ControllerInstanceID}
+			if !jsonEqual(bundle.Identity, encode(identity)) {
+				return archiveConflict()
+			}
+			if e = settleActiveHistory(ctx, tx, dao, &bundle, r); e != nil {
+				return e
+			}
+		}
+		if exists && (bundle.Phase != "settling" || bundle.HistoryID != "" || bundle.TimelineID != "" || bundle.ManifestHash != "") {
+			return archiveConflict()
+		}
+		out, e = op.execution.applyStoppedSourceRecovery(ctx, tx, r, in)
+		if e != nil {
+			return e
+		}
+		if exists {
+			var ledger archiveLedger
+			if json.Unmarshal(bundle.Ledger, &ledger) != nil {
+				return archiveConflict()
+			}
+			if ledger.FinalSourceThrough != "" {
+				ledger.FinalSourceThrough = out.CurrentThrough
+			} else {
+				ledger.SourceThrough = out.CurrentThrough
 			}
 			bundle.Ledger = encode(ledger)
 			return dao.SaveSessionArchiveBundle(ctx, bundle)

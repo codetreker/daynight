@@ -435,6 +435,7 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 		add("POST PUT", base+"/archive")
 		add("GET HEAD POST", base+"/archive/prepare")
 		add("POST", base+"/archive/source-tail")
+		add("POST", base+"/archive/source-tail/recover")
 		add("POST", base+"/archive/seal")
 		add("PUT", base+"/archive/content")
 		add("PUT", base+"/archive/prepare/history/"+id)
