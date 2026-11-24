@@ -12,7 +12,7 @@ import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { SessionComposer } from './SessionComposer';
 import type { ComposerAttachmentsBinding } from './ComposerAttachments';
 import { SessionTimeline, type SessionTimelineReading } from './SessionTimeline';
-import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHistoryPreview } from './history-preview';
+import { matchingSessionHistoryPreview, selectSessionTimeline, type SessionHistoryPreview } from './history-preview';
 import { emptySessionState, sessionRespondGate } from './state';
 import { operationNeedsAttention, operationPresentation } from './operation-presentation';
 import { sessionNativeLabels, useSessionMessages } from './messages';
@@ -78,8 +78,10 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   const preview = matchingSessionHistoryPreview(view.state, historyPreview);
   const previewEnabled = slots?.variant === 'assistant' || historyPreview !== undefined || client === null;
   const timelineState = previewEnabled && !view.historyLoaded ? { ...view.state, entries: [], resources: new Map() } : view.state;
-  const hasContent = selectSessionHistoryRows(timelineState, preview, view.historyLoaded, view.historyCoverage).length > 0;
+  const history = selectSessionTimeline(timelineState, preview, view.historyLoaded, view.historyCoverage, view.botHistoryWindow);
+  const hasContent = history.rows.length > 0 || history.earlierHistoryUnavailable;
   const previewMode = client === null || !view.historyLoaded;
+  const cacheUnavailable = slots?.variant === 'assistant' && current && preview === undefined && previewMode && !hasContent && (view.errorCode === 'controller_offline' || s?.lifecycle === 'active' && s.connectionState === 'disconnected');
   const phase = pendingPhase ?? (client === null ? 'binding' : s === null ? 'snapshot' : 'history');
   const issue = error ?? view.error;
   const refresh = client?.refresh ?? onRetry ?? (() => {});
@@ -125,7 +127,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   } }) : null;
   const timelineAllowed = available && (!readOnly || view.archiveState === 'ready') || preview !== undefined || !readOnly && (slots?.renderPending !== undefined || slots?.variant === 'assistant' || client === null);
   const timelineKey = `${userId}/${s || preview ? sessionFenceKey(s ?? preview!.fence) : 'pending'}`;
-  const timeline = timelineAllowed ? <SessionTimeline key={timelineKey} {...(preview ? { historyPreview: preview } : {})} historyLoaded={view.historyLoaded} historyCoverage={view.historyCoverage} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={previewEnabled && previewMode || !readOnly && !runtimeReady || empty != null && empty !== false} state={timelineState} active={active} actionAdmitted={view.actionAdmitted} canRespond={sessionRespondGate(view.state, canInteract && active && runtimeReady && !view.authPaused)} onRespond={client?.respond ?? noAction} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client?.loadOlder() ?? noAction()} historyError={view.historyError} onLoadResource={client?.resource ?? noResource} onInvalidImageBindings={invalidImageBindings} /> : null;
+  const timeline = timelineAllowed ? <SessionTimeline key={timelineKey} {...(preview ? { historyPreview: preview } : {})} historyLoaded={view.historyLoaded} historyCoverage={view.historyCoverage} botHistoryWindow={view.botHistoryWindow ?? null} botHistoryCacheUnavailable={cacheUnavailable} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={previewEnabled && previewMode || !readOnly && !runtimeReady || empty != null && empty !== false} state={timelineState} active={active} actionAdmitted={view.actionAdmitted} canRespond={sessionRespondGate(view.state, canInteract && active && runtimeReady && !view.authPaused)} onRespond={client?.respond ?? noAction} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client?.loadOlder() ?? noAction()} historyError={view.historyError} onLoadResource={client?.resource ?? noResource} onInvalidImageBindings={invalidImageBindings} /> : null;
   const loadingSlot = { phase, hasContent, retry };
   const pending = !hasContent && !issue && previewMode ? slots?.renderPending?.(loadingSlot) : null;
   const unavailable = issue ? slots?.renderUnavailable?.({ ...loadingSlot, error: issue }) : null;
@@ -143,7 +145,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     {issue && (error || view.errorCode !== 'controller_offline') ? unavailable ?? <p className="session-error" role="alert">{issue}{assistantShell && (error || !hasContent) ? <button className="inline-link" onClick={retry}>{m.retryHistory}</button> : null}</p> : null}
     {readOnly && view.archiveState !== 'ready' ? <p className="session-empty" role="status">{archiveLabel}</p> : null}
     {readOnly && view.archiveState === 'ready' && view.archiveContentPolicy === 'task_body' ? <p className="session-empty">{m.bodyHistory}</p> : null}
-    {timeline ? assistantShell || slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}{assistantShell && !hasContent && !issue && previewMode ? <div className="session-presentation-pending" role="status">{pending ?? <SessionPendingContent />}</div> : null}</div> : timeline : null}
+    {timeline ? assistantShell || slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}{assistantShell && !hasContent && !issue && previewMode && !cacheUnavailable ? <div className="session-presentation-pending" role="status">{pending ?? <SessionPendingContent />}</div> : null}</div> : timeline : null}
     {client && !readOnly && operations.length > 0 ? <div className={`session-receipts${operations.length === 1 ? ' single' : ''}`} aria-live="polite" role={operations.length > 1 ? 'region' : undefined} aria-label={operations.length > 1 ? m.operationReceipts : undefined} tabIndex={operations.length > 1 ? 0 : undefined}>{operations.map(operation => {
       const receipt = operationPresentation(operation, view.operationProgress);
       const message = operation.error ? operationErrorText(operation.error.message, m.operationFailed) : receipt === 'failed' ? m.operationFailed : receipt === 'rejected' ? m.operationRejected : receipt === 'expired' ? m.operationExpired : receipt === 'unknown' && operation.kind === 'send_message' ? m.operationUnknown : m.operationUnconfirmed;

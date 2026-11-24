@@ -27,7 +27,7 @@ export const hydrateSession = (previous: SessionState, snapshot: SessionSnapshot
   return { snapshot, entries: mergeTimeline(sameHistory ? previous.entries : [], entries), resources: mergedResources,
     operations: sameExecution ? previous.operations : new Map(), responseTargets: sameExecution ? previous.responseTargets : new Map(), lastEventSeq: snapshot.lastEventSeq, recoveryRequired: false };
 };
-export const applySessionEvent = (state: SessionState, event: SessionEvent): SessionState => {
+export const applySessionEvent = (state: SessionState, event: SessionEvent, windowedHistory = false): SessionState => {
   const snapshot = state.snapshot;
   if (!snapshot || sessionFenceKey(event) !== sessionFenceKey(snapshot)) return state;
   if (BigInt(event.eventSeq) <= BigInt(state.lastEventSeq)) {
@@ -37,7 +37,7 @@ export const applySessionEvent = (state: SessionState, event: SessionEvent): Ses
   if (state.recoveryRequired || event.historyEpoch !== snapshot.historyEpoch || BigInt(event.eventSeq) !== BigInt(state.lastEventSeq) + 1n || event.kind === 'gap') return { ...state, recoveryRequired: true };
   const next = { ...state, lastEventSeq: event.eventSeq };
   switch (event.kind) {
-    case 'timeline_upsert': return { ...next, entries: mergeTimeline(state.entries, [event.payload]) };
+    case 'timeline_upsert': return windowedHistory && event.payload.kind !== 'interaction' ? next : { ...next, entries: mergeTimeline(state.entries, [event.payload]) };
     case 'snapshot': return { ...next, snapshot: BigInt(event.payload.sessionRevision) > BigInt(snapshot.sessionRevision) ? event.payload : snapshot };
     case 'operation': return { ...next, operations: new Map(state.operations).set(event.payload.operationId, event.payload) };
     case 'resource': return { ...next, resources: new Map(state.resources).set(event.payload.resourceId, event.payload) };

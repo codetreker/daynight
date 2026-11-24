@@ -1,5 +1,7 @@
 import { sessionFenceKey, type SessionFence } from '../../../../daynight/src/session/protocol';
+import type { BotHistoryWindowEntry } from '../../../../daynight/src/session/bot-history-window';
 import type { SessionResource, TimelineEntry } from '../../api/types';
+import { boundBotHistoryWindow, type BotHistoryView } from './bot-history-window';
 import type { SessionState } from './state';
 
 /** Historical display data carries neither live capabilities nor an operation owner. */
@@ -9,6 +11,8 @@ export type SessionHistoryPreview = {
   readonly lastEventSeq: string;
   readonly entries: readonly TimelineEntry[];
   readonly resources: readonly SessionResource[];
+  readonly botHistoryWindow?: BotHistoryView;
+  readonly savedAt?: number;
   readonly readingAnchor?: { readonly entryId: string; readonly offset: number; readonly following: boolean };
 };
 
@@ -20,6 +24,7 @@ export type SessionHistoryCoverage = {
   readonly lastEventSeq: string;
 };
 export type SessionHistoryRow = { readonly entry: TimelineEntry; readonly preview: boolean };
+export type SessionTimelineRow = { readonly entry: TimelineEntry | BotHistoryWindowEntry; readonly preview: boolean };
 
 export function matchingSessionHistoryPreview(state: SessionState, preview: SessionHistoryPreview | undefined): SessionHistoryPreview | undefined {
   const snapshot = state.snapshot;
@@ -37,4 +42,27 @@ export function selectSessionHistoryRows(state: SessionState, preview: SessionHi
   }
   for (const entry of state.entries) rows.set(entry.entryId, { entry, preview: false });
   return [...rows.values()].sort((a, b) => BigInt(a.entry.entrySeq) < BigInt(b.entry.entrySeq) ? -1 : BigInt(a.entry.entrySeq) > BigInt(b.entry.entrySeq) ? 1 : a.entry.entryId.localeCompare(b.entry.entryId));
+}
+
+/** A settled window owns covered rows, including authoritative omissions. */
+export function selectSessionTimeline(state: SessionState, preview: SessionHistoryPreview | undefined, historyLoaded: boolean, coverage: SessionHistoryCoverage | null, liveWindow: BotHistoryView | null | undefined): {
+  readonly rows: readonly SessionTimelineRow[];
+  readonly earlierHistoryUnavailable: boolean;
+  readonly cachedWindow: boolean;
+} {
+  const cached = matchingSessionHistoryPreview(state, preview)?.botHistoryWindow;
+  const window = liveWindow ?? (historyLoaded ? undefined : cached);
+  if (!window) return { rows: selectSessionHistoryRows(state, preview, historyLoaded, coverage), earlierHistoryUnavailable: false, cachedWindow: false };
+  const verified = new Set(liveWindow?.entries.map(entry => entry.entryId));
+  const first = liveWindow?.entries[0]?.entrySeq;
+  const floor = liveWindow?.retainedFromSeq;
+  const unconfirmed = liveWindow && !liveWindow.localEviction && cached && first !== undefined && floor != null
+    ? cached.entries.filter(entry => !verified.has(entry.entryId) && BigInt(entry.entrySeq) >= BigInt(floor) && BigInt(entry.entrySeq) < BigInt(first)) : [];
+  const combined = unconfirmed.length ? boundBotHistoryWindow(window, [...unconfirmed, ...window.entries]) : window;
+  const rows: SessionTimelineRow[] = combined.entries.map(entry => ({ entry, preview: !verified.has(entry.entryId) }));
+  const ids = new Set(rows.map(row => row.entry.entryId));
+  // Live control cards retain their own lifecycle and write admission.
+  for (const entry of state.entries) if (entry.kind === 'interaction' && !ids.has(entry.entryId)) rows.push({ entry, preview: false });
+  rows.sort((a, b) => BigInt(a.entry.entrySeq) < BigInt(b.entry.entrySeq) ? -1 : BigInt(a.entry.entrySeq) > BigInt(b.entry.entrySeq) ? 1 : a.entry.entryId.localeCompare(b.entry.entryId));
+  return { rows, earlierHistoryUnavailable: combined.earlierHistoryUnavailable, cachedWindow: !liveWindow };
 }

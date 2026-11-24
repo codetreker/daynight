@@ -1,7 +1,8 @@
 import {
   botDisplayHistoryKey, parseBotDisplayPreview, prepareBotDisplayPreview,
-  MAX_SNAPSHOTS, MAX_TOTAL_UNITS, type BotDisplayPreview,
+  MAX_SNAPSHOTS, MAX_TOTAL_BYTES, MAX_TOTAL_UNITS, snapshotBytes, type BotDisplayPreview,
 } from './display-snapshot-codec';
+import { advancesBotHistoryWindow } from '../task-agent-session/bot-history-window';
 
 export * from './display-snapshot-codec';
 
@@ -41,7 +42,31 @@ function parseEnvelope(raw: string, ownerUserId: string): Envelope {
     ids.add(botId);
     return { historyVersion: row.historyVersion, preview: parseBotDisplayPreview(row.preview, ownerUserId, botId) };
   });
+  if (records.some(row => row.preview.botHistoryWindow) && snapshotBytes(raw) > MAX_TOTAL_BYTES) throw new Error('Display snapshot storage byte limit exceeded.');
   return { schemaVersion: 1, ownerUserId, generation: data.generation, records };
+}
+
+function exceedsAccountBudget(value: Envelope): boolean {
+  if (value.records.length > MAX_SNAPSHOTS) return true;
+  const json = JSON.stringify(value);
+  return json.length > MAX_TOTAL_UNITS || value.records.some(row => row.preview.botHistoryWindow) && snapshotBytes(json) > MAX_TOTAL_BYTES;
+}
+
+function regressesHistory(candidate: BotDisplayPreview, previous: BotDisplayPreview): boolean {
+  const currentWindow = candidate.botHistoryWindow, previousWindow = previous.botHistoryWindow;
+  if (!previousWindow) {
+    if (currentWindow) return false;
+    if (BigInt(candidate.lastEventSeq) < BigInt(previous.lastEventSeq)) return true;
+    const revisions = new Map(previous.entries.map(entry => [entry.entryId, entry.revision]));
+    return candidate.entries.some(entry => revisions.has(entry.entryId) && BigInt(entry.revision) < BigInt(revisions.get(entry.entryId)!));
+  }
+  if (!currentWindow || !advancesBotHistoryWindow(previousWindow, currentWindow)) return true;
+  const sameRevision = currentWindow.windowRevision === previousWindow.windowRevision;
+  const entries = new Map(previousWindow.entries.map(entry => [entry.entryId, entry]));
+  return currentWindow.entries.some(entry => {
+    const previousEntry = entries.get(entry.entryId);
+    return previousEntry !== undefined && (entry.entrySeq !== previousEntry.entrySeq || BigInt(entry.revision) < BigInt(previousEntry.revision) || sameRevision && JSON.stringify(entry) !== JSON.stringify(previousEntry));
+  });
 }
 
 /** Injected locks must serialize this name across every writer sharing the storage. */
@@ -277,9 +302,7 @@ export class BotDisplaySnapshotStore {
       if (lease.historyKey !== null && lease.historyKey !== historyKey) return 'stale';
       if (lease.historyVersion !== (previous?.historyVersion ?? null)) return 'stale';
       if (sameHistory) {
-        if (BigInt(candidate.lastEventSeq) < BigInt(previous.preview.lastEventSeq)) return 'stale';
-        const revisions = new Map(previous.preview.entries.map(entry => [entry.entryId, entry.revision]));
-        if (candidate.entries.some(entry => revisions.has(entry.entryId) && BigInt(entry.revision) < BigInt(revisions.get(entry.entryId)!))) return 'stale';
+        if (regressesHistory(candidate, previous.preview)) return 'stale';
         // Both previews have passed the same codec, which fixes their field order.
         // Compare only after the locked lease checks: a peer may have changed disk.
         if (JSON.stringify({ ...candidate, savedAt: 0 }) === JSON.stringify({ ...previous.preview, savedAt: 0 })) {
@@ -292,7 +315,7 @@ export class BotDisplaySnapshotStore {
       records.push({ historyVersion, preview: candidate });
       const next: Envelope = { ...account.value, records };
       let evicted = false;
-      while (next.records.length > MAX_SNAPSHOTS || JSON.stringify(next).length > MAX_TOTAL_UNITS) {
+      while (exceedsAccountBudget(next)) {
         if (next.records.length === 1) return 'invalid';
         next.records.shift(); evicted = true;
       }

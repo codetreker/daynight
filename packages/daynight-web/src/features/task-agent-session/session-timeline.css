@@ -10,6 +10,10 @@
 .session-tool-status { flex: none; white-space: nowrap; font-size: var(--text-sm); }
 .session-tool-name-compact { display: none; }
 .session-tool-exact-name { margin: 0; overflow-wrap: anywhere; }
+.session-tool .session-tool-preview-status { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
+.session-tool-preview-metadata { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: var(--text-sm); }
+.session-tool-preview-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.session-history-omission { margin: 4px 0; color: var(--task-helper); font-size: var(--text-sm); }
 @container session-timeline (width < 480px) {
   .session-timeline-content .session-tool > summary { display: grid; grid-template-columns: 14px minmax(0, 1fr) max-content; column-gap: 8px; row-gap: 2px; }
   .session-tool summary .session-tool-name { max-width: 100%; }

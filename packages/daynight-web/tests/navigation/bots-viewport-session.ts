@@ -2,10 +2,15 @@ export * from '../../src/api/sessions';
 import type { BotSessionBinding, SessionApi } from '../../src/api/sessions';
 import type { SessionSnapshot } from '../../src/api/types';
 import type { SessionArchive } from '../../../daynight/src/session/archive';
+import type { BotHistoryWindowPage, BotHistoryWindowRequest } from '../../../daynight/src/session/bot-history-window';
 import { sessionFence } from '../../../daynight/src/session/protocol';
+import { ApiError } from '../../src/api/client';
 import { sessionImageBytes } from '../helpers/sessionImages';
 import { BotHistorySnapshotObserver } from '../../src/features/bots/display-snapshot-coordinator';
 import { BotDisplaySnapshotStore } from '../../src/features/bots/display-snapshot';
+
+type WindowMode = BotHistoryWindowRequest['mode'];
+type WindowResponse = Pick<BotHistoryWindowPage, 'items' | 'windowRevision' | 'retainedFromSeq' | 'throughSeq' | 'earlierHistoryUnavailable' | 'hasEarlierHistory' | 'beforeCursor' | 'nextCursor'> | 'controller_offline' | 'reset_required';
 
 export type BotViewportOptions = {
   readonly scenario: 'empty' | 'long' | 'error' | 'archive' | 'hot-switch' | 'persistent';
@@ -17,11 +22,14 @@ export type BotViewportOptions = {
   readonly historyEpoch?: string;
   readonly lastEventSeq?: string;
   readonly persistentTail?: { readonly start: number; readonly end: number };
+  readonly historyWindow?: { readonly tail: WindowResponse; readonly before?: WindowResponse; readonly changes?: Readonly<Record<string, WindowResponse>> };
+  readonly refuseSnapshotWrites?: boolean;
 };
 
 // Only the Bot transport is controlled. AuthenticatedApp, the cache, client,
 // renderer, composer and pagination hooks are production implementations.
 const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, archives: 0, archiveContents: 0, resourceReads: 0, currentCalls: [] as number[], snapshotWrites: 0, snapshotFlushes: [] as { readonly at: number; readonly observation: number; readonly source: string | null; readonly generation: number | null; readonly result?: string | null }[], snapshotReads: [] as { readonly at: number; readonly botId: string; readonly touch: boolean | undefined; complete?: boolean }[], snapshotEvents: [] as (string | null)[], snapshotChanges: [] as { readonly at: number; readonly writes: number; readonly oldValue: string | null; readonly newValue: string | null }[], bindings: [] as string[] };
+const windowRequests: { mode: WindowMode; cursor: string | null }[] = [];
 const read = BotDisplaySnapshotStore.prototype.read;
 BotDisplaySnapshotStore.prototype.read = function(owner, botId, options) {
   const entry: (typeof metrics.snapshotReads)[number] = { at: Date.now(), botId, touch: options?.touch };
@@ -44,7 +52,13 @@ BotHistorySnapshotObserver.prototype.flush = function() {
 };
 const observerStates = () => [...observers].map(value => value as unknown as ObserverState).filter(value => !value.closed).map(value => ({ observation: value.observation, candidate: value.candidate !== null, timer: value.timer !== null, saving: value.saving.size }));
 const setItem = Storage.prototype.setItem;
-Storage.prototype.setItem = function(key, value) { if (key.startsWith('daynight:bot-display:v1:')) metrics.snapshotWrites++; return setItem.call(this, key, value); };
+Storage.prototype.setItem = function(key, value) {
+  if (key.startsWith('daynight:bot-display:v1:')) {
+    metrics.snapshotWrites++;
+    if (window.botViewportOptions?.refuseSnapshotWrites) throw new DOMException('Controlled Bot snapshot quota', 'QuotaExceededError');
+  }
+  return setItem.call(this, key, value);
+};
 window.addEventListener('storage', event => {
   if (!event.key?.startsWith('daynight:bot-display:v1:')) return;
   metrics.snapshotEvents.push(event.newValue);
@@ -58,8 +72,8 @@ const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
 const beforeGate = new Promise<void>(resolve => { releaseBefore = resolve; });
 type HistorySnapshotPatch = Partial<Pick<SessionSnapshot, 'historyEpoch' | 'executionGeneration' | 'lastEventSeq' | 'lastTimelineSeq'>>;
 const historyControls = new Map<string, { snapshot: (patch: HistorySnapshotPatch) => void; upsert: (sequence: number, revision: string, text: string) => void }>();
-declare global { interface Window { botViewport: { metrics: typeof metrics; observerStates: typeof observerStates; releaseCurrent: () => void; releaseHistory: () => void; releaseBefore: () => void; publishSnapshot: (botId: string, patch: HistorySnapshotPatch) => void; upsert: (botId: string, sequence: number, revision: string, text: string) => void }; botViewportOptions?: BotViewportOptions } }
-window.botViewport = { metrics, observerStates, releaseCurrent, releaseHistory, releaseBefore,
+declare global { interface Window { botViewport: { metrics: typeof metrics; windowRequests: typeof windowRequests; observerStates: typeof observerStates; releaseCurrent: () => void; releaseHistory: () => void; releaseBefore: () => void; publishSnapshot: (botId: string, patch: HistorySnapshotPatch) => void; upsert: (botId: string, sequence: number, revision: string, text: string) => void }; botViewportOptions?: BotViewportOptions } }
+window.botViewport = { metrics, windowRequests, observerStates, releaseCurrent, releaseHistory, releaseBefore,
   publishSnapshot: (botId, patch) => historyControls.get(botId)!.snapshot(patch),
   upsert: (botId, sequence, revision, text) => historyControls.get(botId)!.upsert(sequence, revision, text),
 };
@@ -67,12 +81,13 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
   metrics.bindings.push(JSON.stringify(binding));
   const options = window.botViewportOptions;
   const archived = options?.scenario === 'archive';
+  const initialWindow = options?.historyWindow?.tail;
   let snapshot: SessionSnapshot = {
     protocol: 'daynight.session.v1', schemaVersion: 1, projectionVersion: 1,
     sessionId: binding.sessionId, testExecutionId: binding.testExecutionId,
     executionGeneration: '1', connectionEpoch: '1',
     identity: { ownerUserId: binding.ownerUserId, controllerId: '00000007-1111-4111-8111-111111111111', controllerInstanceId: '00000008-1111-4111-8111-111111111111', agentControlMode: 'web', provider: 'codex', nativeSessionId: 'viewport-fixture' },
-    sessionRevision: '1', historyEpoch: options?.historyEpoch ?? 'viewport-history', lastEventSeq: options?.lastEventSeq ?? '0', lastTimelineSeq: options?.scenario === 'persistent' ? String(options.persistentTail?.end ?? 100) : '2000',
+    sessionRevision: '1', historyEpoch: options?.historyEpoch ?? 'viewport-history', lastEventSeq: options?.lastEventSeq ?? '0', lastTimelineSeq: typeof initialWindow === 'object' ? initialWindow.throughSeq ?? '0' : options?.scenario === 'persistent' ? String(options.persistentTail?.end ?? 100) : '2000',
     initialInputState: 'not_required', synchronized: !archived, lifecycle: archived ? 'archived' : 'active', connectionState: archived ? 'disconnected' : 'connected', activity: 'idle', currentTurnId: null,
     capabilities: { send: true, steer: true, cancel: true, respond: true }, operations: { canSend: !archived, canCancel: false, canRespond: false },
   };
@@ -100,6 +115,26 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
   });
   return {
     current: async () => { metrics.currentCalls.push(Date.now()); if (options?.holdCurrent) await currentGate; return { status: 'registered', session: snapshot }; },
+    ...(options?.historyWindow ? {
+      botHistoryWindow: async (_id: string, mode: WindowMode, cursor: string | null, signal: AbortSignal): Promise<BotHistoryWindowPage> => {
+        windowRequests.push({ mode, cursor });
+        if (options.holdHistory) await historyGate;
+        signal.throwIfAborted();
+        const history = window.botViewportOptions?.historyWindow;
+        const tail = history?.tail;
+        const response = mode === 'changes'
+          ? history?.changes?.[cursor ?? ''] ?? (typeof tail === 'object' ? { ...tail, items: [], hasEarlierHistory: false, beforeCursor: null } : tail)
+          : history?.[mode];
+        if (response === 'controller_offline') throw new ApiError('server', 503, response);
+        if (response === 'reset_required') throw new ApiError('server', 409, response);
+        if (!response) throw new Error(`Unexpected Bot history request: ${mode}`);
+        return {
+          kind: 'bot_history_window', botHistoryWindowVersion: 1, sessionId: snapshot.sessionId,
+          testExecutionId: binding.testExecutionId, executionGeneration: snapshot.executionGeneration,
+          connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, ...response,
+        };
+      },
+    } : {}),
     timeline: async (_id, direction, cursor) => {
       if (direction === 'tail') {
         metrics.tail++;

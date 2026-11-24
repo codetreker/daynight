@@ -1,5 +1,7 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
+import type { BotHistoryWindowEntry } from '../../../../daynight/src/session/bot-history-window';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useI18n } from '../../i18n/LocaleProvider';
 import { legacySubagentActivity } from './legacy-subagent-activity';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
@@ -17,7 +19,8 @@ import { usePendingInteractionLocator } from './usePendingInteractionLocator';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
 import { useSessionImageScope } from './images/SessionImageScope';
 import { selectSessionDisplayEntries, type SessionDisplayMode } from './display-mode';
-import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHistoryPreview, type SessionHistoryCoverage } from './history-preview';
+import { matchingSessionHistoryPreview, selectSessionTimeline, type SessionHistoryPreview, type SessionHistoryCoverage } from './history-preview';
+import type { BotHistoryView } from './bot-history-window';
 import { toolSummary } from './tool-summary';
 import type { InvalidImageBindings } from './useInvalidImageBindings';
 
@@ -27,10 +30,12 @@ export type SessionTimelineReadingHandle = Pick<ReturnType<typeof useTimelineScr
 // SessionTimeline adds the actual session fence and history epoch.
 export type SessionTimelineReading = { readonly scope: string; readonly ref: Ref<SessionTimelineReadingHandle> };
 
-export function SessionTimeline({ state, active, canRespond, actionAdmitted = true, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, onInvalidImageBindings, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading, historyPreview, historyLoaded = true, historyCoverage = null, recordIdentity }: {
+export function SessionTimeline({ state, active, canRespond, actionAdmitted = true, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, onInvalidImageBindings, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading, historyPreview, historyLoaded = true, historyCoverage = null, botHistoryWindow, botHistoryCacheUnavailable = false, recordIdentity }: {
   readonly onInvalidImageBindings?: InvalidImageBindings;
   readonly recordIdentity?: { readonly scope: string; readonly historyEpoch: string };
   readonly historyPreview?: SessionHistoryPreview; readonly historyLoaded?: boolean; readonly historyCoverage?: SessionHistoryCoverage | null;
+  readonly botHistoryWindow?: BotHistoryView | null;
+  readonly botHistoryCacheUnavailable?: boolean;
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
   readonly actionAdmitted?: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
@@ -44,6 +49,7 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   readonly historyReady?: boolean; readonly historyRevision?: number; readonly connectionGeneration?: number;
 }) {
   const m = useSessionMessages();
+  const { format } = useI18n();
   const shell = useRef<HTMLDivElement>(null);
   const [compactNavigation, setCompactNavigation] = useState(false);
   useLayoutEffect(() => {
@@ -57,12 +63,13 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
   }, []);
   const preview = matchingSessionHistoryPreview(state, historyPreview);
-  const rows = useMemo(() => selectSessionHistoryRows(state, preview, historyLoaded, historyCoverage), [state, preview, historyLoaded, historyCoverage]);
+  const { rows, earlierHistoryUnavailable, cachedWindow } = useMemo(() => selectSessionTimeline(state, preview, historyLoaded, historyCoverage, botHistoryWindow), [state, preview, historyLoaded, historyCoverage, botHistoryWindow]);
   const renderedEntries = useMemo(() => rows.map(row => row.entry), [rows]);
   const previewIds = useMemo(() => new Set(rows.filter(row => row.preview).map(row => row.entry.entryId)), [rows]);
   const previewResources = useMemo(() => new Map(preview?.resources.map(resource => [resource.resourceId, resource]) ?? []), [preview]);
   const entries = useMemo(() => selectSessionDisplayEntries(renderedEntries, displayMode), [renderedEntries, displayMode]);
-  const historyEmpty = state.entries.length === 0 && (!hasOlder || historyComplete);
+  const historyEmpty = renderedEntries.length === 0 && (!hasOlder || historyComplete);
+  const savedAt = preview?.savedAt === undefined ? null : new Date(preview.savedAt);
   const originalKeys = useMemo(() => renderedEntries.map(entry => entry.entryId), [renderedEntries]);
   const visibleKeys = useMemo(() => entries.map(entry => entry.entryId), [entries]);
   const fence = state.snapshot ?? preview?.fence;
@@ -108,10 +115,17 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   return <div ref={shell} className={`session-timeline-shell${compactNavigation ? ' session-timeline-shell-compact' : ''}`}>
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={history.onScroll} onWheel={history.onWheel} onTouchStart={history.onTouchStart} onTouchMove={history.onTouchMove} onPointerDown={history.onPointerDown} onKeyDown={history.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
-        {previewIds.size > 0 ? <p className="session-history-preview-label">{m.historyPreview}</p> : null}
+        {previewIds.size > 0 || cachedWindow ? <p className="session-history-preview-label">{m.historyPreview}{savedAt && Number.isFinite(savedAt.getTime()) ? <> · {m.historyPreviewSaved} <time dateTime={savedAt.toISOString()}>{format.dateTime(savedAt)}</time></> : null}</p> : null}
+        {earlierHistoryUnavailable ? <p className="session-history-preview-label" data-bot-history-gap="">{m.botHistoryGap}</p> : null}
+        {botHistoryCacheUnavailable ? <p className="session-history-preview-label" data-bot-history-unavailable="" role="status">{m.botHistoryCacheUnavailable}</p> : null}
         {loadingOlder ? <div className="session-history-loading" role="status" aria-live="polite">{m.loadingOlder}</div> : null}
         {history.error ? <div role="alert" className="session-error session-history-error"><span>{history.error}</span>{hasOlder ? <button type="button" className="inline-link" disabled={!active || !historyReady || loadingOlder} onClick={history.retry}>{m.retryHistory}</button> : null}</div> : null}
-        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' && !historyEmpty ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} data-history-preview={previewIds.has(entry.entryId) ? 'true' : undefined} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} disclosures={disclosures.current.values} resourceAccess={previewIds.has(entry.entryId) ? 'none' : 'live'} operations={entry.kind === 'interaction' && !previewIds.has(entry.entryId) ? state.operations : undefined} resources={previewIds.has(entry.entryId) ? previewResources : state.resources} active={active} canRespond={!previewIds.has(entry.entryId) && entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} actionAdmitted={actionAdmitted} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} onInvalidImageBindings={onInvalidImageBindings} /></article>)}
+        {entries.length === 0 ? (suppressEmpty || earlierHistoryUnavailable ? null : <p className="session-empty">{displayMode === 'conversation' && !historyEmpty ? m.conversationEmpty : m.empty}</p>) : entries.map(entry => {
+          const cached = previewIds.has(entry.entryId);
+          return <article key={entry.entryId} data-entry-key={entry.entryId} data-history-preview={cached ? 'true' : undefined} className={`session-entry session-entry-${entry.kind}`}>
+            {'preview' in entry ? <BotWindowEntry entry={entry} disclosures={disclosures.current.values} /> : <SessionEntry entry={entry} disclosures={disclosures.current.values} resourceAccess={cached ? 'none' : 'live'} operations={entry.kind === 'interaction' && !cached ? state.operations : undefined} resources={cached ? previewResources : state.resources} active={active} canRespond={!cached && entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} actionAdmitted={actionAdmitted} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} onInvalidImageBindings={onInvalidImageBindings} />}
+          </article>;
+        })}
       </div>
     </div>
     {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
@@ -133,6 +147,40 @@ function compactToolName(name: string): string {
   const tokens = operation.split('_');
   return tokens.length > 2 ? `${tokens[0]}_…_${tokens.slice(-2).join('_')}` : `…${operation.slice(-18)}`;
 }
+const BotWindowEntry = memo(function BotWindowEntry({ entry, disclosures }: { readonly entry: BotHistoryWindowEntry; readonly disclosures: Map<string, boolean> }) {
+  const m = useSessionMessages(), labels = useTimelineMessages(), { format } = useI18n();
+  const unavailableResource = entry.resourceIds.length > 0 ? <p className="session-history-omission">{m.resourceUnavailable}</p> : null;
+  if (entry.kind !== 'tool_call') return <div className={`session-message ${entry.kind} markdown-content`}>
+    <SessionMarkdown text={entry.preview} resourceAccess="none" />
+    {unavailableResource}
+    {entry.truncated ? <p className="session-history-omission" data-bot-history-omission="message">{m.messagePreviewOmitted}</p> : null}
+  </div>;
+
+  const tool = entry.tool;
+  const name = tool?.toolName ?? m.toolPreviewUnknown;
+  const compact = compactToolName(name);
+  const status = tool?.status === 'running' || tool?.status === 'completed' || tool?.status === 'failed' ? labels[tool.status] : tool?.status ?? m.toolPreviewUnknown;
+  const omitted = entry.omittedEntryCount === 1 ? m.toolPreviewOne : m.toolPreviewCount.replace('{count}', format.number(entry.omittedEntryCount));
+  return <>
+    <LazyDetails disclosures={disclosures} disclosureKey={`${entry.entryId}/preview-tool`} className="session-tool" summary={<>
+      <svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>
+      <strong className="session-tool-name" title={name}>{compact === name ? name : <><span className="session-tool-name-wide">{name}</span><span className="session-tool-name-compact">{compact}</span></>}</strong>
+      <span className="session-tool-summary">{tool?.command ?? ''}</span>
+      <small className="session-tool-status session-tool-preview-status" title={status}>{status}</small>
+    </>}>
+      <dl className="session-tool-preview-metadata">
+        <dt>{labels.toolName}</dt><dd><code>{name}</code></dd>
+        <dt>{labels.command}</dt><dd><code>{tool?.command ?? m.toolPreviewUnknown}</code></dd>
+        <dt>{m.toolPreviewCwd}</dt><dd><code>{tool?.cwd ?? m.toolPreviewUnknown}</code></dd>
+        <dt>{m.toolPreviewExitCode}</dt><dd><code>{tool?.exitCode ?? m.toolPreviewUnknown}</code></dd>
+      </dl>
+      {entry.preview ? <><h5>{m.toolPreviewOutput}</h5><pre className="session-tool-output" tabIndex={0}>{entry.preview}</pre></> : null}
+      {unavailableResource}
+    </LazyDetails>
+    {entry.truncated ? <p className="session-history-omission" data-bot-history-omission="tool">{entry.omittedEntryCount ? omitted : m.toolPreviewOmitted}</p> : null}
+  </>;
+});
+
 type EntryProps = {
   readonly disclosures: Map<string, boolean>;
   readonly resourceAccess: 'live' | 'none';

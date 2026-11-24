@@ -13,7 +13,7 @@ import { BotConversationEmpty } from './BotConversationEmpty';
 import { getBotDisplaySnapshotCoordinator, type BotDisplaySnapshotCoordinator } from './display-snapshot-coordinator';
 import type { BotDisplayPreview } from './display-snapshot';
 import { botDisplayHistoryKey } from './display-snapshot-codec';
-import { selectSessionHistoryRows, type SessionHistoryPreview } from '../task-agent-session/history-preview';
+import { selectSessionHistoryRows, selectSessionTimeline, type SessionHistoryPreview } from '../task-agent-session/history-preview';
 import type { SessionViewState } from '../task-agent-session/client';
 import './bot-session.css';
 
@@ -120,12 +120,31 @@ function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, bot
       if (!live || !owner.allowed(botId)) return;
       // Persistence may save a shorter real tail. The admitted display seed owns
       // its uncovered rows until real coverage or actual revocation consumes them.
-      setLoaded(previous => previous?.owner === owner && previous.botId === botId && previous.generation === generation && previous.preview && (!preview || botDisplayHistoryKey(previous.preview) === botDisplayHistoryKey(preview)) ? previous : { owner, botId, generation, preview });
+      setLoaded(previous => {
+        if (previous?.owner === owner && previous.botId === botId && previous.generation === generation && previous.preview) {
+          if (!preview) return previous;
+          if (botDisplayHistoryKey(previous.preview) === botDisplayHistoryKey(preview)) {
+            const nextWindow = preview.botHistoryWindow, previousWindow = previous.preview.botHistoryWindow;
+            if (!nextWindow || previousWindow && BigInt(nextWindow.windowRevision) <= BigInt(previousWindow.windowRevision)) return previous;
+          }
+        }
+        return { owner, botId, generation, preview };
+      });
     });
     return () => { live = false; };
   }, [owner, botId, active, version, readAllowed]);
   useLayoutEffect(() => {
     if (!view?.historyLoaded || !loaded?.preview || loaded.owner !== owner || loaded.botId !== botId) return;
+    if (loaded.preview.botHistoryWindow) {
+      if (!view.botHistoryWindow) return;
+      const { rows } = selectSessionTimeline(view.state, loaded.preview, true, view.historyCoverage, view.botHistoryWindow);
+      const remaining = new Set(rows.filter(row => row.preview && 'preview' in row.entry).map(row => row.entry.entryId));
+      const { botHistoryWindow } = loaded.preview;
+      const entries = botHistoryWindow.entries.filter(entry => remaining.has(entry.entryId));
+      if (entries.length !== botHistoryWindow.entries.length) setLoaded(current => current === loaded ? { ...loaded, preview: { ...loaded.preview!, botHistoryWindow: { ...botHistoryWindow, entries } } } : current);
+      return;
+    }
+    if (view.botHistoryWindow) return;
     const entries = selectSessionHistoryRows(view.state, loaded.preview, true, view.historyCoverage).filter(row => row.preview).map(row => row.entry);
     // Consumed rows stay withdrawn when a later tail starts a disjoint cursor
     // chain. The retained seed only shrinks and never enters client/save inputs.
@@ -143,7 +162,7 @@ function BotPane({ cache, botId, pane, noSession, active, current, fullscreenBou
   const owner = cache.displaySnapshots();
   const loadedPreview = useHistoryPreview(owner, botId, active && current && !noSession, view);
   const preview = noSession ? null : loadedPreview;
-  const previewInput: SessionHistoryPreview | undefined = preview ? { fence: preview.fence, historyEpoch: preview.historyEpoch, lastEventSeq: preview.lastEventSeq, entries: preview.entries, resources: preview.resources, ...(preview.readingAnchor ? { readingAnchor: preview.readingAnchor } : {}) } : undefined;
+  const previewInput: SessionHistoryPreview | undefined = preview ? { fence: preview.fence, historyEpoch: preview.historyEpoch, lastEventSeq: preview.lastEventSeq, entries: preview.entries, resources: preview.resources, savedAt: preview.savedAt, ...(preview.botHistoryWindow ? { botHistoryWindow: preview.botHistoryWindow } : {}), ...(preview.readingAnchor ? { readingAnchor: preview.readingAnchor } : {}) } : undefined;
   const readingRef = useRef<SessionTimelineReadingHandle | null>(null);
   useLayoutEffect(() => { if (pane) pane.reading.current = readingRef.current; });
   useEffect(() => { if (!active) cache.flushDisplay(botId); }, [active, cache, botId]);
@@ -175,7 +194,13 @@ function BotPane({ cache, botId, pane, noSession, active, current, fullscreenBou
     if (!active || !snapshot?.synchronized || snapshot.connectionState !== 'connected' || snapshot.lifecycle !== 'active') return;
     const key = bookmark.anchor?.key;
     const page = `${view.connectionGeneration}/${snapshot.connectionEpoch}/${view.historyRevision}`;
-    if (!key || view.state.entries.some(entry => entry.entryId === key) || !view.historyReady || !view.hasOlder || view.loadingOlder || view.historyError || view.authPaused || attemptedPage.current === page) return;
+    if (!key || view.state.entries.some(entry => entry.entryId === key) || view.botHistoryWindow?.entries.some(entry => entry.entryId === key) || !view.historyReady || !view.hasOlder || view.loadingOlder || view.historyError || view.authPaused || attemptedPage.current === page) return;
+    const window = view.botHistoryWindow;
+    if (window?.earlierHistoryUnavailable && loadedPreview?.historyEpoch === snapshot.historyEpoch) {
+      const cachedEntries = loadedPreview.botHistoryWindow?.entries ?? loadedPreview.entries;
+      const anchorSeq = cachedEntries.find(entry => entry.entryId === key)?.entrySeq;
+      if (anchorSeq && (window.retainedFromSeq === null || BigInt(anchorSeq) < BigInt(window.retainedFromSeq))) { pane.retained.bookmark = null; return; }
+    }
     attemptedPage.current = page;
     void pane.client.loadOlder();
     // Admission can change before authPaused reaches the view. A synchronous

@@ -3,6 +3,8 @@ import { TASK_BODY_HISTORY_VERSION_HEADER, parseSessionArchive, parseSessionArch
 import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
 import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
+import { BOT_HISTORY_WINDOW_VERSION, parseBotHistoryWindowBoundary, parseBotHistoryWindowPage, type BotHistoryWindowBoundary, type BotHistoryWindowPage, type BotHistoryWindowRequest } from '../../../daynight/src/session/bot-history-window';
+import { HISTORY_CURSOR_BYTES, HISTORY_RESPONSE_BYTES } from '../../../daynight/src/session/history';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId, readAuthRequestGeneration } from './client';
 import { createArchiveReadRetry } from './archive-retry';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
@@ -22,6 +24,12 @@ export type SessionChannel = { close(): void };
 export class IndependentSessionReadDenied extends ApiError {
   constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, error); this.name = 'IndependentSessionReadDenied'; }
 }
+export class BotHistoryWindowReset extends ApiError {
+  constructor(error: ApiError, readonly boundary: BotHistoryWindowBoundary) {
+    super('server', error.status, error.code, error.requestId, error);
+    this.name = 'BotHistoryWindowReset';
+  }
+}
 export type BotSessionBinding = {
   readonly ownerUserId: string;
   readonly botId: string;
@@ -34,6 +42,7 @@ export type SessionApi = {
   resources(fence: SessionFence, isCurrent: () => boolean): SessionResourceClient;
   current(signal: AbortSignal): Promise<CurrentSessionResponse>;
   timeline(sessionId: string, direction: 'tail' | 'before' | 'after', cursor: string | null, signal: AbortSignal): Promise<TimelinePage>;
+  botHistoryWindow?(sessionId: string, mode: BotHistoryWindowRequest['mode'], cursor: string | null, signal: AbortSignal): Promise<BotHistoryWindowPage>;
   command(sessionId: string, command: SessionCommand, signal: AbortSignal): Promise<SessionOperation>;
   operation(sessionId: string, operationId: string, signal: AbortSignal): Promise<SessionOperation>;
   channel(sessionId: string, after: string | null, onMessage: (message: BrowserMessage) => void, onClose: (error?: unknown) => void): SessionChannel;
@@ -50,7 +59,42 @@ export function createTestSessionApi(sessionId: string, userId: string, onPrinci
 /** Bind Bot management's confirmed identity to the existing independent Session transport. */
 export function createBotSessionApi(binding: BotSessionBinding, onPrincipalMismatch: () => void): SessionApi {
   requestId(binding.botId);
-  return createIndependentSessionApi(requestId(binding.sessionId), requestId(binding.ownerUserId), onPrincipalMismatch, requestId(binding.testExecutionId));
+  const sessionId = requestId(binding.sessionId), userId = requestId(binding.ownerUserId), testExecutionId = requestId(binding.testExecutionId);
+  const api = createIndependentSessionApi(sessionId, userId, onPrincipalMismatch, testExecutionId);
+  const assertBinding = (value: BotHistoryWindowBoundary) => {
+    if (value.sessionId !== sessionId || value.testExecutionId !== testExecutionId) throw new ApiError('protocol');
+  };
+  return { ...api, botHistoryWindow: async (id, mode, cursor, signal) => {
+    if (id !== sessionId || (mode === 'tail') !== (cursor === null) || cursor !== null && (cursor.length > HISTORY_CURSOR_BYTES || !/^[A-Za-z0-9_-]+$/.test(cursor))) throw new ApiError('protocol');
+    const query = new URLSearchParams({ mode, limit: '50' });
+    if (cursor !== null) query.set('cursor', cursor);
+    const response = await request(`/api/v1/test-sessions/${sessionId}/bot-history-window?${query}`, signal, { headers: { Accept: 'application/json' } });
+    const version = response.headers.get('Daynight-Bot-History-Window-Version');
+    // The pre-window router reports an unregistered route without an authenticated principal.
+    const missingRoute = response.status === 404 && version === null && !response.headers.has('Daynight-User-ID');
+    if (!missingRoute) assertResponsePrincipal(response, userId, onPrincipalMismatch);
+    let payload: unknown;
+    return json(response, signal, value => {
+      if (response.status !== 200 || version !== String(BOT_HISTORY_WINDOW_VERSION)) throw new ApiError('protocol', response.status);
+      const page = parseBotHistoryWindowPage(value);
+      assertBinding(page);
+      return page;
+    }, async () => {
+      payload = decodeStrictJson(await boundedResponseBytes(response, signal, HISTORY_RESPONSE_BYTES), HISTORY_RESPONSE_BYTES);
+      return payload;
+    }, missingRoute, error => {
+      if (missingRoute && error.code === 'not_found' && error.serverMessage === 'resource not found') throw new ApiError('server', 501, 'upgrade_required', error.requestId, error);
+      if (error.status === 409 && error.code === 'resource_conflict') throw new IndependentSessionReadDenied(error);
+      if (error.code === 'upgrade_required' || error.code === 'reset_required') {
+        if (version !== String(BOT_HISTORY_WINDOW_VERSION) || error.status !== (error.code === 'reset_required' ? 409 : 501)) throw new ApiError('protocol', error.status);
+      }
+      if (error.code === 'reset_required') {
+        const boundary = parseBotHistoryWindowBoundary((payload as { boundary?: unknown }).boundary);
+        assertBinding(boundary);
+        throw new BotHistoryWindowReset(error, boundary);
+      }
+    });
+  } };
 }
 function createIndependentSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void, testExecutionId?: string): SessionApi {
   const root = `/api/v1/test-sessions/${requestId(sessionId)}`;
@@ -113,7 +157,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           const archive = parseSessionArchive(archiveEnvelope(value));
           if (archive.sessionId !== id) throw new ApiError('protocol');
           return archive;
-        }, async () => { rawBytes = await boundedArchiveBytes(response, signal, SESSION_ARCHIVE_MAX_BYTES + 1024); return decodeStrictJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
+        }, async () => { rawBytes = await boundedResponseBytes(response, signal, SESSION_ARCHIVE_MAX_BYTES + 1024); return decodeStrictJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
         assertCurrent();
         if (archive.schemaVersion === 3) {
           if (archive.recordId !== id) throw new ApiError('protocol');
@@ -127,7 +171,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           assertCurrent();
           assertResponsePrincipal(timelineResponse, userId, onPrincipalMismatch);
           if (timelineResponse.status !== 200) return await json(timelineResponse, signal, () => { throw new ApiError('protocol', timelineResponse.status); });
-          const bytes = await boundedArchiveBytes(timelineResponse, signal, SESSION_ARCHIVE_TIMELINE_MAX_BYTES);
+          const bytes = await boundedResponseBytes(timelineResponse, signal, SESSION_ARCHIVE_TIMELINE_MAX_BYTES);
           assertCurrent();
           const timeline = await verifySessionArchiveMetadata(archive, bytes);
           assertCurrent();
@@ -205,7 +249,7 @@ function archiveEnvelope(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('archive' in value) || Object.keys(value).length !== 1) throw new ApiError('protocol');
   return value.archive;
 }
-async function boundedArchiveBytes(response: Response, signal: AbortSignal, limit: number): Promise<Uint8Array<ArrayBuffer>> {
+async function boundedResponseBytes(response: Response, signal: AbortSignal, limit: number): Promise<Uint8Array<ArrayBuffer>> {
   signal = responseSignal(response, signal);
   signal.throwIfAborted();
   if (!response.body) throw new ApiError('protocol');

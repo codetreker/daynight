@@ -98,7 +98,9 @@ const boundary = (o: Record<string, unknown>): BotHistoryWindowBoundary => {
   if (throughSeq === null ? retainedFromSeq !== null || earlierHistoryUnavailable : retainedFromSeq === null ? !earlierHistoryUnavailable : BigInt(retainedFromSeq) > BigInt(throughSeq)) return fail();
   return { sessionId: imageId(o.sessionId), testExecutionId: imageId(o.testExecutionId), executionGeneration: imageDecimal(o.executionGeneration), connectionEpoch: imageDecimal(o.connectionEpoch), botHistoryWindowVersion: 1, historyEpoch: imageId(o.historyEpoch), windowRevision: imageDecimal(o.windowRevision), retainedFromSeq, throughSeq, earlierHistoryUnavailable };
 };
-const entry = (value: unknown): BotHistoryWindowEntry => {
+export const parseBotHistoryWindowBoundary = (value: unknown): BotHistoryWindowBoundary => boundary(imageObject(value, boundaryKeys));
+
+export const parseBotHistoryWindowEntry = (value: unknown): BotHistoryWindowEntry => {
   const o = imageObject(value, ["entryId", "entrySeq", "revision", "kind", "preview", "truncated", "originalBytes", "previewBytes", "omissionReason", "omittedEntryCount", "resourceIds", "tool"]);
   if (o.kind !== "user_message" && o.kind !== "assistant_message" && o.kind !== "tool_call") return fail();
   const preview = text(o.preview, BOT_HISTORY_WINDOW_PREVIEW_BYTES, true), previewBytes = imageDecimal(o.previewBytes, true), originalBytes = nullable(o.originalBytes, value => imageDecimal(value, true));
@@ -118,7 +120,7 @@ const entry = (value: unknown): BotHistoryWindowEntry => {
 export const parseBotHistoryWindowPage = (value: unknown): BotHistoryWindowPage => {
   const o = imageObject(value, [...boundaryKeys, "kind", "items", "hasEarlierHistory", "beforeCursor", "nextCursor"]);
   if (o.kind !== "bot_history_window" || !Array.isArray(o.items) || o.items.length > 200 || new TextEncoder().encode(JSON.stringify(value)).length > HISTORY_RESPONSE_BYTES) return fail();
-  const state = boundary(o), items = o.items.map(entry), hasEarlierHistory = bool(o.hasEarlierHistory), beforeCursor = nullable(o.beforeCursor, historyCursorText), nextCursor = nullable(o.nextCursor, historyCursorText);
+  const state = boundary(o), items = o.items.map(parseBotHistoryWindowEntry), hasEarlierHistory = bool(o.hasEarlierHistory), beforeCursor = nullable(o.beforeCursor, historyCursorText), nextCursor = nullable(o.nextCursor, historyCursorText);
   if (hasEarlierHistory !== (beforeCursor !== null) || beforeCursor !== null && items.length === 0 || new Set(items.map(item => item.entryId)).size !== items.length) return fail();
   let last = 0n;
   for (const item of items) {
@@ -130,7 +132,7 @@ export const parseBotHistoryWindowPage = (value: unknown): BotHistoryWindowPage 
 };
 
 /** Hash the complete validated preview and its resource references. */
-export const botHistoryWindowEntryDigest = (value: BotHistoryWindowEntry): Promise<string> => hashSessionBytes(canonicalSessionJson(entry(value)));
+export const botHistoryWindowEntryDigest = (value: BotHistoryWindowEntry): Promise<string> => hashSessionBytes(canonicalSessionJson(parseBotHistoryWindowEntry(value)));
 
 export const parseBotHistoryWindowRequest = (value: unknown): BotHistoryWindowRequest => {
   const o = imageObject(value, ["kind", "historyEpoch", "mode", "cursor", "limit", "responseOverhead"]);

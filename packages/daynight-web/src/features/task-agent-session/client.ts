@@ -4,11 +4,13 @@ import { liveHistoryAllowed } from './presentation';
 import { sessionArchiveReferences, type SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import type { SessionResourceClient } from '../../../../daynight/src/session/resource-client';
 import { ApiError, isAbortError, readAuthRequestGeneration } from '../../api/client';
+import type { BotHistoryWindowPage } from '../../../../daynight/src/session/bot-history-window';
+import { advancesBotHistoryWindow, boundBotHistoryWindow, matchesBotHistoryWindow, mergeBotHistoryWindowEntries, type BotHistoryView } from './bot-history-window';
 import { pageImageStore, type ImageScope } from './images/image-store';
 import { ImageDraftController, type ImageDraftContext } from './drafts/image-draft-controller';
 import { clearImageDraftScope } from './drafts/draft-store-cleanup';
 import { draftOwnerKey } from './drafts/draft-store-identity';
-import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel, type LoadedSessionArchive } from '../../api/sessions';
+import { BotHistoryWindowReset, IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel, type LoadedSessionArchive } from '../../api/sessions';
 import { clearSessionDisplayPreference } from './useSessionDisplayPreference';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionFence, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/session/controller-protocol';
@@ -70,6 +72,7 @@ export type SessionViewState = {
   /** Accepted history can be observed only outside replacement and recovery. */
   readonly historySettled: boolean;
   readonly historyCoverage: SessionHistoryCoverage | null;
+  readonly botHistoryWindow?: BotHistoryView | null;
 };
 type Options = { readonly api: SessionApi; readonly userId: string; readonly initialActionAdmitted?: boolean; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
   { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly ownerUserId: string; readonly testSessionId?: never; readonly bot?: never } |
@@ -124,6 +127,10 @@ export class TaskSessionClient {
   private cursor: string | null = null;
   private before: string | null = null;
   private beforeCursors = new Set<string>();
+  private botWindowCursor: string | null = null;
+  private botWindowRequest: AbortController | null = null;
+  private botWindowResetPending = false;
+  private botHistoryVisible = true;
   private olderRequest: AbortController | null = null;
   private hydrating = false;
   private historyRequest: AbortController | null = null;
@@ -227,6 +234,12 @@ export class TaskSessionClient {
     return this.media.client;
   }
   snapshot = (): SessionViewState => this.view;
+  setBotHistoryVisible = (visible: boolean): void => {
+    if (this.botHistoryVisible === visible) return;
+    this.botHistoryVisible = visible;
+    const snapshot = this.view.state.snapshot;
+    if (visible && snapshot) void this.refreshBotWindow(snapshot);
+  };
   /** One authenticated resource scope follows this retained client, independent of presentation. */
   imageScope = (): ImageScope | null => {
     const snapshot = this.view.state.snapshot;
@@ -375,9 +388,12 @@ export class TaskSessionClient {
     }
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
-      change = { ...change, historyLoaded: change.historyLoaded ?? false, historyCoverage: change.historyCoverage ?? null, loadingOlder: false, historyError: null };
+      this.botWindowCursor = null;
+      this.botWindowResetPending = false;
+      change = { ...change, botHistoryWindow: null, historyLoaded: change.historyLoaded ?? false, historyCoverage: change.historyCoverage ?? null, loadingOlder: false, historyError: null };
     } else if (previous && next && previous.connectionEpoch !== next.connectionEpoch) {
       this.cancelOlder(); this.cancelHydration(); change = { ...change, loadingOlder: false };
+      if (this.view.botHistoryWindow) { this.hydrated = false; this.botWindowCursor = null; change = { ...change, connected: false }; }
     }
     if (change.state) change = { ...change, environmentConnected: next !== null && next !== undefined && (next.connectionState === 'connected' || next.connectionState === 'synchronizing' || previous !== null && sameExecution(previous, next) && this.view.environmentConnected) };
     if (next && this.historyFailureIdentity !== null && this.historyFailureIdentity !== historyIdentity(next) && liveHistoryAllowed(next, this.view.startupReport)) {
@@ -406,7 +422,7 @@ export class TaskSessionClient {
     }
     this.view = { ...this.view, ...change };
     if (this.view.connected && (this.currentReadFailure || !this.view.state.snapshot || !this.historyAllowed(this.view.state.snapshot) || BigInt(this.view.state.lastEventSeq) < BigInt(this.replayThrough))) this.view = { ...this.view, connected: false };
-    this.view = { ...this.view, connectionGeneration: this.connectionGeneration, historySettled: this.view.historyLoaded && !this.hydrating && !this.replaceHistory && !this.view.state.recoveryRequired && this.view.state.snapshot !== null, historyReady: this.hydrated && !this.hydrating && this.view.connected && this.view.status === 'ready' && !this.view.state.recoveryRequired && this.view.state.snapshot !== null && this.historyAllowed(this.view.state.snapshot) };
+    this.view = { ...this.view, connectionGeneration: this.connectionGeneration, historySettled: this.view.historyLoaded && !this.hydrating && !this.replaceHistory && !this.botWindowResetPending && !this.view.state.recoveryRequired && this.view.state.snapshot !== null, historyReady: this.hydrated && !this.hydrating && !this.botWindowResetPending && this.view.connected && this.view.status === 'ready' && !this.view.state.recoveryRequired && this.view.state.snapshot !== null && this.historyAllowed(this.view.state.snapshot) };
     this.reconcileImageReferences();
     const snapshot = this.view.state.snapshot;
     if (snapshot) this.bindDraft(snapshot);
@@ -639,6 +655,7 @@ export class TaskSessionClient {
       if (!this.historyAllowed(selected)) { this.cancelOlder(); this.publish({ connected: false, loadingOlder: false }); }
       else if (this.channelAuthenticated && !this.hydrating && !this.hydrated) this.startHydration(selected, generation);
       else if (this.channelAuthenticated && this.hydrated && !this.hydrating && !this.view.state.recoveryRequired && BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: true });
+      void this.refreshBotWindow(selected);
     } catch (error) {
       if (!currentRequest() || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -697,7 +714,7 @@ export class TaskSessionClient {
       this.cursor = value.cursor; if (BigInt(s.lastEventSeq) > BigInt(this.replayThrough)) this.replayThrough = s.lastEventSeq;
       if (!this.historyAllowed(s)) { this.publish({ connected: false }); return; }
       if (!this.hydrated) this.startHydration(s, generation);
-      else { this.publish({ connected: BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough), error: null }); this.retries = 0; this.reconcile(); }
+      else { this.publish({ connected: BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough), error: null }); this.retries = 0; this.reconcile(); void this.refreshBotWindow(s); }
       return;
     }
     const bound = this.view.state.snapshot;
@@ -719,7 +736,8 @@ export class TaskSessionClient {
     const s = this.view.state.snapshot;
     if (!s || sessionFenceKey(value.event) !== sessionFenceKey(s)) return;
     if (value.event.kind === 'operation' && value.event.payload.state === 'unknown') this.endOperationProgress(value.event.payload.operationId);
-    let state = applySessionEvent(this.view.state, value.event);
+    const window = this.view.botHistoryWindow;
+    let state = applySessionEvent(this.view.state, value.event, window != null);
     const sameHistory = state.snapshot !== null && sessionFenceKey(state.snapshot) === sessionFenceKey(s) && state.snapshot.historyEpoch === s.historyEpoch;
     if (!sameHistory) {
       this.replaceHistory = true;
@@ -736,9 +754,13 @@ export class TaskSessionClient {
     this.publish({ state, historyCoverage });
     if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
     if (state.recoveryRequired) { this.cancelOlder(); this.beforeCursors.clear(); this.hydrated = false; this.cursor = null; this.publish({ connected: false, loadingOlder: false }); this.schedule(0); }
-    else { this.cursor = value.cursor; if (!this.hydrating && BigInt(state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: this.historyAllowed(state.snapshot!) }); }
+    else {
+      this.cursor = value.cursor;
+      if (!this.hydrated && this.channelAuthenticated && state.snapshot) this.startHydration(state.snapshot, this.connectionGeneration);
+      else if (!this.hydrating && BigInt(state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: this.historyAllowed(state.snapshot!) });
+    }
     if (value.event.kind === 'operation') this.persist();
-    if (value.event.kind === 'timeline_upsert' && !state.recoveryRequired) this.readMissingDescriptors(value.event.payload);
+    if (!window && value.event.kind === 'timeline_upsert' && !state.recoveryRequired) this.readMissingDescriptors(value.event.payload);
   }
   /**
    * Live timeline events carry image parts but not their resource descriptors;
@@ -825,7 +847,9 @@ export class TaskSessionClient {
       const resources = archive.schemaVersion === 3 ? archive.resources.map(({ resource }) => resource) : archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
       const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
       this.replaceHistory = false;
-      this.publish({ archiveState: 'ready', archiveContentPolicy: archive.schemaVersion === 3 ? archive.contentPolicy ?? null : null, state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
+      this.botWindowCursor = null;
+      this.botWindowResetPending = false;
+      this.publish({ archiveState: 'ready', archiveContentPolicy: archive.schemaVersion === 3 ? archive.contentPolicy ?? null : null, state, botHistoryWindow: null, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
     } catch (error) {
       if (!this.currentReadCurrent(flight) || !this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -837,7 +861,7 @@ export class TaskSessionClient {
     if (page.sessionId !== snapshot.sessionId || page.historyEpoch !== snapshot.historyEpoch) throw new ApiError('protocol');
     if (page.hasMoreBefore && !page.beforeCursor) throw new HistoryCursorError('Session history returned an empty pagination cursor.');
   }
-  private cancelHydration(): void { this.historyRequest?.abort(); this.historyRequest = null; this.descriptorRequest?.abort(); this.descriptorRequest = null; this.descriptorAgain = false; this.hydrating = false; this.buffer = []; }
+  private cancelHydration(): void { this.historyRequest?.abort(); this.historyRequest = null; this.botWindowRequest?.abort(); this.botWindowRequest = null; this.descriptorRequest?.abort(); this.descriptorRequest = null; this.descriptorAgain = false; this.hydrating = false; this.buffer = []; }
   private pageCoverage(entries: SessionState['entries'], throughEntrySeq: string, lastEventSeq: string, completeBefore: boolean, previous: SessionHistoryCoverage | null): SessionHistoryCoverage {
     let first = previous?.firstEntrySeq ?? null, through = previous && BigInt(previous.throughEntrySeq) > BigInt(throughEntrySeq) ? previous.throughEntrySeq : throughEntrySeq;
     for (const entry of entries) {
@@ -846,11 +870,127 @@ export class TaskSessionClient {
     }
     return { firstEntrySeq: first, throughEntrySeq: through, completeBefore: completeBefore || (previous?.completeBefore ?? false), lastEventSeq: previous && BigInt(previous.lastEventSeq) > BigInt(lastEventSeq) ? previous.lastEventSeq : lastEventSeq };
   }
+  private validateBotWindow(page: BotHistoryWindowPage, snapshot: SessionSnapshot): void {
+    if (!matchesBotHistoryWindow(page, snapshot) || !page.nextCursor ||
+      this.view.botHistoryWindow && !advancesBotHistoryWindow(this.view.botHistoryWindow, page)) throw new ApiError('protocol');
+  }
+  private acceptBotWindow(page: BotHistoryWindowPage, entries: BotHistoryView['entries'], before: string | null, cursor: string | null, change: Partial<SessionViewState> = {}): void {
+    const preserveLocalGap = this.view.botHistoryWindow?.localEviction && before === null && entries[0]?.entrySeq !== page.retainedFromSeq;
+    const window = boundBotHistoryWindow({ ...page, ...(preserveLocalGap ? { localEviction: true } : {}) }, entries);
+    this.before = window.entries[0] === entries[0] ? before : null;
+    this.botWindowCursor = cursor;
+    this.publish({ botHistoryWindow: window, historyLoaded: true, historyCoverage: null, status: 'ready',
+      hasOlder: this.before !== null, historyError: null, error: null,
+      historyRevision: this.view.historyRevision + 1, ...change });
+  }
+  private async refreshBotWindow(snapshot: SessionSnapshot, mode: 'changes' | 'before' = 'changes'): Promise<void> {
+    const api = this.options.api.botHistoryWindow, previous = this.view.botHistoryWindow;
+    const cursor = mode === 'before' ? this.before : this.botWindowCursor;
+    if (!api || !previous || !cursor || !this.hydrated || !this.channelAuthenticated ||
+      !this.historyAllowed(snapshot) || !this.live() || !this.sameHistory(snapshot)) return;
+    if (mode === 'changes' && (!this.botHistoryVisible || this.botWindowRequest)) return;
+    // A user-requested older page must not be consumed by the pagination hook
+    // while an unchanged background poll owns the slot.
+    if (mode === 'before') this.botWindowRequest?.abort();
+    const request = new AbortController();
+    this.botWindowRequest = request;
+    const signal = AbortSignal.any([request.signal, this.network.signal]);
+    const current = () => this.botWindowRequest === request && this.sameHistory(snapshot) && this.live() && !signal.aborted;
+    if (mode === 'before') this.publish({ loadingOlder: true, historyError: null });
+    const read = async (direction: 'tail' | 'changes' | 'before', position: string | null) => {
+      const page = await api(snapshot.sessionId, direction, position, signal);
+      if (!current()) throw new DOMException('Bot history read ended', 'AbortError');
+      this.validateBotWindow(page, snapshot);
+      return page;
+    };
+    const loadTail = async () => {
+      const tail = await read('tail', null);
+      this.botWindowResetPending = false;
+      const ids = new Set(tail.items.map(item => item.entryId));
+      this.acceptBotWindow(tail, mergeBotHistoryWindowEntries(tail.items, previous.entries.filter(old => ids.has(old.entryId))), tail.beforeCursor, tail.nextCursor);
+    };
+    try {
+      if (this.botWindowResetPending) { await loadTail(); return; }
+      let page = await read(mode, cursor);
+      if (mode === 'before') {
+        if (page.beforeCursor === cursor || page.items.some(item => previous.entries[0] && BigInt(item.entrySeq) >= BigInt(previous.entries[0].entrySeq))) throw new HistoryCursorError('Bot history pagination did not advance.');
+        this.acceptBotWindow(page, mergeBotHistoryWindowEntries(previous.entries, page.items), page.beforeCursor, this.botWindowCursor);
+      } else if (page.items.length || page.windowRevision !== previous.windowRevision) {
+        const revision = page.windowRevision;
+        const seen = new Set([cursor]);
+        const scanned: BotHistoryView['entries'][number][] = [];
+        while (page.items.length) {
+          if (scanned.length + page.items.length > 500 || seen.has(page.nextCursor!) ||
+            scanned.length > 0 && BigInt(page.items[0]!.entrySeq) <= BigInt(scanned.at(-1)!.entrySeq)) throw new HistoryCursorError('Bot history changes did not advance.');
+          scanned.push(...page.items);
+          seen.add(page.nextCursor!);
+          page = await read('changes', page.nextCursor);
+          if (page.windowRevision !== revision) { await loadTail(); return; }
+        }
+        const start = BigInt(previous.entries[0]?.entrySeq ?? previous.retainedFromSeq ?? '0');
+        const currentRows = scanned.filter(item => BigInt(item.entrySeq) >= start);
+        const existing = new Set(currentRows.map(item => item.entryId));
+        const merged = mergeBotHistoryWindowEntries(previous.entries.filter(item => existing.has(item.entryId)), currentRows);
+        const before = page.retainedFromSeq !== null && merged[0]?.entrySeq === page.retainedFromSeq ? null : this.before;
+        this.acceptBotWindow(page, merged, before, page.nextCursor);
+      }
+    } catch (originalError) {
+      if (!current() || isAbortError(originalError)) return;
+      let error = originalError;
+      if (error instanceof ApiError && error.code === 'reset_required') {
+        try {
+          if (error instanceof BotHistoryWindowReset) {
+            if (!matchesBotHistoryWindow(error.boundary, snapshot) || !advancesBotHistoryWindow(previous, error.boundary)) throw new ApiError('protocol');
+            this.botWindowResetPending = true;
+            this.before = null;
+            this.publish({ botHistoryWindow: boundBotHistoryWindow({ ...error.boundary, ...(previous.localEviction ? { localEviction: true } : {}) }, previous.entries), hasOlder: false, historyRevision: this.view.historyRevision + 1 });
+          }
+          this.botWindowResetPending = true;
+          await loadTail(); return;
+        } catch (tailError) { error = tailError; }
+      }
+      if (!current() || isAbortError(error)) return;
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (error instanceof ApiError && error.code === 'controller_offline') {
+        this.historyFailureIdentity = historyIdentity(snapshot); this.historyFailureError = { message: message(error), code: errorCode(error) };
+        this.hydrated = false; this.publish({ connected: false, status: 'error', error: message(error), errorCode: errorCode(error) });
+      } else if (mode === 'before' || !(error instanceof ApiError && error.code === 'history_unavailable')) this.publish({ historyError: message(error) });
+    } finally {
+      if (this.botWindowRequest === request) {
+        this.botWindowRequest = null;
+        if (mode === 'before') this.publish({ loadingOlder: false });
+      }
+    }
+  }
   private async hydrate(snapshot: SessionSnapshot, generation: number, online = true) {
     const request = new AbortController(); this.historyRequest = request;
     const currentRequest = () => this.owned() && this.historyRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
+    const signal = AbortSignal.any([request.signal, this.network.signal]);
     try {
-      const page = await this.options.api.timeline(snapshot.sessionId, 'tail', null, AbortSignal.any([request.signal, this.network.signal]));
+      if (this.options.bot && this.options.api.botHistoryWindow) {
+        let window: BotHistoryWindowPage | null = null;
+        try { window = await this.options.api.botHistoryWindow(snapshot.sessionId, 'tail', null, signal); }
+        catch (error) {
+          if (!(error instanceof ApiError && error.code === 'upgrade_required') || this.view.botHistoryWindow) throw error;
+        }
+        if (!currentRequest() || !(this.paused() ? await this.admit(signal) : this.admitted()) || !currentRequest()) return;
+        if (window) {
+          this.validateBotWindow(window, snapshot);
+          const previous = this.view.state;
+          const selected = this.view.state.snapshot!;
+          const state = hydrateSession({ ...previous, entries: this.replaceHistory ? [] : previous.entries.filter(entry => entry.kind === 'interaction'), resources: new Map() }, selected, []);
+          const buffered = this.buffer; this.buffer = [];
+          const lastEventSeq = BigInt(previous.lastEventSeq) > BigInt(snapshot.lastEventSeq) && !this.replaceHistory ? previous.lastEventSeq : snapshot.lastEventSeq;
+          const operations = new Map(state.operations);
+          for (const { event } of buffered) if (event.kind === 'operation' && event.historyEpoch === snapshot.historyEpoch && BigInt(event.eventSeq) <= BigInt(lastEventSeq)) operations.set(event.payload.operationId, event.payload);
+          this.replaceHistory = false; this.botWindowResetPending = false; this.hydrated = online; this.hydrating = false;
+          this.acceptBotWindow(window, window.items, window.beforeCursor, window.nextCursor, { state: { ...state, operations, lastEventSeq }, connected: online });
+          if (online) for (const item of buffered) { this.apply(item); if (generation !== this.connectionGeneration) return; }
+          this.restore(); this.restoreDraftOperation(); this.reconcile(); this.retries = 0;
+          return;
+        }
+      }
+      const page = await this.options.api.timeline(snapshot.sessionId, 'tail', null, signal);
       if (!currentRequest() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !currentRequest()) return;
       this.validatePage(page, snapshot);
       if (BigInt(page.lastEventSeq) < BigInt(snapshot.lastEventSeq)) throw new ApiError('protocol');
@@ -881,7 +1021,7 @@ export class TaskSessionClient {
       this.restore(); this.restoreDraftOperation(); this.reconcile(); this.retries = 0;
     } catch (error) {
       if (!currentRequest() || isAbortError(error)) return;
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) { this.invalidate(error); return; }
       if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
       this.hydrating = false; this.publish({ connected: false, status: 'error', error: message(error), errorCode: errorCode(error) });
       if (error instanceof ApiError && error.code === 'controller_offline') { this.historyFailureIdentity = historyIdentity(snapshot); this.historyFailureError = { message: message(error), code: errorCode(error) }; return; }
@@ -895,6 +1035,7 @@ export class TaskSessionClient {
   async loadOlder(): Promise<void> {
     const snapshot = this.view.state.snapshot;
     if (!snapshot || !this.live() || !this.view.historyReady || !this.historyAllowed(snapshot) || !snapshot.synchronized || snapshot.connectionState !== 'connected' || snapshot.lifecycle !== 'active' || !this.before || this.view.loadingOlder || !this.view.hasOlder) return;
+    if (this.view.botHistoryWindow) { await this.refreshBotWindow(snapshot, 'before'); return; }
     const generation = this.connectionGeneration, before = this.before, request = new AbortController();
     this.olderRequest = request;
     const current = () => this.owned() && this.olderRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
