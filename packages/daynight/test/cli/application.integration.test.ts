@@ -14,6 +14,7 @@ import type { UpdateCommandDependencies } from "../../src/commands/update/comman
 import { parseConfiguration } from "../../src/commands/review/config.js";
 import { resolveReviewPaths } from "../../src/commands/review/paths.js";
 import Database from "better-sqlite3";
+import { createCommandLoadingFixture, reviewRuntime } from "./command-loading-fixture.js";
 
 type TestDependencies = CliContext & ReviewCommandDependencies & UpdateCommandDependencies & { output: string[]; errors: string[] };
 const runCli = (args: readonly string[], deps: TestDependencies): Promise<number> => runApplication(args, deps, [
@@ -305,65 +306,15 @@ describe("CLI argument handling", () => {
 describe("built executable", () => {
   const executable = fileURLToPath(new URL("../../dist/main.js", import.meta.url));
 
-  it("loads command and operation modules only when their behavior is selected", async () => {
-    const temporary = fileURLToPath(new URL("../../../../.tmp/", import.meta.url));
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "command-loading 中文-"));
-    const home = path.join(directory, "home");
-    const hook = path.join(directory, "imports.mjs");
-    await writeFile(hook, `import { registerHooks } from 'node:module';
-const blocked = JSON.parse(process.env.DAYNIGHT_TEST_BLOCK_IMPORTS);
-registerHooks({ resolve(specifier, context, nextResolve) {
-  const resolved = nextResolve(specifier, context);
-  const commandMetadata = /\\/commands\\/[^/]+\\/definition\\.js$/.test(resolved.url) || resolved.url.endsWith('/commands/task/session/read-definition.js') || resolved.url.endsWith('/commands/task/session/send-definition.js');
-  if (!commandMetadata && blocked.some(value => specifier.includes(value) || resolved.url.includes(value))) throw new Error('Unexpected module import: ' + specifier);
-  return resolved;
-} });
-`);
-    const reviewRuntime = ["better-sqlite3", "/commands/review/store.js", "/commands/review/runtime.js", "/commands/review/instance-lock.js", "/commands/review/listing.js"];
-    const cases = [
-      { args: [], blocked: ["/commands/"] },
-      { args: ["--help"], blocked: ["/commands/"] },
-      { args: ["--version"], blocked: ["/commands/"] },
-      ...[["--skill"]].map((args) => ({
-        args, blocked: ["which", "better-sqlite3", "yaml", "/platform/skill-bundle.js", "/commands/skill/skills/", "/commands/skill/agents.js", "/commands/skill/install.js", "/commands/skill/targets.js", "/commands/review/", "/config/", "/repository/", "/api/"],
-      })),
-      ...[["--help"], ["send", "--help"], ["operation", "--help"]].map(args => ({
-        args: ["task", "session", ...args], blocked: ["/commands/task/session/send.js", "/commands/task/session/input.js", "/commands/task/session/operation-store.js", "/commands/task/session/private-files.js", "/commands/task/session/windows-files.js", "/commands/task/session/output.js", "koffi", "/commands/server/runtime.js", "/api/", "/config/", "/repository/"],
-      })),
-      { args: ["update", "--help"], blocked: ["/commands/review/", "/commands/update/updater.js", "semver", "read-cmd-shim"] },
-      { args: ["task", "session", "read", "--help"], blocked: ["/commands/task/session/read.js", "/api/", "better-sqlite3"] },
-      ...[[], ["--help"], ["recover", "--help"]].map(args => ({
-        args: ["bot", ...args], blocked: ["/commands/bot/commands.js", "/commands/bot/recover.js", "/commands/worker/", "/commands/server/runtime.js", "/api/", "/config/", "better-sqlite3"],
-      })),
-      ...[[], ["--help"], ["bash"], ["zsh"], ["bash", "--help"], ["zsh", "--help"], ["setup", "--help"]].map((args) => ({
-        args: ["completion", ...args], blocked: ["/commands/completion/setup.js", "/commands/review/", "/commands/update/", "better-sqlite3", "semver", "read-cmd-shim"],
-      })),
-      ...[[], ["--help"], ["install", "--help"]].map((args) => ({
-        args: ["skill", ...args], blocked: ["@inquirer/", "which", "/commands/skill/agents.js", "/commands/skill/install.js", "/commands/skill/targets.js", "/commands/review/", "/config/", "/repository/", "/api/"],
-      })),
-      ...[[], ["--help"], ["run", "--help"], ["list", "--help"], ["add-repo", "--help"]].map((args) => ({
-        args: ["review", ...args], blocked: [...reviewRuntime, "/commands/review/config.js", "/commands/review/repositories.js"],
-      })),
-    ];
-    const invoke = (args: string[], blocked: string[]) => spawnSync(process.execPath, ["--import", pathToFileURL(hook).href, executable, ...args], {
-      cwd: directory, encoding: "utf8", timeout: 10_000,
-      env: { ...process.env, HOME: home, USERPROFILE: home, DAYNIGHT_TEST_BLOCK_IMPORTS: JSON.stringify(blocked) },
-    });
+  it("adds a repository without loading review runtime modules", async () => {
+    const { home, invoke, cleanup } = await createCommandLoadingFixture();
     try {
-      for (const { args, blocked } of cases) {
-        const result = invoke(args, blocked);
-        expect(result.error, args.join(" ")).toBeUndefined();
-        expect(result.status, result.stderr).toBe(0);
-        expect(result.stderr).toBe("");
-      }
-      await expect(readdir(home)).rejects.toMatchObject({ code: "ENOENT" });
       const added = invoke(["review", "add-repo", "https://github.com/o/r"], reviewRuntime);
       expect(added.error).toBeUndefined();
       expect(added.status, added.stderr).toBe(0);
       expect(added.stderr).toBe("");
       expect(await readdir(resolveReviewPaths(home).stateDirectory)).toEqual(["config.yml"]);
-    } finally { await rm(directory, { recursive: true, force: true }); }
+    } finally { await cleanup(); }
   }, 30_000);
 
   it("retains the Node shebang and produces help from an unrelated working directory", async () => {
