@@ -69,3 +69,14 @@ it.each(stages.map((stage, index) => ({ stage, index })))("preserves malformed $
   expect(calls).toEqual(paths.slice(0, index + 1));
   expect(Object.keys(partial!)).toEqual(stages.slice(0, index));
 });
+
+it("rejects a large malformed late ps response without backtracking over its whitespace", async () => {
+  let time = 0;
+  const capture = createLinuxProcessCapture(
+    async path => path.endsWith("boot_id") ? boot : stat,
+    async () => { time = 100; return `${ps.trim()}${" ".repeat(100_000)}\nextra`; },
+    value => value,
+    () => time,
+  );
+  await expect(capture(pid, 100, undefined, undefined, () => new Error("deadline"))).rejects.toThrow("Linux process command identity cannot be established.");
+}, 5_000);

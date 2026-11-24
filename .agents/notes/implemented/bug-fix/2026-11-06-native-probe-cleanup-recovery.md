@@ -53,8 +53,10 @@ not turn the failed sample into a success.
 Linux process observation deadlines also carry private, verifiable evidence of
 the actual bounded operation, including a successful sample delivered after its
 budget. The sampler parses and retains each returned boot, stat or ps sample
-before classifying the deadline, and starts no further I/O after expiry. Partial
-identity conflicts and malformed data remain independent failures. The original owner binds that evidence to its
+before classifying the deadline, and starts no further I/O after expiry. The ps
+parser rejects extra lines before matching, avoiding unbounded backtracking over
+malformed trailing whitespace. Partial identity conflicts and malformed data
+remain independent failures. The original owner binds that evidence to its
 cleanup error and checks the retained error tree again at settlement. A deadline
 coincident with an independent failure is not itself evidence that the failure
 is a wait; changing the error or its members invalidates the classification.

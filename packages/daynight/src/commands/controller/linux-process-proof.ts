@@ -54,7 +54,12 @@ export function createLinuxProcessCapture(
     const stat = (text: string) => parseStat(pid, text);
     const ps = async () => {
       const output = await readPs(pid, remaining());
-      const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
+      // Trim once and reject additional lines before parsing. Overlapping
+      // trailing whitespace and command matches can otherwise backtrack over
+      // a large malformed response after the observation budget has elapsed.
+      const line = output.trim();
+      if (line.includes("\n") || line.includes("\r")) throw new Error("Linux process command identity cannot be established.");
+      const match = /^(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\S+)[ \t]+(\S+[ \t]+\S+[ \t]+\d+[ \t]+\d+:\d+:\d+[ \t]+\d+)[ \t]+(\S.*)$/u.exec(line);
       if (match === null || Number(match[1]) !== pid) throw new Error("Linux process command identity cannot be established.");
       return { parent: Number(match[2]), group: Number(match[3]), status: match[4]!, command: match[6]!.trim(), zombie: match[4]!.startsWith("Z") };
     };
