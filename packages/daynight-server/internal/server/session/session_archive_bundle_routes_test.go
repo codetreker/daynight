@@ -18,11 +18,12 @@ import (
 
 type unifiedArchiveStub struct {
 	*archiveUploadStub
-	prepare  func(context.Context, sp.ArchivePrepareRequest) (sp.ArchivePrepareReceipt, error)
-	source   func(context.Context, sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error)
-	file     func(context.Context, string, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)
-	seal     func(context.Context) (sp.ArchivePrepareReceipt, error)
-	manifest func(context.Context, []byte) (sp.ArchiveStatus, error)
+	prepare       func(context.Context, sp.ArchivePrepareRequest) (sp.ArchivePrepareReceipt, error)
+	source        func(context.Context, sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error)
+	recoverSource func(context.Context, sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error)
+	file          func(context.Context, string, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)
+	seal          func(context.Context) (sp.ArchivePrepareReceipt, error)
+	manifest      func(context.Context, []byte) (sp.ArchiveStatus, error)
 }
 
 func (s *unifiedArchiveStub) PrepareArchive(ctx context.Context, in sp.ArchivePrepareRequest) (sp.ArchivePrepareReceipt, error) {
@@ -36,6 +37,12 @@ func (s *unifiedArchiveStub) AppendArchiveSourceTail(ctx context.Context, in sp.
 		s.t.Fatal("unexpected source tail")
 	}
 	return s.source(ctx, in)
+}
+func (s *unifiedArchiveStub) RecoverArchiveSourceTail(ctx context.Context, in sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error) {
+	if s.recoverSource == nil {
+		s.t.Fatal("unexpected source recovery")
+	}
+	return s.recoverSource(ctx, in)
 }
 func (s *unifiedArchiveStub) PutArchiveFile(ctx context.Context, purpose, id string, offset, length int64, hash, chunk string, body []byte) (sp.ArchiveFileReceipt, error) {
 	if s.file == nil {
@@ -231,5 +238,78 @@ func TestUnifiedSealPublishesOnlyWithoutBodyOrQuery(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatal("invalid seal reached publication", calls)
+	}
+}
+
+func TestArchiveSourceRecoveryAdapter(t *testing.T) {
+	f := archiveHTTPSetup(t)
+	base := f.base + "/" + f.snapshot.SessionID + "/archive/source-tail/recover"
+	calls := 0
+	setupUnifiedStub(f, func(op *unifiedArchiveStub) {
+		op.recoverSource = func(_ context.Context, in sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error) {
+			calls++
+			if in.Fence != f.snapshot.Fence || in.Cutoff != "3" || len(in.Events) != 1 {
+				t.Fatal(in)
+			}
+			return sp.ArchiveSourceRecoveryReceipt{SourceEpoch: in.SourceEpoch, RecoveryID: in.RecoveryID, VerifiedThrough: "1", CurrentThrough: "2"}, nil
+		}
+	})
+	entry := `{"entryId":"` + uuid.NewString() + `","revision":"1","kind":"assistant_message","content":[{"type":"text","text":"tail"}]}`
+	epoch, old, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	body := `{"fence":` + jsonBody(t, f.snapshot.Fence) + `,"controllerId":"` + f.registration.ControllerID + `","controllerInstanceId":"` + f.registration.ControllerInstanceID + `","sourceEpoch":"` + epoch + `","oldBatchId":"` + old + `","recoveryId":"` + id + `","cutoff":"3","events":[{"sourceSeq":"1","kind":"timeline_upsert","payload":` + entry + `}]}`
+	expected := map[string]int{"TryReserveArchivePreflight": 1, "BeginArchiveReserved": 1}
+	response := f.Request(http.MethodPost, base, body, expected)
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"verifiedThrough":"1"`) || !strings.Contains(response.Body.String(), `"currentThrough":"2"`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	response = f.Request(http.MethodPost, base, strings.Replace(body, `"cutoff":"3"`, `"cutoff":"bad"`, 1), expected)
+	if response.Code != 400 || calls != 1 {
+		t.Fatal("invalid recovery reached core", response.Code, calls)
+	}
+}
+
+func TestArchiveSourceHTTPAcceptsFullWireBudgetAndRejectsOverflow(t *testing.T) {
+	for _, recovering := range []bool{false, true} {
+		t.Run(map[bool]string{false: "tail", true: "recover"}[recovering], func(t *testing.T) {
+			f := archiveHTTPSetup(t)
+			base := f.base + "/" + f.snapshot.SessionID + "/archive/source-tail"
+			calls := 0
+			setupUnifiedStub(f, func(op *unifiedArchiveStub) {
+				op.source = func(_ context.Context, in sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error) {
+					calls++
+					return sp.ArchiveSourceTailReceipt{SourceEpoch: in.SourceEpoch, BatchID: in.BatchID, LastAckedSourceSeq: "2"}, nil
+				}
+				op.recoverSource = func(_ context.Context, in sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error) {
+					calls++
+					return sp.ArchiveSourceRecoveryReceipt{SourceEpoch: in.SourceEpoch, RecoveryID: in.RecoveryID, VerifiedThrough: "2", CurrentThrough: "2"}, nil
+				}
+			})
+			epoch := uuid.NewString()
+			payload := func() string {
+				return `{"entryId":"` + uuid.NewString() + `","revision":"1","kind":"reasoning","text":"` + strings.Repeat("<", 1_040_000) + `"}`
+			}
+			events := `[{"sourceSeq":"1","kind":"timeline_upsert","payload":` + payload() + `},{"sourceSeq":"2","kind":"timeline_upsert","payload":` + payload() + `}]`
+			body := `{"fence":` + jsonBody(t, f.snapshot.Fence) + `,"controllerId":"` + f.registration.ControllerID + `","controllerInstanceId":"` + f.registration.ControllerInstanceID + `","sourceEpoch":"` + epoch + `",`
+			if recovering {
+				base += "/recover"
+				body += `"oldBatchId":"` + uuid.NewString() + `","recoveryId":"` + uuid.NewString() + `","cutoff":"2",`
+			} else {
+				body += `"batchId":"` + uuid.NewString() + `",`
+			}
+			body += `"events":` + events + `}`
+			if len(body) >= sp.MaxFrameBytes {
+				t.Fatal("fixture too large", len(body))
+			}
+			body += strings.Repeat(" ", sp.MaxFrameBytes-len(body))
+			expected := map[string]int{"TryReserveArchivePreflight": 1, "BeginArchiveReserved": 1}
+			response := f.Request(http.MethodPost, base, body, expected)
+			if response.Code != http.StatusOK || calls != 1 {
+				t.Fatal(response.Code, response.Body.String(), calls)
+			}
+			response = f.Request(http.MethodPost, base, body+" ", expected)
+			if response.Code != http.StatusRequestEntityTooLarge || calls != 1 {
+				t.Fatal("overflow reached core", response.Code, calls)
+			}
+		})
 	}
 }

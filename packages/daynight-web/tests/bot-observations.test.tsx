@@ -125,3 +125,88 @@ it('supports StrictMode effect replay without admitting cancelled reads', async 
   const { result } = renderHook(() => useBotObservations([botDefinition()], true, load), { wrapper: ({ children }) => <StrictMode>{wrapper({ children })}</StrictMode> });
   await waitFor(() => expect(result.current.get(botId()).stale).toBe(false)); expect(result.current.get(botId()).value?.botId).toBe(botId());
 });
+
+it('keeps three delayed offline polling cycles separate from explicit feedback without renewing old evidence', async () => {
+  scope(); clock();
+  const pending: ReturnType<typeof Promise.withResolvers<BotObservation>>[] = [];
+  const value = botObservation(1, { state: 'offline', freshUntil: null });
+  const load = vi.fn<BotObservationLoader>().mockResolvedValueOnce(value).mockImplementation(() => {
+    const result = Promise.withResolvers<BotObservation>(); pending.push(result); return result.promise;
+  });
+  const { result, unmount } = renderHook(() => useBotObservations([botDefinition()], true, load), { wrapper }); await flush();
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await act(async () => { vi.advanceTimersByTime(cycle === 0 ? 5_000 : 4_000); });
+    expect(load).toHaveBeenCalledTimes(cycle + 2);
+    expect(result.current.get(botId()).stale).toBe(true);
+    expect(result.current.get(botId()).busy).toBe(true);
+    expect(result.current.refreshing).toBe(false); expect(result.current.get(botId()).refreshing).toBe(false);
+    await act(async () => { vi.advanceTimersByTime(1_000); pending[cycle]!.resolve(value); });
+    expect(result.current.get(botId()).value).toEqual(value);
+    expect(result.current.get(botId()).stale).toBe(true);
+    expect(result.current.get(botId()).busy).toBe(false); expect(result.current.refreshing).toBe(false);
+  }
+  unmount(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it('joins pending and queued observations until every explicitly requested target settles', async () => {
+  scope(); clock();
+  const pending: { id: string; result: ReturnType<typeof Promise.withResolvers<BotObservation>> }[] = [];
+  const load = vi.fn<BotObservationLoader>().mockImplementation(id => {
+    const result = Promise.withResolvers<BotObservation>(); pending.push({ id, result }); return result.promise;
+  });
+  const bots = Array.from({ length: 6 }, (_, index) => botDefinition(index + 1));
+  const { result, unmount } = renderHook(() => useBotObservations(bots, true, load), { wrapper }); await flush();
+  expect(load).toHaveBeenCalledTimes(4); expect(result.current.refreshing).toBe(false);
+  act(() => { result.current.refreshExplicit(); result.current.get(botId()).refreshExplicit(); });
+  expect(load).toHaveBeenCalledTimes(4); expect(result.current.refreshing).toBe(true);
+  for (const bot of bots) expect(result.current.get(bot.id).refreshing).toBe(true);
+  expect(result.current.get(botId(6)).busy).toBe(false);
+  for (let index = 0; index < 5; index++) {
+    await act(async () => pending[index]!.result.resolve(botObservation(index + 1)));
+    expect(result.current.get(botId(index + 1)).refreshing).toBe(false);
+    expect(result.current.refreshing).toBe(true);
+  }
+  expect(load).toHaveBeenCalledTimes(6);
+  await act(async () => pending[5]!.result.reject(Error('offline')));
+  expect(result.current.refreshing).toBe(false); expect(result.current.get(botId(6)).error).toBeInstanceOf(Error);
+  act(() => result.current.get(botId(6)).refreshExplicit()); await flush();
+  expect(result.current.get(botId(6)).refreshing).toBe(true);
+  expect(result.current.get(botId()).refreshing).toBe(false);
+  await act(async () => pending[6]!.result.resolve(botObservation(6)));
+  expect(result.current.refreshing).toBe(false); expect(result.current.get(botId(6)).error).toBeNull();
+  unmount(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it('clears queued feedback on cancellation and isolates explicit refresh across account replacement', async () => {
+  let currentScope = scope(); clock();
+  let visible: DocumentVisibilityState = 'visible'; vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible);
+  const pending: { signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<BotObservation>> }[] = [];
+  const load = vi.fn<BotObservationLoader>().mockImplementation((_id, _scope, signal) => {
+    const result = Promise.withResolvers<BotObservation>(); pending.push({ signal, result }); return result.promise;
+  });
+  const bots = Array.from({ length: 5 }, (_, index) => botDefinition(index + 1));
+  const { result, rerender, unmount } = renderHook(() => useBotObservations(bots, true, load), {
+    wrapper: ({ children }) => <TaskCacheProvider scope={currentScope}>{children}</TaskCacheProvider>,
+  }); await flush();
+  act(() => result.current.refreshExplicit()); expect(result.current.get(botId(5)).refreshing).toBe(true);
+  act(() => { visible = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+  expect(result.current.refreshing).toBe(false);
+  for (const bot of bots) expect(result.current.get(bot.id).refreshing).toBe(false);
+  expect(pending.every(item => item.signal.aborted)).toBe(true);
+  await act(async () => { visible = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+  act(() => result.current.get(botId()).refreshExplicit());
+  await act(async () => pending[0]!.result.resolve(botObservation()));
+  expect(result.current.get(botId()).refreshing).toBe(true); expect(result.current.get(botId()).value).toBeNull();
+  currentScope = scope(botId(99)); rerender(); await flush();
+  expect(result.current.refreshing).toBe(false);
+  act(() => result.current.get(botId()).refreshExplicit());
+  await act(async () => pending[4]!.result.resolve(botObservation()));
+  expect(result.current.get(botId()).refreshing).toBe(true); expect(result.current.get(botId()).value).toBeNull();
+  let resume!: () => void; act(() => { resume = pauseAuthRequests(); });
+  expect(result.current.refreshing).toBe(false);
+  act(() => result.current.refreshExplicit()); expect(result.current.refreshing).toBe(false);
+  act(() => resume()); await flush();
+  act(() => result.current.refreshExplicit());
+  act(() => currentScope.dispose()); expect(result.current.refreshing).toBe(false);
+  unmount(); expect(vi.getTimerCount()).toBe(0);
+});

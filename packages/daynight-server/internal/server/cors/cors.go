@@ -126,7 +126,7 @@ func producerRoute(method, pattern string) bool {
 		return method == "POST" || method == "PUT"
 	case "/archive/prepare":
 		return method == "GET" || method == "HEAD" || method == "POST"
-	case "/archive/source-tail", "/archive/seal":
+	case "/archive/source-tail", "/archive/source-tail/recover", "/archive/seal":
 		return method == "POST"
 	case "/archive/prepare/history/{fileId}/complete", "/archive/prepare/history/{fileId}/restart", "/archive/files/{fileId}/complete", "/archive/files/{fileId}/restart":
 		return method == "POST"

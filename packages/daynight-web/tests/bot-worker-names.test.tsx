@@ -11,7 +11,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_USER, botDefaults, botDefinition, botId, botWorkerDefaults } from './helpers/bots';
 import { botObservation } from './helpers/bot-observation';
 
-const observation = (n = 1, worker = 20) => ({ value: botObservation(n, { workerId: botId(worker), machine: { id: `machine-${worker}`, name: `Machine ${worker}` } }), stale: false, busy: false, error: null, refresh: vi.fn() });
+const observation = (n = 1, worker = 20) => ({ value: botObservation(n, { workerId: botId(worker), machine: { id: `machine-${worker}`, name: `Machine ${worker}` } }), stale: false, busy: false, refreshing: false, error: null, refresh: vi.fn(), refreshExplicit: vi.fn() });
 
 vi.mock('../src/api/worker-alias', async original => ({ ...await original<typeof aliases>(), getWorkerAlias: vi.fn() }));
 vi.mock('../src/api/bots', async original => ({ ...await original<typeof bots>(), getBotDefaults: vi.fn(), createBot: vi.fn() }));

@@ -2,42 +2,47 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { authRequestsPaused } from '../../api/client';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 
-type ReadState<T> = { readonly scope: TaskCacheScope; readonly key: string; readonly value: T | null; readonly error: unknown; readonly busy: boolean; readonly stale: boolean };
+type ReadState<T> = { readonly scope: TaskCacheScope; readonly key: string; readonly value: T | null; readonly error: unknown; readonly busy: boolean; readonly refreshing: boolean; readonly stale: boolean };
 /** Poll only visible, admitted resources; an old resource never supplies the new target's value. */
 export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskCacheScope, signal: AbortSignal) => Promise<T>) {
   const scope = useTaskCacheScope();
-  const empty = (): ReadState<T> => ({ scope, key, value: null, error: null, busy: false, stale: true });
+  const empty = (): ReadState<T> => ({ scope, key, value: null, error: null, busy: false, refreshing: false, stale: true });
   const [state, setState] = useState<ReadState<T>>(empty);
-  const action = useRef<() => void>(() => {});
+  const action = useRef<(explicit?: boolean) => void>(() => {});
   const refresh = useCallback(() => action.current(), []);
+  const refreshExplicit = useCallback(() => action.current(true), []);
   useLayoutEffect(() => {
     let live = true, controller: AbortController | null = null, timer: ReturnType<typeof setInterval> | null = null;
     const eligible = () => live && enabled && !scope.isInvalidated && document.visibilityState !== 'hidden';
     const allowed = () => eligible() && !authRequestsPaused();
-    const run = async () => {
-      if (!allowed() || controller) return;
+    const run = async (explicit = false) => {
+      if (!allowed()) return;
+      if (controller) {
+        if (explicit) setState(old => old.scope === scope && old.key === key ? { ...old, refreshing: true } : old);
+        return;
+      }
       const attempt = new AbortController(); controller = attempt;
       const signal = AbortSignal.any([attempt.signal, scope.signal]);
-      setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: true }));
+      setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: true, refreshing: explicit }));
       try {
         await scope.ready(signal);
         if (!allowed() || signal.aborted) return;
         const value = await load(scope, signal);
         await scope.ready(signal);
-        if (allowed() && !signal.aborted) setState({ scope, key, value, error: null, busy: false, stale: false });
+        if (allowed() && !signal.aborted) setState({ scope, key, value, error: null, busy: false, refreshing: false, stale: false });
       } catch (error) {
-        if (allowed() && !signal.aborted) setState(old => ({ ...old, busy: false, stale: true, error }));
+        if (allowed() && !signal.aborted) setState(old => ({ ...old, busy: false, refreshing: false, stale: true, error }));
       } finally {
         if (controller === attempt) {
           controller = null;
-          if (!allowed() || signal.aborted) setState(old => old.scope === scope && old.key === key && old.busy ? { ...old, busy: false } : old);
+          if (!allowed() || signal.aborted) setState(old => old.scope === scope && old.key === key && (old.busy || old.refreshing) ? { ...old, busy: false, refreshing: false } : old);
         }
       }
     };
     const cancel = () => {
       if (!controller) return;
       controller.abort(); controller = null;
-      setState(old => old.scope === scope && old.key === key && old.busy ? { ...old, busy: false } : old);
+      setState(old => old.scope === scope && old.key === key && (old.busy || old.refreshing) ? { ...old, busy: false, refreshing: false } : old);
     };
     const stop = () => { if (timer !== null) clearInterval(timer); timer = null; cancel(); };
     const sync = () => {
@@ -51,12 +56,12 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
       if (eligible() && timer !== null) void run();
       else sync();
     };
-    action.current = () => { void run(); };
+    action.current = explicit => { void run(explicit); };
     sync();
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     return () => { live = false; stop(); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
   }, [scope, key, enabled, load]);
   const current = state.scope === scope && state.key === key && !scope.isInvalidated ? state : empty();
-  return { ...current, refresh };
+  return { ...current, refresh, refreshExplicit };
 }

@@ -1,3 +1,4 @@
+import { clearSourceWire, clearSourceWireThrough, sourceWireEvent } from "./source-wire.js";
 import { isProcessBirth } from "./linux-process-proof.js";
 import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
@@ -35,7 +36,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
 import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, MAX_TICKET_BYTES, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
+import { parseSourceEvent, type SourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
 export type ControllerSnapshot = SessionBinding & {
@@ -154,6 +155,8 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         }
         db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
       }
+      // Earlier events may have been sent by a version without wire records.
+      db.prepare("INSERT OR IGNORE INTO image_runtime_state SELECT 'source_wire_tracking',CAST(last_sequence AS TEXT) FROM execution WHERE id=1").run();
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
       sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite }, options.maxOnlineBytes === undefined ? {} : { maxOnlineBytes: options.maxOnlineBytes });
       if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
@@ -189,6 +192,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       // Content is already committed in the local projection. Only transport
       // replay is discarded; the next connection must hydrate from local data.
       outbox.clear();
+      clearSourceWire(db);
       db.prepare("UPDATE execution SET source_floor=last_sequence WHERE id=1").run();
     }
     const row = db.prepare("UPDATE execution SET last_sequence=last_sequence+1 WHERE id=1 RETURNING CAST(last_sequence AS TEXT) AS sequence").get() as { sequence: string };
@@ -503,11 +507,18 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid controller outbox page size.");
       return outbox.pending(null, limit).map((row) => ({ sequence: row.sequence, payload: json(row.value) }));
     }),
+    bindSourceWire: (event: SourceEvent, live: boolean): SourceEvent => atomic(() => {
+      assertOutboxWrites();
+      const original = outbox.valueAt(BigInt(event.sourceSeq));
+      if (original === undefined || JSON.stringify({ ...(JSON.parse(original) as object), sourceSeq: event.sourceSeq }) !== JSON.stringify(event)) throw new Error("Source wire event differs from its durable outbox.");
+      return sourceWireEvent(db, event, live);
+    }),
     acknowledgeEvents: (sequence: string): void => atomic(() => {
       assertOutboxWrites();
       const value = validSequence(sequence); const row = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string };
       if (value > BigInt(row.sequence)) throw new Error("Controller ACK exceeds its durable event watermark.");
       outbox.acknowledgeThrough(value);
+      clearSourceWireThrough(db, value);
       db.prepare("UPDATE image_occurrences SET acknowledged=1 WHERE CAST(source_sequence AS INTEGER)<=?").run(value);
       db.prepare("UPDATE execution SET last_acknowledged=MAX(last_acknowledged,?) WHERE id=1").run(value);
     }),

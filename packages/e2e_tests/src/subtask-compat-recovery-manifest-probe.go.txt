@@ -1,0 +1,20 @@
+package postgres
+
+// RecoveryMigrationManifest reads the ordered production registry, including
+// the checksum inputs of Go transforms. This file exists only in private clones.
+func RecoveryMigrationManifest() []struct {
+	Version  int64  `json:"version"`
+	Checksum string `json:"checksum"`
+} {
+	entries := make([]struct {
+		Version  int64  `json:"version"`
+		Checksum string `json:"checksum"`
+	}, 0, len(schemaMigrations))
+	for _, migration := range schemaMigrations {
+		entries = append(entries, struct {
+			Version  int64  `json:"version"`
+			Checksum string `json:"checksum"`
+		}{migration.version, migration.checksum()})
+	}
+	return entries
+}

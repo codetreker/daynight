@@ -1,4 +1,4 @@
--- Schema snapshot version: 127
+-- Schema snapshot version: 128
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1001,6 +1001,15 @@ CREATE TABLE "session_source_hashes" (
     "digest" "bytea" NOT NULL
 );
 
+CREATE TABLE "session_source_recoveries" (
+    "session_id" "uuid" NOT NULL,
+    "recovery_id" "uuid" NOT NULL,
+    "digest" "bytea" NOT NULL,
+    "verified_through" bigint NOT NULL,
+    CONSTRAINT "session_source_recoveries_digest_check" CHECK (("octet_length"("digest") = 32)),
+    CONSTRAINT "session_source_recoveries_verified_through_check" CHECK (("verified_through" > 0))
+);
+
 CREATE TABLE "session_timeline" (
     "session_id" "uuid" NOT NULL,
     "entry_id" "uuid" NOT NULL,
@@ -1137,6 +1146,8 @@ CREATE TABLE "task_sessions" (
     "bot_id" "uuid",
     "history_content_policy" "text",
     "online_mode" "text",
+    "source_recovery_count" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "task_sessions_source_recovery_count_check" CHECK ((("source_recovery_count" >= 0) AND ("source_recovery_count" <= 4096))),
     CONSTRAINT "session_backend_content" CHECK (((("backend" = 'web'::"text") AND ("snapshot" IS NOT NULL) AND ("terminal_state" IS NULL)) OR (("backend" = 'herdr'::"text") AND ("scope" = 'task'::"text") AND ("snapshot" IS NULL) AND ("terminal_state" IS NOT NULL)))),
     CONSTRAINT "session_bot_scope" CHECK ((("bot_id" IS NULL) OR (("scope" = 'test'::"text") AND ("backend" = 'web'::"text")))),
     CONSTRAINT "session_scope_binding" CHECK (((("scope" = 'task'::"text") AND ("project_id" IS NOT NULL) AND ("task_id" IS NOT NULL) AND ("claim_id" IS NOT NULL) AND ("test_execution_id" IS NULL)) OR (("scope" = 'test'::"text") AND ("project_id" IS NULL) AND ("task_id" IS NULL) AND ("claim_id" IS NULL) AND ("test_execution_id" IS NOT NULL)))),
@@ -1972,6 +1983,9 @@ ALTER TABLE ONLY "session_resource_state"
 
 ALTER TABLE ONLY "session_resources"
     ADD CONSTRAINT "session_resources_pkey" PRIMARY KEY ("session_id", "resource_id");
+
+ALTER TABLE ONLY "session_source_recoveries"
+    ADD CONSTRAINT "session_source_recoveries_pkey" PRIMARY KEY ("session_id", "recovery_id");
 
 ALTER TABLE ONLY "session_source_hashes"
     ADD CONSTRAINT "session_source_hashes_pkey" PRIMARY KEY ("session_id", "source_epoch", "kind", "identity");

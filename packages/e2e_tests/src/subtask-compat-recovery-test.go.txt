@@ -1,0 +1,487 @@
+//go:build startupshutdown && webhooktest && s1evidence
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+// Production candidate processes exercise the deployed entry point. The controlled
+// Webhook process is used only for the isolated transport/effect boundary.
+func startProductionCandidate(t *testing.T, ctx context.Context, values map[string]string) *persistenceProcess {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, os.Getenv("V1_RUNTIME")+"/bin/server-candidate", "--root", testStorageRoot(t))
+	cmd.Env = grantEnvironment(values)
+	logs := &persistenceProcessLog{}
+	cmd.Stdout, cmd.Stderr = logs, logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	p := &persistenceProcess{cmd: cmd, finished: make(chan error, 1), logs: logs}
+	go func() { p.finished <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if !p.stopped {
+			if err := p.stop(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	return p
+}
+
+func TestS1PairedRecoveryEvidence(t *testing.T) {
+	for _, effect := range []bool{false, true} {
+		t.Run(fmt.Sprintf("external_effect_%t", effect), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+			var delivered atomic.Int64
+			received := make(chan string, 1)
+			receiver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				delivered.Add(1)
+				select {
+				case received <- fmt.Sprintf("%x", sha256.Sum256(body)):
+				default:
+				}
+				w.WriteHeader(204)
+			}))
+			defer receiver.Close()
+			ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: receiver.Certificate().Raw})
+			values := processAPIEnvironment(t)
+			linuxStorage, err := os.MkdirTemp(os.Getenv("V1_RUNTIME")+"/storage", "recovery-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.RemoveAll(linuxStorage); err != nil {
+					t.Error(err)
+				}
+			})
+			values["DAYNIGHT_STORAGE_ROOT"] = linuxStorage
+			values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
+			oldPath := os.Getenv("V1_RUNTIME") + "/bin/server122"
+			startOld := func(expectReady bool) *persistenceProcess {
+				cmd := exec.CommandContext(ctx, oldPath, "--root", testStorageRoot(t))
+				cmd.Env = grantEnvironment(values)
+				logs := &persistenceProcessLog{}
+				cmd.Stdout = logs
+				cmd.Stderr = logs
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				p := &persistenceProcess{cmd: cmd, finished: make(chan error, 1), logs: logs}
+				go func() { p.finished <- cmd.Wait() }()
+				t.Cleanup(func() {
+					if !p.stopped {
+						if err := p.stop(); err != nil {
+							t.Error(err)
+						}
+					}
+				})
+				if expectReady {
+					waitMigrationProcessReady(t, ctx, p, values["DAYNIGHT_PUBLIC_ORIGIN"])
+				}
+				return p
+			}
+			old := startOld(true)
+			db, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close(context.Background())
+			user, team, project, token := uuid.NewString(), uuid.NewString(), uuid.NewString(), secret.Random("dnpat_")
+			for _, q := range []struct {
+				sql  string
+				args []any
+			}{
+				{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$1::uuid::text,now(),now())`, []any{user}},
+				{`INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:read','attachment:upload','project:read','task:read','task:status','task:write','webhook:deliver','webhook:read','webhook:write'],1,$1,$2,$3,'recovery',now(),now()+interval '1 day')`, []any{uuid.NewString(), user, secret.Hash(token)}},
+				{`INSERT INTO teams(id,name) VALUES($1,'Recovery')`, []any{team}},
+				{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, []any{team, user}},
+				{`INSERT INTO projects(id,name,repo_url) VALUES($1,'Recovery','https://example.test/recovery')`, []any{project}},
+				{`INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, []any{project, team}},
+			} {
+				if _, err := db.Exec(ctx, q.sql, q.args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			goal, child := uuid.NewString(), uuid.NewString()
+			if _, err := db.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,status,version,updated_at,deleted_at) VALUES($1,$2,'goal','Old deleted goal','done',9,'2026-01-03','2026-01-03')`, goal, project); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(ctx, `INSERT INTO tasks(id,project_id,parent_id,title,status,version,updated_at) VALUES($1,$2,$3,'Old hidden child','done',9007199254740993,'2026-01-02')`, child, project, goal); err != nil {
+				t.Fatal(err)
+			}
+			var oldProjection string
+			if err := db.QueryRow(ctx, `SELECT jsonb_agg(jsonb_build_array(t.id,t.parent_id,t.status,t.version,t.updated_at,r.effective_deleted_at IS NULL) ORDER BY t.id)::text FROM tasks t JOIN task_resource_rows r ON r.id=t.id WHERE t.id IN ($1,$2)`, goal, child).Scan(&oldProjection); err != nil {
+				t.Fatal(err)
+			}
+			var oldHidden bool
+			if err := db.QueryRow(ctx, `SELECT effective_deleted_at IS NOT NULL FROM task_resource_rows WHERE id=$1`, child).Scan(&oldHidden); err != nil || !oldHidden {
+				t.Fatalf("baseline child must be hidden: %v %v", oldHidden, err)
+			}
+			request := func(path string, input any) map[string]any {
+				raw, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req, err := http.NewRequestWithContext(ctx, "POST", values["DAYNIGHT_PUBLIC_ORIGIN"]+path, bytes.NewReader(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != 201 {
+					t.Fatalf("request %s failed %d %s; server=%s", path, resp.StatusCode, body, old.logs.String())
+				}
+				var result map[string]any
+				if err := json.Unmarshal(body, &result); err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			endpoint := request("/api/v1/me/webhooks", map[string]any{"operationId": uuid.NewString(), "issuedAt": time.Now().UTC().Format(time.RFC3339Nano), "expectedUserId": user, "name": "recovery receiver", "enabled": true, "destination": map[string]any{"kind": "http", "adapterVersion": "1", "configuration": map[string]any{"url": receiver.URL}}, "subscriptions": []any{map[string]any{"id": nil, "projectId": project, "eventTypes": []string{"task.created"}}}})["endpoint"].(map[string]any)["id"].(string)
+			if err := old.stop(); err != nil {
+				t.Fatal(err)
+			}
+			values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
+			old = startOld(true)
+			taskID := request("/api/v1/projects/"+project+"/tasks", map[string]any{"title": "Recovery pending event", "status": "todo"})["id"].(string)
+			attachmentURL := values["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/projects/" + project + "/tasks/" + taskID + "/attachments/files/recovery-proof.txt"
+			attachment := func(method, payload string, status int) []byte {
+				t.Helper()
+				req, err := http.NewRequestWithContext(ctx, method, attachmentURL, strings.NewReader(payload))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "text/plain")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, err := io.ReadAll(resp.Body)
+				if err != nil || resp.StatusCode != status {
+					t.Fatalf("attachment %s status=%d body=%s err=%v", method, resp.StatusCode, body, err)
+				}
+				return body
+			}
+			attachment(http.MethodPut, "paired122", http.StatusCreated)
+			if err := old.stop(); err != nil {
+				t.Fatal(err)
+			}
+			var ledger, epoch string
+			var baseline122 bool
+			if err := db.QueryRow(ctx, `SELECT max(version)=122 FROM schema_migrations`).Scan(&baseline122); err != nil || !baseline122 {
+				t.Fatalf("old baseline ledger is not 122: %v %v", baseline122, err)
+			}
+			if err := db.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledger); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project).Scan(&epoch); err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(values["DAYNIGHT_DATABASE_URL"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			schema := u.Query().Get("search_path")
+			q := u.Query()
+			q.Del("search_path")
+			u.RawQuery = q.Encode()
+			dump := exec.CommandContext(ctx, os.Getenv("V1_RUNTIME")+"/bin/pg_dump", "--dbname", u.String(), "--schema", schema, "--inserts", "--no-owner", "--no-acl")
+			dump.Env = append(os.Environ(), "V1_RECOVERY_TEST=1")
+			snapshot, err := dump.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			backupRoot, err := os.MkdirTemp(os.Getenv("V1_RUNTIME")+"/storage", "paired-backup-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.RemoveAll(backupRoot); err != nil {
+					t.Error(err)
+				}
+			})
+			if err := os.CopyFS(backupRoot, os.DirFS(values["DAYNIGHT_STORAGE_ROOT"])); err != nil {
+				t.Fatal(err)
+			}
+			occupied, err := net.Listen("tcp", values["DAYNIGHT_LISTEN_ADDR"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer occupied.Close()
+			failed := startProductionCandidate(t, ctx, values)
+			select {
+			case err := <-failed.finished:
+				failed.stopped = true
+				if err == nil {
+					t.Fatal("candidate unexpectedly started with occupied listener")
+				}
+			case <-ctx.Done():
+				t.Fatal("candidate listener failure timed out")
+			}
+			if err := occupied.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var candidateLedgerJSON string
+			fresh, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer fresh.Close(context.Background())
+			if err := fresh.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m HAVING max(version)=124`).Scan(&candidateLedgerJSON); err != nil {
+				t.Fatal(err)
+			}
+			values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
+			repairCmd := exec.CommandContext(ctx, os.Getenv("V1_RUNTIME")+"/bin/server-repair", "--root", testStorageRoot(t))
+			repairCmd.Env = grantEnvironment(values)
+			repairLogs := &persistenceProcessLog{}
+			repairCmd.Stdout, repairCmd.Stderr = repairLogs, repairLogs
+			if err := repairCmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			repair := &persistenceProcess{cmd: repairCmd, finished: make(chan error, 1), logs: repairLogs}
+			go func() { repair.finished <- repairCmd.Wait() }()
+			t.Cleanup(func() {
+				if !repair.stopped {
+					if err := repair.stop(); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			waitMigrationProcessReady(t, ctx, repair, values["DAYNIGHT_PUBLIC_ORIGIN"])
+			if raw := attachment(http.MethodGet, "", http.StatusOK); string(raw) != "paired122" {
+				t.Fatalf("replacement did not read candidate attachment: %s", raw)
+			}
+			attachment(http.MethodPut, "repair124", http.StatusOK)
+			if raw := attachment(http.MethodGet, "", http.StatusOK); string(raw) != "repair124" {
+				t.Fatalf("replacement write did not persist: %s", raw)
+			}
+			var unchanged bool
+			if err := db.QueryRow(ctx, `SELECT max(version)=124 AND jsonb_agg(to_jsonb(m) ORDER BY version)::text=$1 FROM schema_migrations m`, candidateLedgerJSON).Scan(&unchanged); err != nil || !unchanged {
+				t.Fatalf("replacement ledger changed: %t %v", unchanged, err)
+			}
+			if err := repair.stop(); err != nil {
+				t.Fatal(err)
+			}
+			t.Log("after candidate committed migration and failed listener, distinct e520 repair build ready on candidate124 ledger; HTTP GET/PUT/GET succeeded; exact ledger unchanged")
+			candidate := startProductionCandidate(t, ctx, values)
+			waitMigrationProcessReady(t, ctx, candidate, values["DAYNIGHT_PUBLIC_ORIGIN"])
+			if raw := attachment(http.MethodGet, "", http.StatusOK); string(raw) != "repair124" {
+				t.Fatalf("production candidate did not read replacement write: %s", raw)
+			}
+			attachment(http.MethodPut, "candidate124", http.StatusOK)
+			if raw := attachment(http.MethodGet, "", http.StatusOK); string(raw) != "candidate124" {
+				t.Fatalf("production candidate write did not persist: %s", raw)
+			}
+			t.Log("production candidate ready on migrated ledger; HTTP GET/PUT/GET succeeded")
+			if effect {
+				if err := candidate.stop(); err != nil {
+					t.Fatal(err)
+				}
+				values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
+				candidate = startControlledWebhookProcess(t, values, ca)
+				t.Log("controlled Webhook transport process used for external-effect boundary")
+			}
+			var sameProjection, backfilled bool
+			if err := db.QueryRow(ctx, `SELECT (SELECT jsonb_agg(jsonb_build_array(t.id,t.parent_id,t.status,t.version,t.updated_at,r.effective_deleted_at IS NULL) ORDER BY t.id)::text FROM tasks t JOIN task_resource_rows r ON r.id=t.id WHERE t.id IN ($1,$2))=$3, (SELECT ancestor_deleted_at='2026-01-03'::timestamptz AND deleted_at IS NULL FROM tasks WHERE id=$2)`, goal, child, oldProjection).Scan(&sameProjection, &backfilled); err != nil || !sameProjection || !backfilled {
+				t.Fatalf("historical goal visibility or backfill changed: projection=%t backfill=%t err=%v", sameProjection, backfilled, err)
+			}
+			t.Log("actual old122 historical deleted Goal: visibility, parent, status, version and updated_at preserved; child backfilled")
+			hash := "none"
+			if effect {
+				select {
+				case hash = <-received:
+				case <-ctx.Done():
+					t.Fatal("background delivery did not reach isolated receiver")
+				}
+			}
+			if _, err := db.Exec(ctx, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Post-upgrade write','todo')`, uuid.NewString(), project); err != nil {
+				t.Fatal(err)
+			}
+			attachment(http.MethodPut, "post123", http.StatusOK)
+			if err := candidate.stop(); err != nil {
+				t.Fatal(err)
+			}
+			rejected := startOld(false)
+			select {
+			case err := <-rejected.finished:
+				rejected.stopped = true
+				if err == nil || !strings.Contains(rejected.logs.String(), "database migrate failed") {
+					t.Fatalf("old artifact accepted new ledger: %v %s", err, rejected.logs.String())
+				}
+			case <-ctx.Done():
+				t.Fatal("old artifact did not refuse")
+			}
+			var candidateLedger bool
+			if err := db.QueryRow(ctx, `SELECT max(version)=124 FROM schema_migrations`).Scan(&candidateLedger); err != nil || !candidateLedger {
+				t.Fatalf("old binary refusal did not retain candidate124 ledger: %v %v", candidateLedger, err)
+			}
+			if !effect && delivered.Load() != 0 {
+				t.Fatal("disabled background caused external effect")
+			}
+			if _, err := db.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
+				t.Fatal(err)
+			}
+			var clean []string
+			for _, line := range strings.Split(string(snapshot), "\n") {
+				if !strings.HasPrefix(line, "\\") {
+					clean = append(clean, line)
+				}
+			}
+			if _, err := db.Exec(ctx, strings.Join(clean, "\n")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(ctx, `SELECT set_config('search_path',$1,false)`, schema); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(values["DAYNIGHT_STORAGE_ROOT"]); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(values["DAYNIGHT_STORAGE_ROOT"], 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.CopyFS(values["DAYNIGHT_STORAGE_ROOT"], os.DirFS(backupRoot)); err != nil {
+				t.Fatal(err)
+			}
+			var same bool
+			if err := db.QueryRow(ctx, `SELECT (SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m)=$1 AND NOT EXISTS(SELECT FROM tasks WHERE title='Post-upgrade write') AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='ancestor_deleted_at')`, ledger).Scan(&same); err != nil || !same {
+				t.Fatalf("paired restore %v %v", same, err)
+			}
+			if effect {
+				if _, err := db.Exec(ctx, `UPDATE webhook_endpoints SET enabled=false WHERE id=$1`, endpoint); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Exec(ctx, `UPDATE projects SET task_cache_epoch=gen_random_uuid()`); err != nil {
+				t.Fatal(err)
+			}
+			var rotated bool
+			if err := db.QueryRow(ctx, `SELECT task_cache_epoch::text<>$2 FROM projects WHERE id=$1`, project, epoch).Scan(&rotated); err != nil || !rotated {
+				t.Fatal("epoch not rotated", err)
+			}
+			values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
+			restored := startOld(true)
+			if raw := attachment(http.MethodGet, "", http.StatusOK); string(raw) != "paired122" {
+				t.Fatalf("restored attachment bytes=%s", raw)
+			}
+			if err := restored.stop(); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("PASS baseline122 -> candidate124 -> old artifact refused -> paired122 restore -> cache epoch rotated -> baseline122 ready; external_effect=%t receiver_requests=%d effect_sha256=%s snapshot_sha256=%x ledger_preserved=%t attachment_restored=true post_upgrade_write_removed=true endpoint_reconciliation=%t", effect, delivered.Load(), hash, sha256.Sum256(snapshot), same, effect)
+		})
+	}
+}
+
+func TestV1PrecommitLockFailureRestoresOldServer(t *testing.T) {
+	values := processAPIEnvironment(t)
+	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	startOld := func() *persistenceProcess {
+		cmd := exec.CommandContext(ctx, os.Getenv("V1_RUNTIME")+"/bin/server122", "--root", testStorageRoot(t))
+		cmd.Env = grantEnvironment(values)
+		logs := &persistenceProcessLog{}
+		cmd.Stdout, cmd.Stderr = logs, logs
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		p := &persistenceProcess{cmd: cmd, finished: make(chan error, 1), logs: logs}
+		go func() { p.finished <- cmd.Wait() }()
+		t.Cleanup(func() {
+			if !p.stopped {
+				if err := p.stop(); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+		waitMigrationProcessReady(t, ctx, p, values["DAYNIGHT_PUBLIC_ORIGIN"])
+		return p
+	}
+	old := startOld()
+	if err := old.stop(); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close(context.Background())
+	var ledger string
+	if err := locker.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m HAVING max(version)=122`).Scan(&ledger); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := locker.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, `LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	values["DAYNIGHT_STARTUP_TIMEOUT"] = "2s"
+	failed := startProductionCandidate(t, ctx, values)
+	select {
+	case err := <-failed.finished:
+		failed.stopped = true
+		if err == nil || !strings.Contains(failed.logs.String(), "database migrate failed") {
+			t.Fatalf("candidate did not fail migration under lock: %v %s", err, failed.logs.String())
+		}
+	case <-ctx.Done():
+		t.Fatal("candidate did not stop under migration lock")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close(context.Background())
+	var same bool
+	if err := fresh.QueryRow(ctx, `SELECT max(version)=122 AND jsonb_agg(to_jsonb(m) ORDER BY version)::text=$1 FROM schema_migrations m`, ledger).Scan(&same); err != nil || !same {
+		t.Fatalf("precommit ledger changed: %v %v", same, err)
+	}
+	delete(values, "DAYNIGHT_STARTUP_TIMEOUT")
+	restored := startOld()
+	if err := restored.stop(); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("candidate lock deadline before commit; fresh connection confirms identical baseline122 ledger; actual old server returned ready")
+}

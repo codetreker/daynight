@@ -2824,6 +2824,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		add("GET PUT", archive+"/content")
 		add("GET POST", archive+"/prepare")
 		add("POST", archive+"/source-tail")
+		add("POST", archive+"/source-tail/recover")
 		add("POST", archive+"/seal")
 		add("PUT", archive+"/prepare/history/{fileId}")
 		add("GET", archive+"/prepare/history/{fileId}/status")

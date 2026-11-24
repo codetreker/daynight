@@ -7,11 +7,12 @@ import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheP
 export type BotObservationRead = {
   readonly value: BotObservation | null; readonly stale: boolean; readonly busy: boolean;
   readonly error: unknown; readonly refresh: () => void;
+  readonly refreshing: boolean; readonly refreshExplicit: () => void;
 };
-type Entry = Omit<BotObservationRead, 'refresh'> & { readonly deadline: number };
+type Entry = Omit<BotObservationRead, 'refresh' | 'refreshExplicit'> & { readonly deadline: number };
 export type BotObservationLoader = (id: string, scope: TaskCacheScope, signal: AbortSignal) => Promise<BotObservation>;
 const loadObservation: BotObservationLoader = (id, scope, signal) => getBotObservation(id, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch });
-const empty = (): Entry => ({ value: null, stale: true, busy: false, error: null, deadline: 0 });
+const empty = (): Entry => ({ value: null, stale: true, busy: false, refreshing: false, error: null, deadline: 0 });
 const instant = (value: string) => BigInt(Date.parse(value.slice(0, 19) + 'Z')) * 1_000_000n + BigInt(value.slice(19, -1).replace('.', '').padEnd(9, '0'));
 const older = (incoming: BotObservation, previous: BotObservation): boolean => {
   for (const field of ['botVersion', 'hostingGeneration'] as const) {
@@ -32,11 +33,12 @@ export function useBotObservations(bots: readonly BotDefinition[], enabled: bool
   const key = JSON.stringify(bots.map(bot => [bot.id, bot.version]).sort(([a], [b]) => a!.localeCompare(b!)));
   const definitions = useMemo(() => new Map(JSON.parse(key) as [string, string][]), [key]);
   const [state, setState] = useState<{ scope: TaskCacheScope; entries: ReadonlyMap<string, Entry> }>(() => ({ scope, entries: new Map() }));
-  const actions = useRef<(id?: string) => void>(() => {});
+  const actions = useRef<(id?: string, explicit?: boolean) => void>(() => {});
   const refresh = useCallback(() => actions.current(), []);
+  const refreshExplicit = useCallback(() => actions.current(undefined, true), []);
   useLayoutEffect(() => {
     let live = true, expiry: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined;
-    const entries = new Map<string, Entry>(state.scope === scope ? [...state.entries].filter(([id]) => definitions.has(id)).map(([id, entry]) => [id, { ...entry, busy: false }]) : []);
+    const entries = new Map<string, Entry>(state.scope === scope ? [...state.entries].filter(([id]) => definitions.has(id)).map(([id, entry]) => [id, { ...entry, busy: false, refreshing: false }]) : []);
     const pending = new Map<string, AbortController>(), queue = new Set<string>(), lifetime = new AbortController();
     const admitted = () => live && enabled && !scope.isInvalidated && !authRequestsPaused() && document.visibilityState !== 'hidden';
     const publish = () => { if (live) setState({ scope, entries: new Map(entries) }); };
@@ -69,16 +71,16 @@ export function useBotObservations(bots: readonly BotDefinition[], enabled: bool
         // A slow response cannot renew old evidence, even when the browser clock differs.
         const budget = value.freshUntil === null ? value.state === 'offline' ? 5_000 : 0 : Math.max(0, Number((instant(value.freshUntil) - instant(value.observedAt)) / 1_000_000n));
         const deadline = previous?.value && instant(previous.value.observedAt) === instant(value.observedAt) ? Math.min(previous.deadline, started + budget) : started + budget;
-        entries.set(id, { value, stale: deadline <= performance.now(), busy: false, error: null, deadline });
+        entries.set(id, { value, stale: deadline <= performance.now(), busy: false, refreshing: false, error: null, deadline });
       } catch (error) {
         if (admitted() && !signal.aborted && pending.get(id) === attempt) {
           const denied = error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0);
-          entries.set(id, { ...(denied ? empty() : entries.get(id) ?? empty()), stale: true, busy: false, error });
+          entries.set(id, { ...(denied ? empty() : entries.get(id) ?? empty()), stale: true, busy: false, refreshing: false, error });
         }
       } finally {
         if (pending.get(id) === attempt) {
           pending.delete(id);
-          const entry = entries.get(id); if (entry?.busy) entries.set(id, { ...entry, busy: false });
+          const entry = entries.get(id); if (entry && (entry.busy || entry.refreshing)) entries.set(id, { ...entry, busy: false, refreshing: false });
           publish(); schedule(); drain();
         }
       }
@@ -91,17 +93,22 @@ export function useBotObservations(bots: readonly BotDefinition[], enabled: bool
         if (!pending.has(id)) void run(id);
       }
     };
-    const refreshOne = (id?: string) => {
+    const refreshOne = (id?: string, explicit = false) => {
       if (!admitted()) return;
-      for (const target of id === undefined ? definitions.keys() : definitions.has(id) ? [id] : []) if (!pending.has(target)) queue.add(target);
+      for (const target of id === undefined ? definitions.keys() : definitions.has(id) ? [id] : []) {
+        if (explicit) entries.set(target, { ...(entries.get(target) ?? empty()), refreshing: true });
+        if (!pending.has(target)) queue.add(target);
+      }
+      if (explicit) publish();
       drain();
     };
     const cancel = () => {
       queue.clear();
       for (const [id, attempt] of pending) {
         attempt.abort();
-        const entry = entries.get(id); if (entry) entries.set(id, { ...entry, busy: false });
+        const entry = entries.get(id); if (entry) entries.set(id, { ...entry, busy: false, refreshing: false });
       }
+      for (const [id, entry] of entries) if (entry.refreshing) entries.set(id, { ...entry, refreshing: false });
       pending.clear(); publish();
     };
     const invalidate = () => { cancel(); lifetime.abort(); entries.clear(); publish(); clearTimeout(expiry); clearInterval(poll); };
@@ -124,8 +131,9 @@ export function useBotObservations(bots: readonly BotDefinition[], enabled: bool
     };
     // Entries are retained by scope; only membership or definition versions restart admission.
   }, [scope, definitions, enabled, load]);
-  return { refresh, get: (id: string): BotObservationRead => {
+  const refreshing = state.scope === scope && !scope.isInvalidated && [...state.entries].some(([id, entry]) => definitions.has(id) && entry.refreshing);
+  return { refresh, refreshExplicit, refreshing, get: (id: string): BotObservationRead => {
     const entry = state.scope === scope && !scope.isInvalidated && definitions.has(id) ? state.entries.get(id) ?? empty() : empty();
-    return { ...entry, stale: !enabled || authRequestsPaused() || entry.stale || entry.deadline <= performance.now() || !!entry.value && BigInt(entry.value.botVersion) < BigInt(definitions.get(id)!), refresh: () => actions.current(id) };
+    return { ...entry, stale: !enabled || authRequestsPaused() || entry.stale || entry.deadline <= performance.now() || !!entry.value && BigInt(entry.value.botVersion) < BigInt(definitions.get(id)!), refresh: () => actions.current(id), refreshExplicit: () => actions.current(id, true) };
   } };
 }

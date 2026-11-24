@@ -22,7 +22,7 @@ import { ARCHIVE_ROUND_TIMEOUT_MS, ARCHIVE_STREAM_ROUND_TIMEOUT_MS, archiveRetry
 import { transferArchiveStream } from "./archive-stream.js";
 import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { syncDirectory, writeDurableJson } from "../../platform/durable-json.js";
-import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
+import { replayStoppedControllerHistory, type StoppedSourceTailReceipt, type StoppedSourceRecoveryReceipt } from "./stopped-history.js";
 
 const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket): ControllerSnapshot => {
   const version = Number(db.pragma("user_version", { simple: true }));
@@ -258,7 +258,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
   if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
     // The durable batch identity and bytes survive retries, including reconciliation after response loss.
-    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt, recover: async (batch, signal) => await call("POST", "/source-tail/recover", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceRecoveryReceipt });
   }
   assertFrozen();
   // Only identity-preserving preparation is replayable; reset requests need their own policy.

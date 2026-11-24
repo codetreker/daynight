@@ -16,3 +16,16 @@ type SessionSourceDAO interface {
 	// SaveSessionSourceHash inserts the caller's decided immutable identity.
 	SaveSessionSourceHash(context.Context, SessionSourceHash) error
 }
+
+// SessionSourceRecoveryDAO stores durable reconciliation identities separately
+// from the finite event and batch window. Count must match the Session watermark.
+type SessionSourceRecoveryDAO interface {
+	SessionSourceRecovery(context.Context, string, string) (SessionSourceRecovery, error)
+	SessionSourceRecoveryCount(context.Context, string) (int, error)
+	SaveSessionSourceRecovery(context.Context, SessionSourceRecovery) error
+}
+type SessionSourceRecovery struct {
+	SessionID, RecoveryID string
+	Digest                []byte
+	VerifiedThrough       int64
+}

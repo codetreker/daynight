@@ -530,6 +530,10 @@ func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 		query = strings.TrimSuffix(query, ")") + " FROM fixture"
 		mustQueryExec(t, db, `WITH fixture AS (SELECT $1::uuid session_id,$2::uuid owner_id,$3::uuid operation_id,$4::uuid resource_id) `+query, id, actor.UserID, op, resource)
 	}
+	// Recovery identities remain as tombstones after Session deletion.
+	recoveryID := uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO session_source_recoveries(session_id,recovery_id,digest,verified_through) VALUES($1,$2,decode(repeat('ab',32),'hex'),1)`, id, recoveryID)
+	mustQueryExec(t, db, `UPDATE task_sessions SET source_recovery_count=1 WHERE id=$1`, id)
 	mustQueryExec(t, db, `INSERT INTO session_media_rates(owner_user_id,category,tokens,updated_at) VALUES($1,'control',1,$2)`, actor.UserID, now)
 	assertMediaRows := func(want int) {
 		t.Helper()
@@ -538,6 +542,10 @@ func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE session_id=$1`, id).Scan(&count); err != nil || count != want {
 				t.Fatalf("%s cleanup: %d want %d: %v", table, count, want, err)
 			}
+		}
+		var recoveryCount int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM session_source_recoveries WHERE session_id=$1 AND recovery_id=$2 AND digest=decode(repeat('ab',32),'hex') AND verified_through=1`, id, recoveryID).Scan(&recoveryCount); err != nil || recoveryCount != 1 {
+			t.Fatalf("Session cleanup lost recovery tombstone: %d %v", recoveryCount, err)
 		}
 		var tokens int64
 		if err := db.Pool.QueryRow(ctx, `SELECT tokens FROM session_media_rates WHERE owner_user_id=$1 AND category='control'`, actor.UserID).Scan(&tokens); err != nil || tokens != 1 {
