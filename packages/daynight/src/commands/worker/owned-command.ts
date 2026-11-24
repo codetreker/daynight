@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import crossSpawn from "cross-spawn";
 import { OperationError, type Operation } from "../../api/operation.js";
 import { currentOwnedCommandLifecycle, runLifecycleOwnedCommand } from "./owned-command-lifecycle.js";
-import { ControllerProcessWaitDeadlineError } from "../controller/process-proof.js";
+import { ControllerProcessWaitDeadlineError, isControllerProcessObservationDeadline } from "../controller/process-proof.js";
 
 export type OwnedSpawn = (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 export const spawnOwnedProcess: OwnedSpawn = (file, args, options) => crossSpawn(file, [...args], options);
@@ -35,8 +35,30 @@ const cleanupConfirmations = new WeakMap<OwnedCommandCleanupError, () => boolean
 /** Register only the original owner's close proof; exit or a PID lookup is insufficient. */
 export const registerOwnedCommandCleanupConfirmation = (error: OwnedCommandCleanupError, confirmed: () => boolean): void => { cleanupConfirmations.set(error, confirmed); };
 
+// Preserve the original cleanup, wait and command-failure graph. Object identity
+// alone does not prevent an admitted failure from later acquiring another error.
+const snapshotCleanupEvidence = (root: Error): (() => boolean) => {
+  const snapshots = new Map<object, { prototype: object | null; descriptors: PropertyDescriptorMap }>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Error) && !Array.isArray(value) || snapshots.has(value)) return;
+    const descriptors = Object.getOwnPropertyDescriptors(value) as PropertyDescriptorMap;
+    snapshots.set(value, { prototype: Object.getPrototypeOf(value), descriptors });
+    for (const descriptor of Object.values(descriptors)) if ("value" in descriptor) visit(descriptor.value);
+  };
+  visit(root);
+  return () => [...snapshots].every(([object, snapshot]) => {
+    if (Object.getPrototypeOf(object) !== snapshot.prototype) return false;
+    const current = Object.getOwnPropertyDescriptors(object), keys = Reflect.ownKeys(snapshot.descriptors);
+    return keys.length === Reflect.ownKeys(current).length && keys.every(key => {
+      const before = Reflect.get(snapshot.descriptors, key) as PropertyDescriptor;
+      const after = Reflect.get(current, key) as PropertyDescriptor | undefined;
+      return after !== undefined && before.configurable === after.configurable && before.enumerable === after.enumerable &&
+        before.writable === after.writable && before.value === after.value && before.get === after.get && before.set === after.set;
+    });
+  });
+};
 const cleanupWaits = new WeakSet<Error>();
-const cleanupWaitEvidence = new WeakMap<OwnedCommandCleanupError, { wait: Error; commandDeadline?: OwnedCommandDeadlineError; cancellation?: OperationError; cancellationCause: unknown; originalCause: unknown; originalErrors: readonly unknown[] }>();
+const cleanupWaitEvidence = new WeakMap<OwnedCommandCleanupError, { wait: Error; observation: boolean; intact: () => boolean; signal?: AbortSignal; commandDeadline?: OwnedCommandDeadlineError; cancellation?: OperationError; cancellationCause: unknown; originalCause: unknown; originalErrors: readonly unknown[] }>();
 /** A deadline created by the original owner while waiting for cleanup. */
 export const ownedCommandCleanupWait = (message: string): Error => {
   const error = new Error(message);
@@ -45,25 +67,46 @@ export const ownedCommandCleanupWait = (message: string): Error => {
 };
 /** Associate the owner's wait and optional command deadline with its original error. */
 export const registerOwnedCommandCleanupWait = (error: OwnedCommandCleanupError, wait: unknown, commandFailure: unknown, signal?: AbortSignal): void => {
-  if (!(wait instanceof Error) || !(cleanupWaits.has(wait) || wait instanceof ControllerProcessWaitDeadlineError)) return;
+  if (!(wait instanceof Error)) return;
+  const observation = isControllerProcessObservationDeadline(wait);
+  if (!(cleanupWaits.has(wait) || wait instanceof ControllerProcessWaitDeadlineError || observation)) return;
   const commandDeadline = commandFailure instanceof OwnedCommandDeadlineError ? commandFailure : undefined;
-  const cancellation = signal?.aborted === true && commandFailure === signal.reason && commandFailure instanceof OperationError && commandFailure.kind === "cancelled" ? commandFailure : undefined;
+  const cancellation = signal?.aborted === true && signal.reason instanceof OperationError && signal.reason.kind === "cancelled" && (commandFailure === signal.reason || error.errors.includes(signal.reason)) ? signal.reason : undefined;
   const allowed = (item: unknown): boolean => item === wait || commandDeadline !== undefined && item === commandDeadline || cancellation !== undefined && item === cancellation;
   if (!error.errors.includes(wait) || !error.errors.every(allowed) || error.cause !== undefined && !allowed(error.cause)) return;
-  cleanupWaitEvidence.set(error, { wait, ...(commandDeadline === undefined ? {} : { commandDeadline }), ...(cancellation === undefined ? {} : { cancellation }), cancellationCause: cancellation?.cause, originalCause: error.cause, originalErrors: [...error.errors] });
+  cleanupWaitEvidence.set(error, { wait, observation, intact: snapshotCleanupEvidence(error), ...(signal === undefined ? {} : { signal }), ...(commandDeadline === undefined ? {} : { commandDeadline }), ...(cancellation === undefined ? {} : { cancellation }), cancellationCause: cancellation?.cause, originalCause: error.cause, originalErrors: [...error.errors] });
+};
+
+/** Add only the original operation's late cancellation to unchanged owner evidence. */
+export const registerOwnedCommandLateCancellation = (error: OwnedCommandCleanupError, cancellation: unknown, signal: AbortSignal): boolean => {
+  try {
+    const evidence = cleanupWaitEvidence.get(error);
+    if (evidence === undefined || evidence.signal !== signal || evidence.cancellation !== undefined || !evidence.intact()
+      || evidence.commandDeadline?.cause !== undefined || error.cause !== evidence.originalCause
+      || error.errors.length !== evidence.originalErrors.length || !evidence.originalErrors.every((item, index) => error.errors[index] === item)
+      || evidence.observation && !isControllerProcessObservationDeadline(evidence.wait)
+      || !signal.aborted || cancellation !== signal.reason || !(cancellation instanceof OperationError) || cancellation.kind !== "cancelled") return false;
+    error.errors.push(cancellation);
+    cleanupWaitEvidence.set(error, { ...evidence, cancellation, cancellationCause: cancellation.cause, intact: snapshotCleanupEvidence(error), originalErrors: [...error.errors] });
+    return true;
+  } catch { return false; }
 };
 
 /** The optional predicate must recognize cancellation of the caller's own reporter. */
 export const isConfirmedOwnedCommandCleanupWait = (error: unknown, isCancellation?: (error: unknown) => boolean): boolean => {
   if (!(error instanceof OwnedCommandCleanupError) || cleanupConfirmations.get(error)?.() !== true) return false;
   const evidence = cleanupWaitEvidence.get(error);
-  if (evidence === undefined || evidence.wait.cause !== undefined || evidence.commandDeadline?.cause !== undefined) return false;
+  if (evidence === undefined || !evidence.intact() || evidence.commandDeadline?.cause !== undefined) return false;
+  if (evidence.observation) {
+    if (!isControllerProcessObservationDeadline(evidence.wait)) return false;
+  } else if (!(cleanupWaits.has(evidence.wait) || evidence.wait instanceof ControllerProcessWaitDeadlineError) || evidence.wait.cause !== undefined) return false;
   if (evidence.cancellation !== undefined) {
     if (evidence.cancellation.cause !== evidence.cancellationCause) return false;
-    try { if (isCancellation?.(evidence.cancellation) !== true) return false; } catch { return false; }
+    try { if (evidence.signal?.aborted !== true || evidence.signal.reason !== evidence.cancellation || isCancellation?.(evidence.cancellation) !== true) return false; } catch { return false; }
   }
   const allowed = (item: unknown): boolean => item === evidence.wait || item === evidence.commandDeadline && item !== undefined || item === evidence.cancellation && item !== undefined;
-  return error.cause === evidence.originalCause && evidence.originalErrors.every(item => error.errors.includes(item)) && error.errors.every(allowed);
+  return error.cause === evidence.originalCause && error.errors.length === evidence.originalErrors.length &&
+    evidence.originalErrors.every((item, index) => error.errors[index] === item) && error.errors.every(allowed);
 };
 
 export const hasOwnedCommandCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {

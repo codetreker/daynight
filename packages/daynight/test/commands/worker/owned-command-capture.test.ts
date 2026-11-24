@@ -70,6 +70,11 @@ it.skipIf(process.platform !== "linux")("joins the original close and late IPC b
     if (stopped) processStopped.resolve();
     return stopped;
   });
+  const stop = processProof.stopControllerProcesses;
+  vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async (...args) => {
+    await stop(...args);
+    processStopped.resolve();
+  });
   const pending = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.once('SIGTERM',()=>setTimeout(()=>process.exit(0),1400));process.stdout.write('ready');setInterval(()=>{},1000);"], environment: process.env }, operation, sink,
     { cleanupWithinDeadline: true, onStdout: async () => { clockAdvance = 29_100; ready.resolve(); } }).catch(error => error);
   try {
@@ -181,6 +186,13 @@ it.each(["success", "writer", "helper", "spawn", "malformed", "journal", "cancel
   let nativeConfirmations = 0, nativeStopped = false, cleanupDeadline: number | undefined;
   const confirmation = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (...args: Parameters<typeof confirmStopped>) => {
     const stopped = await confirmStopped(...args);
+    nativeConfirmations++;
+    if (nativeConfirmations === 2) { nativeStopped = stopped; cleanupDeadline = args[2]; }
+    return stopped;
+  });
+  const confirmGroup = processProof.confirmClosedOwnedCommandGroup;
+  vi.spyOn(processProof, "confirmClosedOwnedCommandGroup").mockImplementation(async (...args: Parameters<typeof confirmGroup>) => {
+    const stopped = await confirmGroup(...args);
     nativeConfirmations++;
     if (nativeConfirmations === 2) { nativeStopped = stopped; cleanupDeadline = args[2]; }
     return stopped;

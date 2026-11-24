@@ -3,13 +3,13 @@ import { finished } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Operation } from "../../api/operation.js";
-import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../controller/process-proof.js";
+import { OperationError, type Operation } from "../../api/operation.js";
+import { captureProcessProof, confirmClosedOwnedCommandGroup, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../controller/process-proof.js";
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../controller/windows-job.js";
 import { createSuspendedNodeChild } from "./suspended-node-child.js";
 import { isWorkerCancellation } from "./execution.js";
 import { withinExecutionDeadline } from "./execution-scope.js";
-import { OwnedCommandCleanupError, OwnedCommandDeadlineError, OwnedCommandError, ownedCommandCleanupWait, registerOwnedCommandCleanupConfirmation, registerOwnedCommandCleanupWait, type OwnedCommand, type OwnedCommandResult } from "./owned-command.js";
+import { OwnedCommandCleanupError, OwnedCommandDeadlineError, OwnedCommandError, ownedCommandCleanupWait, registerOwnedCommandCleanupConfirmation, registerOwnedCommandCleanupWait, registerOwnedCommandLateCancellation, type OwnedCommand, type OwnedCommandResult } from "./owned-command.js";
 
 export type OwnedCommandLifecycleEvent = {
   resourceId: string;
@@ -44,6 +44,7 @@ type RetainedCommand = {
   neverSpawned: boolean; unstartedClosed: boolean; closure: PromiseWithResolvers<void>; joinSave: () => Promise<void>;
   save: (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number) => Promise<void>;
   closeHandles?: () => void; joinChild?: () => Promise<void>; joinUnsubmitted?: () => Promise<void>;
+  child?: { pid?: number | undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }; childClosed?: () => boolean;
 };
 const retained = new Map<string, RetainedCommand>();
 const reconciliations = new Map<string, Promise<void>>();
@@ -96,8 +97,15 @@ const reconcileBoundary = async (resourceId: string, sink: OwnedCommandLifecycle
     await original.save(sink, { resourceId, sequence: 1, stage: "prepared", proof: null }, deadline);
   } else {
     if (proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
-    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
-    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
+    const closedChild = process.platform === "linux" && original.child !== undefined && original.childClosed?.() === true;
+    const initiallyStopped = closedChild
+      ? await confirmClosedOwnedCommandGroup(proof, original.child!, deadline)
+      : await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true });
+    if (!initiallyStopped) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true, strictObservation: true });
+    if (process.platform === "linux" && original.child !== undefined && original.joinChild !== undefined) {
+      await withinExecutionDeadline(original.joinChild(), deadline);
+      if (!await confirmClosedOwnedCommandGroup(proof, original.child, deadline)) throw new Error("Original owned command boundary remains occupied.");
+    } else if (!await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true })) throw new Error("Original owned command boundary remains occupied.");
   }
   if (original.joinChild !== undefined) await withinExecutionDeadline(original.joinChild(), deadline);
   original.sequence++;
@@ -187,7 +195,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     throw cleanup;
   }
   let joinOutput: (() => Promise<void>) | undefined, joinChild: (() => Promise<void>) | undefined, joinUnsubmitted: (() => Promise<void>) | undefined;
-  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinChild === undefined ? {} : { joinChild }), ...(joinUnsubmitted === undefined ? {} : { joinUnsubmitted }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
+  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, child, childClosed: () => closed, ...(joinChild === undefined ? {} : { joinChild }), ...(joinUnsubmitted === undefined ? {} : { joinUnsubmitted }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
   let closed = false, dispatchClosed = false, birthClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
   const captureFailures: unknown[] = [];
@@ -197,7 +205,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     failure ??= error;
     // A late channel or writer failure still belongs to the original result,
     // even when its owner has already started reconciling timed-out cleanup.
-    if (pendingCleanupError !== undefined && !pendingCleanupError.errors.includes(error)) pendingCleanupError.errors.push(error);
+    if (pendingCleanupError !== undefined && !pendingCleanupError.errors.includes(error)
+      && !registerOwnedCommandLateCancellation(pendingCleanupError, error, operation.signal)) pendingCleanupError.errors.push(error);
   };
   const birth = Promise.withResolvers<void>();
   void birth.promise.catch(() => {});
@@ -211,14 +220,25 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   };
   const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
   let bytes = 0, stdoutBytes = 0, stderrBytes = 0;
+  let outputLimitFailed = false, outputConsumeFailed = false, outputCaptureFailed = false;
   const accept = (target: Buffer[], chunk: Buffer) => {
     try {
       bytes += chunk.length;
       if (target === chunks.stdout) stdoutBytes += chunk.length; else stderrBytes += chunk.length;
-      if (bytes > (options.maximumOutputBytes ?? 64 * 1024) || (options.maximumStreamBytes !== undefined && Math.max(stdoutBytes, stderrBytes) > options.maximumStreamBytes)) throw new RangeError("The owned command exceeded its output limit.");
-      operation.consume(chunk.length); if (options.captureOutput !== false) target.push(chunk);
+      if (bytes > (options.maximumOutputBytes ?? 64 * 1024) || (options.maximumStreamBytes !== undefined && Math.max(stdoutBytes, stderrBytes) > options.maximumStreamBytes)) {
+        if (!outputLimitFailed) { outputLimitFailed = true; captureFailure(new RangeError("The owned command exceeded its output limit.")); }
+        return;
+      }
+      try { operation.consume(chunk.length); } catch (error) {
+        const stoppedOperation = error === operation.signal.reason && error instanceof OperationError && (
+          error === failure || failure instanceof OwnedCommandDeadlineError && (error.kind === "deadline" || error.kind === "disposed")
+        );
+        if (!stoppedOperation && !outputConsumeFailed) { outputConsumeFailed = true; captureFailure(error); }
+        return;
+      }
+      if (options.captureOutput !== false) target.push(chunk);
     }
-    catch (error) { failure ??= error; }
+    catch (error) { if (!outputCaptureFailed) { outputCaptureFailed = true; captureFailure(error); } }
   };
   const outputJobs = new Set<Promise<void>>();
   const outputStreams: Promise<void>[] = [];
@@ -356,8 +376,17 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     if (unstartedClosed) {
       // The original Linux launcher has closed without any run attempt.
     } else if (proof !== null && (suspended === undefined || lease !== undefined)) {
-      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
-      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Owned command boundary remains occupied.");
+      const initiallyStopped = process.platform === "linux" && closed
+        ? await confirmClosedOwnedCommandGroup(proof, child, deadline)
+        : await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true });
+      if (!initiallyStopped) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true, strictObservation: true });
+      if (process.platform === "linux") {
+        // Join the original child before another group inventory. A PID probe
+        // after termination can race with reaping; the child handle proves the
+        // original exit without interpreting a failed ps as disappearance.
+        await withinOwnedCommandJoinDeadline(childClosed.promise, deadline);
+        if (!await confirmClosedOwnedCommandGroup(proof, child, deadline)) throw new Error("Owned command boundary remains occupied.");
+      } else if (!await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true })) throw new Error("Owned command boundary remains occupied.");
     } else {
       // Before the handshake no user command was released. Kill only the direct
       // child handle; no PID-based descendant inference is permitted.
