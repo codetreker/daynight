@@ -25,10 +25,27 @@ export const GoalAcceptanceProvider = ({ projectId, snapshot, detailSnapshot, gr
   const [entry, setEntry] = useState<Entry | null>(null);
   const currentEntry = useRef(entry); currentEntry.current = entry;
   const preferHeading = useRef(false);
+  const retiredFocus = useRef<{ goalId: string; element: HTMLElement | null } | null>(null);
   const attached = useRef(new Map<string, { owner: Entry['owner']; fallback: Entry['fallback'] }>());
   const close = useCallback(() => setEntry(null), []);
+  useLayoutEffect(() => {
+    const onFocus = (event: FocusEvent) => {
+      const previous = retiredFocus.current;
+      if (previous?.element?.isConnected && event.target !== previous.element) retiredFocus.current = null;
+    };
+    document.addEventListener('focusin', onFocus);
+    return () => document.removeEventListener('focusin', onFocus);
+  }, []);
   const attach = useCallback((goalId: string, owner: Entry['owner'], fallback: Entry['fallback']) => {
     attached.current.set(goalId, { owner, fallback });
+    const previous = retiredFocus.current, heading = fallback.current;
+    if (previous?.goalId === goalId && canRestore(heading)) {
+      const active = document.activeElement;
+      if (active === previous.element || previous.element?.isConnected !== true && (active === document.body || owner.current?.contains(active))) {
+        retiredFocus.current = { goalId, element: heading };
+        heading.focus({ preventScroll: true });
+      } else retiredFocus.current = null;
+    }
     setEntry(current => current === null || current.goalId !== goalId || current.owner === owner ? current : { ...current, owner, fallback });
   }, []);
   const retire = useCallback((goalId: string) => {
@@ -36,7 +53,7 @@ export const GoalAcceptanceProvider = ({ projectId, snapshot, detailSnapshot, gr
     setEntry(current => current?.goalId === goalId ? null : current);
   }, []);
   const canOpen = useCallback((goalId: string) => snapshot !== null && detailSnapshot !== null && detailSnapshot.summaries.get(goalId)?.type === 'goal', [snapshot, detailSnapshot]);
-  const open = useCallback((next: Entry) => { if (next.projectId === projectId && canOpen(next.goalId)) { preferHeading.current = false; setEntry(next); } }, [projectId, canOpen]);
+  const open = useCallback((next: Entry) => { if (next.projectId === projectId && canOpen(next.goalId)) { preferHeading.current = false; retiredFocus.current = null; setEntry(next); } }, [projectId, canOpen]);
   const renderRelated = useCallback((relatedProjectId: string, content: ReactNode) => {
     const existing = sources.get(relatedProjectId);
     return existing === undefined
@@ -52,6 +69,7 @@ export const GoalAcceptanceProvider = ({ projectId, snapshot, detailSnapshot, gr
       onRestoreFocus={() => {
         const fallback = attached.current.get(entry.goalId)?.fallback ?? entry.fallback;
         const control = !preferHeading.current && canRestore(entry.trigger) ? entry.trigger : fallback.current;
+        retiredFocus.current = preferHeading.current ? { goalId: entry.goalId, element: control } : null;
         if (canRestore(control)) control.focus({ preventScroll: true });
       }}
       onClose={close} onSourceUnavailable={() => retire(entry.goalId)} onRefreshGraph={onRefreshGraph} graphError={graphError} />

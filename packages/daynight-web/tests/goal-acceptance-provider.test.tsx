@@ -7,6 +7,7 @@ import { useGoalAcceptanceOwner } from '../src/features/goal-acceptance-graph/Go
 import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../src/app/overlay';
+import { useDetailOverlay } from '../src/features/task-detail/DetailFrame';
 
 const mock = vi.hoisted(() => ({ mounted: [] as string[], source: new Map<string, { snapshot: GraphSnapshot; syncedSnapshot: GraphSnapshot; error: null; refresh: () => void }>(), sequence: 0 }));
 vi.mock('../src/features/projects/useTaskGraph', () => ({ useTaskGraph: (projectId: string) => {
@@ -43,7 +44,32 @@ const Reader = ({ projectId, hidden = false, target, retired = false }: { projec
 };
 beforeEach(() => { mock.mounted.length = 0; mock.source.clear(); mock.sequence = 0; });
 
+const RecoveryReader = ({ label }: { label: string }) => {
+  const acceptance = useGoalAcceptanceOwner()!, root = useRef<HTMLElement>(null), heading = useRef<HTMLHeadingElement>(null);
+  useDetailOverlay({ root, initialFocus: root, modal: false, fullscreen: false, scope: a, blocked: () => false, onEscape: () => {} });
+  useLayoutEffect(() => acceptance.attach(goal, root, heading), [acceptance]);
+  return <section ref={root} tabIndex={-1}><h2 ref={heading} tabIndex={-1}>{label}</h2>
+    <button disabled={!acceptance.canOpen(goal)} onClick={event => acceptance.open({ projectId: a, goalId: goal, trigger: event.currentTarget, owner: root, fallback: heading })}>Open recovery graph</button>
+  </section>;
+};
+
 describe('Goal acceptance detail owner', () => {
+  it.each([false, true])('hands retired graph focus to the recovered reader unless another control was chosen: %s', moved => {
+    const committed = snapshot(a), refresh = vi.fn();
+    const view = (phase: string) => <><button>Other control</button><GoalAcceptanceProvider projectId={a} snapshot={phase === 'initial' ? committed : null} detailSnapshot={phase === 'initial' ? committed : null} graphError={null} onRefreshGraph={refresh}><RecoveryReader key={phase} label={phase} /></GoalAcceptanceProvider></>;
+    const rendered = render(view('initial'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open recovery graph' }));
+    rendered.rerender(view('loading'));
+    expect(screen.queryByTestId(`graph-${a}`)).toBeNull();
+    expect(screen.getByRole('heading', { name: 'loading' })).toHaveFocus();
+    if (moved) screen.getByRole('button', { name: 'Other control' }).focus();
+    rendered.rerender(view('recovered'));
+    expect(screen.queryByTestId(`graph-${a}`)).toBeNull();
+    const heading = screen.getByRole('heading', { name: 'recovered' });
+    if (moved) expect(heading).not.toHaveFocus();
+    else expect(heading).toHaveFocus();
+  });
+
   it('uses the replacement failure heading when attachment and source retirement batch in one layout effect', () => {
     const committed = snapshot(a), refresh = vi.fn();
     const view = (retired: boolean) => <GoalAcceptanceProvider projectId={a} snapshot={committed} detailSnapshot={committed} graphError={null} onRefreshGraph={refresh}><Reader key={String(retired)} projectId={a} retired={retired} /></GoalAcceptanceProvider>;
@@ -63,7 +89,7 @@ describe('Goal acceptance detail owner', () => {
     expect(screen.getByRole('heading', { name: `Reader ${a}` })).toHaveFocus();
     expect(screen.getByRole('button', { name: `Open ${a}` })).toBeVisible();
   });
-  it('keeps the graph session through history qualification and reattaches a remounted reader', () => {
+  it('keeps a committed graph through detail qualification and reattaches a remounted reader', () => {
     const committed = snapshot(a), refresh = vi.fn();
     const view = (qualified: GraphSnapshot | null, key: string) => <GoalAcceptanceProvider projectId={a} snapshot={committed} detailSnapshot={qualified} graphError={null} onRefreshGraph={refresh}><Reader key={key} projectId={a} /></GoalAcceptanceProvider>;
     const rendered = render(view(committed, 'old'));
@@ -80,14 +106,20 @@ describe('Goal acceptance detail owner', () => {
     expect(mock.mounted).toEqual([]);
   });
 
-  it('restores the visible reader heading when the connected trigger becomes hidden before retirement', () => {
+  it('retires an invalidated baseline and requires a new entry after replacement', () => {
     const committed = snapshot(a), refresh = vi.fn();
     const view = (available: boolean) => <GoalAcceptanceProvider projectId={a} snapshot={available ? committed : null} detailSnapshot={available ? committed : null} graphError={null} onRefreshGraph={refresh}><Reader projectId={a} hidden={!available} /></GoalAcceptanceProvider>;
     const rendered = render(view(true));
     fireEvent.click(screen.getByRole('button', { name: `Open ${a}` }));
+    const instance = screen.getByTestId(`graph-${a}`).getAttribute('data-instance');
     rendered.rerender(view(false));
     expect(screen.queryByTestId(`graph-${a}`)).toBeNull();
     expect(screen.getByRole('heading', { name: `Reader ${a}` })).toHaveFocus();
+    expect(screen.getByRole('button', { name: `Open ${a}`, hidden: true })).toBeDisabled();
+    rendered.rerender(view(true));
+    expect(screen.queryByTestId(`graph-${a}`)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: `Open ${a}` }));
+    expect(screen.getByTestId(`graph-${a}`)).not.toHaveAttribute('data-instance', instance);
   });
 
   it('allocates a foreign source when its reader opens and reuses ancestor sources for A to B to A', () => {

@@ -67,8 +67,12 @@ Graph sessions have no polling loop and do not change TaskSync requests or
 watermarks. Trusted withdrawal and identity/history fences clear affected data;
 conflicting external reads cannot introduce a cycle into the retained local
 graph. Detail entries register the graph under the originating reading layer,
-retaining its draft, tab, fullscreen and scroll state across ordinary source
-loading and Goal surface remounts. Nested Goal Details use
+retaining its draft, tab, fullscreen and scroll state through detail loading
+and Goal surface remounts within the same admitted Project history. The entry
+controller and synchronization source survive ordinary detail remounts. Trusted
+deletion, epoch replacement or another `historyChanged` immediately clears the
+source snapshots and retires its graph. A fresh admitted baseline enables an
+explicit entry action without automatically reopening the retired graph. Nested Goal Details use
 the existing reading and draft layers with independent local draft identities;
 discarding a nested draft preserves a still-mounted parent's draft for the same
 Goal. Layered Escape closes the active overlay

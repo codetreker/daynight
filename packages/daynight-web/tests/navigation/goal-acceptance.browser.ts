@@ -292,38 +292,38 @@ test('Goal detail title receipts preserve committed edges until normal synchroni
   await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
 });
 
-test('normal epoch retirement preserves the graph viewport and selection while retiring nested detail', async ({ page }) => {
+test('project history retirement removes its graph and nested detail until an explicit fresh entry', async ({ page }) => {
   const state = await install(page), { dialog } = await open(page, state.syncRequests);
+  state.holdSource(doneId);
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect.poll(() => state.sourceHeld(doneId)).toBe(true);
   await card(dialog, activeId).locator('.task-node-body').click();
-  const canvas = dialog.locator('.task-graph-canvas'), bounds = await canvas.boundingBox();
-  if (bounds === null) throw new Error('Goal canvas bounds are missing.');
-  await page.mouse.move(bounds.x + bounds.width - 20, bounds.y + 20);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + bounds.width - 80, bounds.y + 70);
-  await page.mouse.up();
-  const viewport = dialog.locator('.react-flow__viewport');
-  const dialogNode = await dialog.elementHandle(), viewportNode = await viewport.elementHandle();
-  const position = await viewport.getAttribute('style');
+  const oldDialog = await dialog.elementHandle();
   await dialog.getByRole('button', { name: 'Details: Release client', exact: true }).click();
-  const detail = page.locator('.goal-detail-surface').last();
-  await expect(detail.locator('.task-detail-title')).toHaveText('Release client');
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Release client');
   state.rotateEpoch();
   await page.clock.fastForward(16_000);
   await expect.poll(state.replacementHeld).toBe(true);
-  await expect(detail).toHaveCount(0);
-  await expect(dialog).toBeVisible();
-  expect(await dialog.evaluate((node, original) => node === original, dialogNode)).toBe(true);
-  expect(await viewport.evaluate((node, original) => node === original, viewportNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
-  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  expect(await oldDialog!.evaluate(node => node.isConnected)).toBe(false);
+  await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toBeVisible();
+  await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${doneId}/goal-dependencies`))).toBe(true);
+  state.releaseSource(doneId);
   state.releaseReplacement();
-  await expect.poll(state.replacementHeld).toBe(false);
+  await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: /^Goals/ }).click();
+  const trigger = page.getByRole('button', { name: 'Acceptance graph', exact: true });
+  await expect(trigger).toBeEnabled();
+  await expect(dialog).toHaveCount(0);
+  const requests = [...state.syncRequests];
+  await trigger.click();
   await expect(card(dialog, activeId)).toContainText('0 / 1 child Tasks done');
-  expect(await viewport.evaluate((node, original) => node === original, viewportNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
+  expect(await dialog.evaluate((node, original) => node === original, oldDialog)).toBe(false);
+  await card(dialog, activeId).locator('.task-node-body').click();
   await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(state.syncRequests).toEqual(requests);
 });
-
 test('transient TaskSync failures show an in-dialog retry and retain the readable graph', async ({ page }) => {
   const state = await install(page), { dialog } = await open(page, state.syncRequests);
   await card(dialog, activeId).locator('.task-node-body').click();
@@ -1095,25 +1095,43 @@ test('focused Goal resource retirement restores focus to its visible failed read
   await expect(failedHeading).toBeFocused();
 });
 
-test('normal source epoch recovery preserves a focused graph and valid selection until its replacement baseline', async ({ page }) => {
-  const state = await install(page), detail = await openProjectGoal(page);
+test('source history retirement focuses its fresh direct reader and requires a new graph entry after recovery', async ({ page }) => {
+  const state = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${activeId}`);
+  const detail = page.locator('.goal-detail-surface');
+  await expect(detailGraphButton(detail)).toBeEnabled();
   await detailGraphButton(detail).click();
-  const dialog = graphDialog(page), viewport = dialog.locator('.react-flow__viewport');
-  const dialogNode = await dialog.elementHandle(), viewportNode = await viewport.elementHandle(), position = await viewport.getAttribute('style');
+  const dialog = graphDialog(page), oldDialog = await dialog.elementHandle();
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  state.holdSource(doneId);
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect.poll(() => state.sourceHeld(doneId)).toBe(true);
+  state.changeGoal(activeId, { title: 'Recovered release client' });
   state.rotateEpoch();
   await page.clock.fastForward(16_000);
   await expect.poll(state.replacementHeld).toBe(true);
-  await expect(dialog).toBeVisible();
-  expect(await dialog.evaluate((node, original) => node === original, dialogNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
-  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog).toHaveCount(0);
+  expect(await oldDialog!.evaluate(node => node.isConnected)).toBe(false);
+  const freshHeading = detail.locator('.task-detail-title');
+  await expect(freshHeading).toHaveText('Recovered release client');
+  await expect(freshHeading).toBeFocused();
+  await expect(detailGraphButton(detail)).toBeDisabled();
+  await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${doneId}/goal-dependencies`))).toBe(true);
+  state.releaseSource(doneId);
   state.releaseReplacement();
+  await expect(detail.locator('.task-detail-title')).toHaveText('Recovered release client');
+  const button = detailGraphButton(detail);
+  await expect(button).toBeEnabled();
+  await expect(dialog).toHaveCount(0);
+  const requests = [...state.syncRequests];
+  await button.click();
   await expect(card(dialog, activeId)).toContainText('0 / 1 child Tasks done');
-  expect(await viewport.evaluate((node, original) => node === original, viewportNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
+  expect(await dialog.evaluate((node, original) => node === original, oldDialog)).toBe(false);
   await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
 });
-
 test('same-Project nested Goal graph preserves its own detail and discussion draft while reusing synchronization', async ({ page }) => {
   const state = await install(page), source = await openProjectGoal(page);
   await detailGraphButton(source).click();

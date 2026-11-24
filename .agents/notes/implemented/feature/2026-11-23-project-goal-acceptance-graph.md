@@ -114,9 +114,15 @@ heading without scrolling before the changing relation list can remove its
 trigger. The programmatically focusable heading remains outside ordinary Tab
 order and keeps the graph's Escape and fullscreen handling reachable.
 Detail entries register the graph under the originating reading layer without
-remounting its draft, tabs, fullscreen or scroll owners. Ordinary source loading
-or Goal surface remounts retain the graph controller and reattach its actual
-reading root, including its loading surface; trusted source loss retires it.
+remounting its draft, tabs, fullscreen or scroll owners. Within the same admitted Project history, detail loading or Goal surface
+remounts preserve the open graph and reattach its actual reading root, including
+its loading surface. The entry controller and synchronization source outlive
+ordinary detail remounts. Trusted deletion, epoch replacement or another
+`historyChanged` clears the source's snapshot and display snapshot immediately
+and retires the graph session. The shared cache cannot prove that the old
+projection was unaffected without complete ordinary parent relationships. A fresh
+admitted baseline enables an explicit entry action; it does not reopen the
+retired graph. Trusted access or resource loss also retires it.
 Graph, detail and confirmation layers provide their actual visual surfaces to
 the shared overlay lease, so each child remains above its parent's current
 surface through nesting and fullscreen. The
@@ -132,7 +138,14 @@ heading. Surface attachment synchronously records the current root and focusable
 heading before batched entry attachment or retirement. Source-unavailable closure
 prefers that current heading, including a loading or failure heading: relationship
 denial can precede detail failure or trigger removal, and a still-connected old
-button is not sufficient restoration evidence. Restoration does not scroll.
+button is not sufficient restoration evidence. Retirement records a heading-focus
+intent for that Goal. When a fresh admitted reader replaces its loading heading,
+the intent transfers focus to the current visible heading only while the old
+heading owns focus, or after its removal during automatic reader registration.
+Otherwise the new reader's own focus effect can leave focus at the page root
+instead of the promised heading. Moving focus to another live control cancels
+the intent, and explicit graph opening clears it. The intent retains no old graph
+data and never reopens a retired graph. Restoration does not scroll.
 The [relationship design](../../../../docs/design/goal-dependencies.md#项目-goal-验收图)
 owns the mechanism and the [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-验收依赖图)
 own visible behavior.
