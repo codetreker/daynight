@@ -135,6 +135,14 @@ owns the mechanism's alternatives and limits.
 
 ### CLI test fixtures
 
+The information-command import matrix in `test/cli/application-command-loading.test.ts`
+starts a fresh compiled CLI process for each argument vector and checks its
+blocked imports. The native `application.integration.test.ts` retains the
+guarded configuration write and native entry, filesystem, SQLite and process
+coverage. Both use a small import-hook fixture; ordinary CI runs both files.
+The [command loading decision](../.agents/notes/implemented/testing/2026-11-24-cli-command-loading-split.md)
+owns the separation and its limits.
+
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
