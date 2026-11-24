@@ -20,10 +20,9 @@ export const runValidation = async (t: TestContext, entry: 'check' | 'startup-sh
   await mkdir(scripts);
   await mkdir(tools);
   await mkdir(join(fixture, 'cmd/daynight-server'), { recursive: true });
-  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts', 'command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts', 'go-test-database-exec.sh']) {
+  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts', 'command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts']) {
     await copyFile(join(moduleRoot, 'scripts', file), join(scripts, file));
   }
-  await chmod(join(scripts, 'go-test-database-exec.sh'), 0o755);
   await copyFile(join(moduleRoot, '.go-cov.toml'), join(fixture, '.go-cov.toml'));
   const fakeGo = `#!/usr/bin/env bash
 set -eu
