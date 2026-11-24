@@ -23,12 +23,10 @@ apply to the module.
 Pull requests use a four-package Go schedule in the same module job. Its
 isolated PostgreSQL service uses a bounded memory-backed data directory. The
 workflow checks the actual mounted filesystem before preparing the dedicated
-Store root database. The [package database decision](2026-11-24-go-pr-package-databases.md)
-separates additional heavy packages in PR module tests. PostgreSQL sync,
-transaction and migration lock behavior remain intact. Local and main package
-concurrency stay at two, with the existing race policy for each entry. The
-ordinary command vet also uses four package slots in PR CI; lifecycle coverage
-retains two.
+Store root database. PostgreSQL sync, transaction and migration lock behavior
+remain intact. Local and main package concurrency stay at two, with the
+existing race policy for each entry. The ordinary command vet also uses four
+package slots in PR CI; lifecycle coverage retains two.
 
 In PR CI the module check overlaps the Node script contract tests with the
 fixed UniAuth fixture preparation and its explicit `testauth` invocation. The

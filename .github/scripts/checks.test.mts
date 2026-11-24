@@ -685,24 +685,11 @@ test("the Go module runner bounds PostgreSQL storage in memory and checks the ac
   assert.match(options, /^          --tmpfs \/var\/lib\/postgresql:rw,size=3g$/m);
   assert.doesNotMatch(startupShutdown + apiIntegration, /--tmpfs \/var\/lib\/postgresql/);
   const steps = stepsOf(server);
-  const prepare = steps.find(step => step.includes("name: Create isolated test databases\n"))!;
+  const prepare = steps.find(step => step.includes("name: Create the Store root test database\n"))!;
   const validation = steps.find(step => step.includes("id: server-validation\n"))!;
   assert.match(prepare, /stat -f -c %T "\$PGDATA"\)" = tmpfs/);
   assert.match(prepare, /createdb -U daynight daynight_store_root/);
   assert.ok(steps.indexOf(prepare) < steps.indexOf(validation));
-  for (const [variable, database] of [
-    ["DAYNIGHT_TEST_POSTGRES_TASK_URL", "daynight_pg_task"],
-    ["DAYNIGHT_TEST_POSTGRES_GITHUB_URL", "daynight_pg_github"],
-    ["DAYNIGHT_TEST_POSTGRES_IDENTITY_URL", "daynight_pg_identity"],
-    ["DAYNIGHT_TEST_POSTGRES_SESSION_URL", "daynight_pg_session"],
-    ["DAYNIGHT_TEST_POSTGRES_WORKER_URL", "daynight_pg_worker"],
-    ["DAYNIGHT_TEST_SERVICE_PROJECT_URL", "daynight_service_project"],
-    ["DAYNIGHT_TEST_SERVICE_SESSION_URL", "daynight_service_session"],
-    ["DAYNIGHT_TEST_SERVICE_MCPDOWNLOAD_URL", "daynight_service_mcpdownload"],
-  ]) {
-    assert.ok(prepare.includes(database));
-    assert.ok(validation.includes(`${variable}: postgres://daynight:daynight-test@127.0.0.1:5432/${database}?sslmode=disable`));
-  }
 });
 
 test("Go module coverage and API integration prepare independent runners", () => {
