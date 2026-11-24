@@ -54,6 +54,88 @@ it("does not classify a proc read error merely because it resembles an abort", a
   expect(isControllerProcessObservationDeadline(error)).toBe(false);
 });
 
+it.each([
+  "second command", "second parent", "second group", "second zombie",
+  "after birth", "after parent", "after group",
+  "exiting birth", "exiting group", "zombie birth", "zombie group",
+  "running after before exiting", "running after before zombie", "running after first zombie",
+  "consistent", "exiting command and parent", "zombie command and parent", "exiting first mismatch", "zombie first mismatch",
+] as const)("preserves a %s observation when the final boot read reaches its real deadline", async scenario => {
+  const proof = await captureProcessProof(pid);
+  let bootReads = 0, statReads = 0, psReads = 0;
+  io.read.mockImplementation((file: string, options: { signal: AbortSignal }) => {
+    if (file.endsWith("boot_id")) {
+      if (++bootReads === 1) return Promise.resolve(`${boot}\n`);
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(new Error("final boot read aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
+      });
+    }
+    if (file === `/proc/${pid}/stat`) {
+      const after = ++statReads === 2;
+      const exiting = after && scenario.startsWith("exiting ") || !after && scenario === "running after before exiting";
+      const zombie = after && scenario.startsWith("zombie ") || !after && scenario === "running after before zombie";
+      return Promise.resolve(stat(after && scenario.endsWith("birth") ? "26140756" : ticks,
+        after && (scenario === "after parent" || scenario.endsWith("command and parent")) ? parent + 1 : parent,
+        after && scenario.endsWith("group") && scenario !== "second group" ? group + 1 : group, zombie ? "Z" : "S", exiting ? "4" : "0"));
+    }
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    const second = ++psReads === 2;
+    const changedCommand = second && (scenario === "second command" || scenario === "exiting command and parent" || scenario === "zombie command and parent") || !second && scenario.endsWith("first mismatch");
+    const changedParent = second && (scenario === "second parent" || scenario === "exiting command and parent" || scenario === "zombie command and parent") || !second && scenario.endsWith("first mismatch");
+    const psZombie = second && scenario === "second zombie" || !second && (scenario === "running after first zombie" || scenario.endsWith("first mismatch"));
+    callback(null, `${pid} ${changedParent ? parent + 1 : parent} ${second && scenario === "second group" ? group + 1 : group} ${psZombie ? "Z" : "S"} ${wallTime} ${changedCommand ? "changed command" : command}\n`);
+  });
+  const error = await inspectProcessProof(proof, 500, { strictObservation: true }).catch(cause => cause);
+  expect(bootReads).toBe(2);
+  expect(statReads).toBe(2);
+  expect(psReads).toBe(2);
+  if (scenario === "consistent" || scenario === "exiting command and parent" || scenario === "zombie command and parent" || scenario.endsWith("first mismatch")) {
+    expect(isControllerProcessObservationDeadline(error)).toBe(true);
+    expect(error.cause).toMatchObject({ name: "AbortError", message: "final boot read aborted" });
+  } else {
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(isControllerProcessObservationDeadline(error)).toBe(false);
+    expect(error.cause).toBe(error.errors[0]);
+    expect(isControllerProcessObservationDeadline(error.errors[0])).toBe(true);
+    expect(error.errors[0].cause).toMatchObject({ name: "AbortError", message: "final boot read aborted" });
+    expect(error.errors[1].message).toMatch(/identity|conflict/i);
+  }
+});
+
+it.each(["conflicting", "consistent"] as const)("preserves a %s second ps group when the following stat read times out", async scenario => {
+  const proof = await captureProcessProof(pid);
+  let bootReads = 0, statReads = 0, psReads = 0;
+  io.read.mockImplementation((file: string, options: { signal: AbortSignal }) => {
+    if (file.endsWith("boot_id")) { bootReads++; return Promise.resolve(`${boot}\n`); }
+    if (file === `/proc/${pid}/stat`) {
+      if (++statReads === 1) return Promise.resolve(stat(ticks, parent, group));
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(new Error("final stat read aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
+      });
+    }
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    const second = ++psReads === 2;
+    callback(null, `${pid} ${parent} ${second && scenario === "conflicting" ? group + 1 : group} S ${wallTime} ${command}\n`);
+  });
+  const error = await inspectProcessProof(proof, 500, { strictObservation: true }).catch(cause => cause);
+  expect([bootReads, statReads, psReads]).toEqual([1, 2, 2]);
+  if (scenario === "consistent") {
+    expect(isControllerProcessObservationDeadline(error)).toBe(true);
+    expect(error.cause).toMatchObject({ name: "AbortError", message: "final stat read aborted" });
+  } else {
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(isControllerProcessObservationDeadline(error)).toBe(false);
+    expect(error.cause).toBe(error.errors[0]);
+    expect(isControllerProcessObservationDeadline(error.errors[0])).toBe(true);
+    expect(error.errors[0].cause).toMatchObject({ name: "AbortError", message: "final stat read aborted" });
+    expect(error.errors[1].message).toMatch(/identity|conflict/i);
+  }
+});
+
 it("keeps the same Linux process running and stoppable when only ps wall-clock birth drifts", async () => {
   const proof = await captureProcessProof(pid);
   wallTime = "Thu Nov 19 19:43:32 2026";

@@ -128,13 +128,22 @@ const completedLinuxObservationDeadline = (expected: ProcessProof, observed: { p
   return new Error("Linux process observation exceeded its deadline with incomplete or conflicting identity evidence; stop remains unconfirmed.");
 };
 const retainPartialIdentityFailure = (expected: ProcessProof, error: unknown, partial: LinuxPartialObservation): unknown => {
-  const stat = partial.stat, first = partial.first;
-  const birth = stat === undefined || partial.boot === undefined ? undefined : `linux:v1:${partial.boot}:${stat.ticks}`;
-  const conflict = partial.boot !== undefined && !expected.startedAt.startsWith(`linux:v1:${partial.boot}:`)
-    || birth !== undefined && birth !== expected.startedAt
-    || stat !== undefined && stat.group !== expected.processGroupId
-    || stat !== undefined && !stat.zombie && !stat.exiting && stat.parent !== expected.parentPid
-    || stat !== undefined && first !== undefined && (first.group !== stat.group || !stat.zombie && !stat.exiting && (first.parent !== stat.parent || first.zombie || hash(first.command) !== expected.commandHash));
+  const { stat, first, second, after, boot, afterBoot } = partial;
+  const conflictsStat = (sample: NonNullable<LinuxPartialObservation["stat"]>): boolean =>
+    boot !== undefined && `linux:v1:${boot}:${sample.ticks}` !== expected.startedAt
+    || sample.group !== expected.processGroupId
+    || !(after?.zombie || after?.exiting) && !sample.zombie && !sample.exiting && sample.parent !== expected.parentPid;
+  const conflict = boot !== undefined && !expected.startedAt.startsWith(`linux:v1:${boot}:`)
+    || afterBoot !== undefined && afterBoot !== boot
+    || stat !== undefined && conflictsStat(stat)
+    || after !== undefined && conflictsStat(after)
+    || stat !== undefined && after !== undefined && (stat.ticks !== after.ticks || stat.group !== after.group)
+    || stat !== undefined && first !== undefined && (first.group !== stat.group
+      || !(after?.zombie || after?.exiting) && (after !== undefined || !stat.zombie && !stat.exiting)
+        && (stat.zombie || stat.exiting || first.parent !== stat.parent || first.zombie || hash(first.command) !== expected.commandHash))
+    || second !== undefined && (second.group !== expected.processGroupId
+      || after !== undefined && second.group !== after.group
+      || !(after?.zombie || after?.exiting) && (second.parent !== expected.parentPid || second.zombie || hash(second.command) !== expected.commandHash || first !== undefined && first.command !== second.command));
   if (!conflict) return error;
   return new AggregateError([error, new Error("Linux process identity conflicts with the original or with the partial observation.")], `Linux process observation failed with conflicting identity evidence: ${error instanceof Error ? error.message : "unknown failure"}`, { cause: error });
 };

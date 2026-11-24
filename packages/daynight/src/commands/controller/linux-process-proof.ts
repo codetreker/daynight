@@ -8,7 +8,8 @@ export const isProcessBirth = (value: unknown): value is string => typeof value 
   && (!value.startsWith("linux:") || isLinuxProcessBirth(value));
 
 type ProcessState = { proof: ProcessProof; zombie: boolean; exiting: boolean; status: string };
-export type LinuxPartialObservation = { boot?: string; stat?: ReturnType<typeof parseLinuxStat>; first?: { parent: number; group: number; command: string; zombie: boolean } };
+type LinuxPsSample = { parent: number; group: number; command: string; zombie: boolean };
+export type LinuxPartialObservation = { boot?: string; stat?: ReturnType<typeof parseLinuxStat>; first?: LinuxPsSample; second?: LinuxPsSample; after?: ReturnType<typeof parseLinuxStat>; afterBoot?: string };
 
 export function parseLinuxBoot(text: string): string {
   const value = text.trim();
@@ -60,9 +61,9 @@ export function createLinuxProcessCapture(
     const beforeBoot = boot(await read("/proc/sys/kernel/random/boot_id")); partial.boot = beforeBoot;
     const before = stat(await read(`/proc/${pid}/stat`)); partial.stat = before;
     const first = await ps(); partial.first = first;
-    const second = await ps();
-    const after = stat(await read(`/proc/${pid}/stat`));
-    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", completedDeadline !== undefined));
+    const second = await ps(); partial.second = second;
+    const after = stat(await read(`/proc/${pid}/stat`)); partial.after = after;
+    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", completedDeadline !== undefined)); partial.afterBoot = afterBoot;
     // Exit can discard the command before Z appears. PF_EXITING permits waiting
     // only; a final zombie proves this instance exited. Neither supplies a
     // running proof, and birth/group fences and descendant checks still apply.
