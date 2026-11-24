@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -409,5 +410,70 @@ func TestArchiveSourceAdmissionUsesValidWireBudgetWithoutReencodingExpansion(t *
 				}
 			}
 		}
+	}
+}
+
+type recoveryBundleFailureDAO struct {
+	*archiveSourceRecoveryDAO
+	point string
+	cause error
+}
+
+func (d *recoveryBundleFailureDAO) SessionArchiveBundle(ctx context.Context, id string) (store.ArchiveBundle, error) {
+	if d.point == "read bundle" {
+		return store.ArchiveBundle{}, d.cause
+	}
+	return d.archiveSourceRecoveryDAO.SessionArchiveBundle(ctx, id)
+}
+func (d *recoveryBundleFailureDAO) SaveSessionArchiveBundle(ctx context.Context, b store.ArchiveBundle) error {
+	if d.point == "save bundle" {
+		return d.cause
+	}
+	return d.archiveSourceRecoveryDAO.SaveSessionArchiveBundle(ctx, b)
+}
+func TestRecoveryRechecksAdmissionAndActiveLedgerFailures(t *testing.T) {
+	for _, scenario := range []string{"invalid request", "producer denied", "read bundle", "active identity mismatch", "active invalid ledger", "active settlement", "settling invalid ledger", "save bundle"} {
+		t.Run(scenario, func(t *testing.T) {
+			op, base, r := archiveFlowFixture(t)
+			epoch := uuid.NewString()
+			r.SourceEpoch = &epoch
+			source := &archiveSourceRecoveryDAO{archiveFlowDAO: base, hashes: &sourceCheckpointDAO{hashes: map[string][]byte{}}}
+			cause := errors.New("archive transaction failed")
+			dao := &recoveryBundleFailureDAO{archiveSourceRecoveryDAO: source, point: scenario, cause: cause}
+			op.execution.archiveRun = func(_ context.Context, _ model.Principal, _, _, _ string, _ bool, work func(*Access) error) error {
+				return work(&Access{tx: &operationTx{dao: dao}, record: r})
+			}
+			in := sp.ArchiveSourceRecoveryRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, SourceEpoch: epoch, OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "8", Events: []sp.SourceEvent{{SourceSeq: "8", Kind: "state", Payload: encode(sp.State{InitialInputState: "confirmed", Activity: "working"})}}}
+			switch scenario {
+			case "invalid request":
+				in.Events = nil
+			case "producer denied":
+				op.execution.SetProducerAdmission(func(context.Context, store.SessionScope, model.Principal) error { return cause })
+			case "active identity mismatch":
+				base.bundle.Phase = "active"
+				base.bundle.Identity = encode(sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: uuid.NewString(), ControllerInstanceID: in.ControllerInstanceID})
+			case "active invalid ledger":
+				base.bundle.Phase = "active"
+				base.bundle.Ledger = []byte(`{`)
+			case "active settlement":
+				base.bundle.Phase = "active"
+			case "settling invalid ledger":
+				base.bundle.Ledger = []byte(`{`)
+			}
+			out, err := op.RecoverArchiveSourceTail(t.Context(), in)
+			if scenario == "active settlement" {
+				var ledger archiveLedger
+				if err != nil || out.VerifiedThrough != "8" || base.bundle.Phase != "settling" || json.Unmarshal(base.bundle.Ledger, &ledger) != nil || ledger.FinalSourceThrough != "8" {
+					t.Fatal(out, err, base.bundle)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("unsafe recovery succeeded", scenario)
+			}
+			if (scenario == "producer denied" || scenario == "read bundle" || scenario == "save bundle") && !errors.Is(err, cause) {
+				t.Fatal("lost failure", err)
+			}
+		})
 	}
 }

@@ -329,3 +329,12 @@ test("a late original receipt cannot clear a batch already settled by recovery",
   await expect(late).rejects.toThrow("batch changed");
   expect(f.read().state).toMatchObject({ last_acknowledged: 3 }); expect(f.read().outbox).toEqual({ total: 0 });
 });
+
+test("an unavailable old Server retains and reuses the same recovery request without inferring its outcome", async () => {
+  const f = await fixture(), legacy = await legacyPending(f); let saved!: StoppedSourceRecovery;
+  const unavailable = new ArchiveRequestError(404, "not_found");
+  await expect(replayStoppedControllerHistory({ ...f, send: async batch => { expect(batch).toEqual(legacy); throw conflictError(); }, recover: async batch => { saved = batch; throw unavailable; } })).rejects.toBe(unavailable);
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 }); expect(f.read().batch).toEqual({ value: JSON.stringify(legacy) });
+  await expect(replayStoppedControllerHistory({ ...f, send: async () => { throw new Error("must reconcile recovery first"); }, recover: async batch => { expect(batch).toEqual(saved); throw unavailable; } })).rejects.toBe(unavailable);
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 });
+});
