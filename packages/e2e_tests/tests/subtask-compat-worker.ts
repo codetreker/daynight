@@ -3,10 +3,9 @@ import { chmod, copyFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { inspect } from 'node:util';
 import { aggregateFailures } from '../src/failures.ts';
-import { markFixtureStopped, prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from '../src/fixture-owner.ts';
+import { prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity } from '../src/fixture-owner.ts';
 import { prepareWorkerFixtureConfiguration } from '../src/worker-config.ts';
-import { stopAndRecordFixtureWorker } from '../src/worker-cleanup.ts';
-import type { ManagedCommand } from '../src/command.ts';
+import { startCompatWorkerContainer, stopCompatWorkerContainer } from '../src/subtask-compat-worker-container.ts';
 import { cliEnvironment, expect, runOwnedCommand } from './fixtures.ts';
 import { observeWorkerCandidates } from './subtask-compat-worker-observer.ts';
 
@@ -25,7 +24,7 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
   const peer = path.join(root, 'codex.mjs'), log = path.join(root, 'peer.jsonl'), launcher = path.join(root, 'daynight');
   const git = async (cwd: string, args: string[]) => runOwnedCommand('git', args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
   const workerId = randomUUID();
-  let worker: ManagedCommand | undefined, observer: Awaited<ReturnType<typeof observeWorkerCandidates>> | undefined, exited = false, failure: unknown;
+  let worker: Awaited<ReturnType<typeof startCompatWorkerContainer>> | undefined, observer: Awaited<ReturnType<typeof observeWorkerCandidates>> | undefined, exited = false, observationFailure: unknown, failure: unknown;
   try {
     await git(root, ['init', '--bare', bare]);
     await git(root, ['init', '-b', 'main', repository]);
@@ -41,7 +40,7 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
     await git(root, ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
     await copyFile(path.join(import.meta.dirname, 'native-worker-peer.mjs'), peer);
     await chmod(peer, 0o700);
-    await writeFile(launcher, `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.entry)} "$@"\n`, { mode: 0o700 });
+    await writeFile(launcher, `#!/bin/sh\nexec /usr/local/bin/node ${shellLiteral(input.entry)} "$@"\n`, { mode: 0o700 });
     const invoke = async (args: string[]) => {
       const result = await input.command(args);
       if (result.exitCode !== 0) throw new Error(`Candidate CLI ${args[0]} ${args[1]} failed: ${result.stderr}`);
@@ -85,11 +84,9 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
     settings.worker.maxConcurrent = 2;
     await writeFile(configFile, JSON.stringify(settings));
     await registerFixtureIdentity(checkout, runDirectory, { projectId, taskId: leaf, workerId, userId: open.assignedTo!, serverOrigin: observer.origin, repository });
-    worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [input.entry, 'worker', 'run'], options: {
-      cwd: root, env: { ...cliEnvironment, DN_CONFIG_DIR: config, CODEX_HOME: path.join(root, 'native'), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 600_000, onOutput: () => {},
-    } });
-    void worker.finished.then(() => { exited = true; }, () => { exited = true; });
-    const alive = () => { if (exited) throw new Error(`${input.variant} Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`); };
+    worker = await startCompatWorkerContainer({ checkout, runDirectory, root, entry: input.entry, config, workerId, log, ca: path.join(runDirectory, 'artifacts', 'daynight-ca.pem'), resolver: path.join(checkout, 'packages/e2e_tests/src/resolve-local.cjs') });
+    void worker.finished.then(() => { exited = true; }, error => { observationFailure = error; });
+    const alive = () => { if (observationFailure !== undefined) throw new Error(`${input.variant} Worker observation failed.`, { cause: observationFailure }); if (exited) throw new Error(`${input.variant} Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`); };
     await expect.poll(async () => { alive(); return (await read(leaf)).properties.worker?.claimId; }, { timeout: 90_000, intervals: [1_000] }).toEqual(expect.any(String));
     const claim = (await read(leaf)).properties.worker;
     if (!claim || claim.workerId !== workerId || claim.state !== 'active') throw new Error('Worker did not own the original claim.');
@@ -122,10 +119,8 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
   finally {
     const failures: unknown[] = [];
     if (failure !== undefined) failures.push(failure);
-    if (worker) {
-      try { await stopAndRecordFixtureWorker({ worker, exited, runDirectory, workerId, launchNumber: 1 }); await markFixtureStopped(checkout, runDirectory); }
-      catch (error) { failures.push(error); }
-    }
+    try { const stopped = await stopCompatWorkerContainer(runDirectory, false, workerId); if (stopped && stopped.exitCode !== 0) failures.push(new Error(`Worker exited with ${stopped.exitCode}: ${stopped.stderr}`)); }
+    catch (error) { failures.push(error); }
     if (observer) try { await observer.close(); } catch (error) { failures.push(error); }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw aggregateFailures('Goal Worker execution or shutdown failed.', failures);
@@ -143,7 +138,7 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
   const peer = path.join(root, 'codex.mjs'), log = path.join(root, 'peer.jsonl'), launcher = path.join(root, 'daynight');
   const git = async (cwd: string, args: string[]) => runOwnedCommand('git', args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
   const workerId = randomUUID();
-  let worker: ManagedCommand | undefined, exited = false, failure: unknown;
+  let worker: Awaited<ReturnType<typeof startCompatWorkerContainer>> | undefined, exited = false, observationFailure: unknown, failure: unknown;
   try {
     await git(root, ['init', '--bare', bare]);
     await git(root, ['init', '-b', 'main', repository]);
@@ -159,7 +154,7 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
     await git(root, ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
     await copyFile(path.join(import.meta.dirname, 'native-worker-peer.mjs'), peer);
     await chmod(peer, 0o700);
-    await writeFile(launcher, `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(input.entry)} "$@"\n`, { mode: 0o700 });
+    await writeFile(launcher, `#!/bin/sh\nexec /usr/local/bin/node ${shellLiteral(input.entry)} "$@"\n`, { mode: 0o700 });
     const project = await input.command(['project', 'create', `Old Worker ${randomUUID()}`, '--repo', remote, '--team', 'personal', '--confirm']);
     const projectId = project.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
     if (!projectId) throw new Error('Worker Project creation returned no ID.');
@@ -172,11 +167,10 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
     await input.command(['task', 'update', taskId, '--project', projectId, '--allow-agents', 'true', '--if-version', String(task.version)]);
     const config = await prepareWorkerFixtureConfiguration(root, { serverUrl: input.server, serverToken: input.token, workerId, repositoryRoot: path.join(root, 'repositories'), peer, projectId, remote, repository, cli: launcher });
     await registerFixtureIdentity(checkout, runDirectory, { projectId, taskId, workerId, userId: task.assignedTo, serverOrigin: input.server, repository });
-    worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [input.entry, 'worker', 'run'], options: {
-      cwd: root, env: { ...cliEnvironment, DN_CONFIG_DIR: config, CODEX_HOME: path.join(root, 'native'), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 300_000, onOutput: () => {},
-    } });
-    void worker.finished.then(() => { exited = true; }, () => { exited = true; });
+    worker = await startCompatWorkerContainer({ checkout, runDirectory, root, entry: input.entry, config, workerId, log, ca: path.join(runDirectory, 'artifacts', 'daynight-ca.pem'), resolver: path.join(checkout, 'packages/e2e_tests/src/resolve-local.cjs') });
+    void worker.finished.then(() => { exited = true; }, error => { observationFailure = error; });
     await expect.poll(async () => {
+      if (observationFailure !== undefined) throw new Error('Published Worker observation failed.', { cause: observationFailure });
       if (exited) throw new Error(`Published Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`);
       return (await read()).properties.worker?.claimId;
     }, { timeout: 90_000, intervals: [1_000] }).toEqual(expect.any(String));
@@ -184,6 +178,8 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
     if (!claim || claim.workerId !== workerId || claim.state !== 'active') throw new Error('Published Worker did not own the original claim.');
     await registerFixtureClaim(checkout, runDirectory, claim.claimId);
     await expect.poll(async () => {
+      if (observationFailure !== undefined) throw new Error('Published Worker observation failed.', { cause: observationFailure });
+      if (exited) throw new Error(`Published Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`);
       try { return (await readFile(log, 'utf8')).includes('turn/start'); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false; throw error; }
     }, { timeout: 90_000, intervals: [1_000] }).toBe(true);
@@ -195,10 +191,8 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
   finally {
     const failures: unknown[] = [];
     if (failure !== undefined) failures.push(failure);
-    if (worker) {
-      try { await stopAndRecordFixtureWorker({ worker, exited, runDirectory, workerId, launchNumber: 1 }); await markFixtureStopped(checkout, runDirectory); }
-      catch (error) { failures.push(error); }
-    }
+    try { const stopped = await stopCompatWorkerContainer(runDirectory, false, workerId); if (stopped && stopped.exitCode !== 0) failures.push(new Error(`Published Worker exited with ${stopped.exitCode}: ${stopped.stderr}`)); }
+    catch (error) { failures.push(error); }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw aggregateFailures('Published Worker execution or shutdown failed.', failures);
   }

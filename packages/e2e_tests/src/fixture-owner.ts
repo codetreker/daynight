@@ -7,6 +7,7 @@ import type { CommandOptions, CommandResult, ManagedCommand } from "./command.ts
 import { startGatedCommand, stopGate } from "./gated-command.ts";
 import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "./process-evidence.ts";
 import { loadFixtureStopProofs, readFixtureBot, readFixtureExecutions, stopRecordedFixtureBot, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "./worker-cleanup.ts";
+import { stopCompatWorkerContainer } from "./subtask-compat-worker-container.ts";
 
 type Launch = { id: string; stopped: boolean };
 type BrowserScope = { id: string; proof: ProcessEvidence | null; stopped: boolean; launchState?: "prepared" | "submitted" | "never_started"; launcher?: ProcessEvidence };
@@ -235,6 +236,9 @@ export const recoverRunOwnership = async (input: { repository: string; runDirect
   if (owner.verified) return;
   if (owner.playwright !== null && !owner.playwright.stopped) await stopGate(run, owner.playwright.id, Date.now() + 15_000);
   const latest = await readOwner(run);
+  // The compatibility fixture's container owns every Worker descendant, including
+  // detached Controllers. Stop that boundary before removing any fixture data.
+  await stopCompatWorkerContainer(run, true, latest.fixture.identity?.workerId);
   if (owner.playwright !== null) {
     if (latest.playwright?.id !== owner.playwright.id) throw new Error("Playwright ownership changed during recovery.");
     latest.playwright.stopped = true; await writeOwner(run, latest);

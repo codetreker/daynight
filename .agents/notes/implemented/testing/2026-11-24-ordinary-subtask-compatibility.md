@@ -19,7 +19,8 @@ same-origin TLS gateway to exercise the client and Server combinations. The
 gateway allows the old and new Web bundles to share an origin without replacing
 the product API. The recovery case retains the database and attachment storage
 across the old and candidate services and records its own resource ownership and
-cleanup outcome.
+cleanup outcome. Compatibility Workers use the dedicated container boundary in
+the [Worker fixture decision](2026-11-24-compat-worker-container.md).
 
 The [product E2E decision](2026-11-08-self-contained-product-e2e.md) owns the
 normal same-revision runtime and authentication fixture. Version compatibility

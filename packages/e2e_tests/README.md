@@ -70,6 +70,22 @@ remain under `.tmp/product-e2e-compat/`; a failed or unconfirmed run is not a
 passing compatibility result. The [compatibility decision](../../.agents/notes/implemented/testing/2026-11-24-ordinary-subtask-compatibility.md)
 records the matrix and its boundaries.
 
+Each compatibility Worker runs in a dedicated container with a private PID
+namespace, including its Controller, native peer and Git descendants. The pinned
+Node image includes Git; the container shares host networking to reach the
+loopback gateway and mounts the checkout read-only at the same path, with the
+fixture's own directory writable. The Worker credential
+stays in the run's private fixture. The owner records the container ID, image,
+Worker identity, exit state and bounded diagnostics. Diagnostics redact the
+fixture token and bearer values; truncated streams are omitted. The container
+must be observed stopped before fixture credentials or runtime services are
+removed. A nonzero Worker exit still fails the scenario even when container stop
+is confirmed. Recovery observes the original container and never assumes that
+a missing or unresolved Docker mutation completed. It joins a recorded Docker
+signal client before forcing a still-running container to stop. A definite bind
+refusal and a confirmed absent container permit fixture cleanup; other uncertain
+creation outcomes remain unconfirmed.
+
 ## Runtime topology
 
 Each run owns a dedicated internal database network, private ingress bridge,
@@ -268,6 +284,7 @@ Chromium. They are not part of the normal product journey or CI harness:
 ```bash
 node --test packages/e2e_tests/validation/provider-navigation.test.mjs
 node --test packages/e2e_tests/validation/worker-monitoring-response.test.mjs
+node --test packages/e2e_tests/validation/compat-worker-container.test.ts
 ```
 
 ## Results and cleanup
