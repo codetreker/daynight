@@ -76,7 +76,10 @@ it.each(["negotiated", "unsupported"] as const)("fences Bot history reads and ch
     expect(() => parseLaunchTicket({ ...ticket, codexBotRecovery: { botId: randomUUID(), directory: home } })).toThrow("Codex recovery belongs to another Bot.");
     await writeFile(ticket.credentialFile, JSON.stringify({ token: "local-test-token", expiresAt: new Date(Date.now() + 60_000).toISOString(),
       sessionId: ticket.sessionId, testExecutionId: executionId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
-    const historyEpoch = randomUUID(), first = preview("1"), second = preview("2"), third = preview("3"), entries = [first, second, third];
+    const historyEpoch = randomUUID();
+    const withResource = (sequence: string): BotHistoryWindowEntry => ({ ...preview(sequence), resourceIds: [randomUUID()] });
+    const first = withResource("1"), second = withResource("2"), third = withResource("3");
+    const entries = [first, second, third];
     const { claimId: _claimId, identity: _identity, ...baseSnapshot } = snapshotFixture;
     const fence = { protocol: SESSION_PROTOCOL, sessionId: ticket.sessionId, testExecutionId: executionId, executionGeneration: "1", connectionEpoch: "1" };
     const session = { ...baseSnapshot, ...fence, historyEpoch, lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: "not_required",
@@ -158,8 +161,9 @@ it.each(["negotiated", "unsupported"] as const)("fences Bot history reads and ch
     expect(retirement).not.toHaveBeenCalled();
     releaseFirstReceipt.resolve();
     await vi.waitFor(() => expect(responses.find(response => response.requestId === oldPage)).toMatchObject({ sourceThrough: "0", result: { windowRevision: "1", items: [first] } }));
-    await vi.waitFor(() => expect(retirement).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(retirement).toHaveBeenCalledTimes(3), { timeout: 3000 });
     expect(checkpoints.map(checkpoint => [checkpoint.sourceThrough, checkpoint.retainedFromSeq])).toEqual([["0", "1"], ["1", "2"], ["2", "3"]]);
+    expect(retirement.mock.calls.map(([references]) => references)).toEqual(entries.map(entry => new Set(entry.resourceIds)));
     const stale = sendRead({ kind: "bot_history_window", mode: "changes", cursor: cursor(checkpoints[0]!, "changes", "0"), responseOverhead: 4096 });
     const latest = sendRead({ kind: "bot_history_window", mode: "tail", cursor: null, responseOverhead: 4096 });
     const legacy = sendRead({ kind: "timeline", direction: "tail", cursor: null });
