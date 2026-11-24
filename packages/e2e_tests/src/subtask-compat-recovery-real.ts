@@ -4,7 +4,7 @@ import { get as httpsGet } from 'node:https';
 import { createServer, type Server } from 'node:net';
 import path from 'node:path';
 import { sourceFingerprint } from './build.ts';
-import { verifyCandidateBuild, verifyCandidateCombination, verifyRepairArtifact } from './subtask-compat-recovery-provenance.ts';
+import { fallbackBaseline, fallbackPatchSHA256, verifyCandidateBuild, verifyCandidateCombination, verifyFallbackArtifact, verifyRepairArtifact } from './subtask-compat-recovery-provenance.ts';
 import { readRegisteredMigrations } from './subtask-compat-recovery-manifest.ts';
 import { migrationLedgerQuery, migrationManifestHash, observeMigrationLedger, requireMigrationPlan, requireSettledCandidateLedger, type MigrationEntry } from './subtask-compat-recovery-migrations.ts';
 import { type CommandOptions, type ManagedCommand, type CommandResult } from './command.ts';
@@ -68,6 +68,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
   if (!ctx.sharedCandidate) throw new Error('Candidate combination artifact is required.');
   if (!ctx.repair) throw new Error('Explicit repair artifact, revision and SHA-256 are required.');
   if (!/^[a-f0-9]{40}$/.test(ctx.repair.revision) || !/^[a-f0-9]{64}$/.test(ctx.repair.sha256)) throw new Error('Repair artifact identity is invalid.');
+  if (ctx.baseline !== fallbackBaseline) throw new Error('The fallback patch requires its fixed baseline.');
   const oldCliIntegrity = 'sha512-T85y9vOcRHjHvjFImEoDpOs25JxQkfSOLkSbmwUgVZi8S/KsQnVx3EJ5+r6Q/vwoGEP64HIPKdNHdUOVxpDe9w==';
   const integrity = async (): Promise<string> => `sha512-${createHash('sha512').update(await readFile(ctx.oldCli!)).digest('base64')}`;
   if (await integrity() !== oldCliIntegrity) throw new Error('Baseline npm CLI integrity mismatch.');
@@ -79,6 +80,13 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
   const artifacts = path.join(runtime, 'artifacts'), run = path.join(runtime, 'run'), privateDir = path.join(run, 'private');
   await mkdir(artifacts, { recursive: true, mode: 0o700 }); await mkdir(privateDir, { recursive: true, mode: 0o700 });
   const candidate = await ctx.clone('candidate', ctx.candidate), baseline = await ctx.clone('old', ctx.baseline), repair = await ctx.clone('repair', ctx.repair.revision);
+  const fallback = await ctx.clone('fallback', ctx.baseline), fallbackCopy = await ctx.clone('fallback-copy', ctx.baseline);
+  const fallbackPatch = path.join(repository, 'packages/e2e_tests/src/subtask-compat-fallback.patch');
+  if (await hash(fallbackPatch) !== fallbackPatchSHA256) throw new Error('Fallback patch digest mismatch.');
+  for (const source of [fallback, fallbackCopy]) {
+    await command('git', ['apply', '--unidiff-zero', '--check', fallbackPatch], source);
+    await command('git', ['apply', '--unidiff-zero', fallbackPatch], source);
+  }
   const candidateTree = (await command('git', ['rev-parse', `${ctx.candidate}:packages/daynight-server`])).stdout.trim();
   const repairTree = (await command('git', ['rev-parse', `${ctx.repair.revision}:packages/daynight-server`])).stdout.trim();
   const dependencyInputs = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'patches', 'packages/daynight-web/package.json'];
@@ -108,6 +116,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
   await ctx.phase('build-candidate'); await buildWeb(candidate, true);
   await ctx.phase('build-baseline'); await buildWeb(baseline, false);
   await ctx.phase('build-repair-web'); await buildWeb(repair, false);
+  await ctx.phase('build-fallback-web'); await buildWeb(fallback, false); await buildWeb(fallbackCopy, false);
   const candidateBinary = path.join(artifacts, 'server-candidate');
   const shared = ctx.sharedCandidate;
   const manifest: unknown = JSON.parse(await readFile(shared.manifest, 'utf8'));
@@ -122,6 +131,9 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
   if (!repairFile.isFile() || repairFile.isSymbolicLink() || await hash(ctx.repair.artifact) !== ctx.repair.sha256) throw new Error('Repair artifact digest mismatch.');
   const repairBinary = path.join(artifacts, 'server-repair'); await cp(ctx.repair.artifact, repairBinary);
   await command('go', ['build', '-trimpath', '-o', path.join(artifacts, 'server122'), './cmd/daynight-server'], path.join(baseline, 'packages/daynight-server'), 600_000, env);
+  const fallbackBinary = path.join(artifacts, 'server-fallback'), reproducedFallback = path.join(runtime, 'fallback-reproduced');
+  await command('go', ['build', '-trimpath', '-o', fallbackBinary, './cmd/daynight-server'], path.join(fallback, 'packages/daynight-server'), 600_000, env);
+  await command('go', ['build', '-trimpath', '-o', reproducedFallback, './cmd/daynight-server'], path.join(fallbackCopy, 'packages/daynight-server'), 600_000, env);
   const reproducedRepair = path.join(runtime, 'repair-reproduced');
   await command('go', ['build', '-trimpath', '-o', reproducedRepair, './cmd/daynight-server'], path.join(repair, 'packages/daynight-server'), 600_000, env);
   const repairInfo = await command('go', ['version', '-m', repairBinary], repository, 30_000, env);
@@ -150,6 +162,15 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     await ctx.evidence(`${name}Registry`, { revision, sourceFingerprint: sourceFingerprints[name], probeSHA256, probe: probes[name], entries: registries[name], sha256: migrationManifestHash(registries[name]!) });
   }
   const baselineManifest = registries.baseline!, candidateManifest = registries.candidate!, repairManifest = registries.repair!;
+  const fallbackRegistry = await readRegisteredMigrations({ source: fallback, probe: registryProbe, overlayFile: path.join(runtime, 'fallback-registry-overlay.json'), environment: env, command });
+  const fallbackProof = { baseline: ctx.baseline, patchSHA256: await hash(fallbackPatch), baselineLedgerSHA256: migrationManifestHash(baselineManifest),
+    fallbackLedgerSHA256: migrationManifestHash(fallbackRegistry.entries), webSHA256: await hashTree(path.join(fallback, 'packages/daynight-web/dist')),
+    reproducedWebSHA256: await hashTree(path.join(fallbackCopy, 'packages/daynight-web/dist')), serverSHA256: await hash(fallbackBinary), reproducedServerSHA256: await hash(reproducedFallback) };
+  if (await hashTree(path.join(fallback, 'packages/daynight-server/internal/service/webui/dist')) !== fallbackProof.webSHA256 ||
+      await hashTree(path.join(fallbackCopy, 'packages/daynight-server/internal/service/webui/dist')) !== fallbackProof.reproducedWebSHA256) throw new Error('Published fallback Web differs from its source build.');
+  const fallbackInfo = await command('go', ['version', '-m', fallbackBinary], repository, 30_000, env);
+  verifyFallbackArtifact({ ...fallbackProof, buildInfo: fallbackInfo.stdout });
+  await ctx.evidence('fallbackArtifact', { ...fallbackProof, verified: true });
   const manifestEvidence = { baselineRevision: ctx.baseline, candidateRevision: ctx.candidate, repairRevision: ctx.repair.revision, sourceFingerprints, probeSHA256, probes,
     baseline: baselineManifest, candidate: candidateManifest, repair: repairManifest,
     baselineSHA256: migrationManifestHash(baselineManifest), candidateSHA256: migrationManifestHash(candidateManifest), repairSHA256: migrationManifestHash(repairManifest) };
@@ -281,7 +302,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     const filename = path.join(privateDir, `browser-command-${commandSequence++}.txt`), temporary = `${filename}.tmp`;
     await writeFile(temporary, operation, { mode: 0o600 }); await rename(temporary, filename);
   };
-  const expectedBinaries = Object.fromEntries(await Promise.all(['server122', 'server-candidate', 'server-repair', 'controlled.test'].map(async name => [name, await hash(path.join(artifacts, name))])));
+  const expectedBinaries = Object.fromEntries(await Promise.all(['server122', 'server-candidate', 'server-repair', 'server-fallback', 'controlled.test'].map(async name => [name, await hash(path.join(artifacts, name))])));
   const baseServerEnv = `DAYNIGHT_REDIS_URL=redis://redis:6379/0\nDAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node\nDAYNIGHT_IMAGE_HELPER_PATH=/opt/e2e/image-validator/image-validation-helper.js\nDAYNIGHT_IMAGE_MANIFEST_PATH=/opt/e2e/image-validator/image-validation-manifest.json\nDAYNIGHT_IMAGE_TEMP_DIRECTORY=/run/private/image-validation\n`;
   await mkdir(path.join(privateDir, 'image-validation'), { mode: 0o700 });
   const serverEnv = path.join(privateDir, 'server.env');
@@ -319,6 +340,33 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     }
     throw new Error('Selected Server readiness timed out.');
   };
+  const verifyServedFallback = async (): Promise<number> => {
+    const root = path.join(fallback, 'packages/daynight-web/dist'), ca = await readFile(path.join(artifacts, 'daynight-ca.pem'));
+    let count = 0;
+    const walk = async (directory: string, prefix: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const name = `${prefix}${entry.name}`, filename = path.join(directory, entry.name);
+        if (entry.isDirectory()) { await walk(filename, `${name}/`); continue; }
+        if (!entry.isFile()) throw new Error('Fallback Web contains a nonregular entry.');
+        const url = name === 'index.html' ? '/' : `/${name.split('/').map(encodeURIComponent).join('/')}`;
+        const received = await new Promise<Buffer>((resolve, reject) => {
+          const req = httpsGet({ hostname: '127.0.0.1', port: serverPort, path: url, servername: 'app.daynight.localhost', headers: { Host: `app.daynight.localhost:${serverPort}` }, ca, signal: AbortSignal.timeout(10_000) }, response => {
+            if (response.statusCode !== 200) { response.resume(); reject(new Error('Fallback Web response failed.')); return; }
+            const chunks: Buffer[] = []; response.on('data', chunk => chunks.push(Buffer.from(chunk))); response.once('error', reject); response.once('end', () => resolve(Buffer.concat(chunks)));
+          }); req.once('error', reject);
+        });
+        const source = await readFile(filename);
+        const expected = name === 'index.html'
+          ? Buffer.from(source.toString('utf8').replace('</head>', `<meta name="daynight-preview-origin" content="https://preview.daynight.localhost:${serverPort}"></head>`))
+          : source;
+        if (!received.equals(expected)) throw new Error('Served fallback Web differs from embedded build.');
+        count++;
+      }
+    };
+    await walk(root, '');
+    if (count < 2) throw new Error('Fallback Web assets missing.');
+    return count;
+  };
   const psql = async (sql: string): Promise<string> => {
     const result = await observe(['exec', resources.postgres, 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'daynight', '-d', 'daynight', '-c', sql]);
     if (result.exitCode !== 0) throw new Error('Isolated database observation failed.'); return result.stdout.trim();
@@ -337,6 +385,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     await tellBrowser('baseline-ready'); const fixtureEvent = await nextEvent('fixture-ready');
     const fixture = JSON.parse(await readFile(path.join(privateDir, 'fixture.json'), 'utf8')) as Fixture;
     for (const key of ['user', 'project', 'goal', 'child', 'hiddenGoal', 'hiddenChild', 'endpoint'] as const) if (!uuid.test(fixture[key]) || fixtureEvent[key] !== undefined && fixtureEvent[key] !== fixture[key]) throw new Error('Fixture identity mismatch.');
+    if (fixtureEvent.oldDatabase !== 13) throw new Error('Baseline profile schema was not observed.');
     if (!fixture.token) throw new Error('Device credential missing.');
     await ctx.evidence('baselineFixture', { authentication: 'normal', server: 'baseline-container', project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild });
     const initialLedger = await observeLedger('baselineLedger', true);
@@ -439,7 +488,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     await ctx.evidence('webhookEffect', { count: effect.count, hashes: effect.hashes });
     await startServer(resources.candidate, 'server-candidate'); await waitServer(resources.candidate);
     await tellBrowser('write'); const post = await nextEvent('written');
-    if (typeof post.task !== 'string' || !uuid.test(post.task)) throw new Error('Post-upgrade task identity missing.');
+    if (typeof post.task !== 'string' || !uuid.test(post.task) || typeof post.originalCacheDigest !== 'string' || !/^[a-f0-9]{64}$/.test(post.originalCacheDigest)) throw new Error('Post-upgrade task or browser cache identity missing.');
     if (await psql(`SELECT count(*) FROM tasks WHERE id='${post.task}'`) !== '1') throw new Error('Post-upgrade write did not persist.');
     await stopServer(resources.candidate);
     const postWriteLedger = await observeLedger('postWriteLedger', true);
@@ -453,18 +502,29 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     if (restoredLedger.state !== 'baseline' || restoredLedger.raw !== ledger) throw new Error('Restored ledger differs from backup.');
     if (await psql(`SELECT count(*) FROM tasks WHERE id='${post.task}'`) !== '0') throw new Error('Post-upgrade write remains after restore.');
     await psql(`UPDATE webhook_endpoints SET enabled=false WHERE id='${fixture.endpoint}'; UPDATE projects SET task_cache_epoch=gen_random_uuid()`);
-    if (await psql(`SELECT task_cache_epoch::text <> '${epoch}' FROM projects WHERE id='${fixture.project}'`) !== 't') throw new Error('Restored cache epoch did not rotate.');
+    const restoredEpoch = await psql(`SELECT task_cache_epoch::text FROM projects WHERE id='${fixture.project}'`);
+    if (!uuid.test(restoredEpoch) || restoredEpoch === epoch) throw new Error('Restored cache epoch did not rotate.');
     if (await psql(`SELECT enabled FROM webhook_endpoints WHERE id='${fixture.endpoint}'`) !== 'f') throw new Error('Webhook reconciliation did not persist.');
-    await startServer(resources.old, 'server122'); await waitServer(resources.old);
+    await startServer(resources.old, 'server-fallback'); await waitServer(resources.old);
+    const servedWebFiles = await verifyServedFallback();
+    await ctx.evidence('fallbackServedWeb', { sha256: fallbackProof.webSHA256, files: servedWebFiles, exactBytes: true });
     await tellBrowser('verify-cli'); await nextEvent('cli-verified');
     await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, cliReadback: true, restoredBrowser: 'not-yet-verified' });
-    await tellBrowser('verify'); await nextEvent('verified'); await stopServer(resources.old);
-    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, cliReadback: true, restoredBrowser: 'verified' });
+    await tellBrowser('verify-restored'); const restored = await nextEvent('restored-verified');
+    if (restored.epoch !== restoredEpoch || restored.user !== fixture.user || restored.project !== fixture.project || restored.child !== fixture.child || restored.hiddenChild !== fixture.hiddenChild || restored.originalCacheDigest !== post.originalCacheDigest || restored.sameContext !== true || restored.candidateTabRetired !== true || restored.attachment !== 'paired122' || restored.history !== 'baseline-only' || restored.deletedStatus !== 410) throw new Error('Restored browser evidence mismatch.');
+    await tellBrowser('verify-failures'); const failures = await nextEvent('failures-verified');
+    if (failures.denied !== true || failures.offline !== true || failures.storage !== true || failures.storageInjected !== true || failures.blocked !== true) throw new Error('Browser failure evidence missing.');
+    await tellBrowser('verify-restart'); const restart = await nextEvent('restart-verified');
+    if (restart.epoch !== restoredEpoch || restart.user !== fixture.user || restart.kind !== 'persistent-browser-process' || restart.sameProfile !== true) throw new Error('Browser restart evidence mismatch.');
+    await tellBrowser('verify-real-storage'); const storageFailure = await nextEvent('real-storage-verified');
+    if (storageFailure.errorName !== 'VersionError' || storageFailure.namespace !== 'daynight-task-cache-recovery-12ebdd08') throw new Error('Real browser storage failure evidence missing.');
+    await stopServer(resources.old);
+    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, baselineEpoch: epoch, restoredEpoch, endpointReconciled: true, cliReadback: true, restoredBrowser: 'verified', restored, failures, restart, storageFailure });
     await tellBrowser('finish'); if ((await browser.finished).exitCode !== 0) throw new Error('Recovery browser did not stop cleanly.'); browserStopped = true;
     if (ctx.sharedCandidate && await hash(candidateBinary) !== ctx.sharedCandidate.sha256) throw new Error('Shared candidate digest changed during recovery.');
-    return { fixture: { project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild },
-      artifacts: { candidate: await hash(path.join(artifacts, 'server-candidate')), baseline: await hash(path.join(artifacts, 'server122')), repair: await hash(path.join(artifacts, 'server-repair')), candidateServerTree: candidateTree, repairServerTree: repairTree, repairRevision: ctx.repair.revision, repairSuppliedSHA256: ctx.repair.sha256, repairReproducedSHA256: await hash(reproducedRepair), authRevision, candidateOrigin: 'candidate-combination', baselineCli: { version: '0.72.0', gitHead: 'f5d73f3275c8e2774a588967a0fbdcd2a261c379', integrity: oldCliIntegrity }, candidateWeb: 'production', baselineWeb: 'production', repairWeb: 'repair production', controlledWebhook: 'test transport' },
-      recovery: { baselineVersion, candidateVersion, migrationManifests: manifestEvidence, candidateLedgerState: committed.state, candidateLedgerSettled: committed.settled, precommitLedgerUnchanged: true, candidateLedger, snapshotSHA256: snapshotHash, storageSHA256: storageHash, historicalProjectionPreserved: true, receiverBefore: zeroEffects.count, receiverAfter: effect.count, receiverHashes: effect.hashes, restoredLedger: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true } };
+    return { fixture: { user: fixture.user, project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild },
+      artifacts: { candidate: await hash(path.join(artifacts, 'server-candidate')), baseline: await hash(path.join(artifacts, 'server122')), repair: await hash(path.join(artifacts, 'server-repair')), fallback: fallbackProof, candidateServerTree: candidateTree, repairServerTree: repairTree, repairRevision: ctx.repair.revision, repairSuppliedSHA256: ctx.repair.sha256, repairReproducedSHA256: await hash(reproducedRepair), authRevision, candidateOrigin: 'candidate-combination', baselineCli: { version: '0.72.0', gitHead: 'f5d73f3275c8e2774a588967a0fbdcd2a261c379', integrity: oldCliIntegrity }, candidateWeb: 'production', baselineWeb: 'production', repairWeb: 'repair production', controlledWebhook: 'test transport' },
+      recovery: { baselineVersion, candidateVersion, migrationManifests: manifestEvidence, candidateLedgerState: committed.state, candidateLedgerSettled: committed.settled, precommitLedgerUnchanged: true, candidateLedger, snapshotSHA256: snapshotHash, storageSHA256: storageHash, historicalProjectionPreserved: true, receiverBefore: zeroEffects.count, receiverAfter: effect.count, receiverHashes: effect.hashes, restoredLedger: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, browser: { baselineSchema: fixtureEvent.oldDatabase, originalCacheDigest: post.originalCacheDigest, restoredEpoch, restored, failures, restart, storageFailure, servedWebFiles } } };
   } finally {
     if (!browserStopped) await browser.stop();
   }

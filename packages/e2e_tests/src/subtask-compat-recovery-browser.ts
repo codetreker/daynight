@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, expect } from '@playwright/test';
+import { chromium, expect, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
 import { beginBrowserScope, bindBrowserScope, finishBrowserScope } from './fixture-owner.ts';
 import { deviceInstructionReader } from './subtask-compat-recovery-device.ts';
 
@@ -40,21 +40,44 @@ const cli = async (args: string[], onOutput?: (channel: 'stdout' | 'stderr', chu
     return output;
   } finally { clearTimeout(timer); running = undefined; }
 };
-let browser: Awaited<ReturnType<typeof chromium.connect>> | undefined;
-let server: Awaited<ReturnType<typeof chromium.launchServer>> | undefined;
+let context: BrowserContext | undefined;
 let phase = 'launch';
 const setPhase = async (value: string): Promise<void> => { phase = value; await writeAtomic(path.join(privateDirectory, 'browser-phase.json'), JSON.stringify({ phase })); };
 let scope: string | undefined, bound = false;
 try {
   await mkdir(cliDirectory, { recursive: true, mode: 0o700 });
   await writeFile(path.join(cliDirectory, 'config.yml'), `serverUrl: ${input.baseURL}\n`, { mode: 0o600 });
-  scope = await beginBrowserScope(input.repository, input.browserOwnerDirectory);
-  server = await chromium.launchServer({ proxy: { server: input.proxyURL, bypass: '127.0.0.1,localhost,*.localhost' } });
-  const browserPID = server.process().pid; if (browserPID === undefined) throw new Error('Browser process identity is missing.');
-  await bindBrowserScope(input.repository, input.browserOwnerDirectory, scope, browserPID); bound = true;
-  browser = await chromium.connect(server.wsEndpoint());
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'en-US' });
-  const page = await context.newPage(); page.setDefaultTimeout(30_000);
+  const profile = path.join(privateDirectory, 'chromium-profile');
+  const launch = async (): Promise<BrowserContext> => {
+    scope = await beginBrowserScope(input.repository, input.browserOwnerDirectory); bound = false;
+    const started = await chromium.launchPersistentContext(profile, { ignoreHTTPSErrors: true, locale: 'en-US', proxy: { server: input.proxyURL, bypass: '127.0.0.1,localhost,*.localhost' } });
+    // Playwright does not expose a persistent context's process handle. Match its
+    // direct child by the exact private profile argument and bind the original
+    // process-group leader before treating the launch as owned.
+    const children = new Set<string>();
+    for (const thread of await readdir(`/proc/${process.pid}/task`)) {
+      try {
+        for (const child of (await readFile(`/proc/${process.pid}/task/${thread}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean)) children.add(child);
+      } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+    }
+    const matches: number[] = [];
+    for (const child of children) {
+      try {
+        const command = (await readFile(`/proc/${child}/cmdline`, 'utf8')).replaceAll('\0', ' ');
+        if (command.includes(` --user-data-dir=${profile} --remote-debugging-pipe`) && !command.includes(' --type=')) matches.push(Number(child));
+      } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+    }
+    if (matches.length !== 1) { await started.close(); throw new Error('Persistent browser process identity is ambiguous.'); }
+    try { await bindBrowserScope(input.repository, input.browserOwnerDirectory, scope, matches[0]!); bound = true; return started; }
+    catch (error) { await started.close(); throw error; }
+  };
+  const stop = async (): Promise<void> => {
+    if (!context || !scope || !bound) throw new Error('Persistent browser ownership is unavailable.');
+    await context.close(); context = undefined;
+    await finishBrowserScope(input.repository, input.browserOwnerDirectory, scope); scope = undefined; bound = false;
+  };
+  context = await launch();
+  let page = context.pages()[0] ?? await context.newPage(); page.setDefaultTimeout(30_000);
   await setPhase('register-uniauth');
   await page.goto(`${input.authURL}/console/`);
   await page.getByRole('button', { name: 'Continue with GitHub', exact: true }).click();
@@ -97,6 +120,7 @@ try {
   const projectOutput = await cli(['project', 'create', `Recovery ${randomUUID()}`, '--repo', `https://example.test/recovery/${randomUUID()}.git`, '--team', 'personal', '--confirm']);
   const project = projectOutput.match(/^ID: ([0-9a-f-]{36})$/m)?.[1]; if (!project) throw new Error('Project ID missing.');
   const request = async (url: string, data: unknown): Promise<Record<string, unknown>> => {
+    if (!context) throw new Error('Persistent browser is not running.');
     const result = await context.request.post(`${input.baseURL}${url}`, { headers: { Authorization: `Bearer ${token}` }, data });
     if (result.status() !== 201) throw new Error(`Fixture API creation failed (${result.status()}).`);
     return await result.json() as Record<string, unknown>;
@@ -110,7 +134,13 @@ try {
   const child = await create(['--parent', goal, '--title', 'Recovery child', '--status', 'todo']);
   const hiddenGoal = await create(['--type', 'goal', '--title', 'Deleted recovery goal']);
   const hiddenChild = await create(['--parent', hiddenGoal, '--title', 'Hidden recovery child', '--status', 'todo']);
+  // Populate the old database before deletion so restoration must not revive it.
+  await page.goto(`${input.baseURL}/projects/${project}/tasks/${hiddenChild}`);
+  await expect(page.getByRole('heading', { name: 'Hidden recovery child', exact: true })).toBeVisible();
+  const oldDatabase = await page.evaluate(async () => (await indexedDB.databases()).find(item => item.name === 'daynight-task-cache')?.version);
+  if (oldDatabase !== 13) throw new Error('Baseline profile did not open task cache schema 13.');
   await cli(['task', 'delete', hiddenGoal, '--project', project, '--force']);
+  await cli(['task', 'thread', 'post', child, '--body=Recovery baseline history', '--project', project]);
   await setPhase('create-webhook');
   const endpointResult = await request('/api/v1/me/webhooks', { operationId: randomUUID(), issuedAt: new Date().toISOString(), expectedUserId: me.id,
     name: 'Recovery receiver', enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: `https://receiver.example:${input.receiverPort}/webhook` } },
@@ -124,8 +154,45 @@ try {
   const shown = JSON.parse(await cli(['task', 'show', child, '--project', project, '--json'])) as { id?: string; parentId?: string };
   if (shown.id !== child || shown.parentId !== goal) throw new Error('Baseline child readback mismatch.');
   await writeFile(path.join(privateDirectory, 'fixture.json'), JSON.stringify({ user: me.id, project, goal, child, hiddenGoal, hiddenChild, endpoint, token }), { mode: 0o600 });
+  await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`);
+  await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
   await page.goto('about:blank');
-  await send({ type: 'fixture-ready', project, goal, child, hiddenGoal, hiddenChild });
+  await send({ type: 'fixture-ready', project, goal, child, hiddenGoal, hiddenChild, oldDatabase });
+  let candidateTab: Page | undefined;
+  let candidateWrite: string | undefined;
+  let candidateControl: CDPSession | undefined;
+  let originalCacheDigest: string | undefined;
+  const childURL = `${input.baseURL}/projects/${project}/tasks/${child}`;
+  const syncPath = `/api/v1/projects/${project}/task-sync`;
+  const databases = async (target: Page): Promise<{ name?: string; version?: number }[]> => await target.evaluate(() => indexedDB.databases());
+  const originalDigest = async (target: Page): Promise<string> => await target.evaluate(async () => {
+    const request = indexedDB.open('daynight-task-cache');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    try {
+      const names = Array.from(db.objectStoreNames).sort();
+      const transaction = db.transaction(names, 'readonly');
+      const entries = await Promise.all(names.map(async name => await new Promise<unknown[]>((resolve, reject) => {
+        const read = transaction.objectStore(name).getAll(); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error);
+      })));
+      const bytes = new TextEncoder().encode(JSON.stringify([names, entries], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value));
+      return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), value => value.toString(16).padStart(2, '0')).join('');
+    } finally { db.close(); }
+  });
+  const snapshot = async (target: Page): Promise<{ epoch: string; user: string }> => {
+    const responsePromise = target.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === syncPath && response.status() === 200 && !url.searchParams.has('epoch') && !url.searchParams.has('since');
+    }, { timeout: 30_000 });
+    await target.goto(childURL);
+    const response = await responsePromise;
+    const body = await response.json() as { mode?: unknown; epoch?: unknown; tasks?: unknown };
+    const principal = response.headers()['daynight-user-id'];
+    if (body.mode !== 'snapshot' || typeof body.epoch !== 'string' || !Array.isArray(body.tasks) || typeof principal !== 'string' || principal !== me.id) throw new Error('Restored browser snapshot or principal mismatch.');
+    const ids = body.tasks.map(item => (item as { id?: unknown }).id);
+    if (!ids.includes(child) || ids.includes(hiddenChild) || candidateWrite !== undefined && ids.includes(candidateWrite)) throw new Error('Restored snapshot contains wrong task history.');
+    await expect(target.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
+    return { epoch: body.epoch, user: principal };
+  };
   while (true) {
     const operation = await next();
     if (operation === 'finish') break;
@@ -147,10 +214,168 @@ try {
     if (operation === 'write') {
       await setPhase('post-upgrade-write');
       const task = await create(['--title', 'Post-upgrade write', '--status', 'todo']);
+      candidateWrite = task;
+      await cli(['task', 'thread', 'post', child, '--body=Recovery post-upgrade history', '--project', project]);
+      candidateTab = await context.newPage();
+      await candidateTab.goto(`${childURL}?tab=discussion`);
+      await expect(candidateTab.getByText('Recovery post-upgrade history', { exact: true })).toBeVisible();
+      const upgraded = (await databases(candidateTab)).find(item => item.name === 'daynight-task-cache');
+      if (upgraded?.version !== 14) throw new Error('Candidate profile did not upgrade task cache schema to 14.');
       await writeFile(payload, 'post124', { mode: 0o600 });
       await cli(['task', 'attachment', 'put', child, payload, '--path', 'recovery-proof.txt', '--project', project]);
       if ((await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project])) !== 'post124') throw new Error('Post-upgrade attachment readback mismatch.');
-      await send({ type: 'written', task }); continue;
+      await page.bringToFront();
+      candidateControl = await context.newCDPSession(candidateTab);
+      await candidateControl.send('Page.setWebLifecycleState', { state: 'frozen' });
+      await page.goto(`${input.baseURL}/readyz`);
+      originalCacheDigest = await originalDigest(page);
+      await send({ type: 'written', task, originalCacheDigest }); continue;
+    }
+    if (operation === 'verify-restored') {
+      await setPhase('restored-browser');
+      if (!candidateTab || !candidateWrite || !candidateControl || !originalCacheDigest) throw new Error('Candidate browser history was not established.');
+      const restored = await snapshot(page);
+      const inventory = await databases(page);
+      if (inventory.find(item => item.name === 'daynight-task-cache')?.version !== 14 || inventory.find(item => item.name === 'daynight-task-cache-recovery-12ebdd08')?.version !== 13) throw new Error('Recovery cache namespaces or versions differ.');
+      if (await originalDigest(page) !== originalCacheDigest) throw new Error('Fallback changed the candidate cache contents.');
+      await candidateControl.send('Page.setWebLifecycleState', { state: 'active' });
+      await candidateTab.bringToFront();
+      await page.goto(`${childURL}/attachments/recovery-proof.txt`);
+      await expect(page.getByText('paired122', { exact: true })).toBeVisible();
+      await page.goto(`${childURL}?tab=discussion`);
+      await expect(page.getByText('Recovery baseline history', { exact: true })).toBeVisible();
+      await expect(page.getByText('Recovery post-upgrade history', { exact: true })).toHaveCount(0);
+      // The still-running candidate tab must retire its own pre-restore history.
+      await expect(candidateTab.getByText('Recovery post-upgrade history', { exact: true })).toHaveCount(0, { timeout: 60_000 });
+      await expect(candidateTab.getByText('Recovery baseline history', { exact: true })).toBeVisible();
+      await page.goto(`${input.baseURL}/projects/${project}/tasks/${hiddenChild}`);
+      await expect(page.getByRole('heading', { name: 'Hidden recovery child', exact: true })).toHaveCount(0);
+      const deleted = await context.request.get(`${input.baseURL}/api/v1/projects/${project}/tasks/${hiddenChild}`);
+      if (deleted.status() !== 410) throw new Error('Deleted Task was not refused after restore.');
+      await send({ type: 'restored-verified', ...restored, project, child, hiddenChild, databases: inventory, originalCacheDigest, sameContext: true, candidateTabRetired: true, attachment: 'paired122', history: 'baseline-only', deletedStatus: deleted.status() });
+      continue;
+    }
+    if (operation === 'verify-failures') {
+      await setPhase('restored-failures');
+      for (const failure of ['denied', 'offline', 'storage'] as const) {
+        const probe = await context.newPage(); probe.setDefaultTimeout(30_000);
+        let refused = 0;
+        if (failure !== 'storage') {
+          await probe.goto(`${childURL}?tab=discussion`);
+          await expect(probe.getByText('Recovery baseline history', { exact: true })).toBeVisible();
+        }
+        if (failure === 'storage') {
+          await probe.addInitScript(() => {
+            const original = indexedDB.open.bind(indexedDB);
+            indexedDB.open = ((name: string, version?: number) => {
+              if (name.startsWith('daynight-task-cache-recovery-')) { (window as Window & { recoveryStorageFailed?: boolean }).recoveryStorageFailed = true; throw new DOMException('Injected storage failure', 'UnknownError'); }
+              return original(name, version);
+            }) as typeof indexedDB.open;
+          });
+        } else {
+          await probe.route(`**/api/v1/projects/${project}/**`, route => {
+            refused++;
+            return failure === 'denied'
+              ? route.fulfill({ status: 403, contentType: 'application/json', headers: { 'Daynight-User-ID': String(me.id) }, body: JSON.stringify({ code: 'forbidden' }) })
+              : route.abort('failed');
+          });
+        }
+        if (failure === 'storage') await probe.goto(childURL);
+        await expect(probe.getByRole('alert').first()).toBeVisible({ timeout: 60_000 });
+        if (failure === 'storage') {
+          if (!await probe.evaluate(() => (window as Window & { recoveryStorageFailed?: boolean }).recoveryStorageFailed === true)) throw new Error('Storage failure was not exercised.');
+        } else if (refused === 0) throw new Error('Project access failure was not exercised.');
+        await expect(probe.getByRole('heading', { name: 'Recovery child', exact: true })).toHaveCount(0);
+        await expect(probe.getByText('Recovery baseline history', { exact: true })).toHaveCount(0);
+        await probe.close();
+      }
+      await page.close();
+      const lockPage = await context.newPage();
+      await lockPage.goto(`${input.baseURL}/projects`);
+      await lockPage.evaluate(async () => {
+        const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 13);
+        const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+        Object.assign(window, { recoveryLock: db });
+      });
+      const upgrade = await context.newPage();
+      await upgrade.goto(`${input.baseURL}/projects`);
+      await upgrade.evaluate(() => {
+        const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 14);
+        request.onblocked = () => { Object.assign(window, { recoveryBlocked: true }); };
+        request.onupgradeneeded = () => { request.transaction!.abort(); };
+        request.onerror = () => { Object.assign(window, { recoveryAborted: request.error?.name === 'AbortError' }); };
+      });
+      await expect.poll(async () => await upgrade.evaluate(() => (window as Window & { recoveryBlocked?: boolean }).recoveryBlocked === true)).toBe(true);
+      const blocked = await context.newPage();
+      await blocked.addInitScript(() => {
+        const original = indexedDB.open.bind(indexedDB);
+        indexedDB.open = ((name: string, version?: number) => {
+          const request = original(name, version);
+          if (name === 'daynight-task-cache-recovery-12ebdd08') {
+            Object.assign(window, { recoveryOpen: 'pending' });
+            request.addEventListener('success', () => Object.assign(window, { recoveryOpen: 'success' }));
+            request.addEventListener('error', () => Object.assign(window, { recoveryOpen: 'error' }));
+          }
+          return request;
+        }) as typeof indexedDB.open;
+      });
+      await blocked.goto(childURL);
+      await expect.poll(async () => await blocked.evaluate(() => (window as Window & { recoveryOpen?: string }).recoveryOpen)).toBe('pending');
+      await expect(blocked.getByRole('heading', { name: 'Recovery child', exact: true })).toHaveCount(0);
+      await expect(blocked.getByText('Recovery baseline history', { exact: true })).toHaveCount(0);
+      await lockPage.evaluate(() => (window as Window & { recoveryLock?: IDBDatabase }).recoveryLock!.close());
+      await expect.poll(async () => await upgrade.evaluate(() => (window as Window & { recoveryAborted?: boolean }).recoveryAborted === true)).toBe(true);
+      await expect(blocked.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
+      await blocked.close(); await lockPage.close(); await upgrade.close();
+      page = await context.newPage();
+      await send({ type: 'failures-verified', denied: true, offline: true, storage: true, storageInjected: true, blocked: true });
+      continue;
+    }
+    if (operation === 'verify-restart') {
+      await setPhase('restored-page-restart');
+      await stop();
+      context = await launch();
+      const restarted = context.pages()[0] ?? await context.newPage();
+      restarted.setDefaultTimeout(30_000);
+      page = restarted;
+      let restartedIdentity = await context.request.get(`${input.baseURL}/api/v1/me`);
+      if (restartedIdentity.status() === 401) {
+        await restarted.goto(`${input.baseURL}/login`);
+        await restarted.getByRole('button', { name: 'Sign in with GitHub', exact: true }).click();
+        await restarted.getByRole('button', { name: 'Authorize local identity', exact: true }).click();
+        restartedIdentity = await context.request.get(`${input.baseURL}/api/v1/me`);
+      }
+      if (restartedIdentity.status() !== 200 || (await restartedIdentity.json() as { id?: unknown }).id !== me.id) throw new Error('Browser restart identity mismatch.');
+      const restored = await snapshot(restarted);
+      await restarted.goto(`${childURL}?tab=discussion`);
+      await expect(restarted.getByText('Recovery baseline history', { exact: true })).toBeVisible();
+      await expect(restarted.getByText('Recovery post-upgrade history', { exact: true })).toHaveCount(0);
+      await send({ type: 'restart-verified', ...restored, kind: 'persistent-browser-process', sameProfile: true });
+      continue;
+    }
+    if (operation === 'verify-real-storage') {
+      await setPhase('restored-real-storage-error');
+      await expect(page.getByText('Recovery baseline history', { exact: true })).toBeVisible();
+      const upgrade = await context.newPage();
+      await upgrade.goto(`${input.baseURL}/projects`);
+      await upgrade.evaluate(async () => {
+        const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 14);
+        const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+        db.close();
+      });
+      const errorName = await upgrade.evaluate(async () => await new Promise<string>(resolve => {
+        const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 13);
+        request.onsuccess = () => { request.result.close(); resolve('success'); };
+        request.onerror = () => resolve(request.error?.name ?? 'unknown');
+      }));
+      if (errorName !== 'VersionError') throw new Error('Actual IndexedDB version failure was not observed.');
+      await expect(page.getByText('Recovery baseline history', { exact: true })).toHaveCount(0, { timeout: 60_000 });
+      const failurePage = await context.newPage(); await failurePage.goto(childURL);
+      await expect(failurePage.getByRole('alert').first()).toBeVisible();
+      await expect(failurePage.getByRole('heading', { name: 'Recovery child', exact: true })).toHaveCount(0);
+      await failurePage.close(); await upgrade.close();
+      await send({ type: 'real-storage-verified', errorName, namespace: 'daynight-task-cache-recovery-12ebdd08' });
+      continue;
     }
     if (operation !== 'verify' && operation !== 'verify-cli') throw new Error('Unknown browser operation.');
     await setPhase(operation === 'verify' ? 'cross-client-readback' : 'restored-cli-readback');
@@ -164,7 +389,7 @@ try {
     if (operation === 'verify') await page.goto('about:blank');
     await send({ type: operation === 'verify' ? 'verified' : 'cli-verified', project, goal, child });
   }
-  await context.close();
+  await stop();
 } catch (error) {
   const category = error instanceof Error && ['Error', 'TimeoutError', 'AssertionError'].includes(error.name) ? error.name : 'unknown';
   const message = error instanceof Error ? error.message : '';
@@ -175,6 +400,5 @@ try {
 }
 finally {
   if (running) running.kill('SIGKILL');
-  if (browser) await browser.close();
-  if (server) { try { await server.close(); } finally { if (scope && bound) await finishBrowserScope(input.repository, input.browserOwnerDirectory, scope); } }
+  if (context) { try { await context.close(); } finally { if (scope && bound) await finishBrowserScope(input.repository, input.browserOwnerDirectory, scope); } }
 }
