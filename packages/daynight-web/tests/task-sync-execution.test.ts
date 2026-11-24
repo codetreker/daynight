@@ -185,6 +185,25 @@ it('keeps the previous history if a manual snapshot loses its commit race', asyn
   expect(cache.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(true);
 });
 
+it.each([false, true])('preserves the prior baseline after a failed manual commit (replacement=%s)', async replacement => {
+  const cache = scope(); await seed(cache);
+  const before = await cache.beginSync(projectId, signal());
+  const nextEpoch = replacement ? crypto.randomUUID() : before.epoch!;
+  const put = IDBObjectStore.prototype.put;
+  const failure = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'projects') throw new Error('Injected commit failure');
+    return put.apply(this, args);
+  });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: nextEpoch, tasks: [], dependencyStates: {}, coverageUpdatedAt: replacement ? null : before.coverageUpdatedAt })));
+  await expect(executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' })).rejects.toMatchObject({ category: 'storage' });
+  failure.mockRestore();
+  const after = await cache.beginSync(projectId, signal());
+  expect(after).toMatchObject({ epoch: before.epoch, cacheGeneration: before.cacheGeneration, syncRevision: before.syncRevision, coverageUpdatedAt: before.coverageUpdatedAt });
+  expect(cache.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(true);
+  expect(cache.getHistoryGeneration(projectId)).toBe(0);
+  expect(getTaskSync).toHaveBeenCalledOnce();
+});
+
 it('does not apply a response from a cancelled read', async () => {
   const cache = scope(); await seed(cache);
   const controller = new AbortController(); const apply = vi.spyOn(cache, 'applySync');
