@@ -183,10 +183,12 @@ describe('full-detail attachment surface', () => {
 
   it('loads all inventory pages before rendering authoritative metadata and shared Markdown', async () => {
     const next = deferred<Page>();
+    const previewRequested = deferred<void>();
+    const previewResponse = deferred<string>();
     const item = file('docs/readme.md', 'text/markdown');
     const api = fixture([item]);
     vi.mocked(api.list).mockResolvedValueOnce({ items: [item], nextCursor: 'next' }).mockReturnValueOnce(next.promise);
-    vi.mocked(api.readText).mockResolvedValue('# Full document\n\n| File | State |\n| --- | --- |\n| UI | Ready |\n\n![Figure](../images/a%20b.svg)\n\n<script>unsafe()</script>');
+    vi.mocked(api.readText).mockImplementationOnce(() => { previewRequested.resolve(); return previewResponse.promise; });
     render(page(api));
     expect(screen.getByRole('main')).toHaveFocus();
     await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
@@ -194,6 +196,11 @@ describe('full-detail attachment surface', () => {
     expect(api.readText).not.toHaveBeenCalled();
     expect(screen.queryByText('找不到此附件，文件可能已被删除。')).toBeNull();
     await act(async () => next.resolve({ items: [], nextCursor: null }));
+    await previewRequested.promise;
+    expect(api.readText).toHaveBeenCalledExactlyOnceWith(projectId, taskId, item.path, expect.any(AbortSignal));
+    expect(preview().getByRole('status')).toHaveTextContent('正在加载预览');
+    expect(screen.queryByRole('heading', { name: 'Full document' })).toBeNull();
+    await act(async () => previewResponse.resolve('# Full document\n\n| File | State |\n| --- | --- |\n| UI | Ready |\n\n![Figure](../images/a%20b.svg)\n\n<script>unsafe()</script>'));
     await screen.findByRole('heading', { name: 'Full document' });
     expect(screen.getByRole('table')).toHaveTextContent('UIReady');
     expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);

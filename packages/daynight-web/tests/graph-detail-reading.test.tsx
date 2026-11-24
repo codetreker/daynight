@@ -1,6 +1,6 @@
 import { selectTaskList } from './helpers/projectViews';
 import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTaskStatus, attachmentPreviewRoot, getTask, getTaskSync, listAttachments, readAttachmentText } from '../src/api/client';
@@ -68,7 +68,9 @@ const graphSnapshot = (container: HTMLElement) => ({
 describe('graph inspection and detail reading integration', () => {
   it.each([false, true])('retains the selected dependency path while task permission %s opens Markdown and its attachment in the same dialog', async (allowAgents) => {
     graphRequest.mockResolvedValue({ ...graph, tasks: graph.tasks.map((task) => task.id === detailNode.id ? { ...task, allowAgents } : task) });
-    vi.mocked(getTask).mockResolvedValue({ ...detail, allowAgents });
+    const detailRequested = Promise.withResolvers<Parameters<typeof getTask>>();
+    const detailResponse = Promise.withResolvers<TaskDetail>();
+    vi.mocked(getTask).mockImplementationOnce((...args) => { detailRequested.resolve(args); return detailResponse.promise; });
     const user = userEvent.setup();
     render(<ProjectPage projectId={graph.project.id} />, { container: root });
     await selectTaskList();
@@ -88,6 +90,12 @@ describe('graph inspection and detail reading integration', () => {
     expect(state.edges.filter((edge) => edge.inspection === 'successor')).toHaveLength(1);
     const trigger = within(document.body.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
+    expect(await detailRequested.promise).toEqual([graph.project.id, detailNode.id, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function) }]);
+    const loadingDialog = document.body.querySelector<HTMLElement>('.task-detail-dialog')!;
+    expect(within(loadingDialog).getByRole('status')).toBeVisible();
+    expect(within(loadingDialog).queryByRole('heading', { name: 'Delivery notes' })).toBeNull();
+    expect(graphSnapshot(document.body)).toEqual(state);
+    await act(async () => { detailResponse.resolve({ ...detail, allowAgents }); });
     const dialog = await screen.findByRole('dialog', { name: detail.title });
     await within(dialog).findByRole('heading', { name: 'Delivery notes' });
     expect(root).toHaveAttribute('inert');
