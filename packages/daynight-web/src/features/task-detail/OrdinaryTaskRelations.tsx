@@ -15,6 +15,7 @@ import type { TaskCacheScope, TaskReadFence } from '../task-cache/project-cache'
 import { pollingInterval } from '../../app/polling';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import './ordinary-task-relations.css';
+import { TaskLifecycleBlockers, taskLifecycleReason } from './TaskLifecycleBlockers';
 
 // Relation pages use their own epoch-qualified Task read, independently of the
 // detail source. A project graph is not an authoritative child list.
@@ -95,6 +96,10 @@ export const OrdinaryTaskRelations = ({ projectId, detail, history, active, onRe
         if (!live || signal.aborted || isAbortError(error)) return;
         if (!denied(error)) { try { await scope.ready(signal); } catch { return; } }
         if (!live || signal.aborted || fence !== null && !scope.isTaskReadCurrent(fence, true)) return;
+        if (fence !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') {
+          scope.fenceTaskHistory(projectId, null);
+          return;
+        }
         setView(old => old.owner === owner ? { ...old, page: denied(error) ? null : old.page, parent: denied(error) ? null : old.parent, fence: denied(error) ? null : old.fence, current: denied(error) ? null : old.current, error, pending: false } : { owner, page: null, parent: null, error, pending: false, fence: null, current: null });
       }
     })();
@@ -205,6 +210,6 @@ export const OrdinarySubtaskCreate = ({ projectId, parent, fence, history, activ
     </fieldset>
     {state.phase === 'confirmed' && state.receipt !== null && <p role="status">{zh ? '子任务已创建：' : 'Subtask created: '}{state.receipt.title} ({state.receipt.id})</p>}
     {state.phase === 'unknown' && <div role="alert"><p>{zh ? '创建结果尚未确认。检查子任务列表不会证明原请求的结果，也不会重新提交。' : 'The creation outcome is unknown. Checking the subtask list cannot prove the original outcome and will not resend the request.'}</p><button className="button" type="button" onClick={onRefresh}>{zh ? '刷新子任务列表' : 'Refresh subtasks'}</button><button className="button" type="button" onClick={() => update({ phase: 'idle', receipt: null, status: 'proposed', title: '', description: '', assignedTo: scope.userId, tags: [], submitted: null, error: null })}>{zh ? '开始新建另一个子任务' : 'Create another subtask'}</button></div>}
-    {state.error !== null && state.phase !== 'unknown' && <p role="alert">{state.error instanceof ApiError ? state.error.serverMessage ?? state.error.message : (zh ? '创建失败。' : 'Creation failed.')}</p>}
+    {state.error !== null && state.phase !== 'unknown' && <div role="alert"><p>{taskLifecycleReason(state.error, messages.inspection.status) ?? (state.error instanceof ApiError ? state.error.message : (zh ? '创建失败。' : 'Creation failed.'))}</p><TaskLifecycleBlockers error={state.error} projectId={projectId} /></div>}
   </div><footer className="dialog-footer"><button className="button" type="button" disabled={state.phase === 'pending'} onClick={close}>{state.phase === 'confirmed' ? (zh ? '关闭' : 'Close') : (zh ? '取消' : 'Cancel')}</button><button className="button primary" type="submit" disabled={state.phase !== 'idle' || creatingTag || !state.title.trim() || !access.ready || !active || parent.status === 'done' || parent.status === 'cancelled'}>{zh ? '创建' : 'Create'}</button></footer></form></FormDialog>;
 };

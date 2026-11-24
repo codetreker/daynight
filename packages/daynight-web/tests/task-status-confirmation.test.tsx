@@ -15,6 +15,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn() }; });
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => <section aria-label="Attachment materials"><input aria-label="Attachment draft" defaultValue="" /></section> }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: { render: (slots: { parent: null; children: null }) => React.ReactNode }) => render({ parent: null, children: null }) }));
 vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void }) => <input aria-label="Tag draft" value={value[0]?.name ?? ''} onChange={(event) => onChange([{ id: '30000000-0000-4000-8000-000000000001', name: event.currentTarget.value }])} /> }));
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
@@ -145,6 +146,30 @@ describe('status menu and reviewed confirmation', () => {
 
 
 describe('task cancellation confirmation', () => {
+  it('requires a separate recursive confirmation and sends its bound intent once', async () => {
+    const initial = source(); const saved = result(initial, 'cancelled');
+    vi.mocked(setTaskStatus).mockRejectedValueOnce(new ApiError('server', 409, 'task_unfinished_children', 'children-request', undefined, undefined, undefined, [dependencyId])).mockResolvedValueOnce(saved);
+    const { dialog } = await open(initial);
+    fireEvent.click(within(select(dialog, 'todo', 'cancelled')).getByRole('button', { name: 'Confirm cancellation' }));
+    const cascade = await screen.findByRole('button', { name: 'Cancel with subtasks' });
+    expect(screen.getByRole('link', { name: dependencyId })).toHaveAttribute('href', `/projects/${projectId}/tasks/${dependencyId}`);
+    fireEvent.click(cascade); let confirmation = screen.getByRole('alertdialog');
+    expect(confirmation).toHaveTextContent('visible when the transaction takes effect');
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
+    expect(setTaskStatus).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel with subtasks' })); confirmation = screen.getByRole('alertdialog');
+    const confirm = within(confirmation).getByRole('button', { name: 'Confirm cancellation' }); fireEvent.click(confirm); fireEvent.click(confirm);
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(setTaskStatus).mock.calls[1]).toEqual([projectId, taskId, 'cancelled', initial.version, expect.any(AbortSignal), expect.any(Object), true]);
+  });
+
+  it('expires an open confirmation when the same Task is read from a new history', async () => {
+    const initial = source(); const { dialog } = await open(initial);
+    select(dialog, 'todo', 'cancelled');
+    await act(async () => { world.scope.retireTaskHistory(projectId, null); });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(setTaskStatus).not.toHaveBeenCalled();
+  });
   it('explains permanent cancellation and dependency satisfaction while keeping attachment drafts through Cancel and Escape', async () => {
     const { dialog, props } = await open();
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Attachments' }));

@@ -25,6 +25,7 @@ export class ApiError extends Error {
   readonly requestId: string | null;
   readonly serverMessage: string | undefined;
   readonly writeOutcome: "not_committed" | undefined;
+  readonly taskIds: readonly string[] | undefined;
 
   constructor(
     kind: ApiError["kind"],
@@ -34,6 +35,7 @@ export class ApiError extends Error {
     cause?: unknown,
     serverMessage?: string,
     writeOutcome?: "not_committed",
+    taskIds?: readonly string[],
   ) {
     const message = kind === "network"
       ? "Unable to connect to the server. Please try again."
@@ -48,6 +50,7 @@ export class ApiError extends Error {
     this.requestId = requestId;
     this.serverMessage = serverMessage;
     this.writeOutcome = writeOutcome;
+    this.taskIds = taskIds;
   }
 }
 
@@ -208,7 +211,7 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
       return result;
     }
     const serverError = parseServerError(body, includeServerMessage);
-    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.writeOutcome);
+    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.writeOutcome, serverError.taskIds);
     onServerError?.(error);
     throw error;
   } catch (error) {
@@ -407,13 +410,15 @@ export const deleteTask = async (
 
 export const setTaskStatus = async (
   projectId: string, taskId: string, status: TaskStatus, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+  cancelDescendants?: true,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
   if (!isTaskVersion(exactVersion) || !["proposed", "todo", "in_progress", "done", "cancelled"].includes(status)) throw new ApiError("protocol");
+  if (cancelDescendants !== undefined && (cancelDescendants !== true || status !== "cancelled")) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/status`, signal, {
     method: "PUT", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: stringifyApiJson({ version: exactVersion, status }),
+    body: stringifyApiJson({ version: exactVersion, status, cancelDescendants }),
   }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();

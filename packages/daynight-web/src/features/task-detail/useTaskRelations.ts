@@ -80,6 +80,10 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
           if (!denied) { try { await scope.ready(signal); } catch { return; } }
           if (signal.aborted || qualification !== null && (!sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification) ||
             !denied && sessions.captureDirectQualification(projectId, taskId) === null)) return;
+          if (qualification !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') {
+            scope.fenceTaskHistory(projectId, null);
+            return;
+          }
           pendingTimeout = null;
           setState(old => old.owner === owner ? { owner, relations: denied ? null : old.relations, error } : old);
         } finally { if (deadline !== null) clearTimeout(deadline); if (controller === current) controller = null; }

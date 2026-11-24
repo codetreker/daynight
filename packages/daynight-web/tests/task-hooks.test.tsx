@@ -378,7 +378,7 @@ describe("task graph snapshots", () => {
     await waitFor(() => expect(result.current.error).toBeNull());
   });
 
-  it("supersedes an old sync silently and retains its display through history replacement and retry", async () => {
+  it("supersedes an old sync and withdraws its display through history replacement and failed retry", async () => {
     const old = deferred<TaskGraph>();
     const full = deferred<TaskGraph>();
     const replacement = resetSnapshot({ ...graph(), tasks: [],
@@ -395,14 +395,14 @@ describe("task graph snapshots", () => {
     expect(oldSignal.aborted).toBe(true);
     expect(result.current).toMatchObject({ displaySnapshot: original, refreshing: false });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(4));
-    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null, status: "loading", refreshing: false });
     await act(async () => { old.resolve(graph()); });
-    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null, status: "loading", refreshing: false });
     const failure = new Error("offline during replacement");
     await act(async () => { full.reject(failure); });
-    await waitFor(() => expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", error: failure }));
+    await waitFor(() => expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null, status: "error", error: failure }));
     act(() => result.current.refresh());
-    expect(result.current.refreshing).toBe(true);
+    expect(result.current.refreshing).toBe(false);
     await waitFor(() => expect(result.current.displaySnapshot?.graph.tasks).toEqual([]));
     expect(result.current.snapshot).toBe(result.current.displaySnapshot);
     expect(result.current.error).toBeNull();
@@ -416,12 +416,11 @@ describe("task graph snapshots", () => {
     const { result, unmount } = renderHook(() => useTaskGraph(projectId));
     try {
       await waitFor(() => expect(result.current.status).toBe("ready"));
-      const display = result.current.displaySnapshot;
       act(() => result.current.reconcile());
       await waitFor(() => expect(result.current.error).toBe(failure));
-      act(() => detailWorld!.scope.fenceGoalHistory(projectId, "00000000-0000-4000-8000-000000000900"));
+      act(() => detailWorld!.scope.fenceTaskHistory(projectId, "00000000-0000-4000-8000-000000000900"));
       await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
-      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: display, status: "ready", refreshing: false, error: failure });
+      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null, status: "error", refreshing: false, error: failure });
       await act(async () => { recovery.resolve(graph()); });
       await waitFor(() => expect(result.current.error).toBeNull());
       expect(result.current.snapshot).not.toBeNull();
@@ -452,7 +451,7 @@ describe("task graph snapshots", () => {
     access.endProjectRead(token);
   });
 
-  it("clears the retained display on access withdrawal while a history rebuild is pending", async () => {
+  it("keeps a retired display hidden on access withdrawal while a history rebuild is pending", async () => {
     detailWorld = createTaskSessionWorld();
     const full = deferred<TaskGraph>();
     const replacement = resetSnapshot({ ...graph(), tasks: [],
@@ -463,7 +462,7 @@ describe("task graph snapshots", () => {
       await waitFor(() => expect(result.current.status).toBe("ready"));
       act(() => result.current.reconcile());
       await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
-      expect(result.current.displaySnapshot).not.toBeNull();
+      expect(result.current.displaySnapshot).toBeNull();
       act(() => detailWorld!.scope.suspendProject(projectId));
       expect(result.current.displaySnapshot).toBeNull();
       await act(async () => { full.resolve(replacement); });

@@ -51,10 +51,18 @@ describe('task mutation admission across authentication pauses', () => {
   });
   it.each(['204', '410', 'network'] as const)('waits for authentication before reconciling a sent DELETE%s from another history', async (response) => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); writes.mock.calls[0]![5].onDispatch?.();
-    await replace(sessions, [restored]); const world = worlds.get(sessions)!; sessions.observe(project, task, world.node(project, task), true); const resume = pause();
+    await replace(sessions, [restored]); const world = worlds.get(sessions)!; const replacementEpoch = world.scope.getAuthorizedProject(project)!.manifest.epoch!;
+    sessions.observe(project, task, world.node(project, task), true); const resume = pause();
     if (response === '204') { writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve(); } else pending.reject(response === '410' ? new ApiError('server', 410, 'task_deleted') : new ApiError('network'));
     await flush(); expect(sessions.snapshot(project, task).mutation.phase).toBe(response === '204' ? 'confirmed' : response === '410' ? 'refused' : 'unknown'); expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
-    reads.mockResolvedValue(restored); resume(); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
+    reads.mockResolvedValue(restored); resume();
+    if (response === '204') {
+      await waitFor(() => expect(world.scope.canPreviewProject(project)).toBe(false));
+      await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('unknown'));
+      await admitTaskGraph(world.scope, graphFixture([restored]), { epoch: replacementEpoch, versionForTask: () => restored.version, propertiesForTask: () => restored.properties });
+      sessions.observe(project, task, world.node(project, task), true); sessions.reconcile(project, task);
+    }
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
     expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
   });
   it('reenters the authentication wait when a new pause begins after ready resolves', async () => {
@@ -94,7 +102,7 @@ describe('task mutation admission across authentication pauses', () => {
     expect(reads).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
     resume(); await flush(); expect(fetcher).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
   });
-  it('retains a trusted receipt when publication is cancelled before installation', async () => {
+  it('retains trusted deletion and immediate history retirement through account refresh', async () => {
     const sessions = createSessions(); await open(sessions); const received = deferred<void>();
     writes.mockImplementationOnce((_project, _task, _version, _removeDepends, signal, admission) => {
       admission.onDispatch?.(); admission.onWriteConfirmed?.(); received.resolve();
@@ -103,7 +111,7 @@ describe('task mutation admission across authentication pauses', () => {
     sessions.deleteTask(project, task, initial.version, true); await received.promise;
     const resume = pause(); sessions.suspendForAccountRefresh();
     await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'confirmed', reconciling: false }));
-    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial });
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'deleted', detail: null });
     expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
     resume(); await flush(); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
   });

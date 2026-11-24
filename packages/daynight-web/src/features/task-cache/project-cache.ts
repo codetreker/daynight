@@ -44,7 +44,7 @@ export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TA
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly peerHintWithdrawal?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true }; readonly unboundProjectDenial?: true; readonly authoritative?: true };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string | null; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true }; readonly unboundProjectDenial?: true; readonly authoritative?: true };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
 }
@@ -139,6 +139,8 @@ export class TaskCacheScope {
   private readonly projectionSnapshotCorrupt = new WeakMap<ReadonlyMap<string, string>, ReadonlySet<string>>();
   private readonly projectionSnapshotSuspended = new WeakMap<ReadonlyMap<string, string>, ReadonlySet<string>>();
   private readonly projectionSnapshotAncestors = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, readonly string[]>>();
+  private readonly projectionHistoryRevisions = new Map<string, number>();
+  private readonly projectionSnapshotHistory = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, number>>();
   private readonly deniedProjects = new Map<string, SyncTicket>();
   private readonly projectPurges = new Map<string, Promise<void>>();
   private readonly pendingTagColorAdmissions = new Map<string, { readonly readRevision: number; readonly scopeRevision: number; readonly directRevision: number; readonly userFence: string | null }>();
@@ -186,8 +188,8 @@ export class TaskCacheScope {
       }
       if ("uncertainEpoch" in hint) {
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
-          !("userFence" in hint) || hint.userFence !== this.userFence || typeof hint.uncertainEpoch !== "string" || canonicalId(hint.uncertainEpoch) !== hint.uncertainEpoch) return;
-        this.fenceGoalEpoch(hint.projectId);
+          !("userFence" in hint) || hint.userFence !== this.userFence || hint.uncertainEpoch !== null && (typeof hint.uncertainEpoch !== "string" || canonicalId(hint.uncertainEpoch) !== hint.uncertainEpoch)) return;
+        this.fenceTaskEpoch(hint.projectId);
         return;
       }
       if ("retiredEpoch" in hint) {
@@ -483,9 +485,10 @@ export class TaskCacheScope {
     for (const listener of this.projectionListeners) listener(event);
   }
   private emit(event: CacheEvent, notifyProjection = true, allowAuthPaused = false): void {
-    if (this.invalidated || this.disposed || this.identityMismatch || !allowAuthPaused && authRequestsPaused() && event.accessRevoked !== true && event.sessionHistoryUncertain?.unbound !== true) return;
+    if (this.invalidated || this.disposed || this.identityMismatch || !allowAuthPaused && authRequestsPaused() && event.accessRevoked !== true && event.historyChanged !== true && event.sessionHistoryUncertain?.unbound !== true) return;
+    if (event.historyChanged) this.projectionHistoryRevisions.set(event.projectId, (this.projectionHistoryRevisions.get(event.projectId) ?? 0) + 1);
     for (const listener of this.listeners) listener(event);
-    if (notifyProjection && (event.accessRevoked || event.accessRestored)) this.emitProjection(event);
+    if (notifyProjection && (event.accessRevoked || event.accessRestored || event.historyChanged)) this.emitProjection(event);
   }
   async prepareProjection(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
     for (;;) {
@@ -503,6 +506,7 @@ export class TaskCacheScope {
     // A read started after a negative hint must wait for its cleanup, including failures.
     await Promise.allSettled([...this.projectionHints, ...this.projectPurges.values()]);
     await Promise.allSettled([...this.deniedProjects.keys()].map((projectId) => this.clearDeniedProject(projectId)));
+    const historyRevisions = new Map(this.projectionHistoryRevisions);
     try {
       const { generations, corrupt, histories } = await this.userTransaction(async (transaction, fence) => {
         const rows = await transaction.objectStore("projects").index("by-user").getAll(this.userId);
@@ -524,6 +528,7 @@ export class TaskCacheScope {
       this.projectionSnapshotCorrupt.set(generations, corrupt);
       this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...[...this.unboundProjectDenials].filter(([, value]) => value.isolated).map(([id]) => id), ...this.pendingUnknownProjects.keys()]));
       this.projectionSnapshotAncestors.set(generations, histories);
+      this.projectionSnapshotHistory.set(generations, historyRevisions);
       return generations;
     } catch (error) {
       if (!(error instanceof TaskCacheError)) throw error;
@@ -543,10 +548,12 @@ export class TaskCacheScope {
   }
   projectionSnapshotDenied(snapshot: ReadonlyMap<string, string>, projectId: string): boolean {
     return this.projectionSnapshotFailed(snapshot) || this.projectionSnapshotCorrupt.get(snapshot)?.has(projectId) === true ||
+      (this.projectionSnapshotHistory.get(snapshot)?.get(projectId) ?? 0) !== (this.projectionHistoryRevisions.get(projectId) ?? 0) ||
       this.projectionSnapshotSuspended.get(snapshot)?.has(projectId) === true || this.isProjectionDenied(projectId);
   }
   projectionSnapshotHasDenials(snapshot: ReadonlyMap<string, string>): boolean {
     return this.projectionSnapshotFailed(snapshot) || (this.projectionSnapshotCorrupt.get(snapshot)?.size ?? 0) > 0 ||
+      [...this.projectionHistoryRevisions].some(([projectId, revision]) => (this.projectionSnapshotHistory.get(snapshot)?.get(projectId) ?? 0) !== revision) ||
       (this.projectionSnapshotSuspended.get(snapshot)?.size ?? 0) > 0 || this.hasProjectionDenials;
   }
   projectionSnapshotError(snapshot: ReadonlyMap<string, string>): TaskCacheError | null {
@@ -1193,21 +1200,22 @@ export class TaskCacheScope {
     return this.isTaskReadCurrent(fence);
   }
   getHistoryGeneration(projectId: string): number { return this.histories.get(projectId)?.generation ?? 0; }
-  // A confirmed Goal deletion rotates the project epoch even before a new
+  // A confirmed subtree deletion rotates the project epoch even before a new
   // snapshot is available. Fence old content immediately, including peers.
-  retireGoalHistory(projectId: string, epoch: string): void {
+  retireTaskHistory(projectId: string, epoch: string | null): void {
     if (this.userFence === null || this.identityMismatch) return;
+    if (epoch === null) { this.fenceTaskHistory(projectId, null); return; }
     this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, retiredEpoch: epoch } satisfies Hint);
     this.retireKnownEpoch(projectId, epoch);
   }
   // A 410 does not report its epoch. Fence rather than retire a potentially
   // current history, and require an observation started after the response.
-  fenceGoalHistory(projectId: string, epoch: string): void {
+  fenceTaskHistory(projectId: string, epoch: string | null): void {
     if (this.userFence === null || this.identityMismatch) return;
     this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, uncertainEpoch: epoch } satisfies Hint);
-    this.fenceGoalEpoch(projectId);
+    this.fenceTaskEpoch(projectId);
   }
-  private fenceGoalEpoch(projectId: string): void {
+  private fenceTaskEpoch(projectId: string): void {
     if (this.isInvalidated || this.identityMismatch) return;
     this.uncertainHistories.add(projectId);
     this.historyVersions.set(projectId, (this.historyVersions.get(projectId) ?? 0) + 1);
@@ -1219,8 +1227,8 @@ export class TaskCacheScope {
   private retireKnownEpoch(projectId: string, epoch: string): void {
     const old = this.histories.get(projectId);
     if (this.isInvalidated || this.identityMismatch) return;
-    if (old?.epoch == null) { this.fenceGoalEpoch(projectId); return; }
-    if (old.epoch !== epoch) { this.fenceGoalEpoch(projectId); return; }
+    if (old?.epoch == null) { this.fenceTaskEpoch(projectId); return; }
+    if (old.epoch !== epoch) { this.fenceTaskEpoch(projectId); return; }
     let retired = this.retiredEpochs.get(projectId);
     if (retired === undefined) { retired = new Set(); this.retiredEpochs.set(projectId, retired); }
     retired.add(epoch);

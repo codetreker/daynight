@@ -55,7 +55,7 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
     if (mutation.phase === "unknown" || mutation.reconciliationError !== null) sessions.reconcile(projectId, taskId);
     else sessions.load(projectId, taskId, revision, "refresh");
   }, [sessions, projectId, taskId, revision]);
-  const setStatus = useCallback((status: TaskStatus, version: bigint) => { sessions.setStatus(projectId, taskId, status, version); }, [sessions, projectId, taskId]);
+  const setStatus = useCallback((status: TaskStatus, version: bigint, cancelDescendants?: true) => { sessions.setStatus(projectId, taskId, status, version, cancelDescendants); }, [sessions, projectId, taskId]);
   const setAgentPermission = useCallback((allowAgents: boolean, version: bigint) => { sessions.setAgentPermission(projectId, taskId, allowAgents, version); }, [sessions, projectId, taskId]);
   const unpause = useCallback((version: bigint) => { sessions.unpause(projectId, taskId, version); }, [sessions, projectId, taskId]);
   const setRequiredPlatform = useCallback((requiredPlatform: ExecutionPlatform | null, version: bigint) => { sessions.setRequiredPlatform(projectId, taskId, requiredPlatform, version); }, [sessions, projectId, taskId]);

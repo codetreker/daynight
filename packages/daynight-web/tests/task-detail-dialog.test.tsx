@@ -44,6 +44,7 @@ vi.mock('../src/api/terminal-sessions', async original => {
   }) };
 });
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: { render: (slots: { parent: null; children: null }) => ReactNode }) => render({ parent: null, children: null }) }));
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const projectId = id(100);
@@ -239,7 +240,7 @@ describe('task detail dialog', () => {
     expect(editor).toHaveValue('Keep Goal changes');
     act(() => {
       if (retirement === 'identity') world.scope.dispose();
-      else world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId));
+      else world.scope.retireTaskHistory(projectId, fixtureTaskEpoch(projectId));
     });
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull());
   });
@@ -266,7 +267,7 @@ describe('task detail dialog', () => {
     view.rerender(<TaskDetailDialog {...options} snapshot={current} />);
     expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
     expect(reader).toHaveValue('child reading state');
-    act(() => world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+    act(() => world.scope.retireTaskHistory(projectId, fixtureTaskEpoch(projectId)));
     await waitFor(() => expect(screen.queryByRole('textbox', { name: '附件草稿' })).toBeNull());
   });
 
@@ -299,7 +300,7 @@ describe('task detail dialog', () => {
     await screen.findByRole('heading', { name: goal.title });
     const direct = vi.spyOn(TaskDetailSessions.prototype, 'openDirect');
     act(() => {
-      world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId));
+      world.scope.retireTaskHistory(projectId, fixtureTaskEpoch(projectId));
       view.rerender(<TaskDetailDialog {...options} observation={{ kind: 'project-summary', revision: 1, task: current.index.nodes.get(goal.id) }} />);
     });
     expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
@@ -341,7 +342,7 @@ describe('task detail dialog', () => {
     const draft = screen.getByRole('textbox', { name: 'Discussion message' });
     fireEvent.change(draft, { target: { value: 'Member draft' } });
     const previousReads = detailReads; mode = 'pending';
-    act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+    act(() => world.scope.fenceTaskHistory(projectId, fixtureTaskEpoch(projectId)));
     await waitFor(() => expect(detailReads).toBeGreaterThan(previousReads));
     expect(document.querySelector('[aria-label="Discussion message"]')).toBe(draft);
     expect(draft).toHaveValue('Member draft');
@@ -355,7 +356,7 @@ describe('task detail dialog', () => {
     if (loss === 'access') act(() => world.scope.suspendProject(projectId));
     else {
       mode = 'missing';
-      act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+      act(() => world.scope.fenceTaskHistory(projectId, fixtureTaskEpoch(projectId)));
       await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());
     }
     await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());

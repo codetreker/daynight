@@ -116,3 +116,5 @@ describe('graph inspection and detail reading integration', () => {
     expect(getTask).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function) });
   });
 });
+// Dependency-path and attachment continuity do not own ordinary-parent reads.
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: Pick<import('../src/features/task-detail/OrdinaryTaskRelations').OrdinaryTaskRelationsProps, 'render'>) => render?.({ parent: null, children: null }) ?? null }));

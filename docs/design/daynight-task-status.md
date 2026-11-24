@@ -51,7 +51,7 @@ Content-Type: application/json
 {"version":123,"status":"cancelled"}
 ```
 
-status 输入接受五态，不增加审批动作或阶段顺序。claimId 仅用于 done，其他状态拒绝；时间、query、依赖和其他元数据不属于状态请求。普通 Task create 的可选 status 只接受 proposed/todo；普通 PATCH 不接受 status。HTTP 与 service 均校验合法输入，认证、Cookie Origin、no-store、成员权限和资源隐藏保持。
+status 输入接受五态，不增加审批动作或阶段顺序。可选严格布尔 `cancelDescendants` 仅适用于普通 Task 的 cancelled 操作，显式后代取消与事务机制由[父子写入设计](daynight-task-parent-writes.md)拥有。claimId 仅用于 done，其他状态拒绝；时间、query、依赖和其他元数据不属于状态请求。普通 Task create 的可选 status 只接受 proposed/todo；普通 PATCH 不接受 status。HTTP 与 service 均校验合法输入，认证、Cookie Origin、no-store、成员权限和资源隐藏保持。
 
 项目一致性作用域核验当前权限、任务和精确版本。同状态返回完整 Task，无写入；陈旧同状态仍冲突。实际转换生成完整 TaskWrite，保留未修改资料，再在同一事务内写状态/时间/version/updatedAt 并冻结不再有效的 Session。数据库或 freeze 失败完整回滚，事务完成失败优先于暂存的业务拒绝。
 
@@ -63,13 +63,13 @@ status 输入接受五态，不增加审批动作或阶段顺序。claimId 仅�
 | done | 检查后继 | 检查后继 | 检查前置与后继 | 无修改 | 允许 |
 | cancelled | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 无修改 |
 
-表中实际转换还受 Worker 归属保护。active claim 不能取消，须先完成 release 或合法解除归属，再读取新版本。release 清除当前归属后，任务遵循普通状态规则。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
+表中实际转换还受[普通父子生命周期](daynight-task-parent-writes.md#生命周期准入)及 Worker 归属保护。active claim 不能取消，须先完成 release 或合法解除归属，再读取新版本。release 清除当前归属后，任务遵循普通状态规则。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
 
 退出 cancelled 的拒绝必须在所有业务入口成立。WithdrawableWorker/WithdrawCandidate 是独立于状态 setter 的 todo-producing 路径，因此明确拒绝 cancelled；不能依赖数据库时间约束报存储错误。认领与 claim-bound 完成也拒绝取消任务。Web 对取消记录不提供对应恢复动作。
 
 ## 依赖、查询与同步
 
-普通和外部依赖使用相同前置满足判断。所有 full Task、ready、priority list、search ready 过滤中的 SQL 共用 done/cancelled 条件；状态规则仅要求 in_progress/done 的全部前置满足。取消不删除边、不级联改变节点、不传递重连，也不增加后继版本。
+普通和外部依赖使用相同前置满足判断。所有 full Task、ready、priority list、search ready 过滤中的 SQL 共用 done/cancelled 条件；状态规则要求 in_progress/done 的全部前置满足。普通取消不删除边、不级联修改依赖节点、不传递重连，也不增加依赖后继版本；普通父子树的显式确认取消由[父子写入设计](daynight-task-parent-writes.md#确认取消)拥有。
 
 项目锁串行化 cancel/claim/withdraw 和边修改，一份精确版本不能同时取消并产生有效执行。done 重开仍保护真实 in_progress/done 后继；取消后继不要求前置持续满足。
 
@@ -115,9 +115,9 @@ Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足�
 
 持久缓存的必需字段变化通过显式 schema 升级重建受影响的 Project、summary 和 detail 记录；未改变的 profile 格式保留。不能用缺 cancelledAt→null 兼容旧缓存。既有用户/项目 generation、历史 fence、高版本合并和同版本不一致拒绝继续适用。
 
-五态均有独立本地化文字与样式，proposed 显示为“待确认”/“Proposed”。未取消任务的菜单提供cancelled目标，并使用既有状态确认与action:status通道；已取消状态无reopen或withdraw动作，资料继续可读。active claim下取消项以aria-disabled标记并通过既有TaskControlTip在悬停/焦点时说明release要求，实际提交仍由服务端保护。确认展示不可恢复、资料可读和本任务作为前置时的满足后果，不引入原因表单或远端停止动作。
+五态均有独立本地化文字与样式，proposed 显示为“待确认”/“Proposed”。未取消任务的菜单提供 cancelled 目标，复用状态确认与 action:status 通道；已取消状态无 reopen 或 withdraw 动作，资料继续可读。确认区分普通取消与显式一并取消后代；`task_unfinished_children` 的取消反馈提供“一并取消”入口，复用 `TaskStatusConfirmation` 再次明确确认。只有后者发送 `cancelDescendants:true`。文案明确覆盖事务生效时全部未结束后代、保留终态后代，并说明不可恢复、资料可读和作为依赖前置的满足后果。active claim 下取消项以 aria-disabled 标记，通过 TaskControlTip 在悬停/焦点说明 release。`ApiError` 保留严格校验的 `details.taskIds`，共享阻塞展示将服务端可读 ID 导向真实同项目 Task URL；不以当前子项列表推断服务端已允许完成、取消或删除。
 
-TaskDetailSession以原审阅身份、version与cacheGeneration核验取消。validStatusTiming显式要求实际取消保留startedAt/completedAt、新cancelledAt非空；不能落入done时间分支。成功精确+1，同状态+0；无效完整响应进入既有未知核对，后续仅GET、不重放。旧历史迟到结果不能覆盖新操作、解锁较新防重或设置删除终态。
+TaskDetailSession 以原审阅身份、version、cacheGeneration 和取消类型核验确认，准备完成与派发前再次检查；过期确认零请求，新历史 fresh GET 后重新确认。validStatusTiming显式要求实际取消保留startedAt/completedAt、新cancelledAt非空；不能落入done时间分支。成功精确+1，同状态+0；无效完整响应进入既有未知核对，后续仅GET、不重放。旧历史迟到结果不能覆盖新操作、解锁较新防重或设置删除终态。
 
 状态筛选显式支持 proposed/cancelled，同时保留完整普通分量、Goal 进度范围和依赖；取消前置摘要经普通delta即可使后继派生就绪性更新。状态与筛选不改变资料读取权限或原有数据保全。
 

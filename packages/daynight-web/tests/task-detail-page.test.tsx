@@ -1,4 +1,6 @@
 // Detail sequence fixtures model a service without the independent usage API.
+// Direct detail polling is independent of the ordinary-parent list controller.
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: Pick<import('../src/features/task-detail/OrdinaryTaskRelations').OrdinaryTaskRelationsProps, 'render'>) => render?.({ parent: null, children: null }) ?? null }));
 vi.mock('../src/api/usage', async original => {
   const actual = await original<typeof import('../src/api/usage')>();
   const { ApiError } = await import('../src/api/client');

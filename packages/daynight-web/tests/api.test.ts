@@ -244,9 +244,9 @@ describe("response parsing", () => {
     expect(() => parseTaskDetail(value, projectId, taskId)).toThrow("invalid response");
   });
 
-  it("validates error metadata while discarding raw messages and unneeded details", () => {
+  it("validates error metadata and blocker IDs while discarding raw messages", () => {
     expect(parseServerError({ error: { code: "not_found", message: "secret SQL", requestId: "Request_1.2-3", details: { taskIds: [taskId] } } }))
-      .toEqual({ code: "not_found", requestId: "Request_1.2-3" });
+      .toEqual({ code: "not_found", requestId: "Request_1.2-3", taskIds: [taskId] });
 
   });
 

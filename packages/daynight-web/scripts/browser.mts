@@ -33,6 +33,8 @@ export const browserConfigs = [
   'attachment-browser-playwright.config.ts',
   'dev-preview-playwright.config.ts',
   'task-controls-playwright.config.ts',
+  'ordinary-task-playwright.config.ts',
+  'ordinary-task-lifecycle-playwright.config.ts',
   'graph-browser-playwright.config.ts',
   'pr-detail-browser-playwright.config.ts',
   'pr-list-browser-playwright.config.ts',

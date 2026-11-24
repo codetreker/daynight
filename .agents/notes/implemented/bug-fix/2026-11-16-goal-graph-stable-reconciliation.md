@@ -12,14 +12,20 @@ access or identity loss must immediately withdraw private content.
 
 ## Decision
 
-The project graph separates its current read observation from the last displayed
-projection. Content history replacement retires the current receipt, tickets and
-detail content while the same identity, project, cache scope and access lifetime
-retain their displayed projection until a validated new snapshot replaces it.
-Only the current already displayed Goal reading may carry its navigation witness
-into the new generation, with detail cleared. A separate access-retirement count
-prevents carrying that witness after revocation even when another history event
-follows. Other old entries remain retired and admitted navigation is authoritative.
+The original decision separated current project reads from the last displayed
+projection. History replacement retired receipts, tickets and detail while the
+same identity, project, scope and access lifetime retained the displayed Goal
+until a validated replacement snapshot arrived. Only the current displayed Goal
+could carry its navigation witness, with detail cleared; a separate access-retirement
+count rejected that witness after revocation. Other old entries remained retired
+and admitted navigation stayed authoritative.
+
+The [ordinary-subtree retirement decision](../architecture/2026-11-24-web-subtask-lifecycle-retirement.md)
+replaces cross-history display retention. A shared cache may omit ordinary parent
+edges and cannot prove that an old Goal projection excludes newly hidden
+descendants. Trusted deletion or history change therefore withdraws old project
+presentation immediately. Still-admitted same-history refreshes continue to retain
+valid content, geometry and interaction state.
 
 Mutation and internal history reconciliation replace active reads silently;
 periodic checks remain deduplicated and explicit refresh retains its progress
@@ -44,9 +50,9 @@ other clients could retain deleted nodes indefinitely.
 
 ## Consequences
 
-A full synchronization can update the existing graph without an API or database
-change. Ordinary errors remain visible while the last displayed data remains
-stable; the display projection is not a permission grant. Access revocation and
-identity or scope replacement still remove it. Keeping separate display and
-current consumers requires each reader or mutation owner to use current
-qualification, while layout and navigation must preserve only still-valid state.
+Separating current and display consumers preserves continuity during ordinary
+same-history updates without turning presentation into a permission grant. The
+original cross-history retention reduced graph interruption but depended on the
+remaining projection being safe to display; ordinary subtrees invalidate that
+assumption. History, access, identity and scope retirement now remove old display
+content, and readers or mutation owners must still use current qualification.

@@ -141,6 +141,7 @@ export type ServerError = {
   readonly requestId: string;
   readonly serverMessage?: string;
   readonly writeOutcome?: "not_committed";
+  readonly taskIds?: readonly string[];
 };
 
 export const parseServerError = (value: unknown, includeServerMessage = false): ServerError => {
@@ -152,8 +153,12 @@ export const parseServerError = (value: unknown, includeServerMessage = false): 
   const detailsValue = data.details;
   const writeOutcome = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue) &&
     (detailsValue as Record<string, unknown>).writeOutcome === "not_committed" ? "not_committed" as const : undefined;
+  const taskIdsValue = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue)
+    ? (detailsValue as Record<string, unknown>).taskIds : undefined;
+  const taskIds = taskIdsValue === undefined ? undefined : array(taskIdsValue, id);
+  if (taskIds !== undefined && new Set(taskIds).size !== taskIds.length) return malformed();
   const withOutcome = (error: ServerError): ServerError => writeOutcome === undefined ? error : { ...error, writeOutcome };
-  return withOutcome({ code, requestId, ...(includeServerMessage ? { serverMessage: message } : {}) });
+  return withOutcome({ code, requestId, ...(includeServerMessage ? { serverMessage: message } : {}), ...(taskIds === undefined ? {} : { taskIds }) });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

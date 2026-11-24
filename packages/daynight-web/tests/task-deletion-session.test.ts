@@ -30,13 +30,13 @@ const expectDeleted = async (sessions: TaskDetailSessions) => {
 afterEach(() => { for (const [sessions, world] of worlds) { sessions.dispose(); world.dispose(); } worlds.clear(); });
 beforeEach(() => { reads.mockReset().mockResolvedValue(initial); writes.mockReset(); vi.mocked(setTaskStatus).mockReset(); vi.mocked(setTaskAgentPermission).mockReset(); vi.mocked(setTaskRequiredPlatform).mockReset(); });
 
-describe('task-local soft-delete ownership', () => {
+describe('subtree soft-delete ownership', () => {
   it.each(['todo', 'in_progress', 'done'] as const)('deletes an unclaimed %s task once using the reviewed version and refreshes its project', async (status) => {
     const detail = source(status); reads.mockResolvedValue(detail); writes.mockResolvedValueOnce();
     const sessions = createSessions(); const refresh = vi.fn(); sessions.subscribeProject(project, refresh); await open(sessions, detail);
     expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); remove(sessions); await expectDeleted(sessions);
     expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), expect.objectContaining({ userId: worlds.get(sessions)!.scope.userId, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
-    expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'); expect(refresh).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+    expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'); expect(refresh).toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
   });
   it.each([false, true])('retains the reviewed removeDepends=%s choice during GET-only reconciliation', async (removeDepends) => {
     const sessions = createSessions(); await open(sessions); writes.mockRejectedValueOnce(new ApiError('network')); reads.mockRejectedValueOnce(deleted()); sessions.deleteTask(project, task, initial.version, removeDepends);
@@ -62,16 +62,16 @@ describe('task-local soft-delete ownership', () => {
   it('reconciles a lost deletion response by GET410 without revoking project access', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const revoke = vi.spyOn(world.scope, 'revokeProject'); const refresh = vi.fn(); sessions.subscribeProject(project, refresh);
     writes.mockRejectedValueOnce(new ApiError('network')); reads.mockRejectedValueOnce(deleted()); remove(sessions); await expectDeleted(sessions);
-    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(refresh).toHaveBeenCalled();
+    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(refresh).toHaveBeenCalled();
   });
-  it('treats an explicit already-deleted response as task-local disappearance', async () => {
+  it('treats an explicit already-deleted response as subtree history retirement', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const revoke = vi.spyOn(world.scope, 'revokeProject'); writes.mockRejectedValueOnce(deleted()); remove(sessions); await expectDeleted(sessions);
-    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce();
   });
-  it('clears a remotely deleted task during ordinary refresh without hiding its sibling', async () => {
+  it('clears a remotely deleted task during ordinary refresh withdraws unproven sibling data', async () => {
     const sessions = createSessions(); const world = worlds.get(sessions)!; const surviving = detailFixture(project, sibling, { title: 'Surviving task' }); await world.sync([surviving]); await open(sessions);
     const revoke = vi.spyOn(world.scope, 'revokeProject'); reads.mockRejectedValueOnce(deleted()); sessions.load(project, task, 2); await expectDeleted(sessions);
-    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true); expect(writes).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).not.toHaveBeenCalled();
   });
   it('retains both uncertain failures and prevents mutation until a deliberate GET succeeds', async () => {
     const sessions = createSessions(); await open(sessions); const writeFailure = new ApiError('network'); const readFailure = new ApiError('network'); writes.mockRejectedValueOnce(writeFailure); reads.mockRejectedValueOnce(readFailure); remove(sessions);
@@ -95,7 +95,7 @@ describe('task-local soft-delete ownership', () => {
     sessions.observe(project, task, undefined); sessions.load(project, task, 2, 'automatic');
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
     reads.mockRejectedValueOnce(deleted()); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open'); await expectDeleted(sessions);
-    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledTimes(2); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
+    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledTimes(2); expect(world.scope.getAuthorizedProject(project)).toBeNull();
   });
   it('settles an unknown deletion from the replacement snapshot while its GET is in flight', async () => {
     const sessions = createSessions(); await open(sessions); const probe = deferred<TaskDetail>();
@@ -107,7 +107,7 @@ describe('task-local soft-delete ownership', () => {
     await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n, propertiesForTask: () => surviving.properties });
     sessions.observe(project, task, undefined, true); await expectDeleted(sessions);
     expect(readSignal.aborted).toBe(true); expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(sessions.snapshot(project, task).mutation.reconciling).toBe(false);
-    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
+    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull();
     probe.resolve(initial); await new Promise((resolve) => setTimeout(resolve, 0));
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(sessions.snapshot(project, task).detail).toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
   });
@@ -118,7 +118,7 @@ describe('task-local soft-delete ownership', () => {
     sessions.observe(project, task, undefined, true); await expectDeleted(sessions);
     pending.reject(new ApiError('network')); await new Promise((resolve) => setTimeout(resolve, 0));
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(sessions.snapshot(project, task).mutation.reconciling).toBe(false);
-    expect(reads).toHaveBeenCalledOnce(); expect(writes).toHaveBeenCalledOnce(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
+    expect(reads).toHaveBeenCalledOnce(); expect(writes).toHaveBeenCalledOnce(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull();
   });
   it('does not expose a late write result after the authenticated scope retires', async () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); remove(sessions); await waitFor(() => expect(writes).toHaveBeenCalledOnce());

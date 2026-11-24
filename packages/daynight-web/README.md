@@ -990,7 +990,14 @@ maximum payloads are not guaranteed to fit every browser quota.
 After identity verification, a project publishes its validated local summary
 snapshot while task-sync runs in the background. Valid empty snapshots render
 normally; missing or invalid baselines retain loading until synchronization.
-Recoverable sync failures retain visible summaries and expose Retry. Summary
+Recoverable sync failures retain currently admitted same-history summaries and
+expose Retry. Trusted deletion or Task Gone retires the affected project history
+immediately: shared caches can omit ordinary-parent edges, so old graph/list
+`displaySnapshot`, search, detail/attachments and My Tasks project rows cannot be
+proved unaffected and withdraw before the next epoch arrives. `historyChanged`
+uses a distinct projection notification from access revocation and propagates
+across tabs. Per-project read revisions reject delayed inventory pages while
+retaining unaffected projects; only newly admitted evidence restores rows. Summary
 publication does not authorize detail bodies or task writes: summary-backed details require this mount's successful online project sync. A direct opening instead requires a current, principal-bound Task observation and does not depend on a graph. A local-only detail mount keeps its
 visibility gate local and leaves shared session observation unchanged, so an
 already accepted operation can finish preparation in its original authorized
@@ -1811,7 +1818,14 @@ done + cancelled while preserving each result count. External context does not
 affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
-copy icon immediately to its right. The ID and its copy control belong to Overview.
+copy icon immediately to its right. The ID and its copy control belong to Overview. Ordinary Task Overview mounts
+`OrdinaryTaskRelations`: the real direct parent appears in its parent slot, and
+authorized direct-child pages display all five states with fixed-parent creation.
+Ordinary parents use independent Task detail URLs and existing draft-aware browser
+navigation; Goal membership and dependency graphs retain their meanings. Missing
+ordinary-parent projection fields remain unknown, not an empty relation. Lifecycle
+refusals preserve validated `details.taskIds` and offer real-ID blocker navigation
+without inventing inaccessible titles.
 The five-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
@@ -1820,18 +1834,21 @@ item and permits selecting it for the original states. Cancelled records have a
 distinct readable status and no reopen, resume or withdraw action. The cancelled
 target uses the existing state confirmation with Confirm cancellation / 确认取消,
 describing irreversibility, retained readability, preserved execution times and
-dependency satisfaction. Active claims mark the option aria-disabled and show the
-release reason on hover or keyboard focus without dispatching a request; no remote
-stop action or reason form is added. Arrow/Home/End, activation and
-Escape preserve keyboard access and focus. Confirmation shows the full task name,
-current/target states and timing consequences. Cancel is initially focused;
-Cancel/close/Escape submits nothing. Long title and confirmation text have bounded
-native scrolling; 320px retains controls without horizontal page overflow.
+dependency satisfaction. Ordinary cancellation targets only this Task. An unfinished-child cancellation refusal offers Cancel with subtasks / 一并取消.
+Its separate explicit confirmation authorizes every visible unfinished descendant when the
+transaction takes effect, preserving ended descendants; only that choice sends
+`cancelDescendants:true`. Active claims mark the option aria-disabled and show the
+release reason on hover or keyboard focus without dispatching a request.
+Arrow/Home/End, activation and Escape preserve keyboard access and focus.
+Confirmation shows the full task name, current/target states and timing consequences.
+Cancel is initially focused; Cancel/close/Escape submits nothing. Long title and
+confirmation text have bounded native scrolling; 320px retains controls without
+horizontal page overflow.
 
 Status, allowAgents, requiredPlatform and assignedTo saves share one per-task
 mutation owner. Operations that require confirmation share one confirmation union.
-Reviewed identity/status/version and material inputs remain frozen; observed
-changes invalidate confirmation. Exact bigint version survives JSON numeric
+Reviewed identity/status/version, project history, cancellation type and material
+inputs remain frozen; observed changes invalidate confirmation. Exact bigint version survives JSON numeric
 serialization without rounding. Same-state requires +0; actual change requires +1.
 Same-state may return fresh derived readiness at the same version. Actual
 cancellation requires a non-null cancelledAt while preserving startedAt,

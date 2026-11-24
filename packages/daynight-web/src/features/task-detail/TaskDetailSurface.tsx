@@ -21,6 +21,7 @@ import { useTaskDetail } from './useTaskDetail';
 import { useTaskRelations } from './useTaskRelations';
 import type { TaskObservationInput } from './TaskDetailSession';
 import { TaskStatusFeedback, TaskStatusMenu } from './TaskStatus';
+import { OrdinaryTaskRelations } from './OrdinaryTaskRelations';
 import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgentPermissionFeedback, TaskAgentPermissionSwitch, type AgentPermissionConfirmation } from './TaskAgentPermission';
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
 import { useSessionMessages } from '../task-agent-session/messages';
@@ -162,9 +163,9 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const mayDisplayWithdraw = currentClaim !== null && access.status === 'ready' && access.access !== null && mayWithdrawClaim(currentClaim, viewer.userId, access.access.effectiveRole);
   type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | WithdrawalConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
     (PlatformConfirmation & { readonly kind: 'requiredPlatform' });
-  const [confirmation, setConfirmation] = useState<TaskConfirmationState | null>(null);
-  const requestConfirmation = (review: TaskConfirmationState): void => setConfirmation((current) => current === null ? review : current);
-  const confirmationValid = confirmation !== null && (confirmation.kind === 'delete'
+  const [confirmation, setConfirmation] = useState<(TaskConfirmationState & { readonly history: number }) | null>(null);
+  const requestConfirmation = (review: TaskConfirmationState): void => setConfirmation((current) => current === null ? { ...review, history: task.historyGeneration } : current);
+  const confirmationValid = confirmation !== null && confirmation.history === task.historyGeneration && (confirmation.kind === 'delete'
     ? matchesDeletionReview(confirmation, detail) && task.canDisplayDelete
     : confirmation.kind === 'withdraw'
     ? matchesWithdrawalReview(confirmation, detail) && task.canDisplayWithdrawClaim && mayDisplayWithdraw
@@ -198,7 +199,10 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
     setConfirmation(null);
     if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version, confirmation.removeDepends);
     else if (confirmation.kind === 'withdraw') task.withdrawClaim(confirmation.claimId, confirmation.detail.version);
-    else if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
+    else if (confirmation.kind === 'status') {
+      if (confirmation.cancelDescendants === undefined) task.setStatus(confirmation.status, confirmation.detail.version);
+      else task.setStatus(confirmation.status, confirmation.detail.version, confirmation.cancelDescendants);
+    }
     else if (confirmation.kind === 'allowAgents') task.setAgentPermission(confirmation.allowAgents, confirmation.detail.version);
     else task.setRequiredPlatform(confirmation.requiredPlatform, confirmation.detail.version);
   };
@@ -307,14 +311,16 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
             </>
           )}
           {(readingScope.current === readingIdentity || retainHistoryDraft && retainedReading.current === scope) && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && (!retainHistoryDraft || !isThreadScopeLoss(error)) && <TaskDetailReading key={retainHistoryDraft ? scope : readingIdentity} projectId={projectId} taskId={taskId} retainDraftsWhileUnavailable={retainHistoryDraft} available={detail !== null && readingScope.current === readingIdentity} usage={(active: boolean) => <TaskUsagePanel key={retainHistoryDraft ? `${readingIdentity}/${viewer.getProjectRevision(projectId)}` : readingIdentity} projectId={projectId} taskId={taskId} active={active && (!retainHistoryDraft || !task.requiresFreshRead)} isolated={retainHistoryDraft} />} description={detail?.description ?? ''} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} trackDraft={retainHistoryDraft} preserveHistoryDraft={retainHistoryDraft} historyRevision={viewer.getProjectRevision(projectId)} historyAdmitted={detail !== null && task.status === "ready" && !task.requiresFreshRead && task.error === null} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(hasSession.current ? { session: (active: boolean) => <TaskSessionHost key={readingIdentity} direct={direct} {...(worker === undefined ? {} : { mode: worker.agentControlMode, claimId: worker.claimId, ownerUserId: worker.userId })} projectId={projectId} taskId={taskId} records={sessionRecords} completed={(detail?.status === 'done' || detail?.status === 'cancelled') || worker !== undefined && worker.state !== 'active'} active={active} current={direct ? task.sessionCurrent : !task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords direct={direct} projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection} {...(direct ? { records: sessionRecords } : {})}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
-                <div className="task-detail-columns">
+                <OrdinaryTaskRelations projectId={projectId} detail={detail} history={task.historyGeneration} active={!task.displayRequiresFreshRead && task.mutation.phase !== 'pending'} onRefreshGraph={onRefreshGraph} render={({ parent, children }) => <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className={`task-detail-section${detail.description === '' ? '' : ' task-detail-description-section'}`} aria-label={m.description}>
                       <h4>{m.description}</h4>
                       {description}
                     </section>
+                    {children}
                   </div>
                   <aside className="task-detail-aside" aria-label={m.relationsMetadata}>
+                    {parent}
                     <section className="task-detail-section" aria-label={m.currentGoal}>
                       <h4>{m.currentGoal}</h4>
                       {detail.parentId === null ? <p className="task-detail-description">{m.noGoal}</p> : (() => {
@@ -348,12 +354,12 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                       <div><dt>{m.taskId}</dt><dd className="task-detail-full-id"><TaskId key={`${projectId}/${taskId}`} value={detail.id} /></dd></div>
                     </dl>
                   </aside>
-                </div></>} />}
+                </div>} /></>} />}
         </div>
-        {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}
+        {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} projectId={projectId} mutation={task.mutation} onReconcile={task.reconcile} />}
         <TaskWithdrawalFeedback key={`${scope}/withdrawal`} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskPauseFeedback key={`${scope}/pause`} mutation={task.mutation} onReconcile={task.reconcile} />
-        <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskStatusFeedback key={`${scope}/status`} projectId={projectId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} {...(detail !== null && detail.type === 'task' && task.canSetStatus ? { onCancelDescendants: () => requestConfirmation({ kind: 'status', status: 'cancelled', detail, cancelDescendants: true }) } : {})} />
         <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAssignmentFeedback mutation={task.mutation} uncertain={task.assignmentUncertain} onReconcile={task.reconcile} />
         <TaskPlatformFeedback key={`${scope}/platform`} id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />

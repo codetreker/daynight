@@ -1,4 +1,6 @@
 import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
+// Category continuity does not own the independent ordinary-parent reads.
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: Pick<import('../src/features/task-detail/OrdinaryTaskRelations').OrdinaryTaskRelationsProps, 'render'>) => render?.({ parent: null, children: null }) ?? null }));
 import { browserNavigation } from "../src/app/navigation";
 import { projectHistory, readProjectHistory } from '../src/app/page-history';
 import { summariesForGraph } from './helpers/taskSync';

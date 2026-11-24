@@ -12,7 +12,7 @@ Goal 的独立四态与时间规则见 [Goal 需求](daynight-goals.md)。状态
 
 ## TS2：状态转换与数据保留
 
-没有 active 执行归属的普通任务可在 proposed、todo、in_progress、done 之间直接设置状态，无需先经过 proposed 或 todo。进入 cancelled 不要求前置满足，也不要求交付、验收或保留成果。proposed、todo、人工 in_progress、done 的任务可以取消；done→cancelled 不撤回已有代码或外部交付，也不受已启动后继限制。
+没有 active 执行归属的普通任务可在 proposed、todo、in_progress、done 之间直接设置状态，无需先经过 proposed 或 todo；既有前置条件与[普通父子生命周期](../design/daynight-task-parent-writes.md#生命周期准入)仍须满足。进入 cancelled 不要求前置满足，也不要求交付、验收或保留成果。proposed、todo、人工 in_progress、done 的任务可以取消；done→cancelled 不撤回已有代码或外部交付，也不受已启动后继限制。
 
 cancelled 不可恢复，不能通过普通 setter、认领、withdraw 或 claim-bound 完成改回 proposed、todo、in_progress 或 done。同状态 cancelled 请求仍遵守精确版本 no-op。既有 completed 归属和 Session/archive 历史保持真实，不改写成新一次执行。
 
@@ -24,7 +24,7 @@ active Worker 持有任务时不能取消，必须先完成现有 release 或其
 
 ## TS3：依赖、就绪与计时
 
-普通和外部前置处于 done 或 cancelled 时均视为满足。实际进入 in_progress/done 要求全部直接前置满足；proposed、todo 和 cancelled 允许有未满足前置。proposed 不满足后继的前置条件。取消保留真实依赖边，不级联修改前置或后继。取消 A 可以使依赖 A 的 B 成为 ready，但 B 仍须满足其余前置与自动执行条件。
+普通和外部前置处于 done 或 cancelled 时均视为满足。实际进入 in_progress/done 要求全部直接前置满足；proposed、todo 和 cancelled 允许有未满足前置。proposed 不满足后继的前置条件。普通取消不删除边、不级联修改依赖前置或后继；普通父子树的显式确认取消独立遵循[父子生命周期](../design/daynight-task-parent-writes.md)。取消 A 可以使依赖 A 的 B 成为 ready，但 B 仍须满足其余前置与自动执行条件。
 
 done 退回 proposed/todo/in_progress 时，若任一直接后继为 in_progress 或 done 则拒绝。cancelled 后继不增加重开限制，因为取消无需前置持续满足。done→cancelled 保持依赖满足，不适用重开保护。
 
@@ -46,9 +46,9 @@ startedAt/completedAt 描述执行区间：进入 in_progress 生成新起点并
 
 Task 详情沿用紧凑头部及公共状态行。五种业务状态都有可区分的双语文字和视觉标识，不能只依赖颜色。未取消任务的状态菜单提供proposed、todo、in_progress、done、cancelled；已取消任务保留可读状态，不提供reopen或withdraw恢复控制。取消记录的描述、附件、Steps、Thread和执行资料保持可读。
 
-选择cancelled使用现有状态确认窗，展示完整任务名、当前→目标，明确不可恢复、无需继续交付、资料保持可读，以及其他任务对本任务的依赖将视为满足。取消不要求填写原因。active Worker的取消项以aria-disabled表达不可提交，悬停或键盘聚焦可读取先完成release的说明；若执行归属在审阅后变化，服务端拒绝仍须准确呈现，不能将进程已停误当作claim已释放。
+选择 cancelled 使用现有状态确认窗，展示完整任务名、当前→目标，明确不可恢复、资料保持可读，以及其他任务对本任务的依赖将视为满足。普通取消只针对目标；服务端返回未结束子任务阻塞时提供“一并取消” / “Cancel with subtasks”，重新明确确认才授权事务生效时全部可见未结束后代，已结束后代保留状态与历史。取消不要求原因。active Worker 的取消项以 aria-disabled 表达不可提交，悬停或键盘聚焦可读取先 release 的说明。普通取消、完成或删除遇到未结束直属子项，以及创建或重开遇到终态父项时，准确显示服务端原因，并按授权提供真实 Task ID 的可打开阻塞项；缺少可读 ID 时只显示已授权原因。整批取消被深层 claim 阻塞时状态保持，不能将进程已停误当 claim 已释放。
 
-放弃确认、关闭确认窗或Escape零写入，保留焦点。已接受操作绑定身份、源状态、目标、精确版本和审阅cacheGeneration，异步准备和发送前继续核验原所有者及历史；冲突重读后重新确认，不替换新版本静默提交。
+放弃确认、关闭确认窗或Escape零写入，保留焦点。确认及已接受操作绑定身份、源状态、目标、精确版本、审阅 cacheGeneration 和明确的普通/后代取消意图，异步准备和发送前继续核验原所有者及历史；冲突重读后重新确认，不替换新版本静默提交。
 
 状态、allowAgents和requiredPlatform保存共用单任务写入会话。读取陈旧、pending、unknown、核对中或核对失败时阻止再次提交。取消保持普通status操作，不设置删除终态：成功须为精确+1、cancelledAt非空且原startedAt/completedAt和其他Task字段保留。同状态核对仍按+0及时间不变规则；无效字段或时间组合不能当作成功。未知结果只GET核对，不重发写入，也不把后来读到的取消值归因于原未知请求。关闭或重开详情不释放进行中的防重责任。
 
