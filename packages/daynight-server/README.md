@@ -1469,6 +1469,9 @@ preserves its container for the restart check; the last test removes it. The
 business tests also require `DAYNIGHT_TEST_DATABASE_URL` set to an isolated
 PostgreSQL database. The startup test uses the overlay produced by `scripts/check.sh`.
 CI runs the object, archive, startup and business tests against its own Azurite service.
+PR CI verifies their passing events in the complete module coverage invocation;
+main CI also runs the separate Azure commands. The PR gate rejects missing,
+skipped or failed tests and incomplete capture, including skipped image subtests.
 
 ### Startup and shutdown tests
 
