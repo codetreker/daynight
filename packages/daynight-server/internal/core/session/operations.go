@@ -17,16 +17,14 @@ import (
 )
 
 type operationRecord struct {
-	WorkerID            *string
-	WorkerIntentVersion *int64
-	Available           bool
-	Command             sp.Command
-	Receipt             sp.Operation
-	Actor               model.Principal
-	Hash                []byte
-	Epoch               *int64
-	Seq                 int64
-	Deadline            time.Time
+	Available bool
+	Command   sp.Command
+	Receipt   sp.Operation
+	Actor     model.Principal
+	Hash      []byte
+	Epoch     *int64
+	Seq       int64
+	Deadline  time.Time
 }
 
 func loadOperation(ctx context.Context, tx *operationTx, session, id string) (operationRecord, error) {
@@ -34,7 +32,7 @@ func loadOperation(ctx context.Context, tx *operationTx, session, id string) (op
 	if err != nil {
 		return operationRecord{}, err
 	}
-	o := operationRecord{WorkerID: persisted.WorkerID, WorkerIntentVersion: persisted.WorkerIntentVersion, Command: persisted.Command, Receipt: persisted.Receipt, Actor: persisted.Actor, Hash: persisted.Hash, Epoch: persisted.Epoch, Seq: persisted.Seq, Deadline: persisted.Deadline}
+	o := operationRecord{Command: persisted.Command, Receipt: persisted.Receipt, Actor: persisted.Actor, Hash: persisted.Hash, Epoch: persisted.Epoch, Seq: persisted.Seq, Deadline: persisted.Deadline}
 	if command, available, err := persistedIntent(ctx, tx, session, id); err != nil {
 		return o, err
 	} else if available {
@@ -429,10 +427,6 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 		if !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
-		workerVersion, err := commandWorkerVersion(ctx, tx, r, c.Kind)
-		if err != nil {
-			return err
-		}
 		if r.Live == nil || !r.Live.Synced {
 			return fault("controller_offline", "Controller is not synchronized.")
 		}
@@ -452,11 +446,7 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 		result = sp.Operation{Fence: c.Fence, Protocol: sp.Protocol, OperationID: c.OperationID, Kind: c.Kind, State: "accepted"}
 		r.OperationSeq++
 		r.Live.Commands[c.OperationID] = c
-		var workerID *string
-		if c.Kind != "cancel" && r.ExecutionWorkerID != "" {
-			workerID = &r.ExecutionWorkerID
-		}
-		if err = tx.dao.InsertSessionOperation(ctx, store.SessionOperation{WorkerID: workerID, WorkerIntentVersion: workerVersion, SessionID: id, OperationID: c.OperationID, Seq: r.OperationSeq, Hash: hash, Command: commandSummary(c), Actor: p, Receipt: durableOperation(result)}); err != nil {
+		if err = tx.dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: c.OperationID, Seq: r.OperationSeq, Hash: hash, Command: commandSummary(c), Actor: p, Receipt: durableOperation(result)}); err != nil {
 			return err
 		}
 		if err = persistIntent(ctx, tx, c); err != nil {
@@ -502,7 +492,7 @@ func preDispatchRefusal(err error) bool {
 		return false
 	}
 	switch refusal.Code {
-	case "worker_disabled", "forbidden", "unauthenticated", "insufficient_scope", "session_conflict", "controller_offline", "capability_changed", "component_unsupported", "resource_conflict", "upload_expired", "unsupported_media_type", "quota_exceeded", "invalid_input":
+	case "forbidden", "unauthenticated", "insufficient_scope", "session_conflict", "controller_offline", "capability_changed", "component_unsupported", "resource_conflict", "upload_expired", "unsupported_media_type", "quota_exceeded", "invalid_input":
 		return true
 	default:
 		return false
@@ -519,24 +509,19 @@ func (s *Execution) operationAuthorized(ctx context.Context, tx *operationTx, r 
 	if !o.Available {
 		return fault("controller_offline", "Operation body must be resent by its original caller.")
 	}
-	if err := requireOperationWorker(ctx, tx, r, o); err != nil {
-		return err
-	}
 	return s.authorizeCommand(ctx, tx, r, t, o.Command)
 }
 func (s *Execution) updateReceipt(ctx context.Context, tx *operationTx, r *record, o sp.Operation) error {
 	return s.saveReceipt(ctx, tx, r, o, durableOperation(o))
 }
 
-// Only the server's pre-dispatch authorization check can persist this proof.
+const preDispatchRefusalCode = "permission_or_state_changed"
+
+// Only the server can persist this proof of refusal before dispatch.
 // Controller receipts may carry the same code, but still lose all error text.
-func (s *Execution) rejectBeforeDispatch(ctx context.Context, tx *operationTx, r *record, o sp.Operation, cause error) (sp.Operation, error) {
+func (s *Execution) rejectBeforeDispatch(ctx context.Context, tx *operationTx, r *record, o sp.Operation) (sp.Operation, error) {
 	o.State = "rejected"
-	o.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
-	var reason *model.Fault
-	if errors.As(cause, &reason) && reason.Code == "worker_disabled" {
-		o.Error = &sp.OperationError{Code: "worker_disabled", Message: "Worker stopped accepting execution before dispatch."}
-	}
+	o.Error = &sp.OperationError{Code: preDispatchRefusalCode, Message: "Operation no longer has current permission or state."}
 	return o, s.saveReceipt(ctx, tx, r, o, o)
 }
 
@@ -580,7 +565,7 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 				if !preDispatchRefusal(err) {
 					return err
 				}
-				if _, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt, err); err != nil {
+				if _, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt); err != nil {
 					return err
 				}
 				continue
@@ -638,7 +623,7 @@ func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t tas
 		}
 		// A stale offer has not crossed the native dispatch boundary. Reject only
 		// that operation so unrelated work can continue on the same channel.
-		o.Receipt, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt, err)
+		o.Receipt, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt)
 		if err != nil {
 			return nil, err
 		}
@@ -700,25 +685,14 @@ func (s *Execution) reconcile(ctx context.Context, tx *operationTx, r *record, t
 		// An old execution's journal may settle history, but can never authorize a new call.
 		if !terminal(o.Receipt.State) {
 			state := item.State
-			rejectedForWorker := false
 			if o.Receipt.State == "provider_accepted" && (state == "not_submitted" || state == "dispatching" || state == "unknown" || state == "rejected" || state == "expired") {
 				// An incomplete journal cannot erase a known native acceptance.
 			} else if state == "not_submitted" {
 				authorization := s.authorizeOperationActor(ctx, tx, r, o)
-				if authorization == nil {
-					authorization = requireOperationWorker(ctx, tx, r, o)
-				}
 				if authorization != nil && !preDispatchRefusal(authorization) {
 					return nil, authorization
 				}
-				var refusal *model.Fault
-				if (o.Receipt.State == "offered" || o.Receipt.State == "accepted") && errors.As(authorization, &refusal) && refusal.Code == "worker_disabled" {
-					rejectedForWorker = true
-					o.Receipt, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt, authorization)
-					if err != nil {
-						return nil, err
-					}
-				} else if o.Receipt.State == "offered" && o.Available && o.Command.ExecutionGeneration == r.Snapshot.ExecutionGeneration && active(t, r) && authorization == nil && o.Actor.UserID == r.Owner {
+				if o.Receipt.State == "offered" && o.Available && o.Command.ExecutionGeneration == r.Snapshot.ExecutionGeneration && active(t, r) && authorization == nil && o.Actor.UserID == r.Owner {
 					o.Receipt.State = "accepted"
 				} else if o.Receipt.State == "offered" {
 					o.Receipt.State = "rejected"
@@ -735,10 +709,8 @@ func (s *Execution) reconcile(ctx context.Context, tx *operationTx, r *record, t
 			if err = tx.dao.SetSessionOperationEpoch(ctx, r.Snapshot.SessionID, item.OperationID, number(r.Snapshot.ConnectionEpoch)); err != nil {
 				return nil, err
 			}
-			if !rejectedForWorker {
-				if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {
-					return nil, err
-				}
+			if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {
+				return nil, err
 			}
 		}
 		results = append(results, o.Receipt)

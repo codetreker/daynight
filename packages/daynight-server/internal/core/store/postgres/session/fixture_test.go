@@ -311,9 +311,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"webhook_operations",
 		"webhook_signing_keys",
 		"webhook_subscriptions",
-		"worker_lifecycle",
-		"worker_lifecycle_observations",
-		"worker_lifecycle_operations",
 		"worker_prompts",
 		"workers",
 	}

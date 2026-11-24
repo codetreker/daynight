@@ -41,8 +41,7 @@ type workerWriteMock struct {
 }
 
 type workerClaimAdmissionMock struct {
-	check func(context.Context, string, string) error
-	read  func(context.Context, string, string) (*model.WorkerDesiredConfiguration, error)
+	read func(context.Context, string, string) (*model.WorkerDesiredConfiguration, error)
 }
 
 func (m *workerClaimAdmissionMock) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
@@ -65,12 +64,7 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 	fixture.Session = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	fixture.Capture = &workerCapturerMock{taskMockBase: base.withLabel("capture")}
 	fixture.CaptureDAO = &captureDAOMock{taskMockBase: base.withLabel("captureDAO")}
-	fixture.Admission = &workerClaimAdmissionMock{check: func(ctx context.Context, user, worker string) error {
-		if ctx != fixture.Context || user != principal.UserID || worker == "" {
-			t.Fatal("changed lifecycle admission identity")
-		}
-		return nil
-	}, read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+	fixture.Admission = &workerClaimAdmissionMock{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 		if ctx != fixture.Context || user != principal.UserID || worker == "" {
 			t.Fatalf("claim admission identity changed: user=%s worker=%s", user, worker)
 		}
@@ -262,12 +256,4 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 			})
 		}
 	}
-}
-
-func (m *workerClaimAdmissionMock) CheckWorkerExecution(ctx context.Context, user, worker string) error {
-	return m.check(ctx, user, worker)
-}
-
-func (m *workerClaimAdmissionMock) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
-	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }

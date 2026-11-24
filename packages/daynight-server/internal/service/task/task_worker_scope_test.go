@@ -53,7 +53,7 @@ func TestScopedWorkerOperations(t *testing.T) {
 				parent := context.WithValue(t.Context(), contextKey{}, "worker-scope")
 				ctx := taskservice.WithTaskWriteAuthorization(parent, model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, tc.full)
 				base := newTaskMockBase(t, "worker-scope")
-				reads, writes, admissionReads, admissionChecks := 0, 0, 0, 0
+				reads, writes, admissionReads := 0, 0, 0
 				project := &projectWriterMock{taskMockBase: base, ProjectAccessFn: func(_ context.Context, p model.Principal) (model.ProjectAccess, error) {
 					if p != principal {
 						t.Fatal("principal changed")
@@ -95,13 +95,6 @@ func TestScopedWorkerOperations(t *testing.T) {
 						}
 						return nil, nil
 					},
-					check: func(actual context.Context, user, worker string) error {
-						admissionChecks++
-						if actual.Value(contextKey{}) != "worker-scope" || user != principal.UserID || worker != descriptor.WorkerID {
-							t.Fatal("claim execution identity or context changed")
-						}
-						return nil
-					},
 				}
 				scope := &taskProjectScopeMock{taskMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return tasks }, SessionDAOFn: func() store.ProjectSessionDAO { return session }, CaptureDAOFn: func() store.WebhookCaptureDAO { return scopeCaptureDAO{} }, WorkerClaimAdmissionDAOFn: func() store.WorkerClaimAdmissionDAO { return admission }}
 				db := &taskStoreMock{taskMockBase: base, WriteProjectFn: func(_ context.Context, id string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
@@ -131,8 +124,8 @@ func TestScopedWorkerOperations(t *testing.T) {
 				if op.name == "claim" && tc.allowed {
 					wantAdmission = 1
 				}
-				if admissionReads != wantAdmission || admissionChecks != wantAdmission {
-					t.Fatalf("claim admission reads=%d checks=%d, want %d each", admissionReads, admissionChecks, wantAdmission)
+				if admissionReads != wantAdmission {
+					t.Fatalf("claim configuration reads=%d, want %d", admissionReads, wantAdmission)
 				}
 				if !tc.allowed {
 					var fault *model.Fault

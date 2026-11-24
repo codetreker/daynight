@@ -232,12 +232,6 @@ func TestScopedRuntimeChecksOriginalParentAndWorkPrincipal(t *testing.T) {
 
 func TestScopedRecoveryRejectsNewGrantButRetainsReceipt(t *testing.T) {
 	f := newRecoveryFixture(t)
-	f.executionError = &model.Fault{Code: "worker_disabled", Message: "Worker is disabled."}
-	t.Cleanup(func() {
-		if f.executionChecks != 0 {
-			t.Fatal("scope rejection or receipt replay checked execution admission")
-		}
-	})
 	input := f.input()
 	checks := 0
 	f.service.producer = func(ctx context.Context, scope store.SessionScope, p model.Principal) (model.CredentialAuthorization, error) {

@@ -1,4 +1,3 @@
-import { LifecycleAdmissionError } from "../../../src/commands/worker/lifecycle-store.js";
 import { imageQualificationFingerprint } from "../../../src/commands/controller/providers/image-qualification.js";
 import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
@@ -500,11 +499,11 @@ test("Copilot cannot submit input when the working-state callback fences its que
   } finally { await provider.close(); }
 });
 
-test("Copilot reports the final queued lifecycle refusal as not dispatched and restores idle state", async () => {
+test("Copilot reports the final queued Controller stop as not dispatched and restores idle state", async () => {
   let fenced = false;
   const provider = await openCopilotProvider({ ...fixture.options,
     onState: state => { fixture.options.onState(state); if (state.activity === "working") fenced = true; },
-    assertNativeDispatch: () => { if (fenced) throw new LifecycleAdmissionError(); },
+    assertNativeDispatch: () => { if (fenced) throw new NativeDispatchRejectedError("Controller stopped before native dispatch."); },
   });
   try {
     await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBeInstanceOf(NativeDispatchRejectedError);

@@ -251,13 +251,6 @@ through release and reconciliation. Native termination grace and escalation
 keep real time. The
 [output join clock decision](../.agents/notes/implemented/testing/2026-11-23-owned-command-output-join-clock.md)
 owns this boundary.
-Worker lifecycle manager fixtures control the wait between observations. The
-local SQLite observer and cloud poll advance independently in ordering-sensitive
-cases. Real SQLite receipts, cancellation and writer joins remain part of
-those cases. A representative fixture exercises the production timers and
-verifies the requested admission and poll intervals.
-The [lifecycle polling decision](../.agents/notes/implemented/testing/2026-11-23-lifecycle-polling-fixtures.md)
-owns the test timing rules.
 Worker reconcile wake tests retain native wake and cancellation. The poll
 completion case controls one Promise delay and asserts its requested interval.
 The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)

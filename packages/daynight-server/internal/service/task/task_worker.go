@@ -36,9 +36,6 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 		if err != nil {
 			return taskcore.Mutation{}, err
 		}
-		if err := tx.WorkerClaimAdmissionDAO().CheckWorkerExecution(ctx, principal.UserID, descriptor.WorkerID); err != nil {
-			return taskcore.Mutation{}, err
-		}
 		filter := model.TagNameFilter{Names: []string{}, Match: "any"}
 		if desired != nil {
 			var fields map[string]json.RawMessage

@@ -12,8 +12,6 @@ import { configurationError, configurationResource, configurationResponse, confi
 import { WORKER_USER, workerDetail, workerId, workerResponse } from './helpers/workers';
 import { wireResponse } from './helpers/wireJson';
 
-vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
-
 const target = workerId(1), path = `/workers/${target}`;
 const scopes: TaskCacheScope[] = [];
 const flush = () => act(async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); });

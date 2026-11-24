@@ -1,4 +1,3 @@
-import { assertProviderNativeDispatch } from "../native-lifecycle.js";
 import { assertNativeImageAdmission } from "./image-admission.js";
 import { ClaudeBotRecovery } from "./claude-bot-recovery.js";
 import { validateNativeInput, verifyNativeImageFiles, textNativeInput } from "./native-input.js";
@@ -215,7 +214,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       }
     } catch (error) { recovery?.close(); await projection.close(); await historyReader?.close(); throw error; }
   }
-  try { assertProviderNativeDispatch(options.assertNativeDispatch); recovery?.markDirty(); native = queryClaudeLive({ prompt: input, options: {
+  try { options.assertNativeDispatch?.(); recovery?.markDirty(); native = queryClaudeLive({ prompt: input, options: {
     // SDK store-backed resume materializes a partial config home. The validated
     // local transcript must resume under the original account's complete home.
     ...(options.resumeNativeSessionId ? recovery ? { extraArgs: { resume: nativeId } } : { resume: nativeId } : { sessionId: nativeId }), cwd: options.cwd,
@@ -246,7 +245,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   } }, options); } catch (error) { recovery?.close(); await projection.close(); await historyReader?.close(); throw error; }
   controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor,
     () => {
-      assertProviderNativeDispatch(options.assertNativeDispatch);
+      options.assertNativeDispatch?.();
       if (recovery && (closed || disconnected)) throw new NativeRpcError(-32602, "Claude recovery cannot dispatch an unconfirmed setting operation.");
       recovery?.markDirty();
       if (recovery && settingInFlight) settingDispatched = true;
@@ -308,7 +307,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   }
   const submit = async (inputValue: NativeInput, operationId: string, text: string) => {
     try {
-      assertProviderNativeDispatch(options.assertNativeDispatch);
+      options.assertNativeDispatch?.();
       if (inputValue.content.some(part => part.type === "image")) assertNativeImageAdmission(inputValue, imageCapabilities(), null);
       recovery?.markDirty();
       if (native?.submit) await native.submit({ uuid: operationId, sessionId: nativeId, input: inputValue });
@@ -386,7 +385,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       let waiter!: { resolve(): void; reject(error: Error): void };
       const stopped = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; cancelWaiters.add(waiter); }); void stopped.catch(() => {});
       const attempt = { turnId: currentTurnId, acknowledged: false, result: undefined as unknown }; cancellation = attempt;
-      try { assertProviderNativeDispatch(options.assertNativeDispatch); const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
+      try { const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
         const result = await deadline(interrupt(capabilities.steer ? { cancelQueued: true } : undefined), "Claude interrupt receipt is unconfirmed.");
         if (closed || disconnected) throw new Error("Native Claude closed before interrupt confirmation.");
         attempt.acknowledged = true;
@@ -397,7 +396,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
       const pending = interactions.get(interactionId); if (!pending || pending.submitted || pending.interaction.revision !== revision) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(pending.interaction, response);
-      assertProviderNativeDispatch(options.assertNativeDispatch);
+      options.assertNativeDispatch?.();
       const confirmation = new Promise<void>((resolve, reject) => { pending.confirm = resolve; pending.rejectConfirmation = reject; });
       pending.submitted = true; pending.resolve(response);
       // A resolved SDK callback is not a native receipt. The matching tool result,

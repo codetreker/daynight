@@ -7,7 +7,6 @@ import (
 
 // WorkerClaimAdmissionDAO reads authoritative targets in a Project write transaction.
 type WorkerClaimAdmissionDAO interface {
-	WorkerExecutionAdmission
 	// ClaimWorkerConfiguration locks the Worker until transaction completion. A
 	// missing Worker is protected against first-report insertion for that lifetime.
 	// Nil means no initialized target; read and cancellation errors are returned.

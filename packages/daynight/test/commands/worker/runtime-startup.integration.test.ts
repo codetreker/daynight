@@ -7,7 +7,7 @@ import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +16,6 @@ import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
-import * as toolRuntimes from "../../../src/commands/worker/tool-selection-runtime.js";
-import { ToolSelectionManager, type ToolSelectionTargets } from "../../../src/commands/worker/tool-selection.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import * as workerIdentity from "../../../src/commands/worker/identity.js";
 import * as atomicFiles from "../../../src/platform/files.js";
@@ -37,13 +35,6 @@ import { createNativeSelectionVerifier } from "../../../src/commands/worker/nati
 import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
 import { prepareBotEnvironment } from "../../../src/commands/worker/bots/environment.js";
 import * as agentCliAliases from "../../../src/cli/agent-cli-aliases.js";
-import * as lifecycleClients from "../../../src/api/worker-lifecycle-client.js";
-import * as controllerLifecycle from "../../../src/commands/controller/lifecycle-store.js";
-import * as controllerProcessProof from "../../../src/commands/controller/process-proof.js";
-import * as lifecycleControllerTickets from "../../../src/commands/worker/lifecycle-controller-ticket.js";
-import { LifecycleAdmissionError, openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
-import * as lifecycleStores from "../../../src/commands/worker/lifecycle-store.js";
-import type { LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudNative, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -77,7 +68,7 @@ vi.mock("node:crypto", async original => {
 });
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   const { createWorkerToolSelectionFixture } = await import("../../helpers/worker-tool-runtime-fixture.js");
-  return { createWorkerToolSelectionRuntime: vi.fn(createWorkerToolSelectionFixture) };
+  return { createWorkerToolSelectionRuntime: createWorkerToolSelectionFixture };
 });
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
@@ -240,229 +231,9 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it.each(["missing", "incomplete"] as const)("prepares a fresh management Git manager before removing a retained retired %s Web worktree", async webState => {
-    const f = await fixture(true, false);
-    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
-    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
-    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
-    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
-    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
-    await mkdir(f.repository.path);
-    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
-    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
-    const owner = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(74) };
-    const project = f.store!.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
-    const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
-    const operation = createOperation();
-    try { await migrateLegacyWorktrees({ repositoryPath: project.localPath, commonDirectory: binding.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } }); }
-    finally { operation.dispose(); }
-    run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
-    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
-    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
-    if (webState === "incomplete") {
-      const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
-      const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
-      web.bindWorktree(record, binding, Date.now()); web.close();
-    }
-    const successorPath = path.join(project.localPath, ".worktrees", "daynight", uuid(75));
-    run(["worktree", "add", "--force", successorPath, binding.branch]);
-    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, projectId: owner.projectId, taskId: owner.taskId, claimId: uuid(76), worktreeId: uuid(75), directoryName: uuid(75) });
-    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
-    const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
-    const saved = openLifecycleStore({ file, identity, allowCreate: true });
-    saved.bindInstance({ instanceId: uuid(72), intentVersion: "1", desired: "disabled" }); saved.close();
-    mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
-    const messages: string[] = [];
-    mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => createWorkerCoordinator({ ...settings, emit: event => {
-      settings.emit(event);
-      if (event.error !== undefined) messages.push(`${event.message}: ${event.error instanceof Error ? event.error.stack : String(event.error)}`);
-    } }));
-    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
-    const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
-    const time = "2026-11-21T00:00:00Z";
-    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
-      instance: { instanceId: uuid(72) }, capability: "supported", observation: null, observedAt: time };
-    const unexpected = vi.fn(async () => { throw new Error("Unexpected management business request."); });
-    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
-      read: async () => cloud,
-      register: async request => {
-        cloud = { ...cloud, instance: { instanceId: request.instanceId } };
-        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
-      },
-      report: async request => ({ protocolVersion: 1, accepted: true, instanceId: request.instanceId, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
-      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
-    });
-    const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
-    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
-    try {
-      await vi.waitFor(() => expect(f.store!.getTask(owner)?.status, messages.join("; ")).toBe("done"), { timeout: 15000 });
-      expect(f.store!.getCleanupSchedule(owner)).toBeNull();
-      expect(run(["worktree", "list", "--porcelain"])).not.toContain(owner.worktreeId);
-      expect(run(["worktree", "list", "--porcelain"])).toContain(uuid(75));
-      await expect(readFile(path.join(binding.worktreePath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
-      const check = openLifecycleStore({ file, identity, allowCreate: false });
-      try { await vi.waitFor(() => expect(check.listResources().filter(row => row.identity.kind === "retained_task").map(row => row.stage)).toEqual(["stopped"])); }
-      finally { check.close(); }
-      expect(mocks.git).toHaveBeenCalledWith(expect.objectContaining({ temporaryDirectory: f.paths.temporaryDirectory, prepareFormat: expect.any(Function) }));
-      expect(remote.readTask).toHaveBeenCalledOnce();
-      expect(remote.configuration).not.toHaveBeenCalled();
-      expect(unexpected).not.toHaveBeenCalled();
-    } finally {
-      cancellation.abort();
-      try { await running.catch(error => { if (error?.name !== "AbortError") throw error; }); }
-      finally { client.mockRestore(); network.mockRestore(); }
-    }
-  }, 25000);
-
-  it.each(["initial", "retry"] as const)("joins a retained claim before reading pending inventory and settles Task and Controller receipts on %s cleanup", async attempt => {
-    const f = await fixture(true, false);
-    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
-    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
-    const taskIdentity = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71) };
-    f.store!.registerProject({ projectId: taskIdentity.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
-    const saved = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-    const state = saved.bindInstance({ instanceId: uuid(72), intentVersion: "1", desired: "disabled" });
-    const binding = { ...identity, instanceId: state.instanceId!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
-    saved.importResource({ binding, resourceId: uuid(73), operationId: taskIdentity.claimId, ownerKind: "task",
-      identity: { kind: "task_claim", ...taskIdentity, worktreeId: uuid(74), candidateVersion: "1", frozenConfiguration: { agent: "codex", model: "cloud-model", args: [] } } });
-    const journalFile = path.join(f.homeDirectory, "original-journal.sqlite");
-    const proof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
-    saved.importResource({ binding, resourceId: uuid(75), operationId: uuid(76), ownerKind: "controller", stage: "running", processProof: proof,
-      identity: { ...taskIdentity, executionId: uuid(77), controllerInstanceId: uuid(78), launchId: uuid(76), journalFile } });
-    let cleanupResourceId: string | undefined;
-    if (attempt === "retry") {
-      const { openExecutionResourceJournal } = await import("../../../src/commands/worker/execution-resource-journal.js");
-      const commands = await openExecutionResourceJournal({ directory: path.join(f.paths.workerDirectory, "execution-resources"), identity });
-      const operation = createOperation();
-      try {
-        await withOwnedCommandLifecycle(async event => {
-          if (event.stage === "prepared") {
-            cleanupResourceId = event.resourceId;
-            saved.reserveCleanupCommand({ binding, task: taskIdentity, resourceId: event.resourceId });
-          }
-          await commands.sink(binding.scopeGeneration)(event);
-          if (event.stage === "bound") saved.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) });
-          // The durable command journal survives a lost lifecycle stop save.
-        }, () => runOwnedCommand({ file: process.execPath, args: ["-e", "process.exit(0)"], environment: process.env }, operation));
-      } finally { operation.dispose(); }
-    }
-    saved.close();
-    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), shutdownEntered = Promise.withResolvers<void>(), receiptReady = Promise.withResolvers<void>();
-    const remote = mocks.remote(); mocks.remote.mockClear();
-    Object.assign(remote, { readTask: vi.fn(async () => {
-      entered.resolve(); await release.promise;
-      return { id: taskIdentity.taskId, projectId: taskIdentity.projectId, version: 2n, status: "in_progress", properties: {
-        worker: { claimId: taskIdentity.claimId, worktreeId: uuid(74), workerId, userId: uuid(6), state: "active", phase: "preparing", agent: "codex", agentControlMode: "web",
-          platform: "windows", machine: { id: uuid(5), name: "fixture" }, nativeSessionId: null, claimedAt: "2026-11-21T00:00:00Z" } } };
-    }) });
-    remote.report.mockResolvedValue({ observedAt: "2026-11-21T00:00:00Z", lastReportedAt: "2026-11-21T00:00:00Z" });
-    let stoppedReceipt = false;
-    const openStore = lifecycleStores.openLifecycleStore;
-    const lifecycleFactory = vi.spyOn(lifecycleStores, "openLifecycleStore").mockImplementation(options => {
-      const store = openStore(options), save = store.recordResource;
-      store.recordResource = input => {
-        if (input.resourceId === cleanupResourceId && input.stage === "stopped" && !stoppedReceipt) throw new Error("Lifecycle command stop save is temporarily unavailable.");
-        return save(input);
-      };
-      return store;
-    });
-    const snapshot = { executionId: uuid(77), controllerInstanceId: uuid(78), controllerProcess: proof, nativeProcesses: [], nativeSessionId: null } as unknown as controllerLifecycle.ControllerSnapshot;
-    const readJournal = vi.spyOn(controllerLifecycle, "readControllerSnapshot").mockImplementation(() => {
-      if (!stoppedReceipt) return null;
-      receiptReady.resolve(); return snapshot;
-    });
-    const readTicket = vi.spyOn(lifecycleControllerTickets, "readLifecycleControllerTicket").mockResolvedValue({} as never);
-    const readWindows = vi.spyOn(controllerLifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(snapshot);
-    const readProcesses = vi.spyOn(controllerProcessProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-    const shutdown = vi.fn(async (settings: Parameters<ReturnType<typeof import("../../../src/commands/worker/coordinator.js").createWorkerCoordinator>["shutdown"]>[0]) => {
-      shutdownEntered.resolve();
-      if (shutdown.mock.calls.length === 1) {
-        expect(f.store!.getTask(taskIdentity)).toBeNull();
-        expect(settings!.pendingClaims).toContainEqual(taskIdentity);
-      }
-      await settings!.currentTasks!.get(`${taskIdentity.projectId}/${taskIdentity.taskId}`);
-      expect(f.store!.getTask(taskIdentity)?.status).toBe("pending");
-      if (attempt === "retry" && shutdown.mock.calls.length === 1) return false;
-      stoppedReceipt = true;
-      return true;
-    });
-    mocks.coordinator.mockReturnValue({ ...coordinator(async () => {}), shutdown, executionSnapshot: () => ({ recovery: [] }) });
-    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
-    const time = "2026-11-21T00:00:00Z";
-    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
-      instance: { instanceId: uuid(72) }, capability: "supported", observation: null, observedAt: time };
-    const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle write."); });
-    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
-      read: async () => cloud,
-      register: async request => {
-        cloud = { ...cloud, instance: { instanceId: request.instanceId } };
-        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
-      },
-      report: async request => ({ protocolVersion: 1, accepted: true, instanceId: request.instanceId, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
-      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
-    });
-    const messages: string[] = [];
-    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
-    try {
-      try { await withinExecutionDeadline(Promise.race([Promise.all([entered.promise, shutdownEntered.promise]), running.then(() => { throw new Error("Management stopped before claim observation."); })]), Date.now() + 5000); }
-      catch (cause) { throw new Error(`Management claim barrier failed: ${messages.join("; ")}`, { cause }); }
-      expect(readJournal).not.toHaveBeenCalled();
-      expect(f.store!.getTask(taskIdentity)).toBeNull();
-      release.resolve();
-      try { await withinExecutionDeadline(receiptReady.promise, Date.now() + 5000); }
-      catch (cause) { throw new Error(`Controller receipt barrier failed: ${messages.join("; ")}; shutdown calls=${shutdown.mock.calls.length}; readTask calls=${remote.readTask.mock.calls.length}`, { cause }); }
-      const check = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
-      try {
-        expect(check.readResource(uuid(73))?.stage).toBe("confirmed");
-        await vi.waitFor(() => expect(check.readResource(uuid(75))?.stage).toBe("stopped"));
-        expect(check.listResources().filter(resource => resource.identity.kind === "retained_task").map(resource => resource.stage)).toEqual(["stopped"]);
-        if (cleanupResourceId !== undefined) expect(check.readResource(cleanupResourceId)?.stage).toBe("stopped");
-      } finally { check.close(); }
-      expect(remote.readTask).toHaveBeenCalledOnce();
-    } finally {
-      release.resolve(); cancellation.abort(); await running.catch(error => { if (error?.name !== "AbortError") throw error; });
-      client.mockRestore(); readJournal.mockRestore(); readTicket.mockRestore(); readWindows.mockRestore(); readProcesses.mockRestore(); lifecycleFactory.mockRestore();
-    }
-  }, 20_000);
-
-  it("releases a Bot probe rejected by local disable during environment preparation", async () => {
+  it("releases a Bot probe rejected by local scope stop during environment preparation", async () => {
     const f = await fixture(false, false);
-    // Lifecycle initialization reconciles retained Task owners before opening a
-    // scope, even when this fixture has no configured projects or saved claims.
-    const taskCoordinator = { ...coordinator(async () => {}), executionSnapshot: vi.fn(() => ({ recovery: [] })) };
-    mocks.coordinator.mockReturnValue(taskCoordinator);
-    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const time = "2026-11-21T00:00:00.000Z";
-    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "enabled", admission: "closed",
-      operationId: null, instance: null, capability: "supported", observation: null, observedAt: time };
-    const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle request."); });
-    const api: lifecycleClients.WorkerLifecycleClient = {
-      read: vi.fn(async () => structuredClone(cloud)),
-      register: vi.fn(async request => {
-        const receipt = { protocolVersion: 1 as const, workerId, operationId: request.operationId, instanceId: request.instanceId,
-          intentVersion: "1", desired: "enabled" as const, admission: "closed" as const, reconnectAllowed: false, observedAt: time };
-        cloud = { ...cloud, instance: { instanceId: receipt.instanceId } };
-        return receipt;
-      }),
-      activate: vi.fn(async request => {
-        cloud = { ...cloud, admission: "open" };
-        return { protocolVersion: 1 as const, workerId, operationId: request.operationId, action: "action" in request ? request.action : "resume",
-          instanceId: request.instanceId, intentVersion: request.intentVersion, localEpoch: request.localEpoch,
-          scopeGeneration: request.scopeGeneration, admission: "open" as const, observedAt: time };
-      }),
-      report: vi.fn(async envelope => ({ protocolVersion: 1 as const, accepted: true as const, instanceId: envelope.instanceId,
-        intentVersion: envelope.intentVersion, reportSequence: envelope.reportSequence, receivedAt: time })),
-      intent: vi.fn(async request => {
-        expect(request).toMatchObject({ action: "disable", source: "local", originOperationId: uuid(81) });
-        const receipt = { protocolVersion: 1 as const, workerId, operationId: request.operationId, action: "disable" as const,
-          intentVersion: "2", desired: "disabled" as const, admission: "closed" as const, state: "accepted" as const, errorCode: null, observedAt: time };
-        cloud = { ...cloud, intentVersion: receipt.intentVersion, desired: receipt.desired, admission: receipt.admission, operationId: receipt.operationId };
-        return receipt;
-      }),
-      operation: unexpected, resolve: unexpected,
-    };
-    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue(api);
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(desired([])));
     remote.report.mockResolvedValue({ observedAt: time, lastReportedAt: time });
@@ -489,51 +260,36 @@ describe("worker cloud-first startup", () => {
     });
     const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
     const managementMessages: string[] = [];
-    const { cancellation, running } = start(f, { lifecycle: true, log: message => { managementMessages.push(message.trim()); }, onExecutionScope: control => { controls.push(control); } });
+    const { cancellation, running } = start(f, { log: message => { managementMessages.push(message.trim()); }, onExecutionScope: control => { controls.push(control); } });
     const waitForStage = async <T>(stage: string, work: Promise<T>): Promise<T> => {
       try {
         return await withinExecutionDeadline(Promise.race([work, running.then(() => { throw new Error("Worker stopped before the barrier."); })]), Date.now() + 5_000);
       } catch (cause) { throw new Error(`Worker did not complete ${stage}. Management diagnostics: ${managementMessages.join("; ") || "none"}`, { cause }); }
     };
-    let lifecycle: ReturnType<typeof openLifecycleStore> | undefined;
+    let stopping: Promise<unknown> | undefined;
     try {
       await waitForStage("Bot alias preparation", Promise.race([entered.promise, result.promise.then(error => {
         throw new Error("Bot environment preparation settled before the alias barrier.", { cause: error });
       })]));
-      expect(taskCoordinator.executionSnapshot).toHaveBeenCalled();
-      expect(api.activate).toHaveBeenCalledOnce();
-      lifecycle = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
-      expect(lifecycle.readState().admission).toBe("open");
       expect(controls).toHaveLength(1);
       const spawnCount = vi.mocked(childProcesses.spawn).mock.calls.length;
-      lifecycle.closeAdmission({ operationId: uuid(81), local: true });
+      stopping = controls[0]!.stop();
       release.resolve();
       const error = await waitForStage("Bot probe admission rejection", result.promise);
-      expect(error).toBeInstanceOf(LifecycleAdmissionError);
+      expect(error).toBeInstanceOf(Error);
       expect(retainedBotCliProbes()).toEqual([]);
       expect(retainedOwnedCommandBoundaries()).toEqual([]);
       expect(vi.mocked(childProcesses.spawn).mock.calls).toHaveLength(spawnCount);
-      expect(lifecycle.listResources()).toEqual([]);
       expect((await readdir(path.join(f.paths.workerDirectory, "execution-resources"))).filter(file => file.endsWith(".json"))).toEqual([]);
-      await vi.waitFor(() => expect(controls[0]!.snapshot().stopped).toBe(true), { timeout: 5_000 });
-      await vi.waitFor(() => expect(lifecycle!.readState()).toMatchObject({ admission: "closed", localVeto: true, stop: "confirmed", save: "durable" }), { timeout: 5_000 });
+      await stopping;
+      expect(controls[0]!.snapshot().stopped).toBe(true);
       expect(fetch).toHaveBeenCalledOnce();
-      expect(unexpected).not.toHaveBeenCalled();
     } finally {
       release.resolve();
-      try {
-        // A failing regression must also retire the never-spawned probe. Import
-        // its original ownership only for teardown, after the assertions above.
-        if (lifecycle !== undefined) for (const probe of retainedBotCliProbes()) {
-          const state = lifecycle.readState();
-          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!,
-            intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
-          resourceId: probe.launchId, operationId: probe.launchId, ownerKind: "repository", identity: { kind: "owned_command" } });
-          await reconcileBotCliProbe(probe.launchId);
-        }
-      } finally {
-        cancellation.abort(); await Promise.allSettled([running]); lifecycle?.close(); aliases.mockRestore(); client.mockRestore();
-      }
+      cancellation.abort();
+      await Promise.allSettled([stopping, running]);
+      for (const probe of retainedBotCliProbes()) await reconcileBotCliProbe(probe.launchId);
+      aliases.mockRestore();
     }
     const lock = await tryAcquireWorkerInstanceLock(f.paths);
     try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
@@ -1092,89 +848,12 @@ describe("worker cloud-first startup", () => {
       release.resolve();
       await vi.waitFor(() => expect(stopManager).toHaveBeenCalledOnce());
       expect((await controls[0]!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
-      expect(stopManager).toHaveBeenCalledOnce();
       expect(mocks.bots).not.toHaveBeenCalled();
       controls[0]!.rebuild();
       await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalled(); });
       expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
       expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
     } finally { release.resolve(); cancellation.abort(); await running; constructing.mockRestore(); }
-  });
-
-  it.each([false, true])("keeps tools open for a late configuration publication and preserves close failure=%s", async (failStop: boolean) => {
-    const f = await fixture(false, false), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
-    const unavailable = new Error("Controlled native preparation unavailable"), stopFailure = new Error("Controlled configuration close failure");
-    const order: string[] = [];
-    let rejectStop = failStop, configurationJoined = false;
-    let preparationSignal: AbortSignal | undefined, lateState: cloudConfiguration.WorkerConfigurationSnapshot | undefined;
-    let tools: ToolSelectionManager | undefined;
-    const closeTools = vi.fn(async () => {
-      order.push("tools-close");
-      const operation = createOperation();
-      try { await tools!.close(operation); } finally { operation.dispose(); }
-    });
-    const createTools: typeof toolRuntimes.createWorkerToolSelectionRuntime = vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).getMockImplementation()!;
-    vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockImplementationOnce((options: Parameters<typeof toolRuntimes.createWorkerToolSelectionRuntime>[0]) => {
-      tools = new ToolSelectionManager({ ...options, probe: { check: async () => ({ version: "fixture" }), close: async () => {} } });
-      return { ...createTools(options), manager: tools,
-        setTargets: (targets: ToolSelectionTargets | null) => targets === null ? tools!.suspendTargets() : tools!.setTargets(targets),
-        prepareNative: async (_native: WorkerCloudNative, signal: AbortSignal) => { preparationSignal = signal; entered.resolve(); await release.promise; throw unavailable; },
-        close: closeTools,
-      };
-    });
-    const createConfiguration = cloudConfiguration.createWorkerConfigurationManager;
-    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async (options: Parameters<typeof cloudConfiguration.createWorkerConfigurationManager>[0]) => {
-      const manager = await createConfiguration({ ...options, onChange: snapshot => {
-        options.onChange?.(snapshot);
-        if (options.signal.aborted) { lateState = snapshot; order.push("late-publication"); }
-      } });
-      const stop = manager.stop;
-      manager.stop = async () => { await stop(); if (!configurationJoined) { configurationJoined = true; order.push("configuration-joined"); } if (rejectStop) throw stopFailure; };
-      return manager;
-    });
-    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
-    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
-    const result = running.then(() => undefined, error => error);
-    try {
-      await entered.promise;
-      await vi.waitFor(() => expect(mocks.reporter).toHaveBeenCalled());
-      if (!failStop) cancellation.abort();
-      const stopping = control!.stop();
-      await vi.waitFor(() => expect(preparationSignal?.aborted).toBe(true));
-      expect(closeTools).not.toHaveBeenCalled();
-      release.resolve();
-      await stopping;
-      expect(lateState?.items.find(item => item.key.kind === "native")).toMatchObject({ state: "error", error: { code: "unavailable" } });
-      const persisted = configurationCache.parseConfigurationCache(JSON.parse(await readFile(f.paths.configurationFile, "utf8")), { serverOrigin: origin, userId: uuid(6), workerId }).cache;
-      expect(persisted.currentItems.find(item => item.value.key.kind === "native")?.value).toMatchObject({ state: "error", error: { code: "unavailable" } });
-      expect(order.indexOf("late-publication")).toBeGreaterThanOrEqual(0);
-      expect(order.indexOf("late-publication")).toBeLessThan(order.indexOf("configuration-joined"));
-      expect(order.indexOf("configuration-joined")).toBeLessThan(order.indexOf("tools-close"));
-      expect(closeTools).toHaveBeenCalledOnce();
-      expect(() => tools!.setTargets({ source: "local", revision: null, choices: { codex: null, copilot: null } })).toThrow("Tool selection manager is closed.");
-      if (failStop) {
-        const configurationResult = control!.snapshot().resources.find(owner => owner.resourceId === "configuration")?.result;
-        expect(configurationResult).toMatchObject({ stop: "unknown", save: "failed" });
-        expect(configurationResult?.error).toBe(stopFailure);
-        expect(control!.snapshot().resources).toContainEqual(expect.objectContaining({ resourceId: "probes", result: expect.objectContaining({ stop: "confirmed", save: "durable" }) }));
-        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
-        rejectStop = false;
-        expect((await control!.reconcile()).every(owner => owner.stop === "confirmed")).toBe(true);
-      }
-      expect(control!.snapshot().stopped).toBe(true);
-      cancellation.abort();
-      const failure = await result;
-      if (failStop) expect(failure instanceof AggregateError ? failure.errors : [failure]).toContain(stopFailure);
-      else expect(failure).toBeUndefined();
-      const lock = await tryAcquireWorkerInstanceLock(f.paths);
-      expect(lock).not.toBeNull(); await lock?.release();
-    } finally {
-      release.resolve(); rejectStop = false;
-      if (control !== undefined && !control.snapshot().stopped) await control.reconcile();
-      cancellation.abort(); await result; constructing.mockRestore();
-      vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockReset().mockImplementation(createTools);
-    }
   });
 
   it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {
@@ -1964,6 +1643,37 @@ describe("worker cloud-first startup", () => {
     try { expect(next).not.toBeNull(); } finally { await next?.release(); }
   });
 
+  it.each([["task", "principal"], ["bot", "principal"], ["task", "configuration"], ["bot", "configuration"]] as const)(
+    "reports original %s stop unknown while startup is waiting for %s", async (kind, stage) => {
+    const f = await fixture(true, false);
+    if (kind === "task") {
+      f.store!.registerProject({ projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path });
+      f.store!.registerPending({ projectId: uuid(1), taskId: uuid(71), claimId: uuid(72), agent: "codex", agentControlMode: "web" });
+    } else {
+      await mkdir(path.join(f.paths.stateDirectory, "bots", uuid(73)), { recursive: true });
+    }
+    const entered = Promise.withResolvers<void>();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    const unavailable = async (signal: AbortSignal): Promise<never> => {
+      signal.throwIfAborted();
+      entered.resolve();
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    };
+    if (stage === "principal") remote.currentUserId.mockImplementation(unavailable);
+    else remote.configuration.mockImplementation((_workerId: string, signal: AbortSignal) => unavailable(signal));
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await entered.promise;
+      const results = await control!.stop({ deadline: Date.now() + 5_000 });
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: kind === "task" ? "tasks" : "bots", stop: "unknown",
+        error: expect.objectContaining({ message: expect.stringContaining("could not initialize their owner") }) }));
+      expect(control!.snapshot().stopped).toBe(false);
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      expect(mocks.bots).not.toHaveBeenCalled();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
   it("retries startup identity under the same lock without reading account-bound cache early", async () => {
     const f = await fixture(), failure = new ApiError({ operation: "me.show" }, "request", { cause: new Error("Temporary identity connection refusal") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -2351,17 +2061,28 @@ it("retains committed Worker state while a Web state failure leaves the configur
   const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
   const invalid = new Database(webFile);
   invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=999"); invalid.close();
-  mocks.emit.mockImplementation((event: { error?: unknown }) => { if (event.error !== undefined) cancellation.abort(); });
-  await runWorker({ ...f, signal: cancellation.signal });
+  const problem = Promise.withResolvers<void>();
+  let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+  mocks.emit.mockImplementation((event: { error?: unknown }) => { if (event.error !== undefined) problem.resolve(); });
+  const running = runWorker({ ...f, signal: cancellation.signal, onExecutionScope: value => { control = value; } });
+  await problem.promise;
+  const results = await control!.stop({ deadline: Date.now() + 5_000 });
+  expect(results).toContainEqual(expect.objectContaining({ resourceId: "tasks", stop: "unknown",
+    error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
+  expect(control!.snapshot().stopped).toBe(false);
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
-  expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
   const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(999);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
   web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT; PRAGMA user_version=1"); web.close();
+  await control!.reconcile({ deadline: Date.now() + 5_000 });
+  expect(control!.snapshot().stopped).toBe(true);
+  cancellation.abort();
+  await running;
+  expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
   mocks.emit.mockImplementation(() => {});
   const repaired = new AbortController(); cancellations.add(repaired); finishAtTick(repaired);
   await runWorker({ ...f, signal: repaired.signal });
@@ -2627,7 +2348,11 @@ describe("real runtime resource isolation", () => {
     const base = { type: "task", parentId: null, projectId: uuid(1), id: uuid(30), title: "healthy", status: "todo", ready: true, allowAgents: true, requiredPlatform: null, assignedTo: uuid(6), version: 1n, properties: {}, dependsOn: [], externalDependsOn: [], blockedBy: [], createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z" };
     remote.ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [uuid(1)], unavailableProjectIds: [] }));
     remote.candidates = vi.fn(async function* () { yield base; });
-    remote.claim = vi.fn(async () => { throw new Error("Grant deliberately unconfirmed"); });
+    remote.claim = vi.fn(async () => {
+      throw new ApiError({ operation: "worker.claim" }, "response", {
+        status: 409, confirmedRefusal: true, cause: new Error("Fixture declines the grant."),
+      });
+    });
     let configurationComplete = false, cycles = 0;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
       const actual = createWorkerCoordinator({ ...options, verifyWebServer: async () => {} });

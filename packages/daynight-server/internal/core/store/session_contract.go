@@ -79,10 +79,6 @@ type SessionGrant struct {
 }
 
 type SessionOperation struct {
-	// WorkerIntentVersion binds queued execution to its original lifecycle intent.
-	// A missing value cannot authorize a command after lifecycle initialization.
-	WorkerID               *string
-	WorkerIntentVersion    *int64
 	SessionID, OperationID string
 	Command                sp.Command
 	Receipt                sp.Operation
@@ -161,6 +157,7 @@ type SessionDAO interface {
 	SessionOperation(context.Context, string, string) (SessionOperation, error)
 	InsertSessionOperation(context.Context, SessionOperation) error
 	SetSessionOperationReceipt(context.Context, sp.Operation) error
+	RejectUnsentSessionOperations(context.Context, string, sp.OperationError) error
 	SetSessionOperationEpoch(context.Context, string, string, int64) error
 	HasOtherFirstInput(context.Context, string, string) (bool, error)
 	HasInteractionResponse(context.Context, string, string, string) (bool, error)

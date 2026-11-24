@@ -68,7 +68,7 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 迁移协调器在原 Worker、Bot 与 Controller 存储锁下核验原执行已停止，再复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后切换唯一写入位置。原 Worker 库事务将源行移除与迁移摘要回执一起提交；原票据和 journal 停证保持不变，由独立映射定位副本。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。本地提交后的 `registration_pending` 阻止旧路径执行，机制与只读历史入口由 [Worker 执行层设计](worker-bot-runtime.md#bot-专属位置与迁移责任)拥有。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
 
-新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
+新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。实际换 Worker 时，在同一个 Session 写事务中撤销旧连接，终结尚处于 accepted 或 offered 的普通输入并保存未派发回执；取消请求以及已取得派发许可或结果未知的操作继续沿原身份对账。原 Worker 续签保持未派发输入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
 
 接管请求、恢复身份与观察字段使用独立版本化合同，不向现有严格管理 DTO 或 `/grant` 静默增加字段。原请求身份及结果查询由接管用例持久保存，结果未知不重发业务输入。当前机器、状态及新鲜度来自版本化观测；数据库中的 ready 或可读缓存不授予发送资格。上述机制不声明跨机接管或真实 Provider 验收已完成。
 

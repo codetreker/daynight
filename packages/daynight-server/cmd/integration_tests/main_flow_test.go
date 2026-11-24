@@ -105,7 +105,6 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("worker monitoring mixed protocols", func(t *testing.T) { serverAPIWorkerMonitoringFlow(t, f) })
 	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
-	t.Run("worker lifecycle", func(t *testing.T) { serverAPIWorkerLifecycleFlow(t, f) })
 	t.Run("worker task tag admission", func(t *testing.T) { serverAPIWorkerTaskTagAdmissionFlow(t, f) })
 	t.Run("worker platform task mode", func(t *testing.T) { serverAPIWorkerPlatformTaskModeFlow(t, f) })
 	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })

@@ -9,9 +9,9 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | 数据库 | 路径 | 当前版本与受支持非零来源 |
 |---|---|---|
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
-| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 18，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 增加 Markdown 投影修复分类，17→18 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
+| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 21，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；17、18 扩展 Markdown 修复和补归档调度，19 保存 Bot 迁移来源；21 删除历史 20 的 lifecycle_adoption，并按原 claimId 保留未结认领；原 claim 和执行资料保持；旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 18，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 增加 worker_lifecycle_bindings；17 增加按精确 ticket_hash 保存完整停止快照的 stopped_generations；18 保存在线模式，旧 execution 保持 legacy 语义 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 20，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 曾增加 worker_lifecycle_bindings；17 保存原 ticket_hash 的完整停止快照；18 保存在线模式；19 保存 Codex 逐响应计量语义；20 删除 worker_lifecycle_bindings，保留原执行、回执和停止证据 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -32,9 +32,9 @@ Review v2 不为接入公共机制额外提高版本或改写记录；journal v6
 
 Controller v6、v8 和 v10 仅从 SQL 行或已提交索引指定的来源执行必要映射，不扫描或采用未引用文件，不验证消息完整性、hash、身份或资源关联。目标不能表示或必要来源缺失时，仅丢弃相应最小项，其他项继续；外部文件不因坏值删除或修复。v12 仅映射 capture state 的变化字段，无法映射的 state 保留原值，receipt 和图片关联不修复。v13 仅从有效 JSON 对象的 native index lease 移除 maximumBytes，保留其他字段和无法映射的原值。正文、实际输出的 totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对完成，才允许下一 writer。upgrade-only 保留 pending，不得制造 stopped。v15 只新增独立在线详情表及统计，并给已有 execution 保存默认 legacy 策略；不得搬移、筛除或重解释原正文，也不得更改已冻结同步、归档或确认事实。新建 Task execution 的正文策略由业务初始化选择，恢复沿用已持久策略。当前格式的普通内容生产者和消费者统一使用 SQL；在线读取与正文同步分别按[Session SQLite 内容设计](../design/session-sqlite-content.md)选择其来源和容量约束，旧解码器仅服务编号迁移。
 
-Controller v16 创建 `worker_lifecycle_bindings`，保存 generation、原 ticket_hash 及生命周期绑定；v17 只创建空的 `stopped_generations`，不得合成历史停止回执。原 ticket 的完整 stopped 快照须由实际停止结算与当前快照在同一事务保存；后继 writer 覆盖单例前必须验证并保存原停止证据。升级后单例仍保留的有效原快照可由业务入口保存，已覆盖且没有完整回执的历史明确失败，不能通过迁移、PID 消失或 Windows Job 名称不存在来补造证明。
+Controller v17 只创建空的 `stopped_generations`，不得合成历史停止回执。原 ticket 的完整 stopped 快照须由实际停止结算与当前快照在同一事务保存；后继 writer 覆盖单例前必须验证并保存原停止证据。升级后单例仍保留的有效原快照可由业务入口保存，已覆盖且没有完整回执的历史明确失败，不能通过迁移、PID 消失或 Windows Job 名称不存在来补造证明。
 
-v18 为已有 execution 记录 legacy 在线模式，不改写其他执行事实，新增修订与 source 序号关联和原生图片槽位但不猜测旧证明。新 execution 在实际协商后固定在线模式，恢复不得切换。
+v18 为已有 execution 记录 legacy 在线模式，不改写其他执行事实，新增修订与 source 序号关联和原生图片槽位但不猜测旧证明。新 execution 在实际协商后固定在线模式，恢复不得切换。v19 固定 Codex 逐响应用量及回合归属表示。v20 仅清除 v16 引入的 `worker_lifecycle_bindings`，保留原票据散列和所有业务执行证据。
 
 旧 Herdr lifecycle 数据由用户处理；Worker 不打开、迁移或重置该数据库。
 

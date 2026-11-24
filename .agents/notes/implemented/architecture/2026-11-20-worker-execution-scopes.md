@@ -16,8 +16,7 @@ an Error object's lifetime and a process restart.
 
 The management root owns the instance lock, verified identity and main database.
 An independent execution scope owns cancellable producers and native resources.
-Normal startup and exit use the same create/stop path exposed to lifecycle
-integration. A replacement needs new objects and a new signal, and is forbidden
+Normal startup and exit use the local create and stop paths. A replacement needs new objects and a new signal, and is forbidden
 until all original owners report confirmed closure and durable save. Startup
 constructors are owned before their first asynchronous operation: cancelling a
 wait retains the original constructor and cleanup of its late result. Its original
@@ -130,18 +129,11 @@ The receipt also waits for original handle and Job lease release. A never-resume
 Windows child can use its original native termination and handle-close evidence;
 outside the Linux pre-dispatch gate, a runnable POSIX launcher with missing birth
 proof cannot use direct-child closure because its proof helper may have descendants.
-Closing business admission still permits an already admitted resource to retry its
-original prepared write under the same journal checks. Active coordinator terminal
-jobs also have a separate exact-claim cleanup sink. It admits new cleanup commands
-while the original scope is closing, with durable cleanup reservations and the
-original Worker, instance and scope identity; a fully stopped scope refuses them.
-It never reopens ordinary command admission. Native inventory reconciles known
-boundaries before joining shared Task stopping, then reconciles late terminal
-commands and synchronizes matching generation and proof stop receipts into the
-lifecycle ledger. This ordering preserves producer progress and captures resources
-created by the terminal writer. A probe's first explicit pre-write
-rejection creates no reservation; later rejections cannot erase an earlier
-uncertain or pending write.
+A closed scope can reconcile an already admitted resource's original prepared
+write under the same journal checks. Terminal cleanup verifies its original
+claim and native boundary before disposing of local resources. Native
+inventory retains responsibility for preparation or persistence that remained
+uncertain during shutdown.
 
 The [Worker design](../../../../docs/design/daynight-worker.md#管理根与执行作用域)
 owns interfaces, budgets and the owner inventory. The
@@ -177,8 +169,8 @@ Missing proof or leases can block recovery and require external repair rather
 than allowing a guessed process kill. Journal records remain private and are
 retained with their original evidence.
 
-These mechanisms do not themselves implement persistent disable intent, cloud
-admission or Controller dispatch fencing. The [local lifecycle integration](2026-11-21-worker-local-lifecycle.md) consumes
-those authorities; complete stop/resume still depends on the original inventory
-and unresolved-operation evidence. Provider
-and platform acceptance remains distinct from controlled mechanism tests.
+Execution scopes own local stopping and retained resource evidence. Task
+scheduling and business-resource authorization follow the
+[Worker scheduling boundary](2026-11-24-worker-scheduling-boundary.md).
+Provider and platform acceptance remains distinct from controlled mechanism
+tests.

@@ -1,4 +1,3 @@
-import type { LifecycleBotRecoveryEvidence } from "../lifecycle-recovery.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { maintainControllerGrants } from "../backends/grant-renewal.js";
 import { ControllerStartupError } from "../../controller/startup.js";
@@ -11,7 +10,6 @@ import type { BotStore } from "./store.js";
 import { parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
 import type { AssistantTaskRuntime } from "./assistant-tasks.js";
 import { botStopDeadline, joinBotWork, type BotStopOptions } from "./stop-budget.js";
-import { assertWorkerLifecycleAdmission, withLifecycleProducer } from "../lifecycle-context.js";
 
 /**
  * Owns discovery and credential maintenance alongside the Task coordinator.
@@ -35,7 +33,6 @@ export const createManagedAssistantRuntime = (options: {
   interval();
   const inventory = options.inventory ?? createBotInventory({ owner, store: options.store, remote: options.remote, now, onError: options.onError });
   const jobs = new Map<string, Promise<void>>(), errors = new Map<string, string>();
-  const recoveryObservations = new Map<string, LifecycleBotRecoveryEvidence>();
   let running = false, closing = false;
   const shutdownCancellation = new AbortController();
   const ticks = new Set<Promise<void>>();
@@ -82,26 +79,16 @@ export const createManagedAssistantRuntime = (options: {
     options.store.observe(record.owner, bot, now());
   };
   const advance = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
-    assertWorkerLifecycleAdmission();
-    recoveryObservations.delete(input.botId);
     let record: BotRecord | null = input;
     try {
       record = await refresh(input, signal);
       if (record === null) return;
       signal.throwIfAborted();
-      const snapshot = await withLifecycleProducer("bot", { kind: "bot_advance", botId: record.botId, executionId: record.intent?.executionId ?? null, sessionId: record.intent?.sessionId ?? null }, () => options.process.advance(record!, signal));
+      const snapshot = await options.process.advance(record, signal);
       if (snapshot.startup?.state === "ready" && ["ready", "working"].includes(snapshot.lifecycle) && snapshot.initialInputState === "not_required") {
         await report(record, { state: "ready", nativeSessionId: snapshot.nativeSessionId }, signal);
       } else if (snapshot.startup?.state === "failed" || snapshot.lifecycle === "failed") {
         await report(record, { state: "failed", code: snapshot.startup?.reasonCode ?? "controller_start_failed", nativeSessionId: snapshot.nativeSessionId }, signal);
-      }
-      const current = options.store.get(owner, input.botId);
-      if (current?.intent !== null && current?.intent !== undefined) {
-        const intent = current.intent;
-        const verified = snapshot.executionId === intent.executionId && snapshot.sessionId === intent.sessionId && snapshot.executionGeneration === intent.executionGeneration
-          && snapshot.startup?.state === "ready" && ["ready", "working"].includes(snapshot.lifecycle) && snapshot.nativeSessionId !== null && !snapshot.nativeStopped && snapshot.error === null;
-        recoveryObservations.set(input.botId, { botId: input.botId, executionId: intent.executionId, sessionId: intent.sessionId,
-          executionGeneration: intent.executionGeneration, recoverability: verified ? "eligible" : "unknown", reasonCode: verified ? null : "resume_interrupted" });
       }
       errors.delete(input.botId);
     } catch (cause) {
@@ -145,11 +132,7 @@ export const createManagedAssistantRuntime = (options: {
   };
   return {
     closeAdmission,
-    snapshot: () => ({ closed: closing, stopState, jobs: [...jobs.keys()], ticks: ticks.size, running, assistants: options.assistantTasks?.snapshot?.(),
-      recovery: [...recoveryObservations.values()].map(item => closing || errors.has(item.botId) || errors.has("inventory")
-        ? { ...item, recoverability: "unknown" as const, reasonCode: "resume_interrupted" as const } : item),
-      errors: [...errors].map(([botId, message]) => ({ botId, message })),
-    }),
+    snapshot: () => ({ closed: closing, stopState, jobs: [...jobs.keys()], ticks: ticks.size, running, assistants: options.assistantTasks?.snapshot?.() }),
     /** A bounded caller-controlled reconciliation, useful before entering steady state. */
     tick: async (signal: AbortSignal): Promise<void> => {
       if (closing) throw new Error("Bot runtime is closing.");

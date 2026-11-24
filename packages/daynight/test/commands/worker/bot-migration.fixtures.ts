@@ -31,7 +31,7 @@ const retain = <T extends { close(): void }>(handle: T, resources = cleanups): T
   resources.push(() => handle.close()); return handle;
 };
 
-export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean; aliasRoot?: "shared" | "bot" } = {}, resources = cleanups) => {
+export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean; originalTicketVersion?: 2; aliasRoot?: "shared" | "bot" } = {}, resources = cleanups) => {
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-migration-tests");
   mkdirSync(root, { recursive: true });
   const homeDirectory = mkdtempSync(path.join(root, "case-"));
@@ -52,8 +52,12 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
   const intent = bots.get(owner, bot.id)!.intent!;
   const record = bots.observe(owner, { ...bot, version: "2", sessionId: id(10), testExecutionId: intent.executionId }, 2);
   executions.prepare(record);
+  const version = options.originalTicketVersion === 2
+    ? { schemaVersion: 2 as const, lifecycleBinding: { serverOrigin: owner.serverOrigin, userId: owner.ownerUserId, workerId: owner.workerId,
+      instanceId: id(98), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } }
+    : { schemaVersion: 1 as const };
   const ticket: ControllerLaunchTicket = {
-    schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId,
+    ...version, launchId: intent.launchId, executionId: intent.executionId,
     testExecutionId: intent.executionId, controllerId: intent.registration.controllerId,
     controllerInstanceId: intent.controllerInstanceId, sessionId: record.intent!.sessionId!,
     executionGeneration: "1", serverOrigin: owner.serverOrigin, ownerUserId: owner.ownerUserId,
@@ -64,7 +68,10 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
     ipcEndpoint: path.join(homeDirectory, "controller.sock"), ipcSecret: "a".repeat(64),
     createdAt: "2026-11-19T00:00:00Z",
   };
-  await writeLaunchTicket(homeDirectory, ticket);
+  if (ticket.schemaVersion === 2) {
+    mkdirSync(path.dirname(intent.ticketPath), { recursive: true, mode: 0o700 });
+    writeFileSync(intent.ticketPath, `${JSON.stringify(ticket)}\n`, { mode: 0o600 });
+  } else await writeLaunchTicket(homeDirectory, ticket);
   mkdirSync(path.dirname(intent.journalPath), { recursive: true, mode: 0o700 });
   writeFileSync(intent.credentialFile, "original credential fixture", { mode: 0o600 });
   const journal = retain(openControllerLifecycleStore(intent.journalPath, ticket, { contentOwnedLocally: true }), resources);

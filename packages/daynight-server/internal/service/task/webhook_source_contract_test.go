@@ -528,12 +528,6 @@ func TestSourceCaptureFailurePropagatesFromTaskWrites(t *testing.T) {
 	}
 }
 
-func (sourceClaimAdmission) CheckWorkerExecution(context.Context, string, string) error { return nil }
-
-func (m sourceClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
-	return nil, m.CheckWorkerExecution(ctx, user, worker)
-}
-
 func (d *sourceTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
 	return d.Task(ctx, id)
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,14 +31,11 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
-	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass,'worker_lifecycle'::regclass,'worker_lifecycle_operations'::regclass,'worker_lifecycle_observations'::regclass)
+	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass)
 	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
 	}
 	wantedKeys := map[string]map[string]bool{
-		"worker_lifecycle":              {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id) ON DELETE CASCADE": true},
-		"worker_lifecycle_operations":   {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id) ON DELETE CASCADE": true},
-		"worker_lifecycle_observations": {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id) ON DELETE CASCADE": true},
 		"bots": {
 			"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
 			"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
@@ -59,7 +57,7 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		},
 	}
 	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
- WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass,'worker_lifecycle'::regclass,'worker_lifecycle_operations'::regclass,'worker_lifecycle_observations'::regclass) AND contype='f'`)
+ WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +104,81 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		t.Fatalf("database times: %v, %v, %v", created, updated, err)
 	}
 	assertMigrationPoolReusable(t, database.Pool)
+}
+
+func TestMigration126DropsWorkerLifecycleAndPreservesSessionOperations(t *testing.T) {
+	pool := emptyPool(t)
+	ctx := t.Context()
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 126 })
+	if index < 2 || schemaMigrations[index-2].version != 124 || schemaMigrations[index-1].version != 125 {
+		t.Fatal("expected worker lifecycle removal after migrations 124 and 125")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index-1]); err != nil {
+		t.Fatal(err)
+	}
+
+	user, worker, session, operation := queryID(1), queryID(2), queryID(3), queryID(4)
+	if _, err := pool.Exec(ctx, `WITH worker AS (
+		INSERT INTO workers (user_id, worker_id, created_at, last_seen_at, telemetry, task_snapshot)
+		VALUES ($1, $2, now(), now(), '{}', '{}')
+		RETURNING user_id, worker_id
+	)
+	INSERT INTO worker_lifecycle (user_id, worker_id, protocol_version, intent_version, desired, admission, instance_epoch, updated_at)
+	SELECT user_id, worker_id, 1, 3, 'enabled', 'open', 1, now() FROM worker`, user, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO session_operations
+		(session_id, operation_id, operation_seq, body_hash, command, actor_user_id, credential_id, credential_kind, receipt, worker_id, worker_intent_version)
+		VALUES ($1, $2, 1, decode(repeat('ab', 32), 'hex'), '{}', $3, $3, 'pat', '{"state":"accepted"}', $4, 3)`,
+		session, operation, user, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+
+	const preserved = `SELECT
+		(SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version IN (110, 125)),
+		(SELECT to_jsonb(w)::text FROM workers w WHERE user_id = $1 AND worker_id = $2),
+		(SELECT (to_jsonb(o) - 'worker_id' - 'worker_intent_version')::text
+		 FROM session_operations o WHERE session_id = $3 AND operation_id = $4)`
+	var oldMigration, oldWorker, oldOperation string
+	if err := pool.QueryRow(ctx, preserved, user, worker, session, operation).Scan(&oldMigration, &oldWorker, &oldOperation); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	var tablesGone, columnsGone bool
+	if err := pool.QueryRow(ctx, `SELECT
+		to_regclass('worker_lifecycle') IS NULL
+		AND to_regclass('worker_lifecycle_operations') IS NULL
+		AND to_regclass('worker_lifecycle_observations') IS NULL,
+		NOT EXISTS (SELECT FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'session_operations'
+			AND column_name IN ('worker_id', 'worker_intent_version'))`).Scan(&tablesGone, &columnsGone); err != nil {
+		t.Fatal(err)
+	}
+	if !tablesGone || !columnsGone {
+		t.Fatalf("worker lifecycle schema remains: tables removed=%t, columns removed=%t", tablesGone, columnsGone)
+	}
+	var newMigration, newWorker, newOperation string
+	if err := pool.QueryRow(ctx, preserved, user, worker, session, operation).Scan(&newMigration, &newWorker, &newOperation); err != nil {
+		t.Fatal(err)
+	}
+	if newMigration != oldMigration || newWorker != oldWorker || newOperation != oldOperation {
+		t.Fatalf("upgrade changed retained rows: migrations 110 and 125=%t, worker=%t, session operation=%t",
+			newMigration != oldMigration, newWorker != oldWorker, newOperation != oldOperation)
+	}
+	var checksum string
+	if err := pool.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version = 126").Scan(&checksum); err != nil {
+		t.Fatal(err)
+	}
+	if checksum != schemaMigrations[index].checksum() {
+		t.Fatalf("migration 126 checksum: got %s, want %s", checksum, schemaMigrations[index].checksum())
+	}
 }
 
 func TestMigrationsRejectInvalidHistory(t *testing.T) {

@@ -65,7 +65,6 @@ export type ProviderOptions = {
   /** Recheck the owning Controller before a new native side effect. */
   assertNativeDispatch?(): void;
   /** Original persistent admission identity for native helper dispatch. */
-  nativeLifecycleFence?: import("../native-lifecycle.js").NativeLifecycleFence;
   onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;

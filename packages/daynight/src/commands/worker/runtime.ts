@@ -18,8 +18,7 @@ import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { lstat, mkdir, chmod } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createReconcileWake } from "./reconcile-wake.js";
@@ -50,7 +49,7 @@ import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
 import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
-import { ensureWorkerIdentity, readWorkerIdentity } from "./identity.js";
+import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { buildWorkerPrompt } from "./prompts.js";
@@ -62,6 +61,8 @@ import { createWorkerConfigurationBootstrap } from "./configuration-bootstrap.js
 import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
+import { importInterruptedWorkerClaims } from "./legacy-claims.js";
+import { assertNoUnobservedExecutions } from "./unobserved-executions.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { BotCliProbeCleanupError } from "./bots/cli-probe.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
@@ -80,20 +81,6 @@ import { createNativeSelectionVerifier } from "./native-selection.js";
 import { createExecutionScopeManager, withinExecutionDeadline, type ExecutionScope, type OwnerStopResult } from "./execution-scope.js";
 import { openExecutionResourceJournal, type ExecutionResourceIdentity } from "./execution-resource-journal.js";
 import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries, OwnedCommandAdmissionError, type OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
-import { LifecycleAdmissionError, openLifecycleStore, readLifecycleIdentity, type LifecycleStore, type LifecycleJson } from "./lifecycle-store.js";
-import { createLifecycleManager, type LifecycleManager } from "./lifecycle-manager.js";
-import { createWorkerLifecycleClient } from "../../api/worker-lifecycle-client.js";
-import { readWorkerClaim } from "../../api/task-properties.js";
-import { parseFrozenNative } from "./store.js";
-import { withWorkerLifecycle } from "./lifecycle-context.js";
-import { reconcileLifecycleRequest } from "./lifecycle-request-recovery.js";
-import { reconcilePreparedInitialReservation } from "./lifecycle-input-recovery.js";
-import { reportLifecycleHeartbeat, runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
-import { collectLifecycleRecovery, selectLifecycleRecoveryResources, type LifecycleRecoverySources } from "./lifecycle-recovery.js";
-import { requireWorkerNetworkToken, workerNetworkUnavailable } from "./management-network.js";
-import { readControllerSnapshot, readControllerOperation, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
-import { confirmControllerProcessesStopped, type ProcessProof } from "../controller/process-proof.js";
-import { preservesControllerProcessProof } from "./backends/orchestration.js";
 
 const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
   emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
@@ -241,10 +228,10 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string; managementOnly?: boolean }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string | undefined, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: workerSqliteMigrationReporter(emit) });
   try {
-    const api = createWorkerSessionApi(serverUrl, serverToken, { managementOnly: options.managementOnly ?? false });
+    const api = createWorkerSessionApi(serverUrl, serverToken);
     const jobLeases = createControllerJobLeases();
     const launcher = createWebControllerLauncher({ ...options, jobLeases, ...(tools === undefined ? {} : { selectToolLaunch: tools.selectToolLaunch, toolObservationFor: tools.toolObservationFor }), store: webStore, sessionApi: api, now: Date.now });
     const archive: NonNullable<import("./backends/web.js").WebBackendOptions["archive"]> = async (task, journalPath, signal) => {
@@ -253,7 +240,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
         || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive does not identify the original execution.");
-      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: requireWorkerNetworkToken(serverToken), signal,
+      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal,
         onRetry: event => emit({ kind: "session-archive-retry", component: "archive", phase: "archive-backfill", message: `Session archive capacity ${JSON.stringify(event)}` }),
       });
     };
@@ -272,7 +259,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
         || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId || ticket.workerId !== workerId || ticket.userId !== userId) throw new Error("Usage replay does not identify the original execution.");
-      return replayStoppedControllerUsage({ journalPath, ticket, serverToken: requireWorkerNetworkToken(serverToken), signal });
+      return replayStoppedControllerUsage({ journalPath, ticket, serverToken, signal });
     };
     const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, userId, signal, store, webStore, archive, probeArchive, usage, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
@@ -311,400 +298,31 @@ type WorkerRunOptions = {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
   onExecutionScope?: (control: WorkerExecutionControl) => void;
-  lifecycle?: boolean;
 };
 type WorkerManagementRoot = {
   cancellation: ReturnType<typeof runtimeCancellation>;
   previousScopeFailures: unknown[];
   managementClosed: boolean;
   managementClosing?: Promise<void>;
-  lifecycleReconciliation?: { work: Promise<void>; closed: boolean; retry(deadline: number): Promise<void> };
-  workerDirectory?: string;
-  retirementReady?: boolean;
-  releasing?: Promise<void>;
   lock?: Awaited<ReturnType<typeof acquireWorkerInstanceLock>>;
   store?: ReturnType<typeof openWorkerStore>;
   identity?: ExecutionResourceIdentity;
   journal?: Awaited<ReturnType<typeof openExecutionResourceJournal>>;
-  lifecycle?: LifecycleStore;
-  manager?: LifecycleManager;
-  ipc?: { close(): Promise<void> };
-  heartbeat?: Promise<void>;
-  executionReporterActive?: boolean;
-  recoverySources?: LifecycleRecoverySources;
-  readRecoverySources?: () => LifecycleRecoverySources;
-};
-const synchronizeCommandStopReceipts = async (root: WorkerManagementRoot): Promise<void> => {
-  if (root.lifecycle === undefined || root.journal === undefined) return;
-  for (const record of await root.journal.read()) {
-    if (record.event.stage !== "stopped") continue;
-    const resource = root.lifecycle.readResource(record.event.resourceId);
-    if (resource === null || ["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
-    if (resource.scopeGeneration !== record.generation || resource.processProof !== null && !isDeepStrictEqual(resource.processProof, record.event.proof)) throw new Error("Command stop receipt conflicts with its original lifecycle reservation.");
-    root.lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: record.event.sequence }, saveState: "durable" });
-  }
 };
 const retainedManagementRoots = new Set<WorkerManagementRoot>();
-const releaseRetiredManagementRoot = async (root: WorkerManagementRoot): Promise<void> => {
-  if (!root.retirementReady || !root.managementClosed || root.lifecycleReconciliation?.closed === false) return;
-  if (root.releasing !== undefined) return root.releasing;
-  root.releasing = Promise.resolve().then(async () => {
-    try { root.lifecycle?.close(); root.store?.close(); await root.lock?.release(); retainedManagementRoots.delete(root); }
-    catch (error) { retainedManagementRoots.add(root); delete root.releasing; throw error; }
-  });
-  return root.releasing;
-};
 const retireManagementRoot = async (root: WorkerManagementRoot): Promise<void> => {
-  root.retirementReady = true;
   retainedManagementRoots.add(root);
-  await releaseRetiredManagementRoot(root);
-  if (!retainedManagementRoots.has(root)) return;
-  // A timed-out observer does not own the lifetime of its original writers.
-  void Promise.allSettled([root.managementClosing, root.lifecycleReconciliation?.work]).then(() => releaseRetiredManagementRoot(root))
-    .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
-};
-const reconcileRetiredManagementRoot = async (paths: WorkerPaths, workerId?: string): Promise<void> => {
-  for (const root of retainedManagementRoots) {
-    if (root.workerDirectory !== paths.workerDirectory || !root.retirementReady || root.lifecycleReconciliation === undefined) continue;
-    const local = await readWorkerLocalConfiguration(paths), original = await readWorkerIdentity(paths);
-    if (root.identity?.workerId !== original || workerId !== undefined && workerId !== original || local.serverUrl !== root.identity.serverOrigin)
-      throw new Error("Retained management cleanup does not identify the original Worker.");
-    try { await root.lifecycleReconciliation.retry(Date.now() + 10_000); }
-    finally { await releaseRetiredManagementRoot(root); }
-    if (retainedManagementRoots.has(root)) throw new Error("Original Worker management resources remain owned.");
-  }
-};
-const managementRemote = (serverUrl: string, serverToken: string | undefined) => new Proxy(createWorkerRemote({ serverUrl, ...(serverToken === undefined ? {} : { serverToken }) }), {
-  get(target, key, receiver): unknown {
-    const value: unknown = Reflect.get(target, key, receiver);
-    if (typeof value !== "function") return value;
-    return (...args: unknown[]) => { requireWorkerNetworkToken(serverToken); return Reflect.apply(value, target, args); };
-  },
-});
-const managementLifecycleClient = (serverUrl: string, serverToken: string | undefined, identity: ExecutionResourceIdentity): ReturnType<typeof createWorkerLifecycleClient> =>
-  serverToken === undefined ? { read: workerNetworkUnavailable, register: workerNetworkUnavailable, intent: workerNetworkUnavailable, activate: workerNetworkUnavailable,
-    operation: workerNetworkUnavailable, resolve: workerNetworkUnavailable, report: workerNetworkUnavailable }
-    : createWorkerLifecycleClient({ serverUrl, serverToken, workerId: identity.workerId, userId: identity.userId });
-const retainedResourceId = (identity: readonly (string | null)[]): string => {
-  const bytes = createHash("sha256").update(JSON.stringify(identity)).digest().subarray(0, 16);
-  bytes[6] = (bytes[6]! & 15) | 80; bytes[8] = (bytes[8]! & 63) | 128;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-};
-
-/** Reuses the normal stop owners without starting their discovery or application loops. */
-const reconcileLifecycleResources = async (options: WorkerRunOptions, root: WorkerManagementRoot, deadline: number): Promise<void> => {
-  const previous = root.lifecycleReconciliation;
-  if (previous !== undefined && !previous.closed) { await previous.retry(deadline); return; }
-  const paths = resolveWorkerPaths(options.homeDirectory), identity = root.identity!, lifecycle = root.lifecycle!;
-  const local = await readWorkerLocalConfiguration(paths, root.cancellation.controller.signal);
-  if (local.serverUrl !== identity.serverOrigin) throw new Error("Original Worker service identity is unavailable for management.");
-  const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
-  const emit = (event: WorkerEvent): void => options.log?.(`${event.message}\n`);
-  const repository = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
-    prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: root.store!, project, repository, operation,
-      workerId: identity.workerId, serverOrigin: identity.serverOrigin }),
-  });
-  const git: ReturnType<typeof createWorkerGitManager> = { ...repository,
-    resolveWorktreeBinding: async (project, owner, operation) => {
-      const retained = root.store!.getProject(project);
-      if (retained === null || retained.repoUrl !== project.repoUrl || retained.localPath !== project.localPath)
-        throw new Error("Original Task repository binding is unavailable for management cleanup.");
-      const directory = await lstat(retained.localPath);
-      if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Original Task repository must be an ordinary directory.");
-      await repository.prepareRepository(retained, operation);
-      return repository.resolveWorktreeBinding(retained, owner, operation);
-    },
+  const release = async (): Promise<void> => {
+    if (!root.managementClosed) return;
+    root.store?.close();
+    await root.lock?.release();
+    retainedManagementRoots.delete(root);
   };
-  let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
-  let bots: WorkerBotHost | undefined;
-  let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
-  let activeDeadline = deadline;
-  const currentTasks = new Map<string, Promise<Task>>();
-  const unresolvedTasks = new Set<string>();
-  const pendingClaims: ClaimIdentity[] = [];
-  const imported: { resourceId: string; group: "task" | "bot" }[] = [];
-  let claimErrors: unknown[] = [];
-  let reconcileClaimRequests: () => Promise<void>;
-  const importTask = (task: ClaimIdentity): void => {
-    const state = lifecycle.readState();
-    if (state.instanceId === null || state.intentVersion === null) return;
-    const resourceId = retainedResourceId(["task", task.claimId, state.scopeGeneration]);
-    const resource = lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
-      resourceId, operationId: task.claimId, ownerKind: "task", identity: { kind: "retained_task", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId } });
-    if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId: resource.resourceId, group: "task" });
-  };
-  type CloseStep = { start(): Promise<void>; work?: Promise<void>; failed?: boolean };
-  const step = (start: () => Promise<void>): CloseStep => ({ start });
-  const join = (entry: CloseStep, reobserve = false): Promise<void> => {
-    if (entry.work === undefined || reobserve && entry.failed) {
-      entry.failed = false;
-      entry.work = Promise.resolve().then(entry.start).catch(error => { entry.failed = true; throw error; });
-    }
-    return entry.work;
-  };
-  const stopTasks = step(async () => {
-    if (coordinator === undefined) return;
-    const claims = reconcileClaimRequests();
-    const complete = await coordinator.shutdown({ deadline: activeDeadline, currentTasks, pendingClaims, unresolvedTasks });
-    await claims;
-    throwFailures([...claimErrors, ...(complete ? [] : [new Error("Original Task stop inventory remains incomplete.")])]);
-    for (const item of imported.filter(item => item.group === "task")) {
-      const resource = lifecycle.readResource(item.resourceId);
-      if (resource !== null && !["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: "task_shutdown", resourceId: item.resourceId }, saveState: "durable", error: null });
-    }
-  });
-  const stopBots = step(async () => { await bots?.shutdown({ deadline: activeDeadline }); });
-  const closeBots = step(async () => { await bots?.close(); });
-  const stopJournal = step(async () => {
-    for (const generation of new Set((await root.journal!.read()).map(record => record.generation)))
-      await root.journal!.reconcileRetained({ generation, deadline: activeDeadline });
-    await synchronizeCommandStopReceipts(root);
-  });
-  const stopControllers = step(async () => {
-    for (const resource of lifecycle.listResources()) {
-      if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
-      if (resource.ownerKind !== "controller" || resource.processProof === null || typeof resource.identity.journalFile !== "string") continue;
-      if (unresolvedTasks.has(`${resource.identity.projectId}/${resource.identity.taskId}`)) continue;
-      const current = readControllerSnapshot(resource.identity.journalFile);
-      if (current === null || current.executionId !== resource.identity.executionId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
-      const historical = current.controllerInstanceId !== resource.identity.controllerInstanceId
-        || typeof resource.identity.executionGeneration === "string" && current.executionGeneration !== resource.identity.executionGeneration;
-      let saved = current;
-      if (historical) {
-        const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
-        const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
-        const stopped = readHistoricalStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
-        if (stopped === null || stopped.controllerProcess === null || !preservesControllerProcessProof(resource.processProof as ProcessProof, stopped.controllerProcess, ticket.launchId)) throw new Error("Original lifecycle Controller journal identity is unavailable.");
-        saved = stopped;
-      }
-      if (saved.controllerProcess === null) throw new Error("Original lifecycle Controller journal identity is unavailable.");
-      if (process.platform === "win32") {
-        if (!historical) {
-          const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
-          const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
-          readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
-        }
-      } else if (!await confirmControllerProcessesStopped(resource.processProof as ProcessProof, saved.nativeProcesses, activeDeadline)) throw new Error("Original lifecycle native boundary is not empty.");
-      lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "controller_boundary", executionId: saved.executionId, controllerInstanceId: saved.controllerInstanceId, nativeSessionId: saved.nativeSessionId }, saveState: "durable" });
-    }
-  });
-  const settlePreparedInputs = step(async () => {
-    for (const resource of lifecycle.listResources()) {
-      if (resource.ownerKind !== "controller" || resource.identity.kind !== "input" || resource.identity.operationKind !== "initial"
-        || resource.stage !== "reserved" || typeof resource.identity.journalFile !== "string") continue;
-      const saved = readControllerSnapshot(resource.identity.journalFile);
-      if (saved === null || BigInt(saved.executionGeneration) <= 1n || saved.initialInputState !== "not_submitted") continue;
-      await reconcilePreparedInitialReservation({ homeDirectory: options.homeDirectory, identity, lifecycle, resource, deadline: activeDeadline });
-    }
-  });
-  const closeArchive = step(async () => { await web?.archiveMaintenance.close(); });
-  const closeLeases = step(async () => { await web?.jobLeases.close(); });
-  const closeInput = step(async () => { web?.webBackend.closeInput(); });
-  const closeStore = step(async () => { web?.webStore.close(); });
-  const closeGit = step(async () => { await git.dispose(); });
-  const cleanup = async (reobserve: boolean): Promise<void> => {
-    const results = await Promise.allSettled([
-      (async () => { await join(stopBots, reobserve); await join(closeBots, reobserve); })(),
-      join(stopJournal, reobserve),
-      (async () => {
-        const taskStop = await Promise.allSettled([join(stopTasks, reobserve)]);
-        const receipts = await Promise.allSettled([synchronizeCommandStopReceipts(root)]);
-        const controllerStop = await Promise.allSettled([join(stopControllers, reobserve)]);
-        throwFailures([...taskStop, ...receipts, ...controllerStop].flatMap(result => result.status === "rejected" ? [result.reason] : []));
-        await join(settlePreparedInputs, reobserve);
-        await join(closeArchive, reobserve); await join(closeLeases, reobserve);
-        await join(closeInput, reobserve); await join(closeStore, reobserve); await join(closeGit, reobserve);
-      })(),
-    ]);
-    throwFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
-    retained.closed = true;
-  };
-  const initial = async (): Promise<void> => {
-    const failures: unknown[] = [];
-    try {
-      const remote = managementRemote(local.serverUrl, local.serverToken);
-      reconcileClaimRequests = async (): Promise<void> => {
-      currentTasks.clear(); unresolvedTasks.clear(); pendingClaims.length = 0; claimErrors = [];
-      const claimSignal = AbortSignal.timeout(Math.max(1, activeDeadline - Date.now()));
-      for (const resource of lifecycle.listResources().filter(resource => resource.identity.kind === "task_claim" && !["confirmed", "stopped", "not_dispatched"].includes(resource.stage))) {
-        const original = resource.identity;
-        const taskKey = `${original.projectId}/${original.taskId}`;
-        if (typeof original.projectId === "string" && typeof original.taskId === "string" && typeof original.claimId === "string") pendingClaims.push({ projectId: original.projectId, taskId: original.taskId, claimId: original.claimId });
-        const previous = currentTasks.get(taskKey);
-        const observed = (async (): Promise<Task> => {
-        if (previous !== undefined) await previous;
-        if (typeof original.projectId !== "string" || typeof original.taskId !== "string" || typeof original.claimId !== "string" || typeof original.worktreeId !== "string" || typeof original.candidateVersion !== "string") throw new Error("Original claim reservation identity is incomplete.");
-        if (await remote.currentUserId(claimSignal) !== identity.userId) throw new Error("Original claim reconciliation account changed.");
-        const task = await remote.readTask(original.projectId, original.taskId, claimSignal), claim = readWorkerClaim(task.properties);
-        const taskIdentity = { projectId: original.projectId, taskId: original.taskId, claimId: original.claimId };
-        if (task.status === "in_progress" && claim?.claimId === original.claimId && claim.workerId === identity.workerId && claim.worktreeId === original.worktreeId && claim.state === "active") {
-          if (root.store!.getTask(taskIdentity) === null) {
-            const reserved = root.store!.getClaimToolReservation(taskIdentity);
-            if (reserved !== null) root.store!.acceptClaimToolReservation(task, identity.workerId);
-            else root.store!.registerPending({ ...taskIdentity, agent: claim.agent, agentControlMode: "web", nativeConfiguration: parseFrozenNative(original.frozenConfiguration) });
-          }
-          importTask(taskIdentity);
-          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "confirmed", saveState: "durable", error: null });
-        } else if (task.version > BigInt(original.candidateVersion)) {
-          const reserved = root.store!.getClaimToolReservation(taskIdentity);
-          if (reserved !== null) root.store!.releaseClaimToolReservation(reserved);
-          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "claim_superseded", taskVersion: String(task.version), originalClaimId: original.claimId }, saveState: "durable" });
-        } else throw new Error("Original claim request outcome remains unconfirmed.");
-        return task;
-        })().catch(error => { unresolvedTasks.add(taskKey); throw error; });
-        currentTasks.set(taskKey, observed);
-      }
-      const results = await Promise.allSettled(currentTasks.values());
-      claimErrors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
-      };
-      web = await createWebRuntime({ ...options, managementOnly: true }, paths, root.store!, git, local.serverUrl, local.serverToken, identity.workerId, identity.userId, currentWorkerPlatform(), emit, signal);
-      coordinator = createWorkerCoordinator({ store: root.store!, git, remote, webStore: web.webStore, webBackend: web.webBackend,
-        retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity, lifecycle, jobLeases: web.jobLeases }),
-        verifyWebUnregistered: web.verifyWebUnregistered, serverOrigin: identity.serverOrigin, workerId: identity.workerId, userId: identity.userId,
-        platform: currentWorkerPlatform(), machine: machineDescription(currentWorkerPlatform()), repositories: [], globalConfiguration: null, maxConcurrent: 1,
-        platformTaskMode: "all", emit });
-      bots = createWorkerBotHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, workingDirectory: options.workingDirectory,
-        paths, owner: { serverOrigin: identity.serverOrigin, ownerUserId: identity.userId, workerId: identity.workerId }, serverToken: local.serverToken, managementOnly: true,
-        configuration: () => null, canAdmitNewExecution: () => false, pollIntervalMs: () => null, recoveryLimit: () => null, emit });
-      const state = lifecycle.readState();
-      if (state.instanceId !== null && state.intentVersion !== null) {
-        const binding = { ...identity, instanceId: state.instanceId, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
-        for (const task of root.store!.listUnfinishedTasks()) {
-          importTask(task);
-        }
-        for (const bot of bots.snapshot().resources) {
-          const resourceId = retainedResourceId(["bot", bot.botId, bot.executionId, bot.executionGeneration, state.scopeGeneration]);
-          const resource = lifecycle.importResource({ binding, resourceId, operationId: resourceId, ownerKind: "bot", identity: { kind: "retained_bot", ...bot } });
-          if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId, group: "bot" });
-        }
-      }
-      const stopped = await Promise.allSettled([
-        join(stopTasks),
-        join(stopBots),
-        join(stopJournal),
-      ]);
-      root.recoverySources = { tasks: coordinator.executionSnapshot().recovery, bots: bots.snapshot().recovery };
-      failures.push(...stopped.flatMap(result => result.status === "rejected" ? [result.reason] : []));
-      for (const item of imported.filter(item => item.group === "bot")) if (stopped[1]?.status === "fulfilled") lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: "bot_shutdown", resourceId: item.resourceId }, saveState: "durable", error: null });
-      for (const resource of lifecycle.listResources()) {
-        if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
-        if (resource.ownerKind === "assistant" && resource.processProof === null) {
-          if (local.serverToken === undefined) continue;
-          const result = await reconcileLifecycleRequest({ resource, identity, serverToken: local.serverToken, signal });
-          if (result.kind === "settled") lifecycle.recordResource({ resourceId: resource.resourceId, stage: result.stage,
-            stopProof: { kind: "external_result", operationId: resource.operationId, receipt: result.receipt }, saveState: "durable", error: null });
-          continue;
-        }
-        if ((resource.identity.kind === "task_advance" && stopped[0]?.status === "fulfilled") || (resource.identity.kind === "bot_advance" && stopped[1]?.status === "fulfilled")) {
-          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "producer_recovered", resourceId: resource.resourceId }, saveState: "durable" });
-          continue;
-        }
-        if (resource.identity.kind === "input" && typeof resource.identity.journalFile === "string") {
-          const operation = readControllerOperation(resource.identity.journalFile, resource.operationId);
-          if (operation !== null && operation.executionGeneration === resource.identity.executionGeneration) {
-            if (["confirmed", "failed", "provider_accepted"].includes(operation.state)) lifecycle.recordResource({ resourceId: resource.resourceId, stage: "confirmed", saveState: "durable" });
-            else if (["rejected", "expired"].includes(operation.state)) lifecycle.recordResource({ resourceId: resource.resourceId, stage: "not_dispatched", saveState: "durable" });
-          }
-          continue;
-        }
-      }
-    } catch (error) { failures.push(error); }
-    finally { try { await cleanup(false); } catch (error) { failures.push(error); } }
-    throwFailures(failures);
-  };
-  let settled = false;
-  const observe = (work: Promise<void>): Promise<void> => {
-    const original = work.finally(() => { settled = true; });
-    void original.then(() => releaseRetiredManagementRoot(root), () => releaseRetiredManagementRoot(root))
+  if (root.managementClosed) await release();
+  else {
+    // A timed-out observer does not own the original writers or their lock.
+    void root.managementClosing?.then(release)
       .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
-    return original;
-  };
-  const retained: NonNullable<WorkerManagementRoot["lifecycleReconciliation"]> = {
-    closed: false, work: Promise.resolve(),
-    retry: async nextDeadline => {
-      if (settled && !retained.closed) {
-        settled = false; activeDeadline = nextDeadline; retained.work = observe(cleanup(true));
-      }
-      await withinExecutionDeadline(retained.work, Math.min(nextDeadline, Date.now() + 10_000));
-    },
-  };
-  root.lifecycleReconciliation = retained;
-  retained.work = observe(Promise.resolve().then(initial));
-  await retained.retry(deadline);
-};
-
-const prepareLifecycleManagement = async (options: WorkerRunOptions, root: WorkerManagementRoot, managementWorkerId?: string): Promise<void> => {
-  const paths = resolveWorkerPaths(options.homeDirectory), signal = root.cancellation.controller.signal;
-  root.workerDirectory = paths.workerDirectory;
-  await reconcileRetiredManagementRoot(paths, managementWorkerId);
-  const local = await readWorkerLocalConfiguration(paths, signal);
-  root.lock ??= await acquireWorkerInstanceLock(paths);
-  if (process.platform !== "win32") await chmod(paths.workerDirectory, 0o700);
-  const workerId = managementWorkerId === undefined && local.serverToken !== undefined ? await ensureWorkerIdentity(paths, signal) : await readWorkerIdentity(paths, signal);
-  if (managementWorkerId !== undefined && workerId !== managementWorkerId) throw new Error("Local management does not identify the original Worker.");
-  const remote = managementRemote(local.serverUrl, local.serverToken);
-  const file = path.join(paths.workerDirectory, "lifecycle.sqlite");
-  const userId = existsSync(file) ? readLifecycleIdentity({ file, serverOrigin: local.serverUrl, workerId }).userId : await remote.currentUserId(signal);
-  root.identity = { serverOrigin: local.serverUrl, userId, workerId };
-  root.store = openWorkerStore(paths.databaseFile);
-  root.lifecycle = openLifecycleStore({ file, identity: root.identity, allowCreate: !root.store.lifecycleAdopted() });
-  root.store.adoptLifecycle(root.identity);
-  signal.addEventListener("abort", () => { try { root.lifecycle?.closeForRestart(); } catch (error) { options.log?.(`Worker lifecycle persistence failed: ${String(error)}\n`); } }, { once: true });
-  root.journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity: root.identity });
-  let heartbeatReport: Promise<Awaited<ReturnType<typeof remote.report>>> | undefined;
-  let workerRegistered = false;
-  const heartbeat = { signal, machine: machineDescription(currentWorkerPlatform()), platform: currentWorkerPlatform(),
-    workingDirectory: options.workingDirectory, version: options.version, executionReporterActive: () => root.executionReporterActive === true,
-    send: async (report: Parameters<typeof remote.report>[1], operation: Operation) => {
-      const pending = heartbeatReport ??= (async () => {
-        if (await remote.currentUserId(operation.signal) !== userId) throw new Error("Original Worker management account changed.");
-        return remote.report(workerId, report, operation);
-      })();
-      try { const receipt = await pending; workerRegistered = true; return receipt; } finally { if (heartbeatReport === pending) heartbeatReport = undefined; }
-    }, reportError: (error: unknown) => options.log?.(`Worker management heartbeat: ${String(error)}\n`) };
-  root.manager = createLifecycleManager({ store: root.lifecycle, api: managementLifecycleClient(local.serverUrl, local.serverToken, root.identity),
-    ensureWorkerRegistered: async refresh => { if (refresh || !workerRegistered) await reportLifecycleHeartbeat(heartbeat); },
-    recovery: () => {
-      const sources = root.readRecoverySources?.() ?? root.recoverySources ?? {};
-      const claims = new Set(root.store!.listUnfinishedTasks().map(task => task.claimId));
-      const botIds = new Set(sources.bots?.map(bot => bot.botId) ?? []);
-      const resources = selectLifecycleRecoveryResources(root.lifecycle!.listResources(), { unfinishedClaimIds: claims, ...(sources.bots === undefined ? {} : { currentBotIds: botIds }) });
-      return collectLifecycleRecovery({ resources, ...sources });
-    },
-    platform: currentWorkerPlatform(), signal, reconcileResources: deadline => reconcileLifecycleResources(options, root, deadline), reportError: error => options.log?.(`Worker lifecycle: ${error instanceof Error ? error.message : String(error)}\n`) });
-  if (managementWorkerId === undefined) {
-    const { startLifecycleIpcServer } = await import("./lifecycle-ipc.js");
-    root.ipc = await startLifecycleIpcServer({ workerDirectory: paths.workerDirectory, identity: root.identity,
-      handle: async request => {
-        if (request.kind === "resume") { if (request.operationId === null) throw new Error("Resume requires its original operation ID."); await root.manager!.resume(request.operationId); }
-        else if (request.kind !== "query") await root.manager!.reconcile();
-      },
-    });
-    root.manager.start();
-    root.heartbeat = runLifecycleHeartbeat(heartbeat);
-  }
-};
-
-export const runManagedWorker = (options: Omit<WorkerRunOptions, "lifecycle">): Promise<void> => runWorker({ ...options, lifecycle: true });
-
-export const runLifecycleManagementOnly = async (options: { homeDirectory: string; packageDirectory: string; version: string; workerId: string; operationId: string; kind: "disable" | "reconcile" | "resume"; signal?: AbortSignal }): Promise<void> => {
-  const paths = resolveWorkerPaths(options.homeDirectory), cancellation = runtimeCancellation(options.signal);
-  try { await reconcileRetiredManagementRoot(paths, options.workerId); }
-  catch (error) { cancellation.dispose(); throw error; }
-  const lock = await tryAcquireWorkerInstanceLock(paths);
-  if (lock === null) { cancellation.dispose(); return; }
-  const root: WorkerManagementRoot = { cancellation, lock, managementClosed: true, previousScopeFailures: [] };
-  try {
-    const execution = { ...options, workingDirectory: process.cwd() };
-    await prepareLifecycleManagement(execution, root, options.workerId);
-    if (root.identity?.workerId !== options.workerId) throw new Error("Local management does not identify the original Worker.");
-    if (options.kind === "resume") { root.manager!.start(); await root.manager!.resume(options.operationId); }
-    else await root.manager!.reconcile();
-  } finally {
-    cancellation.controller.abort();
-    try { await root.manager?.close(); await retireManagementRoot(root); }
-    finally { cancellation.dispose(); }
   }
 };
 
@@ -719,18 +337,14 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   const root: WorkerManagementRoot = { cancellation, previousScopeFailures: [], managementClosed: true };
   const scopes = createExecutionScopeManager(cancellation.controller.signal);
   try {
-    if (options.lifecycle) await prepareLifecycleManagement(options, root);
     do {
-      const lifecycleBinding = await root.manager?.waitForAdmission();
       await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
-      const scope = scopes.create(lifecycleBinding?.scopeGeneration);
+      const scope = scopes.create();
       const admittedResources = new Map<string, string>();
       const failures: unknown[] = [];
       const failCommandPersistence = (error: unknown): never => {
         if (!failures.includes(error)) failures.push(error);
         scope.closeAdmission(error);
-        try { root.lifecycle?.markBlocked("persistence_failed"); }
-        catch (failure) { if (!failures.includes(failure)) failures.push(failure); }
         throw error;
       };
       const commandSink = (cleanup?: ClaimIdentity): OwnedCommandLifecycleSink => async event => {
@@ -745,50 +359,20 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
           // Re-observing this reservation must remain possible after a failed
           // save closes admission; the journal still checks its original fence.
           admittedResources.set(event.resourceId, commandOwner);
-          try {
-            if (root.lifecycle !== undefined && lifecycleBinding !== undefined) {
-              if (cleanup === undefined) root.lifecycle.reserveExecution({ binding: lifecycleBinding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId });
-              else {
-                const current = root.lifecycle.readState();
-                if (current.intentVersion === null) throw new OwnedCommandAdmissionError(new Error("The original cleanup authority is unavailable."));
-                root.lifecycle.reserveCleanupCommand({ binding: { ...lifecycleBinding, localEpoch: current.localEpoch, intentVersion: current.intentVersion }, task: cleanup, resourceId: event.resourceId });
-              }
-            }
-          } catch (error) {
-            // Admission rejection precedes the reservation write. Other failures
-            // retain responsibility because their persistence outcome is unknown.
-            if (error instanceof LifecycleAdmissionError || error instanceof OwnedCommandAdmissionError) {
-              admittedResources.delete(event.resourceId);
-              throw error instanceof OwnedCommandAdmissionError ? error : new OwnedCommandAdmissionError(error);
-            }
-            failCommandPersistence(error);
-          }
         }
         try {
           if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
           await root.journal.sink(scope.generation)(event);
-          if (root.lifecycle !== undefined) {
-            if (event.stage === "bound") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) as LifecycleJson });
-            if (event.stage === "stopped") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: event.sequence }, saveState: "durable" });
-            if (event.stage === "unknown") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "unknown", error: "Original command boundary is unconfirmed." });
-          }
         } catch (error) { failCommandPersistence(error); }
       };
-      const rebuild = await withOwnedCommandLifecycle(commandSink(), () => {
-        const run = () => runWorkerScope(root.manager === undefined ? options : { ...options, onExecutionScope: control => { root.manager!.attach(control); options.onExecutionScope?.(control); } }, root, scope, failures, commandSink);
-        return root.lifecycle !== undefined && lifecycleBinding !== undefined ? withWorkerLifecycle({ store: root.lifecycle, binding: lifecycleBinding, failed: error => { scope.closeAdmission(error); try { root.lifecycle!.markBlocked("persistence_failed"); } catch { /* The original persistence failure remains authoritative. */ } } }, run) : run();
-      });
-      root.manager?.detach();
+      const rebuild = await withOwnedCommandLifecycle(commandSink(), () => runWorkerScope(options, root, scope, failures, commandSink));
       if (!rebuild) break;
     }
     while (!cancellation.controller.signal.aborted);
   } finally {
     cancellation.controller.abort();
-    await root.ipc?.close();
-    await root.manager?.close();
-    await root.heartbeat;
     try {
-      if (scopes.current() === null || scopes.current() === undefined || scopes.current()?.snapshot().stopped === true) {
+      if (scopes.current() === undefined || scopes.current()?.snapshot().stopped === true) {
         await retireManagementRoot(root);
       }
     } finally { cancellation.dispose(); }
@@ -814,16 +398,6 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   let promptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let bots: WorkerBotHost | undefined;
-  const captureRecovery = (): LifecycleRecoverySources => {
-    const stale = <T extends { recoverability: string; reasonCode: unknown }>(items: readonly T[] | undefined) => items?.map(item => item.recoverability === "eligible" ? { ...item, recoverability: "unknown" as const, reasonCode: "resume_interrupted" as const } : item);
-    let tasks = root.recoverySources?.tasks, botResults = root.recoverySources?.bots;
-    try { tasks = coordinator?.executionSnapshot().recovery ?? stale(tasks); } catch { tasks = stale(tasks); }
-    try { botResults = bots?.snapshot().recovery ?? stale(botResults); } catch { botResults = stale(botResults); }
-    if (signal.aborted) { tasks = stale(tasks); botResults = stale(botResults); }
-    root.recoverySources = { ...(tasks === undefined ? {} : { tasks }), ...(botResults === undefined ? {} : { bots: botResults }) };
-    return root.recoverySources;
-  };
-  root.readRecoverySources = captureRecovery;
   let botRun: Promise<void> | undefined;
   let reviewerRun: Promise<void> | undefined;
   let reviewerSettled = false;
@@ -860,7 +434,6 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     } catch (failure) { failures.push(failure); }
     if (!commandCleanup) {
       scope.closeAdmission(error);
-      root.lifecycle?.markBlocked("stop_unknown");
     }
   };
   const selectionVerifier = createNativeSelectionVerifier();
@@ -913,9 +486,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   const stopProbes = (): Promise<void> => {
     if (probeStop !== undefined) return probeStop;
     const work = (async () => {
-      // Configuration jobs publish their final saved results through the tool
-      // manager. Keep it open until those publishers join; its own owner still
-      // reports any failure, and independent probe cleanup must also proceed.
+      // Configuration jobs can still publish results through the tool manager.
       try { await stopConfigurationManager(); }
       catch (error) { if (!failures.includes(error)) failures.push(error); }
       await join([selectionVerifier.close(), tools?.close()]);
@@ -934,7 +505,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   };
   let reportDrain: Promise<void> | undefined;
   let reportFailure: unknown;
-  const stopReporter = (): Promise<void> => reportDrain ??= Promise.resolve().then(() => reporter?.stop()).then(() => { root.executionReporterActive = false; }).catch(error => { reportFailure = error; });
+  const stopReporter = (): Promise<void> => reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { reportFailure = error; });
   const drainReport = (): Promise<void> => {
     if (!managementSignal.aborted) return Promise.resolve();
     return stopReporter();
@@ -943,7 +514,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   const stopTasks = (deadline: number): Promise<void> => {
     if (taskStop !== undefined) return taskStop;
     const work = (async () => {
-      if (coordinator !== undefined && !await coordinator.shutdown({ deadline })) throw new Error("Some original task resources remain unconfirmed.");
+      if (coordinator === undefined) await assertNoUnobservedExecutions(paths, "task", deadline);
+      else if (!await coordinator.shutdown({ deadline })) throw new Error("Some original task resources remain unconfirmed.");
     })();
     taskStop = work;
     void work.catch(() => { if (taskStop === work) taskStop = undefined; });
@@ -976,7 +548,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     stop: ({ deadline }) => stopTasks(deadline) });
   registerOwner({ resourceId: "bots", ownerKind: "bot",
     closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
-    stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; captureRecovery(); await bots?.close(); } });
+    stop: async ({ deadline }) => {
+      if (bots === undefined) await assertNoUnobservedExecutions(paths, "bot", deadline);
+      else { await bots.shutdown({ deadline }); await botRun; await bots.close?.(); }
+    } });
   registerOwner({ resourceId: "reviewer", ownerKind: "assistant",
     snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
     stop: stopReviewer });
@@ -992,11 +567,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   registerOwner({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
     // Reconcile known boundaries before joining Task writers. The final read
     // also covers cleanup commands those writers admitted after scope closure.
-    const originalCommands = await Promise.allSettled([root.journal?.reconcileRetained({ generation: scope.generation, deadline })]);
+    const originalCommands = await Promise.allSettled([root.journal?.reconcileRetained({ deadline })]);
     const taskStop = await Promise.allSettled([stopTasks(deadline)]);
-    const cleanupCommands = await Promise.allSettled([root.journal?.reconcileRetained({ generation: scope.generation, deadline })]);
-    const receipts = await Promise.allSettled([synchronizeCommandStopReceipts(root)]);
-    throwFailures([...originalCommands, ...taskStop, ...cleanupCommands, ...receipts].flatMap(result => result.status === "rejected" ? [result.reason] : []));
+    const cleanupCommands = await Promise.allSettled([root.journal?.reconcileRetained({ deadline })]);
+    throwFailures([...originalCommands, ...taskStop, ...cleanupCommands].flatMap(result => result.status === "rejected" ? [result.reason] : []));
     if (retainedOwnedCommandBoundaries().length) throw new Error("Original native command boundaries remain unconfirmed.");
   } });
   let archiveStop: Promise<void> | undefined;
@@ -1011,7 +585,6 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     await stopTasks(deadline);
     await stopConfiguration();
     await stopArchive();
-    captureRecovery();
     await web?.jobLeases.close();
     web?.webBackend.closeInput();
     web?.webStore.close();
@@ -1053,9 +626,12 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     const identity = { serverOrigin: serverUrl, userId, workerId };
     if (root.identity !== undefined && !isDeepStrictEqual(root.identity, identity)) throw new Error("Worker management identity changed across execution scopes.");
     root.identity ??= identity;
-    root.journal ??= await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity });
-    signal.throwIfAborted();
-    await withinExecutionDeadline(root.journal.assertClosed(), Date.now() + 10_000);
+    if (root.journal === undefined) {
+      const journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity });
+      signal.throwIfAborted();
+      root.journal = journal;
+      await journal.reconcileRetained({ deadline: Date.now() + 10_000 });
+    }
     signal.throwIfAborted();
     const observer = monitoring;
     monitoringSender = createMonitoringSender({ capture: observer.capture,
@@ -1496,7 +1072,6 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
       return receipt;
     }, emit, configuration: exchange });
-    root.executionReporterActive = true;
     reviewerRun = runReviewerHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, serverOrigin: serverUrl,
       serverToken, userId, workerId, signal, emit }).finally(() => { reviewerSettled = true; });
     void reviewerRun.catch(executionFailure);
@@ -1509,14 +1084,15 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
+        const retainedClaimRequests = importInterruptedWorkerClaims(options.homeDirectory, identity, currentStore);
         if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, workerId, userId, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime, () => manager.current().effective.archiveSessions);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(executionFailure);
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" };
-        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, cleanupCommandLifecycle,
-          retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases, ...(root.lifecycle === undefined ? {} : { lifecycle: root.lifecycle }) }),
+        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, cleanupCommandLifecycle, retainedClaimRequests,
+          retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases }),
           store: currentStore, git: getGit(), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
           archiveSessions: () => manager.current().effective.archiveSessions,
           prepareProject: async (projectId, preparationSignal) => {
@@ -1684,6 +1260,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     }
     const finishManagement = async (): Promise<void> => {
       await joinStartup();
+      // A startup observation can time out while the original receipt is saving.
+      await root.journal?.read();
       await stopReporter();
       if (reportFailure !== undefined) {
         try {
@@ -1706,7 +1284,6 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       }
       failures.push(...configurationDiagnostics?.errors() ?? []);
       root.managementClosed = managementFailures.length === 0;
-      delete root.readRecoverySources;
     };
     root.managementClosed = false;
     root.managementClosing = finishManagement();
@@ -1733,14 +1310,14 @@ export const runWorkerControl = async (options: {
   const signal = cancellation.controller.signal;
   let lock: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>> | undefined;
   let store: ReturnType<typeof openWorkerStore> | undefined;
+  let retryJournal: Awaited<ReturnType<typeof openExecutionResourceJournal>> | undefined;
+  let retryEntered = false;
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   const configurationExchanges: ReturnType<typeof createWorkerConfigurationExchange>[] = [];
-  let controlLifecycle: LifecycleStore | undefined;
-  let controlLifecycleManager: LifecycleManager | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
   let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
@@ -1759,206 +1336,195 @@ export const runWorkerControl = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const userId = await remote.currentUserId(signal);
     const runControl = async (store: ReturnType<typeof openWorkerStore>): Promise<void> => {
-    diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
-    configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
-    await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit), reportHolderTerminated: holderTerminatedReporter(diagnostics.emit),
-      prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: store!, project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
-    });
-    const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
-    const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
-    tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
-      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web)] });
-    const toolRuntime = tools;
-    const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
-      ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply,
-      onApplication: configurationDiagnostics!.application,
-      onStorageState: configurationDiagnostics!.storage,
-    }).then(manager => { configurationManager = manager; return manager; });
-    let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" };
-    const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
-    if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
-    if (sources.length === 0 || sources[0]!.status === "done") throw new Error("Management requires the original unfinished local execution.");
-    const targetProjectId = sources[0]!.projectId;
-    const frozenRetry = options.request.kind === "retry";
-    if (options.request.kind !== "release" && !frozenRetry) {
-      let resource: ReceivedWorkerConfigurationResource;
-      const syncId = randomUUID();
-      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
-      try { resource = await remote.configuration(workerId, signal); }
-      catch (error) {
-        if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) {
-          const requestId = workerConfigurationRequestId(error);
-          configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
-          throw error;
-        }
-        resource = { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
-      }
-      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: resource.desired === null ? "not_attempted" : "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
-      controlResource = resource;
-      if (resource.desired === null) {
-        const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
-        const repositories: WorkerRepositoryAssignment[] = [];
-        for (const repository of initial.repositories) {
-          if (targetProjectId !== undefined && repository.projectId !== undefined && repository.projectId !== targetProjectId) continue;
-          try {
-            const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
-            if (targetProjectId !== undefined && project.id !== targetProjectId) continue;
-            const binding = await createWorkerRepositoryAdmission({ paths, store: () => store!, workerId, serverOrigin: serverUrl }).admit({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, signal);
-            repositories.push({ project: binding, configuration: repository });
-          } catch (error) {
-            if (signal.aborted || repository.projectId === targetProjectId || targetProjectId === undefined || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error)) throw error;
-            diagnostics.emit({ kind: "warning", message: "An unrelated worker repository could not be resolved for management.", error });
+      diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
+      configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
+      await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
+      git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit), reportHolderTerminated: holderTerminatedReporter(diagnostics.emit),
+        prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: store!, project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
+      });
+      const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
+      const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
+      tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
+        readActiveSelections: () => [...webToolSelections(options.homeDirectory, web)] });
+      const toolRuntime = tools;
+      const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
+        file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
+        ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply,
+        onApplication: configurationDiagnostics!.application,
+        onStorageState: configurationDiagnostics!.storage,
+      }).then(manager => { configurationManager = manager; return manager; });
+      let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" };
+      const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
+      if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
+      if (sources.length === 0 || sources[0]!.status === "done") throw new Error("Management requires the original unfinished local execution.");
+      const targetProjectId = sources[0]!.projectId;
+      const frozenRetry = options.request.kind === "retry";
+      if (options.request.kind !== "release" && !frozenRetry) {
+        let resource: ReceivedWorkerConfigurationResource;
+        const syncId = randomUUID();
+        configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
+        try { resource = await remote.configuration(workerId, signal); }
+        catch (error) {
+          if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) {
+            const requestId = workerConfigurationRequestId(error);
+            configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
+            throw error;
           }
+          resource = { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
         }
-        coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, platformTaskMode: initial.preferPlatformSpecificTasks ? "prefer" : "all" };
-      } else {
-        configurationManager = await initializeConfiguration();
-        const previous = configurationManager.current();
-        await configurationManager.receive(resource.desired, resource.observationRevision, signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
-        const current = configurationManager.current();
-        configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
-          source: { state: "initialized", generation: current.generation, desiredRevision: current.desiredRevision, observationRevision: current.observationRevision },
-          previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desiredRevision, observationRevision: previous.observationRevision },
-          received: { desiredRevision: resource.desired.revision, observationRevision: resource.observationRevision } });
-        await configurationManager.settle(signal);
-        const effective = configurationManager.current().effective;
-        if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.platformTaskMode === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
-        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local);
-        const repositories = store.listProjects().flatMap(project => {
-          const selected = effective.projects.find(value => value.projectId === project.projectId);
-          const native = selected === undefined ? effective.native : selected.native;
-          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.recoveryLimit!, local) }];
-        });
-        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, platformTaskMode: effective.platformTaskMode,
-          ...(effective.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: effective.taskTagFilterKey }) };
-      }
-    }
-    if (options.request.kind === "release" || frozenRetry) await initializeConfiguration();
-    const controlArchiveSessions = (): boolean | null => {
-      const current = configurationManager?.current();
-      return current?.effective.archiveSessions ?? current?.retainedArchiveSessions ?? null;
-    };
-    const machine = machineDescription(platform);
-    const retryPromptSource = options.request.kind === "retry" ? createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId }) : undefined;
-    controlPromptSource = retryPromptSource;
-    let attemptedPromptSync = false;
-    const preparePromptSource = retryPromptSource === undefined ? undefined : async (projectId: string, inputSignal?: AbortSignal): Promise<void> => {
-      if (attemptedPromptSync) return;
-      attemptedPromptSync = true;
-      retryPromptSource.setDemand([projectId]);
-      retryPromptSource.beginCycle();
-      const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
-      try {
-        const manager = await waitForConfigurationOperation(initializeConfiguration(), operation.signal);
-        if (controlResource !== undefined && !manager.current().synchronized) await manager.receive(controlResource.desired, controlResource.observationRevision, operation.signal, undefined, controlResource.observationJson === null ? null : { observationRevision: controlResource.observationRevision, json: controlResource.observationJson });
-        controlBootstrap ??= createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject: remote.resolveProject });
-        const exchange = createWorkerConfigurationExchange({ manager, needsRead: controlResource === undefined, bootstrap: controlBootstrap, prompts: retryPromptSource,
-          onStage: configurationDiagnostics!.exchange,
-          read: async current => {
-            try { return await remote.configuration(workerId, current.signal, current); }
-            catch (error) {
-              if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
-              return { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
+        configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: resource.desired === null ? "not_attempted" : "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+        controlResource = resource;
+        if (resource.desired === null) {
+          const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
+          const repositories: WorkerRepositoryAssignment[] = [];
+          for (const repository of initial.repositories) {
+            if (targetProjectId !== undefined && repository.projectId !== undefined && repository.projectId !== targetProjectId) continue;
+            try {
+              const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
+              if (targetProjectId !== undefined && project.id !== targetProjectId) continue;
+              const binding = await createWorkerRepositoryAdmission({ paths, store: () => store!, workerId, serverOrigin: serverUrl }).admit({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, signal);
+              repositories.push({ project: binding, configuration: repository });
+            } catch (error) {
+              if (signal.aborted || repository.projectId === targetProjectId || targetProjectId === undefined || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error)) throw error;
+              diagnostics.emit({ kind: "warning", message: "An unrelated worker repository could not be resolved for management.", error });
             }
-          },
-          send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
-        });
-        configurationExchanges.push(exchange);
-        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
-        const outcome = await syncWorkerConfigurationOnce({ operation, configuration: exchange, report: async () => {
-          const sample = await telemetry.collect(operation);
-          const cleanupFailure = sample.issues.find(issue => hasUnconfirmedOwnedCommandCleanup(issue.error));
-          if (cleanupFailure !== undefined) throw cleanupFailure.error;
-          return { ...sample.telemetry, taskInventory: null };
-        } });
-        if (outcome.promptError || retryPromptSource.current(projectId) === null) diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization is unavailable; new input remains waiting." });
-      } catch (error) {
-        if (signal.aborted || inputSignal?.aborted || hasUnconfirmedOwnedCommandCleanup(error)) throw error;
-        diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
-      } finally { operation.dispose(); }
-    };
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, workerId, userId, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime, controlArchiveSessions);
-    if (frozenRetry) {
-      const original = sources[0]!, saved = store.getNativeConfiguration(original);
-      const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: "web", recoveryLimit: workerConfigurationDefaults.recoveryLimit });
-      coordinatorConfiguration = { repositories: [], globalConfiguration: frozen, recoveryLimit: frozen?.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit, maxConcurrent: 1, platformTaskMode: "all" };
-    }
-    const taskTagFilterKey = configurationManager?.current().effective.taskTagFilterKey;
-    const coordinator = createWorkerCoordinator({
-      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
-      retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases, ...(controlLifecycle === undefined ? {} : { lifecycle: controlLifecycle }) }),
-      ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }),
-      archiveSessions: controlArchiveSessions,
-      emit: diagnostics.emit, signal,
-    });
-    const prepareControlProject = async (identity: { projectId: string }): Promise<void> => {
-      const project = store!.getProject(identity);
-      if (project === null) throw new Error("The original project repository binding is unavailable.");
-      // Management never recreates a missing retained repository.
-      await lstat(project.localPath);
-      const operation = createOperation({ signal });
-      try { await git!.prepareRepository(project, operation); } finally { operation.dispose(); }
-    };
-    const controlCoordinator = {
-      ...coordinator,
-      advanceRetry: async (identity: Parameters<typeof coordinator.advanceRetry>[0]) => {
+          }
+          coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, platformTaskMode: initial.preferPlatformSpecificTasks ? "prefer" : "all" };
+        } else {
+          configurationManager = await initializeConfiguration();
+          const previous = configurationManager.current();
+          await configurationManager.receive(resource.desired, resource.observationRevision, signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
+          const current = configurationManager.current();
+          configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
+            source: { state: "initialized", generation: current.generation, desiredRevision: current.desiredRevision, observationRevision: current.observationRevision },
+            previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desiredRevision, observationRevision: previous.observationRevision },
+            received: { desiredRevision: resource.desired.revision, observationRevision: resource.observationRevision } });
+          await configurationManager.settle(signal);
+          const effective = configurationManager.current().effective;
+          if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.platformTaskMode === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
+          const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local);
+          const repositories = store.listProjects().flatMap(project => {
+            const selected = effective.projects.find(value => value.projectId === project.projectId);
+            const native = selected === undefined ? effective.native : selected.native;
+            return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.recoveryLimit!, local) }];
+          });
+          coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, platformTaskMode: effective.platformTaskMode,
+            ...(effective.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: effective.taskTagFilterKey }) };
+        }
+      }
+      if (options.request.kind === "release" || frozenRetry) await initializeConfiguration();
+      const controlArchiveSessions = (): boolean | null => {
+        const current = configurationManager?.current();
+        return current?.effective.archiveSessions ?? current?.retainedArchiveSessions ?? null;
+      };
+      const machine = machineDescription(platform);
+      const retryPromptSource = options.request.kind === "retry" ? createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId }) : undefined;
+      controlPromptSource = retryPromptSource;
+      let attemptedPromptSync = false;
+      const preparePromptSource = retryPromptSource === undefined ? undefined : async (projectId: string, inputSignal?: AbortSignal): Promise<void> => {
+        if (attemptedPromptSync) return;
+        attemptedPromptSync = true;
+        retryPromptSource.setDemand([projectId]);
+        retryPromptSource.beginCycle();
+        const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
+        try {
+          const manager = await waitForConfigurationOperation(initializeConfiguration(), operation.signal);
+          if (controlResource !== undefined && !manager.current().synchronized) await manager.receive(controlResource.desired, controlResource.observationRevision, operation.signal, undefined, controlResource.observationJson === null ? null : { observationRevision: controlResource.observationRevision, json: controlResource.observationJson });
+          controlBootstrap ??= createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject: remote.resolveProject });
+          const exchange = createWorkerConfigurationExchange({ manager, needsRead: controlResource === undefined, bootstrap: controlBootstrap, prompts: retryPromptSource,
+            onStage: configurationDiagnostics!.exchange,
+            read: async current => {
+              try { return await remote.configuration(workerId, current.signal, current); }
+              catch (error) {
+                if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
+                return { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
+              }
+            },
+            send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
+          });
+          configurationExchanges.push(exchange);
+          const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
+          const outcome = await syncWorkerConfigurationOnce({ operation, configuration: exchange, report: async () => {
+            const sample = await telemetry.collect(operation);
+            const cleanupFailure = sample.issues.find(issue => hasUnconfirmedOwnedCommandCleanup(issue.error));
+            if (cleanupFailure !== undefined) throw cleanupFailure.error;
+            return { ...sample.telemetry, taskInventory: null };
+          } });
+          if (outcome.promptError || retryPromptSource.current(projectId) === null) diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization is unavailable; new input remains waiting." });
+        } catch (error) {
+          if (signal.aborted || inputSignal?.aborted || hasUnconfirmedOwnedCommandCleanup(error)) throw error;
+          diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
+        } finally { operation.dispose(); }
+      };
+      web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, workerId, userId, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime, controlArchiveSessions);
+      if (frozenRetry) {
+        const original = sources[0]!, saved = store.getNativeConfiguration(original);
+        const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: "web", recoveryLimit: workerConfigurationDefaults.recoveryLimit });
+        coordinatorConfiguration = { repositories: [], globalConfiguration: frozen, recoveryLimit: frozen?.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit, maxConcurrent: 1, platformTaskMode: "all" };
+      }
+      const taskTagFilterKey = configurationManager?.current().effective.taskTagFilterKey;
+      const coordinator = createWorkerCoordinator({
+        freezeConfiguration: toolRuntime.freezeConfiguration, store, git, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
+        retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases }),
+        ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }),
+        archiveSessions: controlArchiveSessions,
+        emit: diagnostics.emit, signal,
+      });
+      const prepareControlProject = async (identity: { projectId: string }): Promise<void> => {
         const project = store!.getProject(identity);
         if (project === null) throw new Error("The original project repository binding is unavailable.");
+        // Management never recreates a missing retained repository.
         await lstat(project.localPath);
-        return coordinator.advanceRetry(identity, () => prepareControlProject(identity));
-      },
-      cleanupSource: async (identity: Parameters<typeof coordinator.cleanupSource>[0], settings: Parameters<typeof coordinator.cleanupSource>[1]) => {
-        if (settings?.deleteWorktree === true) await prepareControlProject(identity);
-        return coordinator.cleanupSource(identity, settings);
-      },
-      completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0], ownerUserId: Parameters<typeof coordinator.completeSource>[1]) => {
-        await prepareControlProject(owner);
-        return coordinator.completeSource(owner, ownerUserId);
-      },
+        const operation = createOperation({ signal });
+        try { await git!.prepareRepository(project, operation); } finally { operation.dispose(); }
+      };
+      const controlCoordinator = {
+        ...coordinator,
+        advanceRetry: async (identity: Parameters<typeof coordinator.advanceRetry>[0]) => {
+          const project = store!.getProject(identity);
+          if (project === null) throw new Error("The original project repository binding is unavailable.");
+          await lstat(project.localPath);
+          return coordinator.advanceRetry(identity, () => prepareControlProject(identity));
+        },
+        cleanupSource: async (identity: Parameters<typeof coordinator.cleanupSource>[0], settings: Parameters<typeof coordinator.cleanupSource>[1]) => {
+          if (settings?.deleteWorktree === true) await prepareControlProject(identity);
+          return coordinator.cleanupSource(identity, settings);
+        },
+        completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0], ownerUserId: Parameters<typeof coordinator.completeSource>[1]) => {
+          await prepareControlProject(owner);
+          return coordinator.completeSource(owner, ownerUserId);
+        },
+      };
+      const result = await submitWorkerControl({
+        store, remote, serverOrigin: serverUrl, workerId,
+        request: options.request, signal, coordinator: controlCoordinator,
+      });
+      diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
     };
-    const result = await submitWorkerControl({
-      store, remote, serverOrigin: serverUrl, workerId,
-      request: options.request, signal, coordinator: controlCoordinator,
-    });
-    diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
-    };
-    const lifecycleFile = path.join(paths.workerDirectory, "lifecycle.sqlite");
-    if (options.request.kind === "retry" && (store.lifecycleAdopted() || existsSync(lifecycleFile))) {
-      const lifecycle = controlLifecycle = openLifecycleStore({ file: lifecycleFile, identity: { serverOrigin: serverUrl, userId, workerId }, allowCreate: false });
-      try {
-        const journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity: { serverOrigin: serverUrl, userId, workerId } });
-        const root: WorkerManagementRoot = { cancellation, lock, store, identity: { serverOrigin: serverUrl, userId, workerId }, lifecycle, journal, managementClosed: true, previousScopeFailures: [] };
-        const manager = controlLifecycleManager = createLifecycleManager({ store: lifecycle,
-          api: createWorkerLifecycleClient({ serverUrl, serverToken, userId, workerId }), platform, signal,
-          reconcileResources: deadline => reconcileLifecycleResources({ ...options, workingDirectory: options.homeDirectory }, root, deadline),
-          reportError: error => options.log?.(`Worker retry lifecycle: ${String(error)}\n`) });
-        const binding = await manager.initializeForControl();
-        const stopControl = async (): Promise<OwnerStopResult[]> => {
-          cancellation.controller.abort(new Error("Worker retry admission closed."));
-          // The control command's finally block owns the eventual join and save;
-          // waking it is not itself a stop receipt.
-          return [{ resourceId: "retry", ownerKind: "task", generation: binding.scopeGeneration, stop: "unknown", save: "failed" }];
-        };
-        manager.attach({ stop: stopControl, reconcile: stopControl, rebuild: () => { throw new Error("An independent retry cannot rebuild a foreground Worker scope."); } });
-        manager.start();
-        const reserved = new Set<string>();
-        await withWorkerLifecycle({ store: lifecycle, binding, failed: error => { cancellation.controller.abort(error); lifecycle.markBlocked("persistence_failed"); } }, () => withOwnedCommandLifecycle(async event => {
-          if (event.stage === "prepared" && !reserved.has(event.resourceId)) {
-            lifecycle.reserveExecution({ binding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId }); reserved.add(event.resourceId);
-          }
-          await journal.sink(binding.scopeGeneration)(event);
-          if (event.stage === "bound") lifecycle.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) as LifecycleJson });
-          if (event.stage === "stopped") lifecycle.recordResource({ resourceId: event.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: event.sequence }, saveState: "durable" });
-          if (event.stage === "unknown") lifecycle.recordResource({ resourceId: event.resourceId, stage: "unknown", error: "Retry command boundary remains unconfirmed." });
-        }, () => runControl(store!)));
-      } finally { lifecycle.closeForRestart(); }
+    if (options.request.kind === "retry") {
+      const journal = retryJournal = await openExecutionResourceJournal({
+        directory: path.join(paths.workerDirectory, "execution-resources"), identity: { serverOrigin: serverUrl, userId, workerId },
+      });
+      await journal.reconcileRetained({ deadline: Date.now() + 10_000 });
+      signal.throwIfAborted();
+      const reserved = new Set<string>(), save = journal.sink("1");
+      retryEntered = true;
+      await withOwnedCommandLifecycle(async event => {
+        if (event.stage === "prepared" && !reserved.has(event.resourceId)) {
+          if (signal.aborted) throw new OwnedCommandAdmissionError(signal.reason);
+          reserved.add(event.resourceId);
+        }
+        try { await save(event); }
+        catch (error) {
+          if (!failures.includes(error)) failures.push(error);
+          cancellation.controller.abort(error);
+          throw error;
+        }
+      }, () => runControl(store!));
     } else await runControl(store);
   } catch (error) { failures.push(error); }
   finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker management is closing."));
-    try { await controlLifecycleManager?.close(); } catch (error) { failures.push(error); }
     configurationManager?.beginDrain();
     const bootstrapStopped = controlBootstrap?.stop().catch(error => { failures.push(error); });
     controlPromptSource?.close();
@@ -1969,12 +1535,16 @@ export const runWorkerControl = async (options: {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
-    try { controlLifecycle?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     failures.push(...(configurationDiagnostics?.errors() ?? []));
     for (const exchange of configurationExchanges) failures.push(...workerConfigurationDiagnosticFailures(exchange));
-    try { await lock?.release(); } catch (error) { failures.push(error); }
+    try {
+      const deadline = Date.now() + 10_000;
+      if (retryEntered) await retryJournal!.reconcileRetained({ deadline });
+      else if (retryJournal !== undefined) await withinExecutionDeadline(retryJournal.read(), deadline);
+      await lock?.release();
+    } catch (error) { failures.push(error); }
     cancellation.dispose();
   }
   throwFailures(failures);

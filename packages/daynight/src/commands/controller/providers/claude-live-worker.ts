@@ -1,4 +1,3 @@
-import { retainDispatchedOutcome } from "./native-rpc.js";
 import { query, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,7 +5,6 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureProcessProof } from "../process-proof.js";
-import { assertNativeLifecycleAdmission, freezeNativeLifecycleFence, type NativeLifecycleFence } from "../native-lifecycle.js";
 import { ClaudeLiveChannel } from "./claude-live-channel.js";
 import { encodeClaudeLiveInput, exportClaudeLiveMedia, type ClaudeLiveInput } from "./claude-live-media.js";
 import { claudeBackend } from "./claude-live-profile.js";
@@ -21,10 +19,9 @@ class InputStream implements AsyncIterable<SDKUserMessage> {
 const within = <T>(promise: Promise<T>, ms: number) => new Promise<T>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Claude native process stop remains unconfirmed.")), ms); promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); }); });
 const input = new InputStream(), children: ChildProcess[] = [], proofs: Promise<unknown>[] = [];
 let native: Query | undefined, pump: Promise<void> | undefined, stopping = false, closed: Promise<void> | undefined;
-let nativeLifecycleFence: NativeLifecycleFence | undefined, opened = false;
+let opened = false;
 const assertDispatch = (): void => {
   if (stopping) throw new Error("Claude helper stopped before native dispatch.");
-  if (nativeLifecycleFence) assertNativeLifecycleAdmission(nativeLifecycleFence);
 };
 let qualifyProfile: ((apiProvider: unknown) => Promise<void>) | undefined;
 const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
@@ -32,9 +29,7 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
   if (method === "open") {
     if (opened || stopping) throw new Error("Claude helper cannot open another native session.");
     opened = true;
-    const { daynightSessionMirror, nativeLifecycleFence: fence, ...configuration } = value;
-    if (Object.hasOwn(value, "nativeLifecycleFence")) nativeLifecycleFence = freezeNativeLifecycleFence(fence);
-    assertDispatch();
+    const { daynightSessionMirror, ...configuration } = value;
     const options = configuration as unknown as Options;
     const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk")), sdkVersion = String(JSON.parse(await readFile(path.join(path.dirname(sdkPath), "package.json"), "utf8")).version);
     const effectiveSettings = await resolveSettings({ ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.settingSources === undefined ? {} : { settingSources: options.settingSources }), ...(options.managedSettings === undefined ? {} : { managedSettings: options.managedSettings }) }).then(value => value.effective, () => null);
@@ -105,7 +100,7 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
   if (method === "call" && typeof value.method === "string" && ["initializationResult", "supportedModels", "supportedCommands", "reloadSkills", "getSettings", "setModel", "setPermissionMode", "applyFlagSettings", "interrupt"].includes(value.method) && Array.isArray(value.args)) {
     const method = (native as unknown as Record<string, unknown>)[value.method]; if (typeof method !== "function") throw new Error("Claude native control is unsupported.");
     if (value.method !== "interrupt") assertDispatch();
-    const result = await retainDispatchedOutcome(() => method.apply(native, value.args as unknown[]));
+    const result = await method.apply(native, value.args);
     // Only the provider discriminator crosses the profile channel; the
     // account's identity and credential metadata remain native-private.
     if (value.method === "initializationResult") await qualifyProfile?.(object(object(result).account).apiProvider);

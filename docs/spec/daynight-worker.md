@@ -6,6 +6,8 @@
 
 Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领取配置仓库中允许 Agent 执行的 ready task，在系统管理的 Git worktree 中按冻结的 Web 执行配置运行 Copilot、Codex 或 Claude。服务端拥有资格、权限、唯一 claim 和完成操作；worker 拥有调度、资源、对账和清理；agent 拥有业务交付、验收、证据及最后一次 claim-bound done。
 
+正常启动和本机重启后的接单使用既有候选与认领接口。服务端可根据任务资格、权限和当前业务归属拒绝认领，但不得要求 Worker 注册额外管理实例、上报本机停止或保存证明，或取得本机激活许可。Worker 在本机负责进程停止、保存和恢复；正在运行或未知状态的执行继续按原 claim 和本机证据处理。[职责边界](../design/daynight-worker.md#worker-与服务端的职责边界)定义调度和本机执行的分工。
+
 Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端完整自有 claim 清单，实际资源状态来自 Controller journal、操作系统、Git 和文件系统；归档完成来自服务端回执。本机主索引保存项目映射、认领、原生会话身份和新 claim 的原生配置冻结。清理记录只保存资源身份、控制意图、期限和重试策略，不能用操作完成标记替代重新观察。Web 保留执行配置、恢复预算和原生操作身份，并从 Controller 拥有的回执与进程实例证明读取原生事实，以满足 [Task Session 需求](task-sessions.md)的未知结果不重放及单 writer 要求。旧 Herdr 资源由用户处理。
 
 独立 Bot 的本地库存与启动意图由[Bot 库存需求](worker-bot-inventory.md)拥有，使用相同 Worker 锁和 SQLite 格式，不参与 Task 容量计算。[Bot 运行需求](worker-bot-runtime.md)拥有原会话恢复和退出停证：取消管理工作后逐项停止并汇总错误，保留 Bot、原 Session 和私有恢复资料，不调用 StopTest 或归档作为退出前置。正式 `runWorker` Bot 调度与能力广告尚未启用。

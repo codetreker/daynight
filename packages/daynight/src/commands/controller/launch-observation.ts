@@ -18,7 +18,7 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError } from "./storage-preparation.js";
 
 export type ControllerLaunchObservation =
-  | { kind: "observed"; snapshot: ControllerSnapshot }
+  | { kind: "observed"; snapshot: ControllerSnapshot; workerLifecycleProtocol?: 1 }
   | { kind: "running-unobserved"; process: ProcessProof }
   | { kind: "controller-exited"; process: ProcessProof; snapshot: ControllerSnapshot }
   | { kind: "pre-writer-exited"; process: ProcessProof; journal: "missing" | "preceding-generation" }
@@ -178,7 +178,7 @@ export const reconcileSubmittedControllerLaunch = async (input: { journalFile: s
   if (response === undefined) checkAfterFailure(ipcFailure); else check();
   if (response !== undefined) {
     if (response.snapshot.sessionId !== input.ticket.sessionId) throw new ControllerIpcIdentityConflictError("Controller IPC session identity mismatch.");
-    return { kind: "observed", snapshot: response.snapshot };
+    return { kind: "observed", snapshot: response.snapshot, ...(response.workerLifecycleProtocol === 1 ? { workerLifecycleProtocol: 1 } : {}) };
   }
   let state: Awaited<ReturnType<typeof inspectBootstrapProcessProof>>, mismatch: { sameBirth: boolean } | undefined;
   const processTimeout = timeoutAfterFailure(5000, ipcFailure);

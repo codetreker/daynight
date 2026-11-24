@@ -82,7 +82,7 @@ func TestBotRecoveryDurableLeaseBlocksCachedBrowserInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := BotRecoveryGrant{BotRecoveryBinding: BotRecoveryBinding{SessionID: before.SessionID, TestExecutionID: before.TestExecutionID, NativeSessionID: before.Identity.NativeSessionID}, ControllerToken: "dncontroller_" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{31}, 32)), Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: before.TestExecutionID, ControllerID: before.Identity.ControllerID, ControllerInstanceID: before.Identity.ControllerInstanceID, ExecutionGeneration: before.ExecutionGeneration, Kind: "reconnect"}}
-			grant, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+			grant, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 			if err != nil {
 				t.Fatal(err)
 			}

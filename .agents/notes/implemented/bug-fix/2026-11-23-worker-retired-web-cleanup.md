@@ -36,15 +36,6 @@ job retains existing failure recording and retry backoff. A settled job Promise
 is not cleanup proof: completion also requires its original ending target to
 have been cleared.
 
-The active coordinator terminal executor installs a separate exact-claim
-cleanup-command sink, so closing business admission cannot prevent its original
-Git cleanup commands from starting. Each new command durably reserves a
-cleanup_command ledger resource before dispatch, validates the original Worker,
-instance and scope, and uses current localEpoch and intentVersion without opening
-business admission or consuming the local veto. Prepared, bound and stopped
-receipts retain the original command journal generation and native proof. A stale
-owner or fully stopped scope cannot admit cleanup commands.
-
 Shutdown first cancels and joins original producers. A native stop that outlives
 the shutdown waiter retains its original owner; another waiter joins that work
 instead of issuing concurrent stopping. The repository owner waits for the shared
@@ -53,15 +44,12 @@ that manager to verify and remove its original worktree. Unconfirmed Task
 closure keeps the repository owner unknown and the manager open. Later
 reconciliation joins the original stop and disposes Git only after complete Task
 closure. Native inventory first reconciles known command boundaries, joins the
-shared Task stopping result, then reconciles late terminal commands and
-synchronizes matching generation and proof stop receipts into the lifecycle
-ledger. This captures commands created during terminal cleanup without making
-producer progress depend on a closed command gate. Current or unknown ownership
-retains preserve-site stopping. Missing or incomplete Web state uses the original
-Worker's Controller lifecycle resources and a batch of its existing Task launch
-tickets to locate every matching execution generation. Exact ticket, journal,
-Worker identity and process-boundary validation remains required; current
-ownership alone cannot prove a process stopped.
+shared Task stopping result, then reconciles commands started by terminal
+cleanup. Current or unknown ownership retains preserve-site stopping. Missing
+or incomplete Web state uses original native evidence and batches of existing
+Task launch tickets to locate matching execution generations. Exact ticket,
+journal, Worker identity and process-boundary validation remains required.
+Current ownership alone cannot prove a process stopped.
 
 Management-only reconciliation gives each Task its own original claim-request
 result Promise. Cleanup candidates include pending reservations as well as saved
@@ -78,13 +66,7 @@ owner still requires its original Git binding to be checked. A missing directory
 cannot trigger a clone, and format preparation does not query Session registration
 or authorize business execution. An already formatted repository does
 not populate that manager's preparation state. Failed preparation retains that
-Task's cleanup responsibility for retry while independent stopping continues. Controller lifecycle reconciliation follows the Task
-stop attempt, skips unresolved Task records and consumes actual
-stopped journals and native-boundary results for the remaining resources.
-Independent Controller checks continue after a Task stop failure. Management
-Task cleanup and stopJournal retries synchronize actual command stop receipts
-through the existing standalone command path; the active cleanup sink is not
-installed for management-only commands.
+Task's cleanup responsibility for retry while independent stopping continues.
 
 Local resource discovery remains separate from coordinator orchestration. The
 adapter owns original native boundaries, endpoints and durable stop receipts;
@@ -141,16 +123,13 @@ preserve the immutable v16 Bot migration copies described by
 the [migration decision](../architecture/2026-11-19-bot-storage-migration.md);
 raising the active writer format cannot invalidate a checksum-protected original
 copy. Already overwritten history without a full stop receipt remains
-unrecoverable from the retained data. Retained lifecycle proof still requires
-its own boundary check.
+unrecoverable from the retained data.
 
 This replaces the retired-Web portion of the archived
 [direct shutdown decision](../../archived/bug-fix/2026-10-28-worker-direct-shutdown.md).
 The [execution scope decision](../architecture/2026-11-20-worker-execution-scopes.md)
-continues to own producer joins and original stop responsibility, and the
-[local lifecycle decision](../architecture/2026-11-21-worker-local-lifecycle.md)
-owns admission and durable resource records. The
-[Worker design](../../../../docs/design/daynight-worker.md#结束清理与退出)
+owns producer joins, durable resource records and original stop responsibility.
+The [Worker design](../../../../docs/design/daynight-worker.md#结束清理与退出)
 owns the complete cleanup and exit mechanism.
 
 ## Alternatives

@@ -85,10 +85,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["disable", "resume", "lifecycle", "list", "show", "setup", "run", "repo", "resources", "migrate-bot", "migrated-bot-history", "repair-markdown", "retry", "release"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "repo", "resources", "migrate-bot", "migrated-bot-history", "repair-markdown", "retry", "release"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('disable' 'resume' 'lifecycle' 'list' 'show' 'setup' 'run' 'repo' 'resources' 'migrate-bot' 'migrated-bot-history' 'repair-markdown' 'retry' 'release')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'repo' 'resources' 'migrate-bot' 'migrated-bot-history' 'repair-markdown' 'retry' 'release')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('recover')");
     expect(renderZshCompletion(commandTree)).toContain("recover:Verify or recover a completed Web execution");

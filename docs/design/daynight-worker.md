@@ -4,6 +4,14 @@
 
 Worker 内的独立 PR 审查宿主与 Task 调度并行运行，其名单、状态隔离、启动门禁和发布恢复见 [Worker Reviewer 设计](worker-reviewer.md)。
 
+## Worker 与服务端的职责边界
+
+Worker 与 Daynight Server 通过业务协议协作。服务端提供候选查询、任务认领、归属核验和业务操作的结果记录。Worker 在本机拥有进程启动、停止、保存、重启和恢复，使用普通候选和 claim 接口参与调度。本机执行以原 claim、Session、Controller ticket、journal 与进程证据为依据。
+
+服务端可以检查 Task 资格、当前 claim、Bot 宿主、Session 执行代次及调用者权限。Worker 的正常接单、正常启动或本机恢复不要求额外的管理实例注册、全机停止证明、保存回执或激活许可。进程与资源观测供诊断使用，调度不得依赖独立的本机生命周期握手。针对具体业务资源的停止证明仍由拥有该操作的协议定义，例如原 claim 的显式释放。
+
+本机关闭时由 Worker 停止新生产者，等待原 owner 收尾并保存各自证据。已初始化的 owner 可以在网络不可用时继续本机停止和保存。启动中断且 owner 尚未建立时，只读检查原本机清单；存在原资源责任或清单无法核验时保留未知停止结果。服务端负责对具体业务写入给出准确结果，本机停止结论由原资源 owner 核实。取舍和后果见[职责边界决策](../../.agents/notes/implemented/architecture/2026-11-24-worker-scheduling-boundary.md)。
+
 ## 总体结构
 
 ```mermaid
@@ -68,35 +76,11 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 
 原资源的确认闭合在消息和输出 join、终态保存及原句柄和 Job lease 释放后通知所有消费句柄，Git 的 joined 不依赖由哪个 owner 完成重核，也不要求再发一次停止请求。异步 spawn 失败必须由原 ChildProcess 的未启动事实、关闭事件和输出 join 共同证明没有进程；Linux 未尝试发送的原 launcher 使用上述直接关闭证据，其他已运行且缺失出生证明的边界不能仅凭直接子进程关闭结算。Windows 从未恢复执行的原挂起进程可由其原生句柄终止及关闭证明结算，不能把这项证明用于已经恢复执行的进程。
 
-作用域关闭拒绝新的业务命令 `prepared` 准入，但允许同作用域已进入 journal 的原资源重核准备记录，仍执行原代际、序列及证明校验。运行中 coordinator 的原 Task 终态 job 使用独立的 `cleanupCommandLifecycle` sink，仅为精确 project/task/claim 准入清理命令；作用域已完全 stopped 时拒绝。该入口保留原 Worker、管理实例及作用域，先通过 `reserveCleanupCommand` 在生命周期账本持久预留 `cleanup_command`，使用当前 `localEpoch` 和 `intentVersion` 核验原绑定。业务门禁关闭或本机否决不阻止这项收尾预约，过期实例或作用域仍明确拒绝。命令继续在原 journal 代际保存 prepared、bound 与 stopped 证明，不重新开放业务执行。仅管理模式沿用原独立 owned-command 路径，不使用这项运行中 sink。探针仅将首次调用明确在任何写入前被拒绝视为没有预留；曾经发生写入失败或仍有待完成写入时，后续拒绝不能抹去原责任。
+作用域关闭后拒绝新的业务命令。原 Task 终态清理可在同一作用域的关闭过程中按精确 project/task/claim 发起本机清理命令，作用域停止后不再准入。自有命令 journal 保留原资源 ID、准备、绑定和停止证据；无法证明尚未启动的命令仍归原 owner 核对。
 
 Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁和未完成关闭责任。原生命令核对成功后，宿主仍须核对同一次 Reviewer 执行的全部停止原因并实际完成关闭；只有原清理证明覆盖全部原因时才可解除阻塞。普通异常、宿主 Promise 已结束或错误中包含一个已确认的命令，均不足以证明 Reviewer 资源已释放。
 
-执行作用域和资源事件接口提供本机机制。持久停用意图、云端准入、Controller 最终 dispatch 围栏及显式恢复授权由生命周期集成层负责；单独建立或重建作用域不声明完整 Worker 停用能力。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
-
-## 持久停用与恢复
-
-`lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例 UUID 和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、注册实例与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
-
-业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原 Task 终态清理命令使用独立预约，不要求业务门禁开放；它刷新当前 localEpoch 与 intentVersion，同时严格保留原管理实例和 scopeGeneration，并在副作用前持久保存精确 claim 的 cleanup_command 责任。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
-
-本地入口为 `daynight worker disable --worker-id <uuid> --local --confirm --json`。命令在唤醒管理根之前提交本机否决；网络失败不能撤销该否决。IPC 只传原身份、操作 ID 和管理动作，回执仅确认受理；实际结果从原 SQLite 读取。原管理根不可达且请求明确尚未发出时，管理命令仅尝试取得空闲实例锁核对原责任，不接管占用的锁，也不建立业务作用域。私有 IPC 凭据不能出现在 URL、任务材料或日志中。
-
-持久资源预约前的生命周期准入明确拒绝，按 owned command 从未启动处理，并移除内存准入标记；只有确认拒绝发生于预约写入前才使用此路径。持久化结果未知的失败保留原资源责任和标记，继续按原身份核对，不能伪造不存在的预约或丢弃潜在写入。
-
-Task Web 与 Bot 的票据均可在启动提交前保存。若后续 Worker 生命周期已变化，或同一生命周期内的原 launch 预约已持久确认 `not_dispatched`，只有原执行持久状态证明该代启动从未提交、没有当前 Controller 进程或不确定启动证据时，才能在当前开放的生命周期下建立新的本地 launch 票据。保留原 claim、Session、native 身份、恢复代次、预算、初始操作、提示词和冻结配置；Task 的首次启动还要求不存在 journal 运行证据，恢复代次只能接受同一执行已停止的前一代 journal。原预约的身份、票据哈希、存储路径和持久终态必须一致；临时配置拒绝恢复后使用新 launch，不重新开放原终结预约。先持久发布不可变票据和原工具侧文件，再原子更新执行中的启动引用，旧票据及生命周期责任继续保留用于核对。已提交或结果未知的启动不得通过此路径重绑定。对于已分配但从未提交的恢复代次，显式 retry 先验证原前代 journal 和进程树停止，再原子消费该次授权、清除恢复暂停及正常关停标记，并同步更新已有启动报告中的恢复摘要；随后才准备可能需要换绑的票据。存储等待后的继续执行保留已消费授权，不重复增加恢复次数或分配代次。
-
-管理根保留生命周期观察、原操作结果查询、停止和保存通道。启动初始化与常规管理循环中，停止核对、保存或原恢复意图查询失败时，仍独立读取当前权威并上报已有停止、阻塞和库存事实；失败继续保留原责任并关闭准入，不能把核对失败转换成停止成功。新停用的观察不能依赖旧恢复请求先查明结果。管理实例的未知注册结果仍须先按原身份查明，才能注册下一实例。注册成功后，未完成的执行核对保留同一初始化和关闭准入，不阻断管理观察；停止和原操作均确认后才允许执行激活。激活回执验证并成功提交本地准入后，在通知执行 owner 重建前同步结束保留的初始化；显式恢复中途查明旧请求结果，也不能使下一轮轮询重新进入启动停止路径。失败、未知或已被更新停用取代的激活不能凭此结束初始化。独立心跳仅报告管理连接及已有事实；它不启动能力探测。 实例注册前，管理根先取得同一 Worker 轻量心跳的成功回执，确保服务端 Worker 记录已经存在。因 Worker 记录不存在而明确拒绝的实例注册保留原账本；重新确认此前置后才允许作出新的注册决策，其他拒绝不能借此重试。submitted/unknown 注册继续按原 operationId 查询和 resolve，不得换 ID 绕过未知结果。凭据缺失时，显式管理 owner 仍可依据原私有身份尝试本地停止和保存；网络方法在发送前明确拒绝，原云端责任继续保留。关闭期间不得运行清理 prompt、Reviewer 工作、assistant 续期、接管或事件投递。停用对当前仍归本 Worker 或归属未知的执行保留原 claim、worktree、分支、HEAD/index、Session、native ID、独立暂停和恢复预算，不自动 stash、commit、reset 或 release；已确认失去当前归属的旧 Web claim 按终态清理结束本机资源责任。
-
-`daynight worker lifecycle show --worker-id <uuid> --local --json` 只读完整私有库存。`phase`、`stop`、`save`、`sync` 是独立事实：仅库存完整、原责任全部闭合且保存完成，才能确认本机停止；云端未收到观测仍单独报告同步未完成。云端明细可按条数限制截断，但总数、库存摘要与 `detailsComplete` 保留该区别，本机查询不使用展示截断证明完整。outbox 固定原序列及正文；原回执或更高权威覆盖后才能退休，重传同序列不刷新原观测时间。
-
-`daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 使用服务端保存的资格，包括重新创建本机状态的启动。首次 bootstrap 使用独立资格。两者都保留本机否决。注册和原请求核对跨越异步等待后，激活选择还须核对当前持久 veto、desired 与 intentVersion；开始初始化时的快照不能抵消等待期间新增的停用意图。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
-
-当前管理实例独立保留恢复的后续激活责任，不以 `intentVersion` 是否再次变化作为唯一入口。恢复意图响应丢失时，先查询或 resolve 原 operationId；已有本地账本保留完整冻结请求，仅首次从远端发现的操作使用无请求账本。操作查询、停止或观察上报暂时失败后，仍可核对同一恢复并继续激活。activation 续接前及提交后的权威读取，若确认同一实例已有更高版本的停用意图，均清除旧激活的续接资格并收敛、上报新停用；这也覆盖旧观察因版本过期被拒绝、尚无 activation 回执的情况。原操作账本中的已确认回执和未知结果独立保留。普通管理循环先上报当前停用，再按原身份自动核对被替代的未知激活；查询暂时失败时继续报告停止，且禁止新激活，恢复可查后才继续后续显式恢复。读取暂时失败不构成意图替代或原操作未提交的证明。本地 resume 在受理时、进入管理队列前冻结 `localEpoch`；初始化、原操作核对、停止、权威读取及上报完成后均验证该 epoch，才能发送恢复意图。activation 的原结果核对及上报等待后也验证冻结的 epoch，再发送激活请求；已发送请求仍按原身份保存和核对结果，失效不能改写其 unknown 语义。该责任绑定接受时的本地 epoch 和管理实例，新的本机停用使旧责任失效，不能读取后来的 binding 来采用新 veto 的 epoch；进程重启不重建这一自动续接资格，中断的恢复仍须再次显式请求。
-
-未知外部写入按原请求身份恢复。assistant claim/inbox 需要原请求指纹，事件确认需要原事件和 ack operation，Session 操作需要原 Session、绑定与执行代次。只有原回执才能结算派发结果，已受理仍不证明 native 停止。普通 assistant `addEvent`、`addRecord`、`saveItem`、`answer`、`clearAttention` 没有原操作结果查询协议时保留未知责任；相同正文、对象存在、404、权限失败或旧 fence 均不能证明原写成功或从未提交。该限制会阻止完整停止与恢复资格，必须保留原证据。取舍见[本机生命周期决策](../../.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md)。
-
-逐执行 `recovery` 来自 Task/Bot owner 的原 claim、Session 和执行代次观察，独立记录 `eligible`、`blocked` 或 `unknown`，随同观测正文持久化到 outbox。Worker 开门本身不证明原执行已恢复；暂停、所有权变化、原生材料或预算阻塞仍可形成部分恢复。完整结束的历史执行不占未来恢复清单，未结责任及尚未恢复的原执行继续保留。旧代完整终态以原 canonical JSON 和 SHA-256 压缩保存，不计未来作用域的资源总数；历史证据不授权重用旧资源 ID。
+执行作用域和资源事件接口负责本机启动、停止和保存。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
 
 ## 状态来源与清理判定
 
@@ -371,9 +355,9 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 当前运行监控消费同一容量准入投影与真实操作边界，不增加资源发现或改变清理责任。[上报设计](daynight-worker-reporting.md#当前运行监控)说明观测与独立发送的生命周期。
 
-原 claim 在成功完整自有清单中缺席后，coordinator 保留该原 project/task/claim 已失去当前归属的结论，取消其执行入口；即使全局资源快照未发现它，本机未完成行也进入同一 Task 串行清理 job。具有可用 Web 执行来源时终态请求设置 immediateStop，复用原 Controller 停止与 Git 删除；来源缺失或不足时由本机适配器补定位和停止原资源，再完成同一终态 Git 清理，结清本机索引、调度、配额和旧 claim 屏障；当前或历史 Session 不提供这项归属结论。持久调度只发现责任，重启后仍需重新分类归属。清理目标保留原 claim 身份及可选真实 worktreeId，Web journal 证明完整 owner 后沿用该身份；尚无 worktreeId 时不创建虚假 owner 或另建台账。本机补定位优先使用原 Worker 生命周期 Controller 资源，再按批次读取原 Worker 状态目录的 Task ticket；逐个匹配原 claim 的所有执行代际和对应 journal，不只选择最新 ticket。同一代际的合法 launch replacement 按 launchId 分别保留，以 journal 的精确 ticket_hash 选择实际运行票据，再验证完整原身份；不按 generation 合并或任意选择。未提交票据没有独立进程证据时不产生虚构停止回执；已有 reserved/unknown 预约而缺少进程证明时，须先由原启动 owner 提供真实未派发或 gate 关闭结果，否则保留未知责任。仍有生命周期进程证明的旧代际继续核对自身边界。launcher 与 Controller 自采的进程证明复用原身份比较规则：POSIX 保持 PID、出生标识、命令摘要和非空进程组时允许合法父进程变化，Windows 继续核对父 PID 与原 Job。Windows 以原 ticket 绑定的完整历史 stopped 回执核对已销毁的旧 Job；journal 的跨代停证保留、身份校验及缺证失败由 [Controller 协议](task-session-protocol.md#关闭与清理)拥有。已覆盖且从未保存完整停证的旧历史不能重建，后继代际存在或原 Job 名称消失均不能替代原边界停止证明。票据、生命周期绑定、journal 与进程出生证明须识别同一服务、账号、Worker 和原执行，其他 claim、Test Session 与 Bot 资源不进入目标。没有完整 owner 时不推测目录；完整本机观察确认没有原资源时直接结清。已识别的同 Task 后继资源保持不变，旧 claim 的实际资源已消失便结束旧索引。身份不完整的失败使用进程内退避，重启从保留的未完成行重新发现；完整 owner 才持久保存 cleanup_schedules。
+原 claim 在成功完整自有清单中缺席后，coordinator 保留该原 project/task/claim 已失去当前归属的结论，取消其执行入口；即使全局资源快照未发现它，本机未完成行也进入同一 Task 串行清理 job。具有可用 Web 执行来源时终态请求设置 immediateStop，复用原 Controller 停止与 Git 删除；来源缺失或不足时由本机适配器补定位和停止原资源，再完成同一终态 Git 清理，结清本机索引、调度、配额和旧 claim 屏障；当前或历史 Session 不提供这项归属结论。持久调度只发现责任，重启后仍需重新分类归属。清理目标保留原 claim 身份及可选真实 worktreeId，Web journal 证明完整 owner 后沿用该身份；尚无 worktreeId 时不创建虚假 owner 或另建台账。本机补定位按批次读取原 Worker 状态目录的 Task ticket。旧版本保存在 `lifecycle.sqlite` v1 或 v2 的资源位置和原进程身份证据仅供原执行核对，以只读方式验证，不参与新执行准入。清理逐个匹配原 claim 的所有执行代际和对应 journal，不只选择最新 ticket。同一代际的合法 launch replacement 按 launchId 分别保留，以 journal 的精确 ticket_hash 选择实际运行票据，再验证完整原身份；不按 generation 合并或任意选择。未提交票据没有独立进程证据时不产生虚构停止回执；原启动结果未知时，须由原启动 owner 核对实际未派发、启动门关闭或进程停止证据；证据不足时保留责任。launcher 与 Controller 自采的进程证明复用原身份比较规则：POSIX 保持 PID、出生标识、命令摘要和非空进程组时允许合法父进程变化，Windows 继续核对父 PID 与原 Job。Windows 以原 ticket 绑定的完整历史 stopped 回执核对已销毁的旧 Job；journal 的跨代停证保留、身份校验及缺证失败由 [Controller 协议](task-session-protocol.md#关闭与清理)拥有。已覆盖且从未保存完整停证的旧历史不能重建，后继代际存在或原 Job 名称消失均不能替代原边界停止证明。票据、journal 与进程出生证明须识别同一服务、账号、Worker 和原执行，其他 claim、Test Session 与 Bot 资源不进入目标。没有完整 owner 时不推测目录；完整本机观察确认没有原资源时直接结清。已识别的同 Task 后继资源保持不变，旧 claim 的实际资源已消失便结束旧索引。身份不完整的失败使用进程内退避，重启从保留的未完成行重新发现；完整 owner 才持久保存 cleanup_schedules。
 
-新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
+新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求前按原 claimId 持久保存冻结参数。结果未知时记录 Warning 并等待原归属回读；新候选仍可发起独立的版本化认领。服务端同一 Task 版本至多批准一次。回读获胜 claim 后只采用其冻结配置，任务版本已经超过的其他预留随之结清。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 
 coordinator 接受可选 `taskTagFilterKey`：缺失表示旧服务，null 表示应用证明不可用，只暂停新领取；有效摘要参与配置身份。有效摘要下每页候选查询附带 `candidateWorkerId`，claim 附带捕获的摘要。配置身份改变时停止发送旧轮次尚未发出的 claim，已经发送的 claim 由服务端原子准入和既有对账处理。筛选上下文中的游标失效或确定性 claim 冲突通过可选回调提示重新读取配置；这只是重新核对提示，不证明冲突原因。runWorker 从有效配置快照提供该摘要，并将失效提示接到 exchange.markNeedsRead() 与 reporter.trigger()，由原交换路径重新核对权威配置。runWorkerControl 同样投影有效值，只管理已有执行并保留原显式读取或单次同步，不新增报告循环或候选查询。
 
@@ -498,7 +482,7 @@ Agent 完成全部交付和证据后，核验原 active claim、Worker 和 workt
 
 Release 在远端确认前保留 worktree，拒绝时仍可恢复原执行；确认成功后尚未完成本机收尾时，下一次 run 按原 claim 缺席继续处理。远端操作保留既有权限、精确版本和 release 的 stoppedConfirmed。停止后再检查取消，随后只提交一次 release；未知响应保留原错误和资源责任，不通过 GET 推断请求成功或重放。有效 200 后收尾失败明确报告释放已确认并保留错误原因。管理 runtime 只关闭自身句柄、释放锁；管理期间 runner 停机是这一单控制者方案的操作代价。
 
-Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和为已释放 Task 建立新 claim 的专用 resume 入口均已移除；释放任务通过普通认领开始新执行。Worker 整体生命周期的 `worker resume --worker-id` 只恢复原 Worker 准入，不提供 Task 领取例外。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
+Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。释放后的 Task 通过普通认领开始新执行；同一 claim 的本机恢复沿用原执行身份和单项恢复规则。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
 
 ## 观测关联和错误
 

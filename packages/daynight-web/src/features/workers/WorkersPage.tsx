@@ -6,7 +6,6 @@ import { followWorkerLink, WorkerIcon, WorkerReadNotice, WorkerReadState, Worker
 import { MonitoringCard, MonitoringListError } from './WorkerMonitoring';
 import { useWorkerMonitoringSummaries } from './useWorkerMonitoring';
 import './workers.css';
-import { WorkerLifecyclePanel } from './WorkerLifecyclePanel';
 
 export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) => {
   const state = useWorkers({ readEnabled });
@@ -37,7 +36,6 @@ export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) 
             <div className="worker-card-footer"><div className="worker-last-report">{m.lastReported} <span className="worker-last-time"><WorkerTimestamp value={worker.lastReportedAt} /></span></div>
               <span className="worker-open" aria-hidden="true">{m.viewDetails} <span>→</span></span></div>
           </a>
-          <WorkerLifecyclePanel worker={worker} readEnabled={readEnabled} compact />
         </li>)}</ul><p className="list-footer">{m.recentDetail}</p>
       </>}
     </>}
