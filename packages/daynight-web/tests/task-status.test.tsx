@@ -302,8 +302,15 @@ describe('status in shared production task details', () => {
     fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     let dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
+    const mutationRefresh = deferred<TaskGraph>();
+    const previousGraphReads = graphRequest.mock.calls.length;
+    graphRequest.mockReturnValueOnce(mutationRefresh.promise);
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(previousGraphReads + 1));
+    expect(stat('In progress')).toHaveTextContent('0');
+    await act(async () => { mutationRefresh.resolve(graph()); });
+    await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
     const current = records.get(standalone)!;
     records.set(standalone, { ...current, status, ready: false, version: current.version + 1n, updatedAt: '2026-10-22T00:02:00Z' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));

@@ -1335,6 +1335,7 @@ describe('project overview and task workspace', () => {
     await waitFor(() => expect(screen.getByRole('region', { name: '项目任务统计' }).querySelector('.stat-number')).toHaveTextContent('6'));
     expect(chainRow()).toBe(chain);
     expect(chain).not.toBeVisible();
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '项目不存在' });
     expect(chain.isConnected).toBe(false);
