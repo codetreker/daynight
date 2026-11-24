@@ -1,4 +1,4 @@
-.goal-acceptance-reading { display: grid; grid-template-columns: minmax(0, 1fr) 260px; min-height: 0; }
+.goal-acceptance-reading { display: grid; grid-template-columns: minmax(0, 1fr) 260px; grid-template-rows: minmax(200px, 1fr); flex: 1 0 200px; min-height: 0; }
 .goal-acceptance-inspection { padding: 14px; border-left: 1px solid #e1e5ed; overflow: auto; min-width: 0; font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
 .goal-acceptance-inspection h3 { font-size: var(--text-base); margin: 0 0 12px; }
 .goal-acceptance-inspection h4 { font-size: var(--text-sm); margin: 12px 0 4px; }
@@ -8,7 +8,7 @@
 .goal-acceptance-progress { color: var(--task-helper); font-size: var(--text-xs); line-height: 1.5; }
 .goal-acceptance-relation-state { display: block; color: var(--task-helper); font-size: var(--text-xs); }
 .goal-acceptance-context { display: block; color: var(--task-helper); font-size: var(--text-xs); }
-.goal-relation-status { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; max-height: 140px; overflow: auto; border-bottom: 1px solid #e1e5ed; }
+.goal-relation-status { display: flex; flex: none; flex-direction: column; gap: 4px; padding: 6px 12px; max-height: 140px; overflow: auto; border-bottom: 1px solid #e1e5ed; }
 .goal-relation-source { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
 .goal-relation-source .button { font-size: var(--text-xs); padding: 2px 6px; }
 .goal-acceptance-relation { border: 0; background: transparent; color: var(--task-focus); font: inherit; text-align: left; text-decoration: underline; padding: 4px 0; overflow-wrap: anywhere; }
@@ -18,8 +18,7 @@
 .goal-acceptance-node:has(.goal-acceptance-expand) .task-node-bottom { padding-right: calc(9 * var(--text-sm)); }
 .goal-acceptance-empty { position: absolute; inset: 0; padding: 20px; pointer-events: none; font-size: var(--text-sm); }
 .goal-acceptance-graph .task-graph-canvas { min-width: 0; }
-.task-chain-dialog-fullscreen .goal-acceptance-reading { flex: 1; }
 @media (max-width: 700px) {
-  .goal-acceptance-reading { grid-template-columns: minmax(0, 1fr); }
+  .goal-acceptance-reading { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(200px, 1fr) auto; flex-basis: auto; }
   .goal-acceptance-inspection { border-left: 0; border-top: 1px solid #e1e5ed; max-height: 260px; }
 }

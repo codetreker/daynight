@@ -30,7 +30,7 @@ const edge = (dialog: Locator, source: string, target: string) => dialog.locator
 const pendingFixtures = new Set<() => void>();
 test.afterEach(() => { for (const release of pendingFixtures) release(); pendingFixtures.clear(); });
 
-const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean; inspectionSaturation?: boolean } = {}) => {
+const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean; inspectionSaturation?: boolean; empty?: boolean } = {}) => {
   let details: TaskDetail[] = [
     detailFixture(projectId, activeId, { type: 'goal', title: 'Release client', status: 'in_progress', startedAt: time, ready: false, dependsOn: [doneId, cancelledId] }),
     detailFixture(projectId, doneId, { type: 'goal', title: 'Accepted identity', status: 'done', completedAt: time, ready: false }),
@@ -54,6 +54,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     detailFixture(externalProjectId, nextSuccessorId, { type: 'goal', title: 'External second rollout', ready: false }),
     detailFixture(externalProjectId, externalChildId, { parentId: externalId, title: 'Owned authentication task', status: 'in_progress', startedAt: time, ready: false }),
   ];
+  if (options.empty) details = [detailFixture(projectId, childId, { title: 'Independent task' })];
   let syncDetails = details;
   let epoch = taskSyncEpoch(projectId);
   let failingSync = false;
@@ -1225,4 +1226,107 @@ test('foreign nested graphs reuse ancestor Project owners and preserve each sour
   await foreign.getByRole('tab', { name: 'Discussion', exact: true }).click();
   await expect(foreign.getByRole('textbox', { name: 'Discussion message', exact: true })).toHaveValue('Keep foreign source draft');
   expect(state.syncRequests).toEqual(requests);
+});
+
+const layoutMetrics = (dialog: Locator) => dialog.evaluate(element => {
+  const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+  const graph = box('.goal-acceptance-graph'), canvas = box('.task-graph-canvas');
+  const reading = box('.goal-acceptance-reading'), inspection = box('.goal-acceptance-inspection'), foot = box('.graph-foot');
+  const aside = element.querySelector<HTMLElement>('.goal-acceptance-inspection')!;
+  const status = element.querySelector<HTMLElement>('.goal-relation-status');
+  return { canvasHeight: canvas.height, canvasBottom: canvas.bottom, readingBottom: reading.bottom, inspectionTop: inspection.top,
+    footBottom: foot.bottom, graphBottom: graph.bottom, asideHeight: inspection.height, asideScroll: aside.scrollHeight,
+    statusHeight: status?.getBoundingClientRect().height ?? 0, dialogScroll: element.scrollHeight, dialogHeight: element.clientHeight,
+    horizontalOverflow: element.scrollWidth - element.clientWidth };
+});
+
+const prepareLongInspection = async (state: Awaited<ReturnType<typeof install>>) => {
+  const ids = Array.from({ length: 6 }, (_, index) => `00000000-0000-4000-8000-${String(600 + index).padStart(12, '0')}`);
+  for (const [index, id] of ids.entries()) state.changeGoal(id, { title: `Long prerequisite ${index + 1} ${'readable relationship title '.repeat(8)}` });
+  state.changeEdges([doneId, cancelledId, ...ids]);
+};
+
+for (const fullscreen of [false, true]) test(`acceptance graph allocates desktop height with ${fullscreen ? 'fullscreen' : 'ordinary'} long inspection`, async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const state = await install(page, { bulk: true });
+  await prepareLongInspection(state);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(dialog.locator('.goal-relation-source[data-phase="ready"]')).toHaveCount(8);
+  if (fullscreen) await dialog.getByRole('button', { name: 'View fullscreen', exact: true }).click();
+  const before = await layoutMetrics(dialog);
+  expect.soft(before.canvasHeight).toBeGreaterThan(300);
+  expect.soft(Math.abs(before.footBottom - before.graphBottom)).toBeLessThanOrEqual(1);
+  expect(before.statusHeight).toBeLessThanOrEqual(153);
+  await frameBranch(page, dialog);
+  const requests = [...state.syncRequests], viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  await card(dialog, activeId).locator('.task-node-body').click();
+  await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('Release client');
+  const after = await layoutMetrics(dialog);
+  expect.soft(Math.abs(after.canvasHeight - before.canvasHeight)).toBeLessThanOrEqual(1);
+  expect(after.asideScroll).toBeGreaterThan(after.asideHeight);
+  expect(Math.abs(after.footBottom - after.graphBottom)).toBeLessThanOrEqual(1);
+  expect(after.horizontalOverflow).toBe(0);
+  await expect(viewport).toHaveAttribute('style', position!);
+  expect(state.syncRequests).toEqual(requests);
+});
+
+for (const size of [{ width: 320, height: 900 }, { width: 390, height: 900 }, { width: 390, height: 480 }]) test(`acceptance graph stacks and scrolls at ${size.width}x${size.height}`, async ({ page }) => {
+  await page.setViewportSize(size);
+  const state = await install(page, { bulk: true });
+  await prepareLongInspection(state);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(dialog.locator('.goal-relation-source[data-phase="ready"]')).toHaveCount(8);
+  const unselected = await layoutMetrics(dialog);
+  if (size.height > 480) expect(unselected.canvasHeight).toBeGreaterThan(200);
+  await frameBranch(page, dialog);
+  await card(dialog, activeId).locator('.task-node-body').click();
+  const metrics = await layoutMetrics(dialog);
+  expect(metrics.canvasHeight).toBeGreaterThanOrEqual(199);
+  expect(metrics.inspectionTop).toBeGreaterThanOrEqual(metrics.canvasBottom - 1);
+  expect(metrics.asideHeight).toBeLessThanOrEqual(261);
+  expect(metrics.asideScroll).toBeGreaterThan(metrics.asideHeight);
+  expect(metrics.horizontalOverflow).toBe(0);
+  if (size.height === 480) expect(metrics.dialogScroll).toBeGreaterThan(metrics.dialogHeight);
+  else expect(Math.abs(metrics.footBottom - metrics.graphBottom)).toBeLessThanOrEqual(1);
+  await dialog.locator('.graph-foot').scrollIntoViewIfNeeded();
+  await expect(dialog.locator('.graph-foot')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close acceptance graph', exact: true }).scrollIntoViewIfNeeded();
+  await expect(dialog.getByRole('button', { name: 'Close acceptance graph', exact: true })).toBeVisible();
+});
+
+
+test('acceptance graph retains its allocated height through loading, failure and retry', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const state = await install(page, { bulk: true });
+  state.holdAllRoots();
+  const { dialog } = await open(page, state.syncRequests);
+  await expect.poll(() => state.relationRequests.length).toBe(4);
+  const loading = await layoutMetrics(dialog);
+  expect(loading.canvasHeight).toBeGreaterThan(300);
+  expect(Math.abs(loading.footBottom - loading.graphBottom)).toBeLessThanOrEqual(1);
+  state.releaseAll();
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  state.failSource(activeId, true);
+  await retryRelations(dialog, 'Release client').click();
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  const failed = await layoutMetrics(dialog);
+  expect(failed.canvasHeight).toBeGreaterThan(300);
+  expect(Math.abs(failed.footBottom - failed.graphBottom)).toBeLessThanOrEqual(1);
+  state.failSource(activeId, false);
+  await retryRelations(dialog, 'Release client').click();
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  expect((await layoutMetrics(dialog)).canvasHeight).toBeGreaterThan(300);
+});
+
+test('empty acceptance graph uses the available dialog height', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await install(page, { empty: true });
+  await page.goto(`/projects/${projectId}?tab=tasks`);
+  await page.getByRole('tab', { name: /^Goals/ }).click();
+  await page.getByRole('button', { name: 'Acceptance graph', exact: true }).click();
+  const dialog = graphDialog(page);
+  await expect(dialog.locator('.goal-acceptance-empty')).toBeVisible();
+  const metrics = await layoutMetrics(dialog);
+  expect(metrics.canvasHeight).toBeGreaterThan(300);
+  expect(Math.abs(metrics.footBottom - metrics.graphBottom)).toBeLessThanOrEqual(1);
 });
