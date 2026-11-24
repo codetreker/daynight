@@ -571,27 +571,45 @@ mismatch fails the gate. Existing intentional skips and todos remain represented
 JSON success never replaces the native command and job results.
 
 The opt-in `CLI focused evidence` workflow compares full and focused executions
-on the same PR head. Add the `cli-focused-evidence` PR label, or dispatch the
-workflow with a PR number after it exists on the default branch. The workflow
-records the PR head and ref, clean checkout revision and tree, platform,
-architecture, Node and Vitest versions, actual test outcome, complete Vitest
-discovery and JSON results. It rechecks the PR head and ref after verification.
-The ordinary required matrix and its selection remain unchanged.
+on the same PR head. The `cli-focused-evidence` PR label starts a full-first
+comparison. Explicit dispatch requires a PR number, exact `expected_sha` and
+`expected_ref`, a `comparison_group`, and `order=full-first|focused-first`.
+Dispatch is confined to the selected `daynight/` work branch: the workflow ref,
+PR head and supplied identity must agree. The first mode finishes before the
+second starts; repeated groups can alternate their order while retaining one
+candidate. Each job uses fresh checkout, installation, build and macOS termination
+diagnostics. The workflow rechecks PR head and ref after verification. Ordinary
+required PR and main matrices remain full.
 
-The sample classification in `.github/scripts/cli-portable-files.json` contains
-exact CLI package-relative paths, reasons, Git blobs and conservative Git object
-guards for the CLI source, tests, scripts, build configuration, dependencies and
-shared test configuration. Any guarded change requires reexamining the
-classification and updating its object identities. The verifier rejects empty,
-missing, duplicate or stale plans and mismatched execution identities. Linux must
-actually pass tests in every portable file; Windows's two focused shards must be
-disjoint and cover the full discovery less the portable paths, and macOS must
-execute that same retained set. The full and focused native reports must agree
-on the structured identity and passed/skipped/todo state of every retained case,
-and the designated Windows and macOS native sentinels must pass. These reports
-are evidence for a candidate, not authorization to change the required matrix.
-The artifacts expire after 30 days; preserve conclusions with their source and
-run references when longer retention is needed.
+The classification in `.github/scripts/cli-portable-files.json` contains exact
+CLI package-relative paths, reasons, Git blobs and conservative Git object guards
+for CLI source, tests, scripts, build configuration, dependencies and shared test
+configuration. It includes reviewed DTO parsing, compiled Task protocol matrices
+and synthetic filesystem records. Native Task regressions and the separate Darwin
+filesystem ABI test stay in the retained set. A guarded change requires reexamining
+the classification and updating its object identities. Before execution,
+`cli-focused-evidence.mts preflight <discovered.json>` rejects dirty checkouts,
+empty, missing, duplicate or stale plans and invalid full discovery.
+
+Format-2 reports record PR head/ref separately from actual checkout revision/tree,
+platform, architecture, Node, pnpm and Vitest versions, real test outcome, complete
+Vitest discovery and JSON results. Hosted reports also retain run, attempt, job
+and comparison-group identity; a group cannot combine different hosted runs or
+hosted and local reports. An attempt can differ after an explicit failed-job rerun.
+All source identities must match the verifier's exact checkout, including when a
+checkout uses a synthetic merge revision. Older reports require their original
+verifier; they are not accepted as current-format evidence.
+
+Linux must actually pass tests in every portable file. Windows's two focused
+shards must be disjoint and cover full discovery less the portable paths; macOS
+must execute the same retained set. Full and focused native reports must agree
+on structured identity and passed/skipped/todo state of every retained case, and
+the Windows suspended-thread and Darwin filesystem ABI sentinels must pass.
+JSON success never replaces native command or job success. These reports establish
+coverage for a candidate; they do not establish meaningful CI wall-clock benefit
+or authorize changing the required matrix. Group timings and queue/job/critical
+path observations remain source-bound evidence. Artifacts expire after 30 days;
+preserve conclusions with source and run references for longer retention.
 
 The reporter records only the framework's file, full test or suite name, and
 error name, message and stack. Field limits include JSON escaping: file 2 KiB,

@@ -14,13 +14,23 @@
       "path": "test/api/worker-runtime-configuration.test.ts",
       "blob": "ace902284d52bbc0ab6e59b515d64d988f287c2b",
       "reason": "Worker runtime configuration response parsing with synthetic values."
+    },
+    {
+      "path": "test/cli/task-protocol.test.ts",
+      "blob": "2a05018027c68adf0878db7f630934c78cb35822",
+      "reason": "Compiled CLI protocol matrices with loopback HTTP and synthetic API responses; native environment, Git, file-transfer and process-lifetime cases remain in task.test.ts."
+    },
+    {
+      "path": "test/commands/controller/markdown/local-source-filesystem.test.ts",
+      "blob": "05863062af96cda090ebce0e93bcf07b2ed10af6",
+      "reason": "Synthetic filesystem record bytes with explicit platform inputs; actual Darwin fstatfs and descriptor lifetime remain in local-source-filesystem-darwin.test.ts."
     }
   ],
   "guards": {
-    "packages/daynight/src": "cd0e90002e51fc3d9a552be9b41d746e616cd272",
-    "packages/daynight/test": "54cc9c1bd44cd0c0cb377a8bd4ea08c49e815504",
+    "packages/daynight/src": "78e408402806c2780c6d2443380349b6bad0218b",
+    "packages/daynight/test": "b5ae3508e246e267a3952366d6361b3aa8df7153",
     "packages/daynight/scripts": "76e34299c661b4cbe2455799719a3f01e04df60b",
-    "packages/daynight/package.json": "ad0a07414dabba690d6d75a6fe00bf3cc759379b",
+    "packages/daynight/package.json": "d1f8d90d792e545af98764b5a30cedf564834d5e",
     "packages/daynight/vitest.config.ts": "5545db2be9ae0f2a0616fe90e17dcbf3d5bc7ac2",
     "package.json": "8f6caa23579e771a9883352d282060a0b08bf70b",
     "pnpm-workspace.yaml": "0b78b9934980fa3c4168abb1338c57e56b40ba98",
@@ -30,6 +40,6 @@
     "packages/daynight/vitest.focused-evidence.config.ts": "bd717106d14ae5de62f520739e9f4b406f869289",
     "patches": "b5fb0d8cebb6780edefafb810bd99af53822bec3",
     ".npmrc": null,
-    ".github/workflows/cli-focused-evidence.yml": "86fc98f88cf61d40a40732ff97e892624ff0058a"
+    ".github/workflows/cli-focused-evidence.yml": "846b20cf1718a25da7786b5421a42795420a63fa"
   }
 }

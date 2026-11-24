@@ -15,6 +15,10 @@ const git = (...args: string[]): string => {
   return r.stdout.trim();
 };
 const source = () => ({ sourceRevision: git("rev-parse", "HEAD"), sourceTree: git("rev-parse", "HEAD^{tree}") });
+const gitObject = (file: string): string | null => {
+  const entry = git("ls-tree", "HEAD", "--", file);
+  return entry ? entry.split(/\s+/)[2]! : null;
+};
 const labels = ["linux-full", "windows-full-1", "windows-full-2", "windows-focused-1", "windows-focused-2", "macos-full", "macos-focused"] as const;
 const canonical = (root: unknown, file: unknown, platform: string): string => {
   assert.equal(typeof root, "string"); assert.equal(typeof file, "string");
@@ -28,6 +32,24 @@ const canonical = (root: unknown, file: unknown, platform: string): string => {
 };
 const add = (set: Set<string>, key: string, label: string) => { assert.ok(!set.has(key), `Duplicate ${label}: ${key}`); set.add(key); };
 const same = (a: Set<string>, b: Set<string>, label: string) => assert.deepEqual([...a].sort(), [...b].sort(), label);
+const discoverFiles = (discovered: unknown, packageRoot: string, platform: string): Set<string> => {
+  assert.ok(platform === "win32" || platform === "darwin" || platform === "linux", "Invalid discovery platform");
+  const files = new Set<string>();
+  for (const entry of arr(discovered, "discovery")) {
+    const spec = obj(entry, "specification");
+    assert.ok(spec.projectName === undefined || spec.projectName === "", "Named projects are unsupported");
+    add(files, canonical(packageRoot, spec.file, platform), "discovered file");
+  }
+  assert.ok(files.size, "Empty discovery");
+  return files;
+};
+const focusedFiles = (full: Set<string>, portable: Set<string>): Set<string> => {
+  assert.ok(portable.size, "Empty portable manifest");
+  for (const file of portable) assert.ok(full.has(file), `Stale portable path: ${file}`);
+  const focused = new Set([...full].filter(file => !portable.has(file)));
+  assert.ok(focused.size, "Empty focused plan");
+  return focused;
+};
 
 const guardPaths = ["packages/daynight/src", "packages/daynight/test", "packages/daynight/scripts", "packages/daynight/package.json", "packages/daynight/vitest.config.ts", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/vitest.focused-evidence.config.ts", "patches", ".npmrc", ".github/workflows/cli-focused-evidence.yml"];
 export function portableFiles(manifest: unknown, blob: (file: string) => string | null): Set<string> {
@@ -50,33 +72,49 @@ export function portableFiles(manifest: unknown, blob: (file: string) => string 
   return files;
 }
 
-interface Expected { sourceRevision: string; sourceTree: string; vitestVersion: string; prHead: string; prRef: string }
+export const preflightFocusedPlan = (manifest: unknown, blob: (file: string) => string | null, discovered: unknown, packageRoot: string, platform: string): { full: Set<string>; focused: Set<string> } => {
+  const portable = portableFiles(manifest, blob);
+  const full = discoverFiles(discovered, packageRoot, platform);
+  return { full, focused: focusedFiles(full, portable) };
+};
+
+interface Expected { sourceRevision: string; sourceTree: string; vitestVersion: string; pnpmVersion: string; prHead: string; prRef: string }
 interface Evidence { metadata: unknown; discovered: unknown; results: unknown }
 interface Run { files: Set<string>; discovery: Set<string>; assertions: Map<string, string[]>; passed: Map<string, Set<string>> }
 export function verifyFocusedEvidence(evidence: Record<string, Evidence>, expected: Expected, portable: Set<string>): void {
-  assert.ok(/^[a-f0-9]{40}$/.test(expected.prHead) && expected.prHead === expected.sourceRevision && expected.prRef, "Invalid PR identity");
+  assert.ok(/^[a-f0-9]{40}$/.test(expected.prHead) && expected.prRef, "Invalid PR identity");
+  assert.ok(/^[a-f0-9]{40}$/.test(expected.sourceRevision) && /^[a-f0-9]{40}$/.test(expected.sourceTree), "Invalid checkout identity");
+  assert.equal(expected.pnpmVersion, "11.28.6", "Invalid expected pnpm version");
   assert.ok(portable.size, "Empty portable manifest");
   const runs = new Map<string, Run>();
   let discovery: Set<string> | undefined;
   let nodeVersion: string | undefined;
+  const executionOrigins = new Set<string>();
+  const comparisonGroups = new Set<string | undefined>();
   for (const label of labels) {
     const e = obj(evidence[label], `evidence ${label}`), m = obj(e.metadata, `metadata ${label}`);
     const platform = label.startsWith("windows") ? "win32" : label.startsWith("macos") ? "darwin" : "linux";
     const arch = platform === "darwin" ? "arm64" : "x64";
     const shard = label.match(/-(1|2)$/)?.[1];
-    assert.equal(m.formatVersion, 1); assert.equal(m.label, label); assert.equal(m.platform, platform); assert.equal(m.arch, arch);
+    assert.equal(m.formatVersion, 2); assert.equal(m.label, label); assert.equal(m.platform, platform); assert.equal(m.arch, arch);
     assert.equal(m.shard, shard ? `${shard}/2` : "");
     assert.equal(m.sourceDirty, false, `Dirty source: ${label}`); assert.equal(m.testStepOutcome, "success", `Test step failed: ${label}`);
-    for (const k of ["sourceRevision", "sourceTree", "vitestVersion", "prHead", "prRef"] as const) assert.equal(m[k], expected[k], `Mismatched ${k}: ${label}`);
+    const hosted = [m.githubRunId, m.githubRunAttempt, m.githubJob].some(value => value !== undefined);
+    if (hosted) {
+      assert.ok(typeof m.githubRunId === "string" && /^[1-9][0-9]*$/.test(m.githubRunId), `Invalid GitHub run: ${label}`);
+      assert.ok(typeof m.githubRunAttempt === "string" && /^[1-9][0-9]*$/.test(m.githubRunAttempt), `Invalid GitHub attempt: ${label}`);
+      assert.ok(typeof m.githubJob === "string" && m.githubJob.length, `Invalid GitHub job: ${label}`);
+    }
+    executionOrigins.add(hosted ? `github:${m.githubRunId}` : "local");
+    assert.equal(executionOrigins.size, 1, "Mixed execution origins or GitHub runs");
+    assert.ok(m.comparisonGroup === undefined || typeof m.comparisonGroup === "string" && m.comparisonGroup.length, `Invalid comparison group: ${label}`);
+    comparisonGroups.add(m.comparisonGroup);
+    assert.equal(comparisonGroups.size, 1, "Mixed comparison groups");
+    for (const k of ["sourceRevision", "sourceTree", "vitestVersion", "pnpmVersion", "prHead", "prRef"] as const) assert.equal(m[k], expected[k], `Mismatched ${k}: ${label}`);
     assert.ok(typeof m.nodeVersion === "string" && /^v24\./.test(m.nodeVersion), `Invalid Node version: ${label}`);
     if (nodeVersion) assert.equal(m.nodeVersion, nodeVersion, `Mismatched Node version: ${label}`); else nodeVersion = m.nodeVersion;
-    const found = new Set<string>();
-    for (const entry of arr(e.discovered, "discovery")) {
-      const spec = obj(entry, "specification");
-      assert.ok(spec.projectName === undefined || spec.projectName === "", "Named projects are unsupported");
-      add(found, canonical(m.packageRoot, spec.file, platform), "discovered file");
-    }
-    assert.ok(found.size, `Empty discovery: ${label}`);
+    const found = discoverFiles(e.discovered, m.packageRoot, platform);
+    focusedFiles(found, portable);
     if (discovery) same(found, discovery, `Discovery differs: ${label}`); else discovery = found;
     const result = obj(e.results, "results");
     assert.equal(result.success, true); assert.equal(result.numFailedTestSuites, 0); assert.equal(result.numFailedTests, 0);
@@ -106,8 +144,7 @@ export function verifyFocusedEvidence(evidence: Record<string, Evidence>, expect
     assert.ok(full.has(file), `Stale portable path: ${file}`);
     assert.ok(runs.get("linux-full")!.passed.get(file)?.size, `Portable file did not pass on Linux: ${file}`);
   }
-  const focused = new Set([...full].filter(file => !portable.has(file)));
-  assert.ok(focused.size, "Empty focused plan");
+  const focused = focusedFiles(full, portable);
   same(runs.get("linux-full")!.files, full, "Linux full execution differs");
   const union = (a: string, b: string): Run => {
     const first = runs.get(a)!, second = runs.get(b)!;
@@ -120,28 +157,46 @@ export function verifyFocusedEvidence(evidence: Record<string, Evidence>, expect
   for (const [baseline, candidate] of [[wf, wc], [mf, mc]]) for (const file of focused) assert.deepEqual(candidate.assertions.get(file), baseline.assertions.get(file), `Test identities or statuses differ: ${file}`);
   for (const [run, file, name] of [
     [wc, "test/platform/windows-suspended-process.test.ts", JSON.stringify([[], "keeps the native thread suspended until its owner resumes and joins it"])],
-    [mc, "test/commands/controller/markdown/local-source-filesystem.test.ts", JSON.stringify([["local image filesystem records"], "recognizes the actual local Darwin filesystem by name and mount flags"])],
+    [mc, "test/commands/controller/markdown/local-source-filesystem-darwin.test.ts", JSON.stringify([["local image filesystem records"], "recognizes the actual local Darwin filesystem by name and mount flags"])],
   ] as const) assert.ok(run.passed.get(file)?.has(name), `Native sentinel did not pass: ${file} ${name}`);
 }
 
-if (import.meta.main) {
+const runCommand = (): void => {
   const [command, argument, ...extra] = process.argv.slice(2); assert.equal(extra.length, 0);
+  if (command === "preflight") {
+    assert.ok(argument, "Full discovery file required");
+    assert.equal(git("status", "--porcelain"), "", "Preflight checkout must be clean");
+    const plan = preflightFocusedPlan(read(".github/scripts/cli-portable-files.json"), gitObject, read(argument), path.resolve("packages/daynight"), process.platform);
+    console.log(`Validated focused plan: ${plan.full.size} discovered files, ${plan.focused.size} retained files.`);
+    return;
+  }
   const prHead = process.env.PR_HEAD_SHA, prRef = process.env.PR_HEAD_REF;
   assert.ok(prHead && prRef, "PR_HEAD_SHA and PR_HEAD_REF are required");
   if (command === "record") {
     assert.ok(labels.includes(argument as typeof labels[number]), "Invalid evidence label");
     const packageRoot = path.resolve("packages/daynight"), require = createRequire(path.join(packageRoot, "package.json"));
-    const metadata = { formatVersion: 1, label: argument, ...source(), sourceDirty: git("status", "--porcelain") !== "", vitestVersion: require("vitest/package.json").version, nodeVersion: process.version, platform: process.platform, arch: process.arch, packageRoot, shard: argument.match(/-(1|2)$/)?.[1] ? `${argument.at(-1)}/2` : "", prHead, prRef, testStepOutcome: process.env.CLI_TEST_RESULT };
+    const pnpm = spawnSync(process.platform === "win32" ? "cmd.exe" : "pnpm", process.platform === "win32" ? ["/d", "/s", "/c", "pnpm --version"] : ["--version"], { encoding: "utf8", timeout: 10_000 });
+    if (pnpm.error) throw pnpm.error;
+    assert.equal(pnpm.status, 0, `pnpm version failed: ${pnpm.stderr}`);
+    const metadata = {
+      formatVersion: 2, label: argument, ...source(), sourceDirty: git("status", "--porcelain") !== "",
+      vitestVersion: require("vitest/package.json").version, pnpmVersion: pnpm.stdout.trim(), nodeVersion: process.version,
+      platform: process.platform, arch: process.arch, packageRoot, shard: argument.match(/-(1|2)$/)?.[1] ? `${argument.at(-1)}/2` : "",
+      prHead, prRef, testStepOutcome: process.env.CLI_TEST_RESULT, githubRunId: process.env.GITHUB_RUN_ID,
+      githubRunAttempt: process.env.GITHUB_RUN_ATTEMPT, githubJob: process.env.GITHUB_JOB, comparisonGroup: process.env.CLI_COMPARISON_GROUP,
+    };
     const directory = path.resolve(".tmp/focused-evidence", argument); mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
   } else if (command === "verify") {
     assert.ok(argument, "Evidence directory required");
     assert.equal(git("status", "--porcelain"), "", "Verifier checkout must be clean");
     const manifest = obj(read("packages/daynight/package.json"), "package manifest");
-    const expected = { ...source(), vitestVersion: obj(manifest.devDependencies, "dependencies").vitest, prHead, prRef };
-    const portable = portableFiles(read(".github/scripts/cli-portable-files.json"), file => { const entry = git("ls-tree", "HEAD", "--", file); return entry ? entry.split(/\s+/)[2]! : null; });
+    const expected = { ...source(), vitestVersion: obj(manifest.devDependencies, "dependencies").vitest, pnpmVersion: "11.28.6", prHead, prRef };
+    const portable = portableFiles(read(".github/scripts/cli-portable-files.json"), gitObject);
     const evidence = Object.fromEntries(labels.map(label => [label, Object.fromEntries(["metadata", "discovered", "results"].map(name => [name, read(path.join(argument, label, `${name}.json`))]))])) as Record<string, Evidence>;
     verifyFocusedEvidence(evidence, expected, portable);
     console.log(`Verified ${portable.size} portable files and complete native focused execution against full reports.`);
-  } else throw new Error("Use record <label> or verify <directory>");
-}
+  } else throw new Error("Use preflight <full-discovery.json>, record <label> or verify <directory>");
+};
+
+if (import.meta.main) runCommand();
