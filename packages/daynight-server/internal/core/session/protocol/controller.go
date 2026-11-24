@@ -95,6 +95,12 @@ func DecodeController(data []byte) (ControllerMessage, error) {
 		if raw["sourceFloor"] != nil {
 			fields["sourceFloor"] = zeroSequence
 		}
+		if raw["botHistoryWindowVersion"] != nil {
+			fields["botHistoryWindowVersion"] = version
+			if raw["testExecutionId"] == nil || raw["claimId"] != nil {
+				return ControllerMessage{}, errInvalid
+			}
+		}
 	}
 	var value ControllerMessage
 	var err error

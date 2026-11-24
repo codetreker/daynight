@@ -11,29 +11,33 @@ const MaxContentChunkBytes = 512 * 1024
 // Content responses are transient reads from the owning controller. They never
 // establish a server-side copy of native session history.
 type ContentResult struct {
-	Kind          string          `json:"kind"`
-	HistoryEpoch  string          `json:"historyEpoch,omitempty"`
-	Items         []TimelineEntry `json:"items,omitempty"`
-	Resources     []Resource      `json:"resources,omitempty"`
-	BeforeCursor  *string         `json:"beforeCursor,omitempty"`
-	AfterCursor   *string         `json:"afterCursor,omitempty"`
-	HasMoreBefore bool            `json:"hasMoreBefore,omitempty"`
-	HasMoreAfter  bool            `json:"hasMoreAfter,omitempty"`
-	Resource      *Resource       `json:"resource,omitempty"`
-	Offset        string          `json:"offset,omitempty"`
-	Data          string          `json:"data,omitempty"`
-	EOF           bool            `json:"eof,omitempty"`
-	MessageItems  []MessageItem   `json:"-"`
-	Coverage      HistoryCoverage `json:"coverage"`
-	EntryID       string          `json:"entryId,omitempty"`
-	Revision      string          `json:"revision,omitempty"`
-	SHA256        string          `json:"sha256,omitempty"`
-	ByteLength    string          `json:"byteLength,omitempty"`
-	Fragment      string          `json:"fragment,omitempty"`
-	NextCursor    *string         `json:"nextCursor,omitempty"`
+	BotHistoryWindow *BotHistoryWindowPage `json:"-"`
+	Kind             string                `json:"kind"`
+	HistoryEpoch     string                `json:"historyEpoch,omitempty"`
+	Items            []TimelineEntry       `json:"items,omitempty"`
+	Resources        []Resource            `json:"resources,omitempty"`
+	BeforeCursor     *string               `json:"beforeCursor,omitempty"`
+	AfterCursor      *string               `json:"afterCursor,omitempty"`
+	HasMoreBefore    bool                  `json:"hasMoreBefore,omitempty"`
+	HasMoreAfter     bool                  `json:"hasMoreAfter,omitempty"`
+	Resource         *Resource             `json:"resource,omitempty"`
+	Offset           string                `json:"offset,omitempty"`
+	Data             string                `json:"data,omitempty"`
+	EOF              bool                  `json:"eof,omitempty"`
+	MessageItems     []MessageItem         `json:"-"`
+	Coverage         HistoryCoverage       `json:"coverage"`
+	EntryID          string                `json:"entryId,omitempty"`
+	Revision         string                `json:"revision,omitempty"`
+	SHA256           string                `json:"sha256,omitempty"`
+	ByteLength       string                `json:"byteLength,omitempty"`
+	Fragment         string                `json:"fragment,omitempty"`
+	NextCursor       *string               `json:"nextCursor,omitempty"`
 }
 
 func (v ContentResult) MarshalJSON() ([]byte, error) {
+	if v.Kind == "bot_history_window" && v.BotHistoryWindow != nil {
+		return MarshalWire(v.BotHistoryWindow)
+	}
 	if v.Kind == "inspect_page" {
 		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.MessageItems, "beforeCursor": v.BeforeCursor, "hasMoreBefore": v.HasMoreBefore, "coverage": v.Coverage})
 	}
@@ -54,6 +58,10 @@ func contentResult(data json.RawMessage) bool {
 	}
 	if json.Unmarshal(data, &k) != nil {
 		return false
+	}
+	if k.Kind == "bot_history_window" {
+		_, err := DecodeBotHistoryWindowPage(data)
+		return err == nil
 	}
 	if k.Kind == "inspect_page" {
 		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("inspect_page"), "historyEpoch": identifier, "items": many(inspectionItem, 0, 200, "entryId"), "beforeCursor": optional(relayString(MaxHistoryCursorBytes)), "hasMoreBefore": boolean, "coverage": inspectionCoverage})
@@ -80,6 +88,13 @@ func DecodeContentResult(data []byte) (ContentResult, error) {
 	var out ContentResult
 	if !validUnicode(data) || !contentResult(data) || json.Unmarshal(data, &out) != nil {
 		return out, errInvalid
+	}
+	if out.Kind == "bot_history_window" {
+		page, err := DecodeBotHistoryWindowPage(data)
+		if err != nil {
+			return ContentResult{}, err
+		}
+		out.BotHistoryWindow = &page
 	}
 	if out.Kind == "timeline" {
 		var raw struct {

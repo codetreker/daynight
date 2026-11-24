@@ -12,6 +12,24 @@ import (
 
 func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 	calls := sessionhttp.ServiceCallsForTest{
+		ReadBotHistoryWindow: func(ctx context.Context, principal model.Principal, project, task, id string, input sessioncore.BotHistoryWindowRequest) (sp.BotHistoryWindowPage, error) {
+			b.mu.Lock()
+			fn := b.Funcs.ReadBotHistoryWindow
+			b.mu.Unlock()
+			if err := b.check("ReadBotHistoryWindow", fn != nil); err != nil {
+				return sp.BotHistoryWindowPage{}, err
+			}
+			return fn(ctx, principal, project, task, id, input)
+		},
+		CommitBotHistoryCheckpoint: func(ctx context.Context, credential string, input sp.BotHistoryCheckpoint) (sp.BotHistoryCheckpointReceipt, error) {
+			b.mu.Lock()
+			fn := b.Funcs.CommitBotHistoryCheckpoint
+			b.mu.Unlock()
+			if err := b.check("CommitBotHistoryCheckpoint", fn != nil); err != nil {
+				return sp.BotHistoryCheckpointReceipt{}, err
+			}
+			return fn(ctx, credential, input)
+		},
 		ArchiveContentReserved: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 io.Closer) (sessionhttp.ArchiveContentForTest, error) {
 			b.mu.Lock()
 			fn := b.Funcs.ArchiveContentReserved

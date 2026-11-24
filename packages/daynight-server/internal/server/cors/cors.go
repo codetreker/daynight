@@ -106,7 +106,7 @@ func userREST(path string, nativePaths []string) bool {
 }
 
 func producerRoute(method, pattern string) bool {
-	for _, suffix := range []string{"/worker-channel", "/worker-messages", "/image-history-ledger/{fileId}", "/image-history-ledger/{fileId}/status"} {
+	for _, suffix := range []string{"/worker-channel", "/worker-messages", "/bot-history-window/checkpoint", "/image-history-ledger/{fileId}", "/image-history-ledger/{fileId}/status"} {
 		if strings.HasSuffix(pattern, suffix) {
 			return true
 		}

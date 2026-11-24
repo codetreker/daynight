@@ -4,7 +4,7 @@
 
 ## 版本化近期窗口
 
-[近期历史窗口合同](../spec/bot-session-view.md#近期历史窗口合同)定义 `botHistoryWindowVersion=1`。以下共享呈现、绑定和持久快照机制描述既有实现；窗口协议须由服务端、Controller 和客户端协商后接入，不将现有完整历史悄然改为可淘汰缓存。Controller 的 500 条／16 MiB、首屏 50 条是未测量初值，浏览器继续使用自身更小的驻留、快照和序列化预算。
+[近期历史窗口合同](../spec/bot-session-view.md#近期历史窗口合同)定义 `botHistoryWindowVersion=1`。[服务端窗口设计](bot-history-window.md)拥有能力协商、检查点、读取游标和资源生命周期。以下共享呈现、绑定和持久快照机制描述既有实现；Controller 与浏览器须明确采用窗口协议后接入，不将现有完整历史悄然改为可淘汰缓存。Controller 的 500 条／16 MiB、首屏 50 条是未测量初值，浏览器继续使用自身更小的驻留、快照和序列化预算。
 
 窗口接入由真实历史客户端核验 Session fence、`historyEpoch`、`windowRevision` 和保留边界，再将同 ID 修订合并进当前行。已接纳的 `retainedFromSeq` 同时约束真实行、只读预览和资源引用；低水位之前的行不能由迟到修订或持久快照重新补回。过旧游标的 `reset_required` 触发近期页重建，不能伪造完整空历史或无限查找已淘汰书签。当前窗口之外的原文与裁剪预览必须区分，不向已淘汰字节提供下载或完整正文引用。
 

@@ -99,3 +99,83 @@ func TestArchiveCleanupRunnerIdleCancellationAndInvalidStart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestArchiveCleanupRunnerKeepsBotProgressAndDrainsItsSweep(t *testing.T) {
+	runner := NewArchiveCleanupRunner(NewArchiveCleanup(nil, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runner.interval = time.Millisecond
+	if err := runner.SetBotHistorySweep(nil); err == nil {
+		t.Fatal("nil Bot sweep accepted")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	archiveCalls, botCalls := 0, 0
+	var archiveContext context.Context
+	runner.sweep = func(ctx context.Context, cursor string) (string, error) {
+		archiveContext = ctx
+		archiveCalls++
+		if archiveCalls == 1 && cursor != "" || archiveCalls == 2 && cursor != "archive-next" {
+			t.Error("archive cursor crossed into Bot work", cursor)
+		}
+		return "archive-next", errors.New("archive failure must not block Bot cleanup")
+	}
+	if err := runner.SetBotHistorySweep(func(ctx context.Context, cursor string) (string, error) {
+		botCalls++
+		if ctx == archiveContext || ctx.Err() != nil || archiveContext.Err() == nil {
+			t.Error("Bot cleanup inherited the closed archive deadline")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("Bot cleanup has no deadline")
+		}
+		entered <- cursor
+		if botCalls == 1 {
+			return "bot-next", errors.New("retryable Bot failure")
+		}
+		<-ctx.Done()
+		<-release
+		return cursor, ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		runner.Cancel()
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		if err := runner.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := runner.SetBotHistorySweep(func(context.Context, string) (string, error) { return "", nil }); err == nil {
+		t.Fatal("active sweep was replaced")
+	}
+	for _, expected := range []string{"", "bot-next"} {
+		select {
+		case actual := <-entered:
+			if actual != expected {
+				t.Fatal("Bot cursor lost", actual, expected)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	runner.Cancel()
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if err := runner.Stop(stopped); !errors.Is(err, context.Canceled) {
+		t.Fatal("Bot sweep was not drained", err)
+	}
+	close(release)
+	if err := runner.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if archiveCalls != 2 || botCalls != 2 {
+		t.Fatal("unexpected cleanup passes", archiveCalls, botCalls)
+	}
+}

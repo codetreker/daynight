@@ -233,6 +233,8 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"assistant_tasks",
 		"bot_configuration_preferences",
 		"bot_effort_preferences",
+		"bot_history_reclaims",
+		"bot_history_windows",
 		"bot_model_preferences",
 		"bot_recovery",
 		"bot_recovery_operations",

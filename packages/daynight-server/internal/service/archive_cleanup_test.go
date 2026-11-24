@@ -23,6 +23,80 @@ type archiveRuntimeStore struct {
 	exited  chan struct{}
 }
 
+type botCleanupRuntimeStore struct {
+	store.Transactions
+	store.ArchiveCleanupStore
+	dao *botCleanupRuntimeDAO
+}
+type botCleanupRuntimeDAO struct {
+	store.SessionDAO
+	entered chan struct{}
+	release chan struct{}
+}
+type botCleanupRuntimeScope struct {
+	store.SessionScope
+	dao *botCleanupRuntimeDAO
+}
+
+func (s botCleanupRuntimeScope) SessionDAO() store.SessionDAO { return s.dao }
+func (s *botCleanupRuntimeStore) ListArchiveCleanup(context.Context, string, int) ([]store.ArchiveCleanupTarget, error) {
+	return nil, errors.New("archive scan unavailable")
+}
+func (s *botCleanupRuntimeStore) WriteSession(ctx context.Context, work func(store.SessionScope) error) (store.Completion, error) {
+	if err := work(botCleanupRuntimeScope{dao: s.dao}); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+func (d *botCleanupRuntimeDAO) BotHistoryReclaimSessions(ctx context.Context, after string, limit int) ([]string, error) {
+	if after != "" || limit != 32 {
+		return nil, errors.New("unexpected Bot cleanup scan")
+	}
+	close(d.entered)
+	<-ctx.Done()
+	<-d.release
+	return nil, ctx.Err()
+}
+
+func TestBotHistoryCleanupApplicationStartsDespiteArchiveFailureAndDrains(t *testing.T) {
+	dao := &botCleanupRuntimeDAO{entered: make(chan struct{}), release: make(chan struct{})}
+	db := &botCleanupRuntimeStore{dao: dao}
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, nil, nil, nil)
+	if err := app.assembleArchiveCleanup(db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		select {
+		case <-dao.release:
+		default:
+			close(dao.release)
+		}
+		if err := app.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-dao.entered:
+	case <-ctx.Done():
+		t.Fatal("Bot cleanup did not start", ctx.Err())
+	}
+	app.CancelWork()
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if err := app.Drain(stopped); !errors.Is(err, context.Canceled) {
+		t.Fatal("application drained before Bot maintenance exited", err)
+	}
+	close(dao.release)
+	if err := app.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (s *archiveRuntimeStore) ListArchiveCleanup(ctx context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
 	if cursor != "" || limit != 32 {
 		return nil, errors.New("unexpected archive scan")

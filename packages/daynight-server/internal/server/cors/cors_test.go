@@ -150,6 +150,31 @@ func TestCredentialRouteCORSExclusions(t *testing.T) {
 	}
 }
 
+func TestBotWindowCheckpointRemainsControllerOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	called := 0
+	path := "/api/v1/test-sessions/{sessionId}/bot-history-window"
+	mux.HandleFunc("GET "+path, func(http.ResponseWriter, *http.Request) { called++ })
+	mux.HandleFunc("PUT "+path+"/checkpoint", func(http.ResponseWriter, *http.Request) { called++ })
+	h := Wrap(mux, mux, "https://client.example", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		method, suffix string
+		status         int
+	}{{"GET", "", 204}, {"PUT", "/checkpoint", 403}} {
+		r := httptest.NewRequest(http.MethodOptions, "/api/v1/test-sessions/11111111-1111-4111-8111-111111111111/bot-history-window"+tc.suffix, nil)
+		r.Header.Set("Origin", "https://client.example")
+		r.Header.Set("Access-Control-Request-Method", tc.method)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.status || called != 0 {
+			t.Fatal(tc, w.Code, called)
+		}
+		if tc.method == "PUT" && w.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatal("Controller checkpoint was exposed through browser CORS")
+		}
+	}
+}
+
 func TestScopeRefusalExposesStatusOnlyToConfiguredOrigin(t *testing.T) {
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

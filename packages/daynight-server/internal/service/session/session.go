@@ -44,6 +44,7 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	s.Execution.SetTerminalHistoryRunner(s.terminalHistory)
 	s.Execution.SetTerminalDirectoryRunners(s.terminalDirectory, s.taskTerminalDirectory)
 	engine.SetMediaLeaseRecovery(s.recoverMediaLeases)
+	engine.SetBotHistoryReclamation(s.reclaimBotHistoryAfterRead)
 	engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
 		return s.write(ctx, func(store.TransactionOutcome) {}, func(scope store.SessionScope) error {
 			dao, ok := scope.SessionDAO().(store.SessionResourceDAO)

@@ -20,7 +20,7 @@ export type HistoryCursorIdentity = { readonly source: HistorySource; readonly s
 export type HistoryPageCursor = HistoryCursorIdentity & { readonly entrySeq: string };
 export type HistoryEntryCursor = HistoryCursorIdentity & { readonly entryId: string; readonly revision: string; readonly sha256: string; readonly byteLength: string; readonly offset: string };
 export class SessionHistoryError extends Error {
-  constructor(readonly code: "invalid_input" | "reset_required" | "content_changed" | "content_unavailable" | "payload_too_large", message: string) { super(message); this.name = "SessionHistoryError"; }
+  constructor(readonly code: "invalid_input" | "reset_required" | "content_changed" | "content_unavailable" | "payload_too_large" | "upgrade_required", message: string) { super(message); this.name = "SessionHistoryError"; }
 }
 const fail = (): never => { throw new SessionHistoryError("invalid_input", "Invalid session history value."); };
 const exact = (value: unknown, keys: readonly string[]): Record<string, unknown> => {

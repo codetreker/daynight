@@ -109,6 +109,7 @@ func (h *Routes) RegisterRoutesWithScopeObservers(mux httpx.RouteRegistrar, prod
 func (h *Routes) registerRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux, observe)
+	h.registerBotHistoryWindowRoutes(mux, observe)
 	h.registerArchiveRoutes(mux, observe)
 	h.registerImageRoutes(mux, observe, observeOccurrence)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
@@ -703,6 +704,9 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	welcome := map[string]any{"type": "welcome", "requiresLiveSync": true, "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}
+	if hello.BotHistoryWindowVersion == 1 {
+		welcome["botHistoryWindowVersion"] = 1
+	}
 	if optedIn {
 		welcome["onlineMode"] = online.OnlineMode
 		welcome["historyContentPolicy"] = online.HistoryContentPolicy

@@ -67,6 +67,44 @@ func (b *appBackend) WriteArchiveCleanup(context.Context, store.ArchiveCleanupTa
 	return store.Completion{Outcome: store.TransactionNotCommitted}, b.unexpected("WriteArchiveCleanup")
 }
 
+func (b *appBackend) WriteSession(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	if err := b.check(ctx); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	if err := b.record("WriteSession", 1); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	defer b.guardCallback()
+	dao := &appBotHistoryInventoryDAO{backend: b, ctx: ctx}
+	err := fn(appBotHistoryInventoryScope{dao: dao})
+	if dao.calls != 1 {
+		err = errors.Join(err, b.unexpected("Session callback without one Bot history inventory read"))
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, err
+}
+
+type appBotHistoryInventoryScope struct {
+	store.SessionScope
+	dao *appBotHistoryInventoryDAO
+}
+
+func (s appBotHistoryInventoryScope) SessionDAO() store.SessionDAO { return s.dao }
+
+type appBotHistoryInventoryDAO struct {
+	store.SessionDAO
+	backend *appBackend
+	ctx     context.Context
+	calls   int
+}
+
+func (d *appBotHistoryInventoryDAO) BotHistoryReclaimSessions(ctx context.Context, after string, limit int) ([]string, error) {
+	d.calls++
+	if d.calls != 1 || ctx != d.ctx || after != "" || limit != 32 {
+		return nil, d.backend.unexpected("BotHistoryReclaimSessions arguments or calls")
+	}
+	return []string{}, d.backend.check(ctx)
+}
+
 func newAppBackend(t *testing.T) *appBackend {
 	t.Helper()
 	b := &appBackend{t: t, expectedPolicies: 1, expectedReferences: 1, oauthCompletion: store.Completion{Outcome: store.TransactionCommitted}, authorizationCompletion: store.Completion{Outcome: store.TransactionCommitted}, credentialCompletion: store.Completion{Outcome: store.TransactionCommitted}, privateCompletion: store.Completion{Outcome: store.TransactionCommitted}, policies: []wm.Policy{{Version: 1, MaxAutomaticAttempts: 10, AutomaticWindowSeconds: 259200,

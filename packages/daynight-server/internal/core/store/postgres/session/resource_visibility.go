@@ -9,7 +9,7 @@ func (tx *DAO) SessionResourceReadableBy(ctx context.Context, session, resource,
 	err := tx.tx.QueryRow(ctx, `SELECT EXISTS (
  SELECT 1 FROM session_resource_references ref
  WHERE ref.session_id=$1 AND ref.resource_id=$2 AND (
-  ref.kind='message'
+  ref.kind IN ('message','bot_window')
   OR (ref.kind='upload' AND EXISTS (
    SELECT 1 FROM session_image_uploads upload
    WHERE upload.session_id=ref.session_id AND upload.upload_id::text=ref.reference_id

@@ -15,7 +15,7 @@ func taskSyncDeletionMigrationFixture(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool := emptyPool(t)
 	bootstrapBaseline(t, pool)
-	migrateTo(t, pool, 127)
+	migrateTo(t, pool, 128)
 	if _, err := pool.Exec(t.Context(), `INSERT INTO projects(id,name,repo_url) VALUES ($1,'Project','https://example.test/a.git')`, queryID(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func taskSyncDeletionMigrationFixture(t *testing.T) *pgxpool.Pool {
 func TestTaskSyncDeletionMigrationRollbackAndRecovery(t *testing.T) {
 	pool := taskSyncDeletionMigrationFixture(t)
 	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION reject_task_sync_deletion_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
- BEGIN IF NEW.version=128 THEN RAISE EXCEPTION 'injected sync deletion ledger failure'; END IF; RETURN NEW; END $$;
+ BEGIN IF NEW.version=129 THEN RAISE EXCEPTION 'injected sync deletion ledger failure'; END IF; RETURN NEW; END $$;
  CREATE TRIGGER reject_task_sync_deletion_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_task_sync_deletion_ledger()`); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestTaskSyncDeletionMigrationRollbackAndRecovery(t *testing.T) {
 	var valid bool
 	err = pool.QueryRow(t.Context(), `SELECT to_regclass('tasks_project_effective_deleted_id') IS NOT NULL
  AND (SELECT count(*)=1 FROM tasks WHERE id=$1 AND deleted_at='2026-01-02'::timestamptz)
- AND (SELECT checksum=$2 FROM schema_migrations WHERE version=128)`, queryID(2), schemaMigrations[len(schemaMigrations)-1].checksum()).Scan(&valid)
+ AND (SELECT checksum=$2 FROM schema_migrations WHERE version=129)`, queryID(2), schemaMigrations[len(schemaMigrations)-1].checksum()).Scan(&valid)
 	if err != nil || !valid {
 		t.Fatalf("migration facts: %v %v", valid, err)
 	}
@@ -60,7 +60,7 @@ func assertTaskSyncDeletionMigrationAbsent(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	var intact bool
 	err := pool.QueryRow(t.Context(), `SELECT to_regclass('tasks_project_effective_deleted_id') IS NULL
- AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=128)
+ AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=129)
  AND (SELECT count(*)=1 FROM tasks WHERE id=$1 AND deleted_at='2026-01-02'::timestamptz)`, queryID(2)).Scan(&intact)
 	if err != nil || !intact {
 		t.Fatalf("migration failed to roll back: %v %v", intact, err)

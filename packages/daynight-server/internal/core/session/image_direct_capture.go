@@ -70,6 +70,11 @@ func (s *Execution) submitImageCapture(ctx context.Context, tx *operationTx, r *
 		resourceID := uuid.NewString()
 		capture = store.SessionCaptureRecord{SessionID: r.Snapshot.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: input.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resourceID}}
 	}
+	if r.Live != nil && r.Live.BotHistoryWindowVersion == 1 && capture.Receipt.State == "reserved" && !(existing && input.Outcome.Kind == "failed") {
+		if err := verifyBotWindowImageOccurrence(ctx, tx, r, request.Occurrence); err != nil {
+			return empty, err
+		}
+	}
 	if r.OnlineMode == "relay" && capture.Receipt.State == "reserved" && !(existing && input.Outcome.Kind == "failed") {
 		// A reserved retry has not accepted an outcome. Its current connection
 		// must prove the position again; accepted outcomes reconcile by identity.

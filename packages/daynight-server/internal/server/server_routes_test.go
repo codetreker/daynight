@@ -2815,9 +2815,10 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	for _, op := range []string{"controller-grant", "stop", "commands"} {
 		add("POST", testSession+"/"+op)
 	}
-	for _, op := range []string{"timeline", "channel", "operations/{operationId}", "resources/{resourceId}/content"} {
+	for _, op := range []string{"timeline", "channel", "bot-history-window", "operations/{operationId}", "resources/{resourceId}/content"} {
 		add("GET", testSession+"/"+op)
 	}
+	add("PUT", testSession+"/bot-history-window/checkpoint")
 	for _, base := range []string{session, testSession} {
 		add("GET PUT DELETE", base+"/image-uploads/{uploadId}")
 		add("PUT", base+"/image-uploads/{uploadId}/chunks")
@@ -2895,7 +2896,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		addPlain("TRACE", session+suffix)
 	}
 	for _, suffix := range []string{
-		"/controller-grant", "/stop", "/timeline", "/commands", "/operations/{operationId}", "/resources/{resourceId}/content", "/channel",
+		"/controller-grant", "/stop", "/timeline", "/commands", "/operations/{operationId}", "/resources/{resourceId}/content", "/channel", "/bot-history-window",
 	} {
 		addPlain("TRACE", testSession+suffix)
 	}
@@ -2933,7 +2934,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" || route.path == "/api/v3/oauth/grants" || route.path == "/api/v2/me/tokens" ||
 			route.path == worker+"/monitoring" || route.path == worker+"/readonly/channel" ||
 			route.path == "/api/v1/session-capabilities" || route.path == "/api/v1/test-session-capabilities" ||
-			route.path == "/api/v1/test-sessions" || route.path == testSession ||
+			route.path == "/api/v1/test-sessions" || route.path == testSession || route.path == testSession+"/bot-history-window" ||
 			route.path == task+"/sessions/current"
 		for _, suffix := range []string{"/timeline", "/channel", "/operations/{operationId}", "/resources/{resourceId}/content"} {
 			explicit = explicit || route.path == session+suffix || route.path == testSession+suffix

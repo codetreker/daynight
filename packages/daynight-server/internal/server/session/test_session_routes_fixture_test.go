@@ -116,7 +116,7 @@ func (f *testSessionRouteFixture) registration(t *testing.T, input sp.TestRegist
 	return result
 }
 
-func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected sp.Snapshot, registration sp.TestRegistration) (*websocket.Conn, sp.Snapshot) {
+func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected sp.Snapshot, registration sp.TestRegistration, windowVersion ...int) (*websocket.Conn, sp.Snapshot) {
 	t.Helper()
 	grantInput := sp.Grant{Protocol: sp.Protocol, TestExecutionID: snapshot.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"}
 	grant := sessioncore.GrantResult{TestExecutionID: snapshot.TestExecutionID, Token: "dncontroller_" + uuid.NewString(), ExpiresAt: time.Now().UTC().Add(2 * time.Minute), SessionID: snapshot.SessionID, ExecutionGeneration: "1", ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID}
@@ -134,6 +134,9 @@ func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected s
 	}
 	sourceEpoch := uuid.NewString()
 	hello := sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: registration.Provider, SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0"}
+	if len(windowVersion) != 0 {
+		hello.BotHistoryWindowVersion = windowVersion[0]
+	}
 	helloWire := []byte(jsonBody(t, hello))
 	f.calls.ExpectCalls("Disconnect", 1)
 	f.calls.AllowRepeated("Poll")
@@ -143,6 +146,7 @@ func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected s
 			return nil
 		}
 		c.Connect = func(ctx context.Context, token string, actual sp.ControllerMessage, instance string, contentReadVersion int) (sp.Snapshot, error) {
+			f.argument(actual.BotHistoryWindowVersion == hello.BotHistoryWindowVersion, "Bot window negotiation")
 			nonce, err := uuid.Parse(instance)
 			f.argument(ctx != nil && ctx.Err() == nil && token == grant.Token && actual.Type == "hello" && actual.Protocol == hello.Protocol && actual.Fence == hello.Fence && actual.ConnectionEpoch == "" && actual.SchemaVersion == 1 && actual.ProjectionVersion == 1 && actual.ControllerID == hello.ControllerID && actual.ControllerInstanceID == hello.ControllerInstanceID && actual.Provider == hello.Provider && actual.SourceEpoch == hello.SourceEpoch && actual.LastAckedSourceSeq == "0" && bytes.Equal(actual.Raw, helloWire) && err == nil && nonce.String() == instance, "controller hello/instance")
 			f.mu.Lock()
@@ -166,6 +170,13 @@ func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected s
 	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, nil)
 	sessionWSWrite(t, controller, hello)
 	welcome := sessionWSKind(t, controller, "welcome")
+	if hello.BotHistoryWindowVersion == 1 {
+		if string(welcome["botHistoryWindowVersion"]) != "1" {
+			t.Fatal("negotiated Bot window capability was not acknowledged")
+		}
+	} else if _, present := welcome["botHistoryWindowVersion"]; present {
+		t.Fatal("legacy welcome acquired an unnegotiated window capability")
+	}
 	actual, err := sp.DecodeSnapshot(welcome["session"])
 	if err != nil || !reflect.DeepEqual(actual, connected) {
 		t.Fatal("welcome changed supplied connection snapshot", err)
