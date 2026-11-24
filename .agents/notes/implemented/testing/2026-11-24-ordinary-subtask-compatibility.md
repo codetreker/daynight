@@ -19,7 +19,10 @@ same-origin TLS gateway to exercise the client and Server combinations. The
 gateway allows the old and new Web bundles to share an origin without replacing
 the product API. The recovery case retains the database and attachment storage
 across the old and candidate services and records its own resource ownership and
-cleanup outcome. Compatibility Workers use the dedicated container boundary in
+cleanup outcome. Its host control client opens the private run directory and
+connects through its short `/proc/self/fd` path, retaining that descriptor until
+the exchange finishes. The socket remains in the same private directory used
+by the container. Compatibility Workers use the dedicated container boundary in
 the [Worker fixture decision](2026-11-24-compat-worker-container.md).
 
 The [product E2E decision](2026-11-08-self-contained-product-e2e.md) owns the
@@ -35,6 +38,10 @@ revision would not exercise the independent client and Server combinations.
 **Use controlled API responses as the compatibility result.** Module fixtures
 can test protocol boundaries but cannot establish the interaction between the
 actual historical artifacts, authentication, browser cache and persistent data.
+
+**Connect to the control socket by its absolute checkout path.** Linux limits
+Unix socket address length, so a valid private directory under a long checkout
+path cannot be addressed that way even though the container can bind it.
 
 ## Consequences
 

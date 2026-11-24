@@ -86,6 +86,10 @@ signal client before forcing a still-running container to stop. A definite bind
 refusal and a confirmed absent container permit fixture cleanup; other uncertain
 creation outcomes remain unconfirmed.
 
+The recovery control client addresses the socket in its private run directory
+through an open directory descriptor, avoiding Unix socket path-length limits
+without moving the socket outside the owned runtime.
+
 ## Runtime topology
 
 Each run owns a dedicated internal database network, private ingress bridge,
@@ -285,6 +289,7 @@ Chromium. They are not part of the normal product journey or CI harness:
 node --test packages/e2e_tests/validation/provider-navigation.test.mjs
 node --test packages/e2e_tests/validation/worker-monitoring-response.test.mjs
 node --test packages/e2e_tests/validation/compat-worker-container.test.ts
+node --test packages/e2e_tests/validation/subtask-compat-recovery-control-docker.test.ts
 ```
 
 ## Results and cleanup
