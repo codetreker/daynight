@@ -73,7 +73,8 @@ for (const resume of [false, true]) {
 test.each([
   { resume: false, unattended: false, sandbox: "workspace-write", approvalPolicy: "on-request", effort: "high" },
   { resume: false, unattended: true, sandbox: "danger-full-access", approvalPolicy: "never", effort: "high" },
-  { resume: true, unattended: true, sandbox: undefined, approvalPolicy: undefined, effort: "low" },
+  { resume: true, unattended: false, sandbox: undefined, approvalPolicy: undefined, effort: "low" },
+  { resume: true, unattended: true, sandbox: "danger-full-access", approvalPolicy: "never", effort: "low" },
 ])("roles preserve native settings and first real input: %j", async ({ resume, unattended, sandbox, approvalPolicy, effort }) => {
   const provider = await openCodexProvider({
     ...options(resume ? "native-thread" : null, {
@@ -88,8 +89,14 @@ test.each([
     expect(before.filter(item => item.method.startsWith("turn/"))).toEqual([]);
     const params = before.find(item => item.method === (resume ? "thread/resume" : "thread/start"))!.params;
     expect(params.developerInstructions).toBe(role);
-    if (resume) for (const key of ["model", "sandbox", "approvalPolicy"]) expect(params).not.toHaveProperty(key);
-    else expect(params).toMatchObject({ model: "requested-model", sandbox, approvalPolicy });
+    if (sandbox === undefined) {
+      expect(params).not.toHaveProperty("sandbox");
+      expect(params).not.toHaveProperty("approvalPolicy");
+    } else {
+      expect(params).toMatchObject({ sandbox, approvalPolicy });
+    }
+    if (resume) expect(params).not.toHaveProperty("model");
+    else expect(params.model).toBe("requested-model");
     const receipt = await provider.send(textNativeInput("Actual user request"), "first-user-operation", null);
     await provider.waitForTurn(receipt.turnId!, Date.now() + 1000);
     const turns = (await requests()).filter(item => item.method.startsWith("turn/"));

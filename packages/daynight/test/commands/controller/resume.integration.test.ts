@@ -358,24 +358,20 @@ test("a committed lease release reports close failure and can close again withou
   } finally { closing.mockRestore(); }
 });
 
-const failLeaseCompletionReport = (failure: Error) => vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
-  const line = String(chunk);
-  if (line.includes('"kind":"sqlite-migration-completed"') && line.includes('"database":"native-resume-leases"')) throw failure;
-  return true;
-});
-
-test("format reporting failure occurs before lease acquisition", async () => {
+test("initializes lease storage silently before recording the lease", async () => {
   const f = await fixture(), input = { provider: "codex" as const, sessionId: f.ticket.sessionId };
-  const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), reportingFailure = new Error("Completion reporter failed");
-  const reporting = failLeaseCompletionReport(reportingFailure);
+  const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
+  const writes: string[] = [];
+  const reporting = vi.spyOn(process.stderr, "write").mockImplementation(chunk => { writes.push(String(chunk)); return true; });
   try {
-    const error = await acquireResume(input, f.context, config).catch(error => error);
-    expect(error).toMatchObject({ kind: "cleanup-failed", outcome: "committed", connectionClosed: true, cause: reportingFailure });
-    const check = new Database(file);
-    try { expect(check.pragma("user_version", { simple: true })).toBe(1); expect(check.prepare("SELECT count(*) AS total FROM leases").get()).toEqual({ total: 0 }); }
-    finally { check.close(); }
+    const lease = await acquireResume(input, f.context, config);
+    try {
+      const check = new Database(file);
+      try { expect(check.pragma("user_version", { simple: true })).toBe(1); expect(check.prepare("SELECT count(*) AS total FROM leases").get()).toEqual({ total: 1 }); }
+      finally { check.close(); }
+      expect(writes.join("")).not.toContain("sqlite-migration-");
+    } finally { await lease.release(); }
   } finally { reporting.mockRestore(); }
-  const next = await acquireResume(input, f.context, config); await next.release();
 });
 
 test.skipIf(process.platform === "win32")("failed inventory never removes a replacement lease nonce", async () => {

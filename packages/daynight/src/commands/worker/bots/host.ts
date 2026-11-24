@@ -2,7 +2,7 @@ import { createOperation, type Operation } from "../../../api/operation.js";
 import { createAssistantTaskClient } from "../../../api/assistant-task.js";
 import type { CodexProbeOwner } from "../codex-probe-owner.js";
 import type { WorkerEvent } from "../execution.js";
-import { workerSqliteMigrationEvent } from "../diagnostics.js";
+import { workerSqliteMigrationReporter } from "../diagnostics.js";
 import type { WorkerPaths } from "../paths.js";
 import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { botToolActivity } from "../tool-activity.js";
@@ -43,7 +43,7 @@ export const createWorkerBotHost = (options: {
   canAdmitNewExecution(): boolean;
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
 }) => {
-  const migration = { onMigration: (event: Parameters<typeof workerSqliteMigrationEvent>[0]): undefined => { options.emit(workerSqliteMigrationEvent(event)); } };
+  const migration = { onMigration: workerSqliteMigrationReporter(options.emit) };
   const local = openLocalBotStores({ stateDirectory: options.paths.stateDirectory, legacyDatabaseFile: options.paths.databaseFile, owner: options.owner, ...migration });
   const { store, executions } = local;
   try {
