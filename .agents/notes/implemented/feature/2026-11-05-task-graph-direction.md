@@ -34,7 +34,9 @@ and inspection choice, while reframing the new geometry using the initial
 viewport policy. The [one-hop external navigation decision](2026-11-07-external-graph-navigation.md)
 owns the current context and resource-switching behavior; each target Goal uses
 its own direction preference. The [historical complete prerequisite context decision](../../archived/feature/2026-10-22-complete-prerequisite-context.md)
-records the original reason framing exposes the upstream rank. Fullscreen remains a presentation
+records the original reason framing exposes the upstream rank. The
+[in-progress framing decision](../bug-fix/2026-11-24-in-progress-graph-framing.md)
+uses that position as the baseline for initial translation. Fullscreen remains a presentation
 of the same graph. The [requirements](../../../../docs/spec/daynight-web.md) and
 [inspection design](../../../../docs/design/daynight-task-inspection.md) own the
 observable behavior and routing mechanism.
