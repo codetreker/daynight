@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -32,6 +34,16 @@ func (d *archiveSourceRecoveryDAO) SessionSourceHashCount(ctx context.Context, s
 func (d *archiveSourceRecoveryDAO) SaveSessionSourceHash(ctx context.Context, h store.SessionSourceHash) error {
 	return d.hashes.SaveSessionSourceHash(ctx, h)
 }
+func (d *archiveSourceRecoveryDAO) SessionSourceRecovery(ctx context.Context, session, id string) (store.SessionSourceRecovery, error) {
+	return d.hashes.SessionSourceRecovery(ctx, session, id)
+}
+func (d *archiveSourceRecoveryDAO) SessionSourceRecoveryCount(ctx context.Context, session string) (int, error) {
+	return d.hashes.SessionSourceRecoveryCount(ctx, session)
+}
+func (d *archiveSourceRecoveryDAO) SaveSessionSourceRecovery(ctx context.Context, in store.SessionSourceRecovery) error {
+	return d.hashes.SaveSessionSourceRecovery(ctx, in)
+}
+
 func (d *archiveSourceRecoveryDAO) SaveSession(_ context.Context, r store.SessionRecord) error {
 	d.saved = &r
 	return nil
@@ -85,6 +97,49 @@ func TestArchiveSourceRecoveryUsesOnlyOriginalStoppedScope(t *testing.T) {
 				if json.Unmarshal(d.bundle.Ledger, &ledger) != nil || ledger.SourceThrough != "8" || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch {
 					t.Fatal("prepared source barrier did not follow its original tail", string(d.bundle.Ledger))
 				}
+			}
+		})
+	}
+}
+
+func TestRecoveryAdmissionRechecksStoppedWriterAndArchivePhase(t *testing.T) {
+	for _, variant := range []string{"prepared", "before-prepare", "wrong-mode", "owner", "controller", "active", "sealed", "history-started", "wrong-epoch"} {
+		t.Run(variant, func(t *testing.T) {
+			op, base, r := archiveFlowFixture(t)
+			epoch := uuid.NewString()
+			r.SourceEpoch = &epoch
+			d := &archiveSourceRecoveryDAO{archiveFlowDAO: base, hashes: &sourceCheckpointDAO{hashes: map[string][]byte{}}}
+			op.execution.archiveRun = func(_ context.Context, _ model.Principal, _, _, _ string, _ bool, work func(*Access) error) error {
+				return work(&Access{tx: &operationTx{dao: d}, record: r})
+			}
+			in := sp.ArchiveSourceRecoveryRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, SourceEpoch: epoch, OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "8", Events: []sp.SourceEvent{{SourceSeq: "8", Kind: "state", Payload: encode(sp.State{InitialInputState: "confirmed", Activity: "working"})}}}
+			switch variant {
+			case "before-prepare":
+				d.bundle = nil
+			case "wrong-mode":
+				op.mode = ArchiveV1Read
+			case "owner":
+				op.owner = uuid.NewString()
+			case "controller":
+				in.ControllerID = uuid.NewString()
+			case "active":
+				r.Snapshot.TestExecutionID, r.Snapshot.Lifecycle = uuid.NewString(), "active"
+			case "sealed":
+				d.bundle.Phase = "sealed"
+			case "history-started":
+				d.bundle.HistoryID = uuid.NewString()
+			case "wrong-epoch":
+				in.SourceEpoch = uuid.NewString()
+			}
+			out, err := op.RecoverArchiveSourceTail(t.Context(), in)
+			if variant == "prepared" || variant == "before-prepare" {
+				if err != nil || out.VerifiedThrough != "8" || out.CurrentThrough != "8" || d.saved == nil {
+					t.Fatal(out, err)
+				}
+				return
+			}
+			if err == nil || d.saved != nil || len(d.hashes.recoveries) != 0 {
+				t.Fatal("unproven recovery admitted", variant, out, err)
 			}
 		})
 	}
@@ -315,6 +370,109 @@ func TestArchiveProjectionRecoveryCannotReplaceStoppedSource(t *testing.T) {
 			}
 			if e := verifyArchiveHistoryAdvance(previous, next); (e == nil) != (variant == "resolved-projection") {
 				t.Fatal("projection recovery escaped its fixed source identity", variant, e)
+			}
+		})
+	}
+}
+
+func TestArchiveSourceAdmissionUsesValidWireBudgetWithoutReencodingExpansion(t *testing.T) {
+	for _, text := range []string{strings.Repeat("<", 1_040_000), strings.Repeat("\u2028", 340_000)} {
+		for _, recovery := range []bool{false, true} {
+			op, base, r := archiveFlowFixture(t)
+			epoch := uuid.NewString()
+			r.SourceEpoch = &epoch
+			d := &archiveSourceRecoveryDAO{archiveFlowDAO: base, hashes: &sourceCheckpointDAO{hashes: map[string][]byte{}}}
+			op.execution.archiveRun = func(_ context.Context, _ model.Principal, _, _, _ string, _ bool, work func(*Access) error) error {
+				return work(&Access{tx: &operationTx{dao: d}, record: r})
+			}
+			events := []sp.SourceEvent{}
+			for _, seq := range []string{"8", "9"} {
+				payload := []byte(`{"entryId":"` + uuid.NewString() + `","revision":"1","kind":"reasoning","text":"` + text + `"}`)
+				events = append(events, sp.SourceEvent{SourceSeq: seq, Kind: "timeline_upsert", Payload: payload})
+			}
+			if recovery {
+				in := sp.ArchiveSourceRecoveryRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, SourceEpoch: epoch, OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "9", Events: events}
+				if len(encode(in)) <= sp.MaxFrameBytes {
+					t.Fatal("fixture did not expand beyond frame limit")
+				}
+				out, err := op.RecoverArchiveSourceTail(t.Context(), in)
+				if err != nil || out.VerifiedThrough != "9" {
+					t.Fatal(out, err)
+				}
+			} else {
+				in := sp.ArchiveSourceTailRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: events}
+				if len(encode(in)) <= sp.MaxFrameBytes {
+					t.Fatal("fixture did not expand beyond frame limit")
+				}
+				out, err := op.AppendArchiveSourceTail(t.Context(), in)
+				if err != nil || out.LastAckedSourceSeq != "9" {
+					t.Fatal(out, err)
+				}
+			}
+		}
+	}
+}
+
+type recoveryBundleFailureDAO struct {
+	*archiveSourceRecoveryDAO
+	point string
+	cause error
+}
+
+func (d *recoveryBundleFailureDAO) SessionArchiveBundle(ctx context.Context, id string) (store.ArchiveBundle, error) {
+	if d.point == "read bundle" {
+		return store.ArchiveBundle{}, d.cause
+	}
+	return d.archiveSourceRecoveryDAO.SessionArchiveBundle(ctx, id)
+}
+func (d *recoveryBundleFailureDAO) SaveSessionArchiveBundle(ctx context.Context, b store.ArchiveBundle) error {
+	if d.point == "save bundle" {
+		return d.cause
+	}
+	return d.archiveSourceRecoveryDAO.SaveSessionArchiveBundle(ctx, b)
+}
+func TestRecoveryRechecksAdmissionAndActiveLedgerFailures(t *testing.T) {
+	for _, scenario := range []string{"invalid request", "producer denied", "read bundle", "active identity mismatch", "active invalid ledger", "active settlement", "settling invalid ledger", "save bundle"} {
+		t.Run(scenario, func(t *testing.T) {
+			op, base, r := archiveFlowFixture(t)
+			epoch := uuid.NewString()
+			r.SourceEpoch = &epoch
+			source := &archiveSourceRecoveryDAO{archiveFlowDAO: base, hashes: &sourceCheckpointDAO{hashes: map[string][]byte{}}}
+			cause := errors.New("archive transaction failed")
+			dao := &recoveryBundleFailureDAO{archiveSourceRecoveryDAO: source, point: scenario, cause: cause}
+			op.execution.archiveRun = func(_ context.Context, _ model.Principal, _, _, _ string, _ bool, work func(*Access) error) error {
+				return work(&Access{tx: &operationTx{dao: dao}, record: r})
+			}
+			in := sp.ArchiveSourceRecoveryRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, SourceEpoch: epoch, OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "8", Events: []sp.SourceEvent{{SourceSeq: "8", Kind: "state", Payload: encode(sp.State{InitialInputState: "confirmed", Activity: "working"})}}}
+			switch scenario {
+			case "invalid request":
+				in.Events = nil
+			case "producer denied":
+				op.execution.SetProducerAdmission(func(context.Context, store.SessionScope, model.Principal) error { return cause })
+			case "active identity mismatch":
+				base.bundle.Phase = "active"
+				base.bundle.Identity = encode(sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: uuid.NewString(), ControllerInstanceID: in.ControllerInstanceID})
+			case "active invalid ledger":
+				base.bundle.Phase = "active"
+				base.bundle.Ledger = []byte(`{`)
+			case "active settlement":
+				base.bundle.Phase = "active"
+			case "settling invalid ledger":
+				base.bundle.Ledger = []byte(`{`)
+			}
+			out, err := op.RecoverArchiveSourceTail(t.Context(), in)
+			if scenario == "active settlement" {
+				var ledger archiveLedger
+				if err != nil || out.VerifiedThrough != "8" || base.bundle.Phase != "settling" || json.Unmarshal(base.bundle.Ledger, &ledger) != nil || ledger.FinalSourceThrough != "8" {
+					t.Fatal(out, err, base.bundle)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("unsafe recovery succeeded", scenario)
+			}
+			if (scenario == "producer denied" || scenario == "read bundle" || scenario == "save bundle") && !errors.Is(err, cause) {
+				t.Fatal("lost failure", err)
 			}
 		})
 	}

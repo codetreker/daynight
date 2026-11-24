@@ -20,6 +20,7 @@ type unifiedArchiveOperation interface {
 	archiveOperation
 	PrepareArchive(context.Context, sp.ArchivePrepareRequest) (sp.ArchivePrepareReceipt, error)
 	AppendArchiveSourceTail(context.Context, sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error)
+	RecoverArchiveSourceTail(context.Context, sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error)
 	PutArchiveFile(context.Context, string, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)
 	PutArchiveResource(context.Context, string, int64, int64, string, string, []byte, sp.Resource) (sp.ArchiveFileReceipt, error)
 	SealArchive(context.Context) (sp.ArchivePrepareReceipt, error)
@@ -31,6 +32,7 @@ func (h *Routes) registerUnifiedArchiveRoutes(mux httpx.RouteRegistrar, base str
 		"GET " + base + "/prepare":                            h.archivePreparation,
 		"POST " + base + "/prepare":                           h.prepareArchive,
 		"POST " + base + "/source-tail":                       h.archiveSourceTail,
+		"POST " + base + "/source-tail/recover":               h.archiveSourceRecovery,
 		"POST " + base + "/seal":                              h.sealArchive,
 		"PUT " + base + "/content":                            h.putArchiveManifest,
 		"PUT " + base + "/prepare/history/{fileId}":           h.putArchiveHistory,
@@ -339,6 +341,37 @@ func (h *Routes) archiveSourceTail(w http.ResponseWriter, r *http.Request, p mod
 		return
 	}
 	out, err := op.AppendArchiveSourceTail(r.Context(), input)
+	if err != nil {
+		h.Failure(w, r, archiveCleanupError(err, op.Close()))
+		return
+	}
+	h.archiveResult(w, r, out, op)
+}
+
+func (h *Routes) archiveSourceRecovery(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if _, err := httpx.QueryValues(r); err != nil {
+		h.Failure(w, r, err)
+		return
+	}
+	op, err := h.beginUnifiedArchive(w, r, p)
+	if err != nil {
+		httpx.CloseUnreadBody(w, r)
+		h.Failure(w, r, err)
+		return
+	}
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := readUnifiedArchiveBody(w, readRequest, "application/json", sp.MaxArchiveSourceTailBytes, false)
+	finishRead()
+	if err != nil {
+		h.Failure(w, r, archiveCleanupError(err, op.Close()))
+		return
+	}
+	input, err := sp.DecodeArchiveSourceRecovery(body)
+	if err != nil {
+		h.Failure(w, r, archiveCleanupError(httpx.InvalidInput("Invalid archive source recovery."), op.Close()))
+		return
+	}
+	out, err := op.RecoverArchiveSourceTail(r.Context(), input)
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return

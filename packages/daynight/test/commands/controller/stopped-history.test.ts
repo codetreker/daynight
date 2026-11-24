@@ -1,3 +1,5 @@
+import { parseSourceEvent } from "../../../src/session/controller-protocol.js";
+import { ArchiveRequestError } from "../../../src/commands/controller/archive-error.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -10,7 +12,7 @@ import type { ControllerJobLease } from "../../../src/commands/controller/window
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
-import { replayStoppedControllerHistory, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
+import { replayStoppedControllerHistory, type StoppedSourceRecovery, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -32,12 +34,16 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
 };
-const fixture = async (count = 3, text = "durable", floor = false) => {
+const fixture = async (count = 3, text = "durable", floor = false, beforeStop?: (store: ReturnType<typeof openControllerLifecycleStore>) => void, raw = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/stopped-history-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const journalPath = path.join(home, "journal.sqlite"), store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, ...(floor ? { maxOutboxBytes: 256 } : {}) });
-  for (let i = 0; i < count; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
+  for (let i = 0; i < count; i++) {
+    const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text }] };
+    if (raw) store.appendEvent({ kind: "timeline_upsert", payload: entry }); else store.projectTimeline(entry);
+  }
+  beforeStop?.(store);
   store.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }); store.markDispatching(ticket.initialOperationId); store.recordOperation(ticket.initialOperationId, "unknown");
   store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
   await completeFixtureStop(journalPath, ticket);
@@ -198,4 +204,137 @@ test("a batch committed before connection shutdown failure retains its committed
   expect(f.read().batch).toEqual({ value: expect.any(String) });
   const permit = acquireControllerStoragePermit(f.journalPath);
   permit.release();
+});
+
+const legacyPending = async (f: Awaited<ReturnType<typeof fixture>>): Promise<StoppedSourceTail> => {
+  let original!: StoppedSourceTail;
+  await expect(replayStoppedControllerHistory({ ...f, send: async batch => { original = batch; throw new Error("lost"); } })).rejects.toThrow("lost");
+  const legacy = { ...original, events: original.events.map(parseSourceEvent) };
+  expect(JSON.stringify(legacy)).not.toBe(JSON.stringify(original));
+  const db = new Database(f.journalPath);
+  try { db.prepare("UPDATE image_runtime_state SET value=? WHERE key='stopped_source_tail'").run(JSON.stringify(legacy)); } finally { db.close(); }
+  return legacy;
+};
+const conflictError = () => new ArchiveRequestError(409, "session_conflict");
+
+test("legacy wire reorder replays the original before recovery and reconciles the identical recovery after a lost response", async () => {
+  const f = await fixture(), legacy = await legacyPending(f); let sentRecovery!: StoppedSourceRecovery;
+  await expect(replayStoppedControllerHistory({ ...f,
+    send: async batch => { expect(batch).toEqual(legacy); throw conflictError(); },
+    recover: async batch => { sentRecovery = batch; throw new Error("lost recovery receipt"); },
+  })).rejects.toThrow("lost recovery receipt");
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 });
+  await replayStoppedControllerHistory({ ...f,
+    send: async () => { throw new Error("must reconcile recovery first"); },
+    recover: async batch => { expect(batch).toEqual(sentRecovery); return { sourceEpoch: batch.sourceEpoch, recoveryId: batch.recoveryId, verifiedThrough: batch.events.at(-1)!.sourceSeq, currentThrough: "3" }; },
+  });
+  expect(f.read().state).toMatchObject({ last_acknowledged: 3 }); expect(f.read().outbox).toEqual({ total: 0 });
+});
+
+test("a concurrent original batch settles both states only after its exact receipt", async () => {
+  const f = await fixture(), legacy = await legacyPending(f); let calls = 0;
+  await replayStoppedControllerHistory({ ...f,
+    send: async batch => {
+      expect(batch).toEqual(legacy);
+      if (++calls === 1) throw conflictError();
+      const db = new Database(f.journalPath, { readonly: true });
+      try { expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_recovery'").get()).toBeDefined(); } finally { db.close(); }
+      return acknowledged(batch);
+    },
+    recover: async () => { throw conflictError(); },
+  });
+  expect(calls).toBe(2); expect(f.read().outbox).toEqual({ total: 0 });
+  const db = new Database(f.journalPath, { readonly: true });
+  try { expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_recovery'").get()).toBeUndefined(); } finally { db.close(); }
+});
+
+test("an ahead checkpoint settles only the verified original batch", async () => {
+  const f = await fixture(101); let calls = 0;
+  await replayStoppedControllerHistory({ ...f, send: async batch => {
+    calls++;
+    if (calls === 2) { expect(f.read().state).toMatchObject({ last_acknowledged: 100 }); expect(f.read().outbox).toEqual({ total: 1 }); }
+    return { ...acknowledged(batch), lastAckedSourceSeq: "101" };
+  } });
+  expect(calls).toBe(2); expect(f.read().state).toMatchObject({ last_acknowledged: 101 });
+});
+
+test("a recovery checkpoint beyond cutoff keeps the original pending and all source events", async () => {
+  const f = await fixture(); await legacyPending(f);
+  await expect(replayStoppedControllerHistory({ ...f, send: async () => { throw conflictError(); }, recover: async batch => ({ sourceEpoch: batch.sourceEpoch, recoveryId: batch.recoveryId, verifiedThrough: batch.events.at(-1)!.sourceSeq, currentThrough: "4" }) })).rejects.toThrow("acknowledgement");
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 }); expect(f.read().batch).toBeDefined();
+});
+
+test("non-conflict original failure never starts recovery", async () => {
+  const f = await fixture(); await legacyPending(f); const recover = vi.fn();
+  await expect(replayStoppedControllerHistory({ ...f, send: async () => { throw new ArchiveRequestError(503, "unavailable"); }, recover })).rejects.toMatchObject({ status: 503 });
+  expect(recover).not.toHaveBeenCalled(); expect(f.read().outbox).toEqual({ total: 3 });
+});
+
+test("legacy recovery persists each bounded prefix and keeps the full outbox across restart", async () => {
+  const f = await fixture(2, "x".repeat(1_048_180)); const legacy = await legacyPending(f);
+  expect(legacy.events).toHaveLength(2);
+  let second!: StoppedSourceRecovery, calls = 0;
+  await expect(replayStoppedControllerHistory({ ...f, send: async () => { throw conflictError(); }, recover: async batch => {
+    calls++; expect(batch.events).toHaveLength(1);
+    expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 2 });
+    if (calls === 2) { second = batch; throw new Error("lost second receipt"); }
+    return { sourceEpoch: batch.sourceEpoch, recoveryId: batch.recoveryId, verifiedThrough: batch.events.at(-1)!.sourceSeq, currentThrough: "2" };
+  } })).rejects.toThrow("lost second receipt");
+  await replayStoppedControllerHistory({ ...f, send: async () => { throw new Error("must not switch back to old batch"); }, recover: async batch => {
+    expect(batch).toEqual(second); expect(f.read().outbox).toEqual({ total: 2 });
+    return { sourceEpoch: batch.sourceEpoch, recoveryId: batch.recoveryId, verifiedThrough: batch.events.at(-1)!.sourceSeq, currentThrough: "2" };
+  } });
+  expect(f.read().state).toMatchObject({ last_acknowledged: 2 }); expect(f.read().outbox).toEqual({ total: 0 });
+});
+
+test("a tracked, never-sent tail can replay its original outbox against an older service", async () => {
+  const text = "\u2028".repeat(300_000), f = await fixture(1, text, false, undefined, true);
+  await replayStoppedControllerHistory({ ...f, send: async batch => {
+    const event = batch.events[0]!;
+    expect(event.kind).toBe("timeline_upsert");
+    expect(event).toMatchObject({ kind: "timeline_upsert", payload: { kind: "assistant_message", content: [{ type: "text", text }] } });
+    return acknowledged(batch);
+  } });
+  expect(f.read().state).toMatchObject({ last_acknowledged: 1 });
+});
+
+test("a frozen live display projection is used again by stopped replay", async () => {
+  const text = "\u2028".repeat(300_000); let live!: import("../../../src/session/controller-protocol.js").SourceEvent;
+  const f = await fixture(1, text, false, store => {
+    const row = store.pendingEvents(1)[0]!;
+    live = store.bindSourceWire({ ...(row.payload as object), sourceSeq: row.sequence } as import("../../../src/session/controller-protocol.js").SourceEvent, true);
+    expect(live).toMatchObject({ kind: "timeline_upsert", payload: { kind: "error", code: "display_budget_exceeded" } });
+  }, true);
+  await replayStoppedControllerHistory({ ...f, send: async batch => { expect(batch.events[0]).toEqual(live); return acknowledged(batch); } });
+  expect(f.read().outbox).toEqual({ total: 0 });
+});
+
+test("old projection without proof replays the old batch but cannot start recovery", async () => {
+  const f = await fixture(1, "\u2028".repeat(300_000), false, undefined, true), legacy = await legacyPending(f);
+  const db = new Database(f.journalPath); try { db.prepare("DELETE FROM image_runtime_state WHERE key='source_wire_tracking'").run(); } finally { db.close(); }
+  const recover = vi.fn();
+  await expect(replayStoppedControllerHistory({ ...f, send: async batch => { expect(batch).toEqual(legacy); throw conflictError(); }, recover })).rejects.toMatchObject({ status: 409, code: "session_conflict" });
+  expect(recover).not.toHaveBeenCalled(); expect(f.read().outbox).toEqual({ total: 1 }); expect(f.read().batch).toBeDefined();
+});
+
+test("a late original receipt cannot clear a batch already settled by recovery", async () => {
+  const f = await fixture(), legacy = await legacyPending(f);
+  let release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const late = replayStoppedControllerHistory({ ...f, send: async batch => { expect(batch).toEqual(legacy); entered(); await waiting; return acknowledged(batch); } });
+  await started;
+  await replayStoppedControllerHistory({ ...f, send: async () => { throw conflictError(); }, recover: async batch => ({ sourceEpoch: batch.sourceEpoch, recoveryId: batch.recoveryId, verifiedThrough: batch.events.at(-1)!.sourceSeq, currentThrough: "3" }) });
+  release();
+  await expect(late).rejects.toThrow("batch changed");
+  expect(f.read().state).toMatchObject({ last_acknowledged: 3 }); expect(f.read().outbox).toEqual({ total: 0 });
+});
+
+test("an unavailable old Server retains and reuses the same recovery request without inferring its outcome", async () => {
+  const f = await fixture(), legacy = await legacyPending(f); let saved!: StoppedSourceRecovery;
+  const unavailable = new ArchiveRequestError(404, "not_found");
+  await expect(replayStoppedControllerHistory({ ...f, send: async batch => { expect(batch).toEqual(legacy); throw conflictError(); }, recover: async batch => { saved = batch; throw unavailable; } })).rejects.toBe(unavailable);
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 }); expect(f.read().batch).toEqual({ value: JSON.stringify(legacy) });
+  await expect(replayStoppedControllerHistory({ ...f, send: async () => { throw new Error("must reconcile recovery first"); }, recover: async batch => { expect(batch).toEqual(saved); throw unavailable; } })).rejects.toBe(unavailable);
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 }); expect(f.read().outbox).toEqual({ total: 3 });
 });

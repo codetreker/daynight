@@ -14,8 +14,9 @@ import (
 
 type sourceCheckpointDAO struct {
 	*imageRuleDAO
-	hashes map[string][]byte
-	fail   bool
+	hashes     map[string][]byte
+	fail       bool
+	recoveries map[string]store.SessionSourceRecovery
 }
 
 func (d *sourceCheckpointDAO) key(h store.SessionSourceHash) string {
@@ -42,6 +43,23 @@ func (d *sourceCheckpointDAO) SaveSessionSourceHash(_ context.Context, h store.S
 		return conflict()
 	}
 	d.hashes[d.key(h)] = append([]byte(nil), h.Digest...)
+	return nil
+}
+func (d *sourceCheckpointDAO) SessionSourceRecovery(_ context.Context, session, id string) (store.SessionSourceRecovery, error) {
+	out, ok := d.recoveries[session+"/"+id]
+	if !ok {
+		return out, model.ErrNotFound
+	}
+	return out, nil
+}
+func (d *sourceCheckpointDAO) SessionSourceRecoveryCount(context.Context, string) (int, error) {
+	return len(d.recoveries), nil
+}
+func (d *sourceCheckpointDAO) SaveSessionSourceRecovery(_ context.Context, h store.SessionSourceRecovery) error {
+	if d.recoveries == nil {
+		d.recoveries = make(map[string]store.SessionSourceRecovery)
+	}
+	d.recoveries[h.SessionID+"/"+h.RecoveryID] = h
 	return nil
 }
 func stoppedCheckpointFixture(t *testing.T) (imageRuleFixture, *sourceCheckpointDAO, sp.ArchiveSourceTailRequest) {

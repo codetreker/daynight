@@ -14,6 +14,7 @@ vi.mock("ws", () => ({ default: class extends EventEmitter {
   close() { this.readyState = 3; this.emit("close"); }
   terminate() { this.close(); }
 } }));
+import { sessionDisplayEntry } from "../../../src/commands/controller/wire-display.js";
 import { createControllerRelay, publicOperation } from "../../../src/commands/controller/relay.js";
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { ImageReleaseStorageError } from "../../../src/commands/controller/media/release-error.js";
@@ -26,7 +27,7 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
   const ticket = { ...snapshot.identity, ...snapshot, provider: "codex", controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, executionId: randomUUID(), credentialFile: "/private/grant", serverOrigin: "http://127.0.0.1:19000" } as unknown as ControllerLaunchTicket;
   files.lstat.mockResolvedValue({ isFile: () => true, isSymbolicLink: () => false, size: 100, mode: 0o600 });
   files.readFile.mockResolvedValue(JSON.stringify({ token: "private-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }));
-  const journal = { bindOnlineMode: vi.fn(), acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", getLastSourceSequence: () => "8", hasImageHistoryCheckpoint: () => true, pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
+  const journal = { bindSourceWire: (event: import("../../../src/session/controller-protocol.js").SourceEvent, live: boolean) => live && event.kind === "timeline_upsert" ? { ...event, payload: sessionDisplayEntry(event.payload) } : event, bindOnlineMode: vi.fn(), acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", getLastSourceSequence: () => "8", hasImageHistoryCheckpoint: () => true, pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
   let activeMediaBlocks = 0;
   const tryAcquireMediaBlock = () => {
     if (activeMediaBlocks === 2) return null;

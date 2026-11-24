@@ -48,7 +48,7 @@ func TestProducerRoutesClassifyActualRegistrations(t *testing.T) {
 		add("PUT "+archive, producer)
 		add(archive, fallback)
 		add("HEAD "+archive, fallback)
-		for _, suffix := range []string{"/prepare", "/source-tail", "/seal", "/prepare/history/{fileId}/complete", "/prepare/history/{fileId}/restart", "/files/{fileId}/complete", "/files/{fileId}/restart"} {
+		for _, suffix := range []string{"/prepare", "/source-tail", "/source-tail/recover", "/seal", "/prepare/history/{fileId}/complete", "/prepare/history/{fileId}/restart", "/files/{fileId}/complete", "/files/{fileId}/restart"} {
 			add("POST "+archive+suffix, producer)
 		}
 		for _, suffix := range []string{"/content", "/prepare/history/{fileId}", "/files/{fileId}"} {
