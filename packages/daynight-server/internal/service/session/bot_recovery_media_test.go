@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -143,9 +144,10 @@ func TestBotRecoveryEntrypointsStopAfterUnconfirmedMediaRecovery(t *testing.T) {
 }
 
 func TestBotRecoveryEntrypointsReapOrphanMediaAndPreserveLiveOwners(t *testing.T) {
+	db := newServiceStore(t)
 	for _, takeover := range []bool{false, true} {
 		for _, live := range []bool{false, true} {
-			t.Run(map[bool]string{false: "grant", true: "takeover"}[takeover]+"/"+map[bool]string{false: "orphan", true: "live"}[live], func(t *testing.T) {
+			if !t.Run(map[bool]string{false: "grant", true: "takeover"}[takeover]+"/"+map[bool]string{false: "orphan", true: "live"}[live], func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 				defer cancel()
 				files, err := local.New(t.TempDir())
@@ -157,7 +159,7 @@ func TestBotRecoveryEntrypointsReapOrphanMediaAndPreserveLiveOwners(t *testing.T
 						t.Error(err)
 					}
 				})
-				f, registered := serviceBoundBot(t, newServiceFixture(t), files)
+				f, registered := serviceBoundBot(t, newServiceFixtureWithStore(t, db), files)
 				f.service.SetOrigin("https://recovery.example")
 				v := registered.Session
 				native := "original-native"
@@ -189,7 +191,8 @@ func TestBotRecoveryEntrypointsReapOrphanMediaAndPreserveLiveOwners(t *testing.T
 					t.Fatal(err)
 				}
 				previous := v.ExecutionGeneration
-				input := core.BotRecoveryGrant{BotRecoveryIdentity: identity, BotRecoveryBinding: binding, OperationID: uuid.NewString(), ExpectedHostingGeneration: 1, ControllerToken: "dncontroller_" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)), Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", PreviousGeneration: &previous, Kind: "reconnect", StopProof: &sp.StopProof{RecordID: v.SessionID, PreviousControllerInstanceID: v.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
+				controllerToken := sha256.Sum256([]byte(uuid.NewString()))
+				input := core.BotRecoveryGrant{BotRecoveryIdentity: identity, BotRecoveryBinding: binding, OperationID: uuid.NewString(), ExpectedHostingGeneration: 1, ControllerToken: "dncontroller_" + base64.RawURLEncoding.EncodeToString(controllerToken[:]), Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", PreviousGeneration: &previous, Kind: "reconnect", StopProof: &sp.StopProof{RecordID: v.SessionID, PreviousControllerInstanceID: v.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
 				run := f.service.GrantBotRecovery
 				if takeover {
 					run = f.service.TakeoverBot
@@ -224,7 +227,14 @@ func TestBotRecoveryEntrypointsReapOrphanMediaAndPreserveLiveOwners(t *testing.T
 				if err = f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_resource_leases WHERE session_id=$1),s.snapshot->>'executionGeneration',b.identity->'fence'->>'executionGeneration',b.identity->>'controllerInstanceId' FROM task_sessions s JOIN session_archive_bundles b ON b.session_id=s.id WHERE s.id=$1`, v.SessionID).Scan(&leases, &generation, &archiveGeneration, &controller); err != nil || leases != 0 || generation != "2" || archiveGeneration != "2" || controller != input.Grant.ControllerInstanceID {
 					t.Fatal("media cleanup and history handoff were not durable", leases, generation, archiveGeneration, controller, err)
 				}
-			})
+			}) {
+				t.FailNow()
+			}
+			// Recovery scans all leases in the schema, including other Sessions.
+			var remaining int
+			if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM session_resource_leases`).Scan(&remaining); err != nil || remaining != 0 {
+				t.Fatalf("leases remain before fixture reuse: %d %v", remaining, err)
+			}
 		}
 	}
 }
