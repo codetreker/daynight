@@ -39,6 +39,21 @@ test('PR CI uses four Go package slots with race disabled and propagates coverag
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
 });
 
+test('PR preparation failures prevent the covered invocation', async (t) => {
+  for (const [extra, expected] of [
+    [{ CONTRACT_EXIT: '17' }, 17],
+    [{ PREP_EXIT: '21' }, 21],
+    [{ TESTAUTH_EXIT: '22' }, 22],
+    [{ MISSING_FIXTURE: '1' }, 1],
+  ] as const) {
+    const { result, trace } = await runValidation(t, 'check', 'true', {
+      GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/42/merge', ...extra,
+    });
+    assert.equal(result.status, expected, result.stderr);
+    assert.doesNotMatch(trace, /(?:^|\n)go-cov |node scripts\/coverage.mts/);
+  }
+});
+
 test('module check propagates fixture and covered test failures', async (t) => {
   const fixtureFailure = await runValidation(t, 'check', undefined, { TESTAUTH_EXIT: '22' });
   assert.equal(fixtureFailure.result.status, 22);

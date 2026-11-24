@@ -3108,6 +3108,10 @@ database, and PostgreSQL keeps its transaction and sync settings. Local,
 main, and lifecycle coverage validation keep package concurrency at two; the
 ordinary command vet uses four in PR CI. Both
 coverage entries clear cached test results before running.
+In PR CI the module entry runs its Node tool tests alongside UniAuth fixture
+preparation and the explicit `testauth` check. Both stages must succeed and
+the fixture must be available before cache cleanup and module coverage begin.
+Local and main validation prepare these stages sequentially.
 The [module throughput decision](../../.agents/notes/implemented/testing/2026-11-24-go-module-ci-throughput.md)
 records the resource and vet boundaries.
 
