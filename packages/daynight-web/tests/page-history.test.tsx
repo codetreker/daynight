@@ -36,6 +36,21 @@ it('restores retired tabs in all nested history selections without changing atta
   expect(() => readResourceHistory(invalid, user, project, root)).toThrow();
 });
 
+it('retains the subtask tab and selected attachment in project, personal and nested resource history', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const navigation = { tab: 'subtasks', path: 'docs/result.md' } as const;
+  const nested = { graphRootId: child, task: { id: child, navigation } };
+  const detail = { id: root, navigation, goalChildren: nested };
+  const projectSelection = { section: 'tasks', view: 'goals', projectGraphWitness: null, detail: { ...detail, source: 'direct', insideProjectGraph: false } } as const;
+  const personal = { projectPages: {}, detail: { ...detail, projectId: project } };
+  const resource = { goalChildren: nested, externalGoal: { ...detail, witness: child } };
+  expect(readProjectHistory(projectHistory(user, project, projectSelection), user, project)).toEqual(projectSelection);
+  expect(readMyTasksHistory(myTasksHistory(user, personal), user)).toEqual(personal);
+  expect(readResourceHistory(resourceHistory(user, project, root, resource), user, project, root)).toEqual(resource);
+});
+
 describe('standalone resource reading history', () => {
   const project = '10000000-0000-4000-8000-000000000001';
   const root = '20000000-0000-4000-8000-000000000001';

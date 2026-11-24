@@ -99,7 +99,7 @@
 .task-detail-panel { flex: 1; min-height: 0; min-width: 0; }
 .task-detail-panel[hidden] { display: none; }
 .task-detail-panel-overview { overflow: auto; overscroll-behavior: contain; }
-.task-detail-panel-usage { overflow: auto; overscroll-behavior: contain; padding: 25px 30px 30px; }
+.task-detail-panel-usage, .task-detail-panel-subtasks { overflow: auto; overscroll-behavior: contain; padding: 25px 30px 30px; }
 .task-detail-panel-attachments { display: flex; overflow: hidden; padding: 24px 30px 30px; }
 .task-detail-body:focus-visible { outline: 3px solid var(--task-focus); outline-offset: -3px; }
 .task-detail-heading { padding: 14px 30px 0; flex: 0 1 auto; min-height: 0; min-width: 0; max-height: min(50%, max(32px, calc(100% - 120px))); overflow: auto; overscroll-behavior: contain; }
@@ -254,7 +254,7 @@
   .task-detail-aside { margin-top: 24px; }
   .task-detail-tabs { padding: 0 19px; flex-wrap: wrap; column-gap: 16px; row-gap: 0; }
   .task-detail-panel-attachments { padding: 14px 12px 16px; }
-  .task-detail-panel-usage { padding: 20px 19px 24px; }
+  .task-detail-panel-usage, .task-detail-panel-subtasks { padding: 20px 19px 24px; }
 }
 
 @media (max-height: 500px) {

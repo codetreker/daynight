@@ -173,6 +173,7 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
     expect(listed.headers()['daynight-user-id']).toBe(identity.id);
     const children = await listed.json() as { items: Task[] };
     expect(children.items).toMatchObject([{ id: child, parentTaskId: parent }]);
+    await newPage.getByRole('tab', { name: 'Subtasks', exact: true }).click();
     await expect(newPage.getByRole('region', { name: 'Subtasks' })).toContainText('Mixed child');
     await newPage.close();
     await verifyOldWorker({ entry: compat.oldCliEntry, token: oldToken, server: topology.baseURL, command: args => command('old', args) });
@@ -259,6 +260,7 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
     const newPage = await context.newPage();
     await newPage.setExtraHTTPHeaders({ 'x-daynight-e2e-web': 'candidate' });
     await newPage.goto(`${topology.baseURL}/projects/${projectId}/tasks/${standalone}`);
+    await newPage.getByRole('tab', { name: 'Subtasks', exact: true }).click();
     await expect(newPage.getByText('This server does not support ordinary Task relationships.')).toBeVisible();
     await newPage.close();
   }

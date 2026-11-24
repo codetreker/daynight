@@ -1,6 +1,6 @@
 import { canonicalId } from '../api/validation';
 import { isAttachmentPath } from '../api/parse';
-import type { TaskDetailNavigation } from './router';
+import { isTaskDetailTab, type TaskDetailNavigation } from './router';
 import type { ProjectSection, TaskView } from '../features/projects/useProjectViewPreferences';
 
 export type WorkerSection = 'overview' | 'system' | 'configuration' | 'prompt';
@@ -35,7 +35,7 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const validId = (value: unknown): value is string => typeof value === 'string' && canonicalId(value) === value;
 const validNavigation = (value: unknown): value is TaskDetailNavigation => record(value) && exact(value, ['tab', 'path']) &&
-  (value.tab === 'description' || value.tab === 'overview' || value.tab === 'steps' || value.tab === 'attachments' || value.tab === 'discussion' || value.tab === 'session' || value.tab === 'usage') &&
+  (value.tab === 'steps' || isTaskDetailTab(value.tab)) &&
   (value.path === null || typeof value.path === 'string' && isAttachmentPath(value.path));
 const validResource = (value: unknown): value is ResourceReading => record(value) && exact(value, ['id', 'navigation']) && validId(value.id) && validNavigation(value.navigation);
 const validChildren = (value: unknown): value is GoalChildren => record(value) && exact(value, ['graphRootId', 'task']) &&

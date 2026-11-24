@@ -67,6 +67,7 @@ async function install(page: Page, timing = false, completion = false, title = '
       const known = [...details.flatMap(detail => detail.tags), { id: '00000000-0000-4000-8000-000000000099', name: 'Draft label' }];
       return send({ items: known.filter(tag => ids.includes(tag.id)) });
     }
+    if (path === `/api/v1/projects/${projectId}/tasks` && request.method() === 'GET') return send({ items: details.filter(detail => detail.parentTaskId === url.searchParams.get('parentTaskId')), nextCursor: null }, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, tagsForTask: row => details.find(detail => detail.id === row.id)!.tags, ...(sessionObservations ? { sessions: { [successorId]: 'notice' as const }, taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'working' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
@@ -1422,7 +1423,7 @@ test('narrow task tabs preserve reading state across dialog, fullscreen and shor
   await page.locator(`#standalone-task-${taskId}`).click();
   const dialog = page.locator('.task-detail-dialog');
   const bar = dialog.locator('.ordinary-task-tabs-wrap [role=tablist]');
-  await expect(bar.getByRole('tab')).toHaveCount(6);
+  await expect(bar.getByRole('tab')).toHaveCount(7);
   await expect(dialog.getByRole('button', { name: 'Dismiss notification' })).toHaveCount(2);
   await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
   await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
@@ -1472,7 +1473,7 @@ test('narrow task tabs preserve reading state across dialog, fullscreen and shor
   await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
   await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
   const pageBar = page.locator('.task-detail-page .ordinary-task-tabs-wrap [role=tablist]');
-  await expect(pageBar.getByRole('tab')).toHaveCount(6);
+  await expect(pageBar.getByRole('tab')).toHaveCount(7);
   await expect.poll(() => pageBar.evaluate(element => {
     const box = element.getBoundingClientRect();
     const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
@@ -1776,3 +1777,61 @@ test('Task parent Goal link uses the information content size', async ({ page })
   }
   await expect(link).toHaveAttribute('href', new RegExp(`/tasks/${goalId}`));
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
+  test(`subtask reading follows tabs and browser history at ${width}px in ${locale}`, async ({ page }, info) => {
+    const title = 'Long parent task 长标题 '.repeat(5);
+    const parent = detailFixture(projectId, taskId, { title, version: 5n, parentTaskId: null });
+    const child = detailFixture(projectId, successorId, { title: 'Child task', version: 5n, parentTaskId: taskId });
+    const state = await install(page, false, false, 'unused', [parent, child], false, true);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    const overview = locale === 'en' ? 'Overview' : '概览';
+    const subtasks = locale === 'en' ? 'Subtasks' : '子任务';
+    const attachments = locale === 'en' ? 'Attachments' : '附件';
+    const tabs = dialog.locator('[role=tablist]');
+    await expect(tabs.getByRole('tab').nth(0)).toHaveText(overview);
+    await expect(tabs.getByRole('tab').nth(1)).toHaveText(subtasks);
+    await expect(tabs.getByRole('tab', { name: overview, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(dialog.locator('.task-detail-panel-overview .ordinary-task-relations')).toHaveCount(0);
+    await tabs.getByRole('tab', { name: overview, exact: true }).press('ArrowRight');
+    await expect(tabs.getByRole('tab', { name: subtasks, exact: true })).toBeFocused();
+    await expect(tabs.getByRole('tab', { name: subtasks, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(dialog.getByRole('region', { name: subtasks })).toContainText('Child task');
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await expect(dialog.getByRole('region', { name: subtasks })).toContainText('Child task');
+    expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await info.attach('subtask-dialog', { body: await page.screenshot(), contentType: 'image/png' });
+    await dialog.getByRole('button', { name: locale === 'en' ? 'More task actions' : '更多任务操作' }).click();
+    const popout = dialog.getByRole('menuitem', { name: locale === 'en' ? 'Open in new tab' : '在新标签页打开' });
+    await expect(popout).toHaveAttribute('href', new RegExp(`/tasks/${taskId}\\?tab=subtasks$`));
+    const [reader] = await Promise.all([page.context().waitForEvent('page'), popout.click()]);
+    const surface = reader.locator('.task-detail-page');
+    await expect(surface.getByRole('tab', { name: subtasks, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(surface.getByRole('region', { name: subtasks })).toContainText('Child task');
+    await reader.reload();
+    await expect(surface.getByRole('tab', { name: subtasks, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await surface.getByRole('tab', { name: attachments, exact: true }).click();
+    await surface.getByRole('button', { name: /^reading\.txt/ }).click();
+    await surface.getByRole('tab', { name: subtasks, exact: true }).click();
+    await expect(reader).toHaveURL(new RegExp(`/attachments/reading.txt\\?tab=subtasks$`));
+    await reader.goBack();
+    await expect(surface.getByRole('tab', { name: attachments, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(surface.locator('.attachment-file-selected')).toContainText('reading.txt');
+    await reader.goForward();
+    await expect(surface.getByRole('tab', { name: subtasks, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await surface.getByRole('link', { name: 'Child task' }).click();
+    await expect(reader).toHaveURL(new RegExp(`/tasks/${successorId}$`));
+    await reader.goBack();
+    await expect(surface.getByRole('tab', { name: subtasks, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(surface.getByRole('region', { name: subtasks })).toContainText('Child task');
+    expect(await reader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(state.writes).toEqual([]);
+    await reader.close();
+  });
+}
