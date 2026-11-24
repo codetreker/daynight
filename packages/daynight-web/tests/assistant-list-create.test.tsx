@@ -151,11 +151,11 @@ it('keeps per-Bot availability and machine facts independent of creation-default
   expect(row).toHaveTextContent('Abnormal');
   expect(row).toHaveTextContent('Machine 20');
   expect(row).not.toHaveTextContent('Worker offline');
-  expect(row).not.toHaveTextContent('Observation out of date');
+  expect(row).not.toHaveTextContent('Expired');
   await waitFor(() => expect(refresh).toBeEnabled());
   defaultsFailed = false; observationFailed = true;
   fireEvent.click(refresh);
-  await waitFor(() => expect(row).toHaveTextContent('Observation out of date'));
+  await waitFor(() => expect(row).toHaveTextContent('Expired'));
   expect(row).toHaveTextContent('Machine 20');
   expect(row.querySelector('time')).toHaveAttribute('dateTime', botObservation().observedAt);
   expect(row).not.toHaveTextContent('Abnormal');
