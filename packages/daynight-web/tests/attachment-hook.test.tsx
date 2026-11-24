@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider";
-import { createTaskSessionWorld } from "./helpers/taskSessions";
+import { admitTaskGraph, createTaskSessionWorld } from "./helpers/taskSessions";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
 import { taskSyncFromGraph } from "./helpers/taskSync";
 import { describe, expect, it, vi } from "vitest";
@@ -427,5 +427,50 @@ it("preserves a selected iframe and pending attachment write when a full rebuild
     expect(await view.result.current.put(document.path, new File(["again"], "index.html"))).toBe(false);
     await act(async () => { held.resolve(document); expect(await write).toBe(true); });
     expect(transport.put).toHaveBeenCalledOnce();
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it.each(['put', 'remove'].flatMap(operation => ['success', 'failure'].map(outcome => ({ operation, outcome }))))('releases a retired $operation attachment owner after history replacement without losing a newer write on old $outcome', async ({ operation, outcome }) => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task);
+  await world.sync([target]);
+  const transport = api();
+  const oldPut = deferred<Attachment>(), newPut = deferred<Attachment>();
+  const oldRemove = deferred<void>(), newRemove = deferred<void>();
+  if (operation === 'put') transport.put.mockReturnValueOnce(oldPut.promise).mockReturnValueOnce(newPut.promise);
+  else transport.remove.mockReturnValueOnce(oldRemove.promise).mockReturnValueOnce(newRemove.promise);
+  const writeApi = operation === 'put' ? transport.put : transport.remove;
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  const write = () => operation === 'put' ? view.result.current.put(a.path, new File(['changed'], 'a.md')) : view.result.current.remove(a.path);
+  try {
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    let oldResult!: Promise<boolean>; act(() => { oldResult = write(); });
+    await waitFor(() => expect(writeApi).toHaveBeenCalledOnce());
+    const oldSignal = operation === 'put' ? transport.put.mock.calls[0]![4] : transport.remove.mock.calls[0]![3];
+    const replacement = { ...target, title: 'Restored task', version: 3n };
+    await act(async () => { await admitTaskGraph(world.scope, graphFixture([replacement]), { epoch: crypto.randomUUID(), versionForTask: () => replacement.version, propertiesForTask: () => replacement.properties }); });
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    expect(oldSignal.aborted).toBe(true);
+    expect(view.result.current.write.status).toBe('idle');
+    let newResult!: Promise<boolean>; act(() => { newResult = write(); });
+    await waitFor(() => expect(writeApi).toHaveBeenCalledTimes(2));
+    const newSignal = operation === 'put' ? transport.put.mock.calls[1]![4] : transport.remove.mock.calls[1]![3];
+    await act(async () => {
+      if (outcome === 'failure') (operation === 'put' ? oldPut : oldRemove).reject(new Error('Retired attachment response lost'));
+      else if (operation === 'put') oldPut.resolve(a);
+      else oldRemove.resolve();
+      expect(await oldResult).toBe(false);
+    });
+    expect(view.result.current.write.status).toBe(operation === 'put' ? 'saving' : 'deleting');
+    expect(newSignal.aborted).toBe(false);
+    expect(await write()).toBe(false);
+    expect(writeApi).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      if (operation === 'put') newPut.resolve(a);
+      else newRemove.resolve();
+      expect(await newResult).toBe(true);
+    });
+    expect(view.result.current.write).toMatchObject({ status: 'idle', error: null });
   } finally { view.unmount(); world.dispose(); }
 });

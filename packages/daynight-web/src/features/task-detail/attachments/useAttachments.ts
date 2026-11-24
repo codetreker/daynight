@@ -80,6 +80,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
       if (removed || historyChanged) {
         writeRequest.current?.abort(); ++writeGeneration.current;
+        writeRequest.current = null;
         setWrite({ scope, status: "idle", error: null });
       }
       if (removed) setWithdrawn(true);
@@ -285,7 +286,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       setWrite({ scope, status: "idle", error: isAbortError(error) ? null : error });
       return false;
     } finally {
-      if (generation === writeGeneration.current) writeRequest.current = null;
+      if (writeRequest.current === controller) writeRequest.current = null;
     }
   }, [api, projectId, taskId, scope, reload, enabled, cache, beginRead, verifyRead, reportDeleted]);
   const put = useCallback((path: string, file: File) => mutate(path, file), [mutate]);
