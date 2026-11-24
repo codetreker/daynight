@@ -61,13 +61,13 @@ it.skipIf(process.platform === "win32").each([false, true])("Worker delivers rec
   const identity = { serverOrigin: source.ticket.serverOrigin, userId: source.ticket.userId!, workerId: source.ticket.workerId! };
   const workerLifecycle = openLifecycleStore({ file: path.join(workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
   try {
-  const lifecycleBinding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
+  const lifecycleBinding: LifecycleBinding = { ...identity, instanceId: randomUUID(), intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
   workerLifecycle.bindInstance({ ...lifecycleBinding, desired: "enabled" });
   workerLifecycle.markStopped({ localEpoch: "1", inventoryRevision: workerLifecycle.readState().inventoryRevision });
   const activation = { binding: lifecycleBinding, operationId: randomUUID(), action: "bootstrap" as const };
   workerLifecycle.prepareActivation(activation);
   workerLifecycle.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId,
-    operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
+    operationId: activation.operationId, instanceId: lifecycleBinding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
   const firstTicket = { ...source.ticket, schemaVersion: 2 as const, lifecycleBinding };
   await writeLaunchTicket(f.home, firstTicket);
   source.saved.mockRestore();

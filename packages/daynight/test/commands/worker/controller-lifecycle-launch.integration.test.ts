@@ -58,10 +58,10 @@ const fixture = async () => {
   const worker = resolveWorkerPaths(homeDirectory).workerDirectory; await mkdir(worker, { recursive: true, mode: 0o700 });
   const identity = { serverOrigin: "https://daynight.example", userId: randomUUID(), workerId: randomUUID() };
   const file = path.join(worker, "lifecycle.sqlite"), store = openLifecycleStore({ file, identity, allowCreate: true }); stores.push(store);
-  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
+  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
   store.bindInstance({ ...binding, desired: "enabled" }); store.markStopped({ localEpoch: "1", inventoryRevision: store.readState().inventoryRevision });
   const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
-  store.prepareActivation(activation); store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId, workerId: identity.workerId, instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" } });
+  store.prepareActivation(activation); store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId, workerId: identity.workerId, instanceId: binding.instanceId, localEpoch: "1", intentVersion: "1", scopeGeneration: "1" } });
   const marker = path.join(homeDirectory, "user-code-started"), packageDirectory = path.join(homeDirectory, "package");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   await writeFile(path.join(packageDirectory, "dist", "main.js"), `import { writeFileSync } from 'node:fs';writeFileSync(${JSON.stringify(marker)},'started');setInterval(()=>{},1000);`);

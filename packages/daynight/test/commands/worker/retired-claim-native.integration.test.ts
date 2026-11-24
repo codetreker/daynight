@@ -50,14 +50,14 @@ const fixture = async () => {
   };
   const lifecycle = (active = false) => {
     const store = openLifecycleStore({ file: lifecycleFile, identity, allowCreate: true }); stores.push(store);
-    const instanceId = randomUUID(), state = store.bindInstance({ instanceId, instanceEpoch: "1", intentVersion: "1", desired: active ? "enabled" : "disabled" });
-    const binding: LifecycleBinding = { ...identity, instanceId, instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    const instanceId = randomUUID(), state = store.bindInstance({ instanceId, intentVersion: "1", desired: active ? "enabled" : "disabled" });
+    const binding: LifecycleBinding = { ...identity, instanceId, intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
     if (active) {
       store.markStopped({ localEpoch: binding.localEpoch, inventoryRevision: store.readState().inventoryRevision });
       const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
       store.prepareActivation(activation);
       store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId,
-        workerId: binding.workerId, instanceEpoch: binding.instanceEpoch, localEpoch: binding.localEpoch, intentVersion: binding.intentVersion, scopeGeneration: binding.scopeGeneration } });
+        workerId: binding.workerId, instanceId: binding.instanceId, localEpoch: binding.localEpoch, intentVersion: binding.intentVersion, scopeGeneration: binding.scopeGeneration } });
     }
     return { store, binding };
   };

@@ -56,7 +56,7 @@ const fixture = async (options: { identityMissing?: boolean; stopping?: boolean;
     try { worker.adoptLifecycle(identity); } finally { worker.close(); }
     const lifecycle = openLifecycleStore({ file, identity, allowCreate: true });
     try {
-      lifecycle.bindInstance({ instanceId: id(7), instanceEpoch: "1", intentVersion: "2", desired: "disabled" });
+      lifecycle.bindInstance({ instanceId: id(7), intentVersion: "2", desired: "disabled" });
       lifecycle.closeAdmission({ operationId: id(20), local: true });
       if (!options.stopping) {
         const snapshot = lifecycle.snapshot();
@@ -73,15 +73,14 @@ const fixture = async (options: { identityMissing?: boolean; stopping?: boolean;
 
 const controlledCloud = () => {
   let cloud: LifecycleResource = { protocolVersion: 1, workerId: identity.workerId, intentVersion: "2", desired: "disabled",
-    admission: "closed", operationId: id(21), instance: { instanceId: id(7), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+    admission: "closed", operationId: id(21), instance: { instanceId: id(7) }, capability: "supported", observation: null, observedAt: time };
   const api: WorkerLifecycleClient = {
     read: vi.fn(async () => structuredClone(cloud)),
     register: vi.fn(async (request: LifecycleInstanceRequest) => {
-      expect(request.previousInstanceEpoch).toBe("1");
       const receipt = { protocolVersion: 1 as const, workerId: identity.workerId, operationId: request.operationId,
-        instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "2", desired: "disabled" as const,
+        instanceId: request.instanceId, intentVersion: "2", desired: "disabled" as const,
         admission: "closed" as const, reconnectAllowed: false, observedAt: time };
-      cloud = { ...cloud, instance: { instanceId: receipt.instanceId, instanceEpoch: receipt.instanceEpoch } };
+      cloud = { ...cloud, instance: { instanceId: receipt.instanceId } };
       return receipt;
     }),
     report: vi.fn(async (envelope: LifecycleObservationEnvelope) => {
@@ -89,7 +88,7 @@ const controlledCloud = () => {
       expect(envelope.operationId).toBe(cloud.operationId);
       expect(envelope.instanceId).toBe(cloud.instance?.instanceId);
       expect(envelope.observation.phase).toBe("disabled");
-      return { protocolVersion: 1 as const, accepted: true as const, instanceEpoch: envelope.instanceEpoch,
+      return { protocolVersion: 1 as const, accepted: true as const, instanceId: envelope.instanceId,
         intentVersion: envelope.intentVersion, reportSequence: envelope.reportSequence, receivedAt: time };
     }),
     intent: mocks.business, activate: mocks.business, operation: mocks.business, resolve: mocks.business,
@@ -273,7 +272,7 @@ it.skipIf(process.platform === "win32").each(["previous", "adopted", "retry"] as
   const store = openLifecycleStore({ file: f.file, identity, allowCreate: false });
   try {
     const state = store.readState();
-    const binding = { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    const binding = { ...identity, instanceId: state.instanceId!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
     const first: ControllerLaunchTicket = { schemaVersion: 2, lifecycleBinding: binding, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(),
       controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", ...identity, projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID(),
       provider: "codex", cwd: f.homeDirectory, nativeHome: path.join(f.homeDirectory, "native"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 },

@@ -115,11 +115,19 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 ## Contracts
 
 The [Worker lifecycle contract](../../docs/spec/worker-lifecycle.md) and
-[design](../../docs/design/worker-lifecycle.md) define persistent stop intent,
-instance and observation fencing, explicit activation and original-operation
-resolution. The independent resource preserves legacy report/configuration
-shapes; Task, Bot and Session execution admission obeys its established gate.
-Server receipts do not prove that native Worker processes have stopped.
+[design](../../docs/design/worker-lifecycle.md) define the independent Worker
+management resource. Registration establishes the current instance UUID.
+Resume, activation and observations use that UUID for instance fencing. An
+enabled Worker can reconnect after a new registration if its previous admission
+was open or already eligible for reconnect. Explicit disable closes admission
+and requires the explicit resume flow. Task, Bot and Session execution use the
+same admission gate. Server receipts give no evidence that native Worker
+processes stopped.
+
+Migration 125 converts persisted lifecycle requests, receipts and observations
+to the UUID contract and recomputes affected operation hashes in the same
+transaction. Drain and stop servers using the previous contract before this
+migration, and use matching Worker and Web clients after upgrading.
 
 The [Worker review participation resource](../../docs/design/worker-review-participation.md)
 provides an account-owned GET/PUT preference at

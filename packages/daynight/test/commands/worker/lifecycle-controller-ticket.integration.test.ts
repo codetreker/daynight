@@ -29,13 +29,13 @@ const fixture = async (privateBotRoot: boolean) => {
   if (process.platform !== "win32") await chmod(paths.workerDirectory, 0o700);
   const identity = { serverOrigin: "https://daynight.example", userId: randomUUID(), workerId: randomUUID() };
   const store = openLifecycleStore({ file: path.join(paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true }); stores.push(store);
-  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
+  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), localEpoch: "1", intentVersion: "1", scopeGeneration: "1" };
   store.bindInstance({ ...binding, desired: "enabled" });
   store.markStopped({ localEpoch: "1", inventoryRevision: store.readState().inventoryRevision, owners: [] });
   const activation = { binding, action: "bootstrap" as const, operationId: randomUUID() };
   store.prepareActivation(activation);
   store.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", operationId: activation.operationId,
-    workerId: identity.workerId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
+    workerId: identity.workerId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
   const bot = resolveBotPaths(paths.stateDirectory, randomUUID()), storageRoot = privateBotRoot ? bot.controllerStateDirectory : undefined;
   const executionId = randomUUID(), launchId = randomUUID(), execution = controllerExecutionDirectory(home, executionId, storageRoot);
   const common = { schemaVersion: 2 as const, lifecycleBinding: binding, launchId, executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(),

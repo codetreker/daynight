@@ -1,6 +1,6 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, type ControllerLaunchTicket } from "../controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, projectControllerLifecycleBinding, readLaunchTicket, type ControllerLaunchTicket } from "../controller/launch-ticket.js";
 import { resolveControllerStateDirectory } from "../controller/paths.js";
 import type { ProcessProof } from "../controller/process-proof.js";
 import type { LifecycleIdentity, LifecycleResource } from "./lifecycle-store.js";
@@ -23,7 +23,7 @@ export const readLifecycleControllerLocation = async (homeDirectory: string, own
   if (identity.journalFile !== path.join(controllerExecutionDirectory(homeDirectory, identity.executionId, root), "journal.sqlite")) return unavailable();
   const ticket = await readLaunchTicket(homeDirectory, identity.launchId, root), binding = ticket.lifecycleBinding;
   if (binding === undefined || binding.serverOrigin !== owner.serverOrigin || binding.userId !== owner.userId || binding.workerId !== owner.workerId
-    || binding.instanceId !== resource.instanceId || binding.instanceEpoch !== resource.instanceEpoch || binding.scopeGeneration !== resource.scopeGeneration
+    || binding.instanceId !== resource.instanceId || binding.scopeGeneration !== resource.scopeGeneration
     || ticket.executionId !== identity.executionId || ticket.sessionId !== identity.sessionId || ticket.executionGeneration !== identity.executionGeneration
     || ticket.controllerInstanceId !== identity.controllerInstanceId || ticket.serverOrigin !== owner.serverOrigin
     || identity.controllerId !== undefined && identity.controllerId !== ticket.controllerId
@@ -44,11 +44,11 @@ export const hasLifecycleUnreleasedControllerGateProof = (ticket: ControllerLaun
   return resource.ownerKind === "controller" && resource.identity.kind === "launch" && resource.stage === "stopped" && resource.saveState === "durable"
     && ticket.lifecycleBinding !== undefined && saved !== null && typeof saved === "object" && !Array.isArray(saved)
     && resource.resourceId === ticket.launchId && resource.operationId === ticket.launchId
-    && resource.instanceId === ticket.lifecycleBinding.instanceId && resource.instanceEpoch === ticket.lifecycleBinding.instanceEpoch
+    && resource.instanceId === ticket.lifecycleBinding.instanceId
     && resource.scopeGeneration === ticket.lifecycleBinding.scopeGeneration
     && Object.keys(saved).sort().join() === "binding,boundaryEmpty,controllerInstanceId,gateReleased,kind,launchId,originalProcessProof,pid"
     && saved.kind === "controller_unreleased_gate" && saved.launchId === ticket.launchId && saved.controllerInstanceId === ticket.controllerInstanceId
     && saved.pid === process.pid && saved.gateReleased === false && saved.boundaryEmpty === true
-    && isDeepStrictEqual(saved.binding, ticket.lifecycleBinding) && isDeepStrictEqual(saved.originalProcessProof, process)
+    && isDeepStrictEqual(saved.binding, projectControllerLifecycleBinding(ticket.lifecycleBinding)) && isDeepStrictEqual(saved.originalProcessProof, process)
     && isDeepStrictEqual(resource.processProof, process);
 };

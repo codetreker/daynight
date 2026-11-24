@@ -30,10 +30,10 @@ const sortedArray = <T extends { resourceId: string }>(parse: Parser<T>): Parser
   return result;
 };
 
-export const parseLifecycleInstanceRequest = object({ ...requestBase, instanceId: lifecycleId, previousInstanceEpoch: nullable(lifecycleVersion), capabilities: object({ disable: literal(true), resume: literal(true), inventory: literal(1), dispatchFence: literal(1) }), platform: choice("windows", "linux", "macos") });
+export const parseLifecycleInstanceRequest = object({ ...requestBase, instanceId: lifecycleId, capabilities: object({ disable: literal(true), resume: literal(true), inventory: literal(1), dispatchFence: literal(1) }), platform: choice("windows", "linux", "macos") });
 export type LifecycleInstanceRequest = ReturnType<typeof parseLifecycleInstanceRequest>;
 const parseDisableRequest = object({ ...requestBase, action: literal("disable"), expectedVersion: lifecycleVersion, source: choice("web", "local"), localEpoch: nullable(lifecycleVersion), originOperationId: nullable(lifecycleId) });
-const parseResumeRequest = object({ ...requestBase, action: literal("resume"), expectedVersion: lifecycleVersion, source: choice("web", "local"), localEpoch: lifecycleVersion, instanceEpoch: lifecycleVersion });
+const parseResumeRequest = object({ ...requestBase, action: literal("resume"), expectedVersion: lifecycleVersion, source: choice("web", "local"), localEpoch: lifecycleVersion, instanceId: lifecycleId });
 export type LifecycleIntentRequest = ReturnType<typeof parseDisableRequest> | ReturnType<typeof parseResumeRequest>;
 export const parseLifecycleIntentRequest = (value: unknown): LifecycleIntentRequest => {
   if (record(value).action === "resume") return parseResumeRequest(value);
@@ -41,7 +41,7 @@ export const parseLifecycleIntentRequest = (value: unknown): LifecycleIntentRequ
   if (result.source === "web" ? result.localEpoch !== null || result.originOperationId !== null : result.localEpoch === null || result.originOperationId === null) return malformed();
   return result;
 };
-const activationFields = { ...requestBase, instanceId: lifecycleId, instanceEpoch: lifecycleVersion, intentVersion: lifecycleVersion, localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, reportSequence: lifecycleVersion };
+const activationFields = { ...requestBase, instanceId: lifecycleId, intentVersion: lifecycleVersion, localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, reportSequence: lifecycleVersion };
 const parseResumeActivation = object(activationFields);
 const parseInternalActivation = object({ ...activationFields, action: choice("bootstrap", "reconnect") });
 export type LifecycleActivationRequest = ReturnType<typeof parseResumeActivation> | ReturnType<typeof parseInternalActivation>;
@@ -74,7 +74,7 @@ const validateObservation = <T extends LifecycleObservation>(result: T): T => {
   return result;
 };
 export const parseLifecycleObservation = (value: unknown): LifecycleObservation => validateObservation(parseObservationShape(value));
-const envelopeFields = { protocolVersion, instanceId: lifecycleId, instanceEpoch: lifecycleVersion, intentVersion: lifecycleVersion, operationId: nullable(lifecycleId), localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, reportSequence: lifecycleVersion };
+const envelopeFields = { protocolVersion, instanceId: lifecycleId, intentVersion: lifecycleVersion, operationId: nullable(lifecycleId), localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, reportSequence: lifecycleVersion };
 const parseEnvelopeShape = object({ ...envelopeFields, observation: parseLifecycleObservation });
 export type LifecycleObservationEnvelope = ReturnType<typeof parseEnvelopeShape>;
 export const parseLifecycleObservationEnvelope = (value: unknown): LifecycleObservationEnvelope => {
@@ -89,21 +89,21 @@ const parseObservedEnvelope = object({ ...envelopeFields, observation: (value: u
   return result;
 } });
 export type LifecycleObservedEnvelope = ReturnType<typeof parseObservedEnvelope>;
-const parseLifecycleResourceShape = object({ protocolVersion, workerId: lifecycleId, intentVersion: lifecycleVersion, desired, admission: choice("open", "closed"), operationId: nullable(lifecycleId), instance: nullable(object({ instanceId: lifecycleId, instanceEpoch: lifecycleVersion })), capability: choice("supported", "unsupported"), observation: nullable(parseObservedEnvelope), observedAt: timestamp });
+const parseLifecycleResourceShape = object({ protocolVersion, workerId: lifecycleId, intentVersion: lifecycleVersion, desired, admission: choice("open", "closed"), operationId: nullable(lifecycleId), instance: nullable(object({ instanceId: lifecycleId })), capability: choice("supported", "unsupported"), observation: nullable(parseObservedEnvelope), observedAt: timestamp });
 export type LifecycleResource = ReturnType<typeof parseLifecycleResourceShape>;
 export const parseLifecycleResource = (value: unknown): LifecycleResource => {
   const result = parseLifecycleResourceShape(value);
   if (result.admission === "open" && result.desired !== "enabled") return malformed();
-  if (result.observation !== null && (result.instance === null || result.observation.instanceId !== result.instance.instanceId || result.observation.instanceEpoch !== result.instance.instanceEpoch || result.observation.intentVersion !== result.intentVersion)) return malformed();
+  if (result.observation !== null && (result.instance === null || result.observation.instanceId !== result.instance.instanceId || result.observation.intentVersion !== result.intentVersion)) return malformed();
   return result;
 };
-export const parseLifecycleInstanceReceipt = object({ ...receiptBase, instanceId: lifecycleId, instanceEpoch: lifecycleVersion, intentVersion: lifecycleVersion, desired, admission: literal("closed"), reconnectAllowed: bool });
+export const parseLifecycleInstanceReceipt = object({ ...receiptBase, instanceId: lifecycleId, intentVersion: lifecycleVersion, desired, admission: literal("closed"), reconnectAllowed: bool });
 export type LifecycleInstanceReceipt = ReturnType<typeof parseLifecycleInstanceReceipt>;
 export const parseLifecycleIntentReceipt = object({ ...receiptBase, action: choice("disable", "resume"), intentVersion: lifecycleVersion, desired, admission: literal("closed"), state: choice("accepted", "applied", "blocked", "superseded"), errorCode: diagnostic });
 export type LifecycleIntentReceipt = ReturnType<typeof parseLifecycleIntentReceipt>;
-export const parseLifecycleActivationReceipt = object({ ...receiptBase, action: choice("resume", "bootstrap", "reconnect"), instanceEpoch: lifecycleVersion, intentVersion: lifecycleVersion, localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, admission: literal("open") });
+export const parseLifecycleActivationReceipt = object({ ...receiptBase, action: choice("resume", "bootstrap", "reconnect"), instanceId: lifecycleId, intentVersion: lifecycleVersion, localEpoch: lifecycleVersion, scopeGeneration: lifecycleVersion, admission: literal("open") });
 export type LifecycleActivationReceipt = ReturnType<typeof parseLifecycleActivationReceipt>;
-export const parseLifecycleObservationReceipt = object({ protocolVersion, accepted: literal(true), intentVersion: lifecycleVersion, instanceEpoch: lifecycleVersion, reportSequence: lifecycleVersion, receivedAt: timestamp });
+export const parseLifecycleObservationReceipt = object({ protocolVersion, accepted: literal(true), intentVersion: lifecycleVersion, instanceId: lifecycleId, reportSequence: lifecycleVersion, receivedAt: timestamp });
 export type LifecycleObservationReceipt = ReturnType<typeof parseLifecycleObservationReceipt>;
 export const parseLifecycleResolutionReceipt = object({ ...receiptBase, requestKind: choice("instance", "intent", "activation"), requestHash: digest, outcome: literal("not_committed") });
 export type LifecycleResolutionReceipt = ReturnType<typeof parseLifecycleResolutionReceipt>;

@@ -104,7 +104,7 @@ func (d *lifecycleDAOTest) DeleteObservation(ctx context.Context, u, w string) e
 	return d.clear()
 }
 func lifecycleState() model.WorkerLifecycle {
-	return model.WorkerLifecycle{UserID: lifecycleUser, WorkerID: lifecycleWorker, ProtocolVersion: 1, IntentVersion: 1, Desired: "enabled", Admission: "closed", InstanceID: lifecyclePtr(lifecycleInstance), InstanceEpoch: 1, CapabilityVersion: lifecyclePtr(1), UpdatedAt: lifecycleNow}
+	return model.WorkerLifecycle{UserID: lifecycleUser, WorkerID: lifecycleWorker, ProtocolVersion: 1, IntentVersion: 1, Desired: "enabled", Admission: "closed", InstanceID: lifecyclePtr(lifecycleInstance), CapabilityVersion: lifecyclePtr(1), UpdatedAt: lifecycleNow}
 }
 func lifecycleInstanceRequest() model.LifecycleInstanceRequest {
 	return model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: lifecycleOp, InstanceID: lifecycleInstance, Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "macos"}
@@ -113,15 +113,15 @@ func lifecycleIntentRequest(action string) model.LifecycleIntentRequest {
 	r := model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: lifecycleOp, Action: action, ExpectedVersion: "1", Source: "web"}
 	if action == "resume" {
 		r.LocalEpoch = lifecyclePtr("2")
-		r.InstanceEpoch = lifecyclePtr("1")
+		r.InstanceID = lifecyclePtr(lifecycleInstance)
 	}
 	return r
 }
 func lifecycleActivationRequest(action string) model.LifecycleActivationRequest {
-	return model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: lifecycleOp, Action: action, InstanceID: lifecycleInstance, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "4"}
+	return model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: lifecycleOp, Action: action, InstanceID: lifecycleInstance, IntentVersion: "1", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "4"}
 }
 func lifecycleObservation(phase string) model.LifecycleStoredObservation {
-	return model.LifecycleStoredObservation{UserID: lifecycleUser, WorkerID: lifecycleWorker, ReceivedAt: lifecycleNow, Envelope: model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lifecycleInstance, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "4", Observation: model.LifecycleObservation{Phase: phase, Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "5", InventoryDigest: strings.Repeat("a", 64), ResourceCount: lifecyclePtr(int64(0)), StoppedCount: lifecyclePtr(int64(0)), PendingCount: lifecyclePtr(int64(0)), BlockedCount: lifecyclePtr(int64(0)), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}}
+	return model.LifecycleStoredObservation{UserID: lifecycleUser, WorkerID: lifecycleWorker, ReceivedAt: lifecycleNow, Envelope: model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lifecycleInstance, IntentVersion: "1", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "4", Observation: model.LifecycleObservation{Phase: phase, Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "5", InventoryDigest: strings.Repeat("a", 64), ResourceCount: lifecyclePtr(int64(0)), StoppedCount: lifecyclePtr(int64(0)), PendingCount: lifecyclePtr(int64(0)), BlockedCount: lifecyclePtr(int64(0)), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}}
 }
 func lifecycleMissingOp(string) (model.LifecycleOperation, error) {
 	return model.LifecycleOperation{}, model.ErrNotFound
@@ -157,19 +157,26 @@ func lifecycleStored(t *testing.T, kind string, request any, receipt any) model.
 }
 
 func TestLifecycleRegisterClosesAdmissionAndPreservesIntent(t *testing.T) {
-	for _, fresh := range []bool{true, false} {
-		t.Run(map[bool]string{true: "first", false: "reconnect"}[fresh], func(t *testing.T) {
+	for _, tc := range []struct {
+		name, desired, admission            string
+		fresh, previouslyAllowed, reconnect bool
+	}{
+		{name: "first", fresh: true},
+		{name: "reconnect", desired: "enabled", admission: "open", reconnect: true},
+		{name: "repeat registration", desired: "enabled", admission: "closed", previouslyAllowed: true, reconnect: true},
+		{name: "disabled", desired: "disabled", admission: "closed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			s := lifecycleState()
-			s.Desired = "enabled"
-			s.Admission = "open"
+			s.Desired, s.Admission = tc.desired, tc.admission
+			s.ReconnectAllowed = tc.previouslyAllowed
 			s.IntentVersion = 7
 			d := lifecycleNewDAO(t, s)
 			r := lifecycleInstanceRequest()
-			if fresh {
+			if tc.fresh {
 				d.state = func() (model.WorkerLifecycle, error) { return model.WorkerLifecycle{}, model.ErrNotFound }
-			} else {
-				r.PreviousInstanceEpoch = lifecyclePtr("1")
 			}
+			r.InstanceID = lifecycleWorker
 			var written model.WorkerLifecycle
 			var operation model.LifecycleOperation
 			cleared := 0
@@ -180,7 +187,7 @@ func TestLifecycleRegisterClosesAdmissionAndPreservesIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if written.Admission != "closed" || written.IntentVersion != map[bool]int64{true: 1, false: 7}[fresh] || written.InstanceEpoch != map[bool]int64{true: 1, false: 2}[fresh] || got.ReconnectAllowed == fresh || cleared != 1 || operation.OperationID != lifecycleOp {
+			if written.Admission != "closed" || written.IntentVersion != map[bool]int64{true: 1, false: 7}[tc.fresh] || written.InstanceID == nil || *written.InstanceID != r.InstanceID || got.InstanceID != r.InstanceID || written.ReconnectAllowed != tc.reconnect || got.ReconnectAllowed != tc.reconnect || cleared != 1 || operation.OperationID != lifecycleOp {
 				t.Fatalf("wrong registration %+v %+v %+v", written, got, operation)
 			}
 			// The original receipt is returned before reading current authority again.
@@ -189,23 +196,6 @@ func TestLifecycleRegisterClosesAdmissionAndPreservesIntent(t *testing.T) {
 			if e != nil || same != got {
 				t.Fatalf("replay %+v %v", same, e)
 			}
-		})
-	}
-}
-func TestLifecycleRegisterRefusals(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		s    model.WorkerLifecycle
-		r    model.LifecycleInstanceRequest
-		code string
-	}{{"stale", lifecycleState(), lifecycleInstanceRequest(), "stale_instance"}, {"overflow", func() model.WorkerLifecycle { s := lifecycleState(); s.InstanceEpoch = math.MaxInt64; return s }(), func() model.LifecycleInstanceRequest {
-		r := lifecycleInstanceRequest()
-		r.PreviousInstanceEpoch = lifecyclePtr("9223372036854775807")
-		return r
-	}(), "lifecycle_unavailable"}} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := LifecycleRegister(context.Background(), lifecycleNewDAO(t, tc.s), lifecycleUser, lifecycleWorker, tc.r, lifecycleNow)
-			lifecycleWantCode(t, err, tc.code)
 		})
 	}
 }
@@ -263,7 +253,7 @@ func TestLifecycleResumeRequiresFreshCompleteDisabledObservation(t *testing.T) {
 			r.ExpectedVersion = "9223372036854775807"
 		}},
 		{"instance", "stale_instance", func(s *model.WorkerLifecycle, o *model.LifecycleStoredObservation, r *model.LifecycleIntentRequest) {
-			r.InstanceEpoch = lifecyclePtr("2")
+			r.InstanceID = lifecyclePtr(lifecycleOp)
 		}},
 		{"stale", "stale_report", func(s *model.WorkerLifecycle, o *model.LifecycleStoredObservation, r *model.LifecycleIntentRequest) {
 			o.ReceivedAt = o.ReceivedAt.Add(-30 * time.Second)
@@ -345,7 +335,7 @@ func TestLifecycleActivationSafetyFences(t *testing.T) {
 		change     func(*model.WorkerLifecycle, *model.LifecycleStoredObservation, *model.LifecycleActivationRequest)
 	}{
 		{"instance", "stale_instance", func(s *model.WorkerLifecycle, o *model.LifecycleStoredObservation, r *model.LifecycleActivationRequest) {
-			r.InstanceEpoch = "2"
+			r.InstanceID = lifecycleOp
 		}},
 		{"intent", "stale_intent", func(s *model.WorkerLifecycle, o *model.LifecycleStoredObservation, r *model.LifecycleActivationRequest) {
 			s.IntentVersion = 2
@@ -492,7 +482,7 @@ func TestLifecycleObservationUpdatesIntentAndResourceRead(t *testing.T) {
 			}
 			d.observation = func() (model.LifecycleStoredObservation, error) { return r, nil }
 			got, e := LifecycleGet(context.Background(), d, lifecycleUser, lifecycleWorker, lifecycleNow.Add(time.Second))
-			if e != nil || got.Observation == nil || got.Observation.Observation.FreshUntil != lifecycleNow.Add(30*time.Second) || got.Instance.InstanceEpoch != "1" {
+			if e != nil || got.Observation == nil || got.Observation.Observation.FreshUntil != lifecycleNow.Add(30*time.Second) || got.Instance == nil || got.Instance.InstanceID != lifecycleInstance {
 				t.Fatalf("resource %+v %v", got, e)
 			}
 		})
@@ -529,7 +519,6 @@ func TestLifecycleStorageFailuresStopAtFailingBoundary(t *testing.T) {
 	}{
 		{name: "register", steps: 6, state: lifecycleState(), run: func(d *lifecycleDAOTest) error {
 			r := lifecycleInstanceRequest()
-			r.PreviousInstanceEpoch = lifecyclePtr("1")
 			_, e := LifecycleRegister(context.Background(), d, lifecycleUser, lifecycleWorker, r, lifecycleNow)
 			return e
 		}},
@@ -730,7 +719,7 @@ func TestLifecycleObservationFencesAndOperationFailures(t *testing.T) {
 		name, code string
 		change     func(*model.WorkerLifecycle, *model.LifecycleObservationEnvelope)
 	}{
-		{"instance", "stale_instance", func(s *model.WorkerLifecycle, r *model.LifecycleObservationEnvelope) { r.InstanceEpoch = "2" }},
+		{"instance", "stale_instance", func(s *model.WorkerLifecycle, r *model.LifecycleObservationEnvelope) { r.InstanceID = lifecycleOp }},
 		{"intent", "stale_intent", func(s *model.WorkerLifecycle, r *model.LifecycleObservationEnvelope) { r.IntentVersion = "2" }},
 		{"accepting-closed", "safety_blocked", func(s *model.WorkerLifecycle, r *model.LifecycleObservationEnvelope) {
 			r.Observation.Phase = "accepting"

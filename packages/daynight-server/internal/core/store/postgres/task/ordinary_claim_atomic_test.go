@@ -31,7 +31,7 @@ func TestOrdinaryCompletionAndDeletionSerializeWithWorkerClaim(t *testing.T) {
 				testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET status='todo',assigned_to=$1,allow_agents=true WHERE id=$2`, f.principal.UserID, root)
 				workerID := uuid.NewString()
 				testutil.PutWorkerSnapshot(t, f.db, testutil.WorkerSnapshotFixture(f.principal.UserID, workerID, time.Now().UTC()))
-				testutil.MustExec(t, f.db.Pool, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at) VALUES($1,$2,1,1,'enabled','open',0,now())`, f.principal.UserID, workerID)
+				testutil.MustExec(t, f.db.Pool, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,updated_at) VALUES($1,$2,1,1,'enabled','open',now())`, f.principal.UserID, workerID)
 				descriptor := taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: workerID, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString()}
 				first := &claimCancelBarrier{Store: f.db, ready: make(chan error, 1), release: make(chan struct{})}
 				second := &claimCancelBarrier{Store: f.db, ready: make(chan error, 1), release: make(chan struct{}), before: true}

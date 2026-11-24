@@ -8,13 +8,13 @@ const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() };
 const signal = () => new AbortController().signal;
 const request: LifecycleIntentRequest = { protocolVersion: 1, operationId: operation, action: 'disable', expectedVersion: '1', source: 'web', localEpoch: null, originOperationId: null };
 const receipt = () => ({ protocolVersion: 1, workerId: worker, operationId: operation, action: 'disable', intentVersion: '2', desired: 'disabled', admission: 'closed', state: 'accepted', errorCode: null, observedAt: WORKER_TIME });
-const observation = () => ({ protocolVersion: 1, instanceId: instance, instanceEpoch: '1', intentVersion: '2', operationId: operation, localEpoch: '3', scopeGeneration: '2', reportSequence: '4', observation: {
+const observation = () => ({ protocolVersion: 1, instanceId: instance, intentVersion: '2', operationId: operation, localEpoch: '3', scopeGeneration: '2', reportSequence: '4', observation: {
   phase: 'disabled', stop: 'confirmed', save: 'durable', sync: 'pending', inventoryComplete: true, detailsComplete: true, inventoryRevision: '1', inventoryDigest: 'a'.repeat(64),
   resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [] as unknown[], recovery: [] as unknown[], errorCode: null,
   receivedAt: WORKER_TIME, freshUntil: '2026-10-29T12:01:00Z',
 } });
 const resource = () => ({ protocolVersion: 1, workerId: worker, intentVersion: '2', desired: 'disabled', admission: 'closed', operationId: operation,
-  instance: { instanceId: instance, instanceEpoch: '1' }, capability: 'supported', observation: observation(), observedAt: WORKER_TIME });
+  instance: { instanceId: instance }, capability: 'supported', observation: observation(), observedAt: WORKER_TIME });
 const response = (value: unknown, status = 200) => { const result = workerResponse(value, WORKER_USER, status); result.headers.set(WORKER_LIFECYCLE_HEADER, '1'); return result; };
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
@@ -62,14 +62,14 @@ describe('Worker lifecycle v1 parsing', () => {
     }
   });
   it('parses every discriminated result and checks activation identities', () => {
-    const activation = { protocolVersion: 1, workerId: worker, operationId: operation, action: 'resume', instanceEpoch: '1', intentVersion: '2', localEpoch: '3', scopeGeneration: '2', admission: 'open', observedAt: WORKER_TIME };
+    const activation = { protocolVersion: 1, workerId: worker, operationId: operation, action: 'resume', instanceId: instance, intentVersion: '2', localEpoch: '3', scopeGeneration: '2', admission: 'open', observedAt: WORKER_TIME };
     const resume = { ...receipt(), action: 'resume', desired: 'enabled' };
     const values = [
       { kind: 'intent', receipt: receipt(), activation: null, activationOutcome: 'not_started' },
       { kind: 'intent', receipt: resume, activation, activationOutcome: 'committed' },
       { kind: 'intent', receipt: resume, activation: null, activationOutcome: 'not_committed' },
       { kind: 'activation', receipt: activation },
-      { kind: 'instance', receipt: { protocolVersion: 1, workerId: worker, operationId: operation, instanceId: instance, instanceEpoch: '1', intentVersion: '2', desired: 'enabled', admission: 'closed', reconnectAllowed: false, observedAt: WORKER_TIME } },
+      { kind: 'instance', receipt: { protocolVersion: 1, workerId: worker, operationId: operation, instanceId: instance, intentVersion: '2', desired: 'enabled', admission: 'closed', reconnectAllowed: false, observedAt: WORKER_TIME } },
       { kind: 'not_committed', receipt: { protocolVersion: 1, workerId: worker, operationId: operation, requestKind: 'intent', requestHash: 'a'.repeat(64), outcome: 'not_committed', observedAt: WORKER_TIME } },
     ];
     for (const value of values) expect(parseLifecycleOperationResult(value, worker, operation)).toEqual(value);
@@ -77,8 +77,9 @@ describe('Worker lifecycle v1 parsing', () => {
   });
   it('validates exact Web intent variants before network dispatch', () => {
     expect(parseLifecycleIntentRequest(request)).toEqual(request);
-    expect(parseLifecycleIntentRequest({ protocolVersion: 1, operationId: operation, action: 'resume', expectedVersion: '2', source: 'web', localEpoch: '3', instanceEpoch: '1' })).toMatchObject({ action: 'resume', localEpoch: '3' });
-    for (const value of [{ ...request, source: 'local' }, { ...request, localEpoch: '1' }, { ...request, instanceEpoch: '1' }, { ...request, action: 'resume' }, { ...request, expectedVersion: '0' }]) expect(() => parseLifecycleIntentRequest(value)).toThrow();
+    const resume = { protocolVersion: 1, operationId: operation, action: 'resume', expectedVersion: '2', source: 'web', localEpoch: '3', instanceId: instance };
+    expect(parseLifecycleIntentRequest(resume)).toEqual(resume);
+    for (const value of [{ ...request, source: 'local' }, { ...request, localEpoch: '1' }, { ...request, instanceId: instance }, { ...request, action: 'resume' }, { ...resume, instanceId: '1' }, { ...request, expectedVersion: '0' }]) expect(() => parseLifecycleIntentRequest(value)).toThrow();
   });
 });
 

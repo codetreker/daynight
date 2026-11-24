@@ -32,7 +32,7 @@ const fixture = () => {
 };
 const binding = (store: LifecycleStore): LifecycleBinding => {
   const state = store.readState();
-  return { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, localEpoch: state.localEpoch, intentVersion: state.intentVersion!, scopeGeneration: state.scopeGeneration };
+  return { ...identity, instanceId: state.instanceId!, localEpoch: state.localEpoch, intentVersion: state.intentVersion!, scopeGeneration: state.scopeGeneration };
 };
 const ready = (store: LifecycleStore): void => {
   const current = store.snapshot(); store.markStopped({ localEpoch: current.state.localEpoch, inventoryRevision: current.inventoryRevision, owners: [] });
@@ -41,11 +41,11 @@ const activate = (store: LifecycleStore, action: LifecycleActivation["action"] =
   const frozen = binding(store), generation = action === "bootstrap" ? frozen.scopeGeneration : String(BigInt(frozen.scopeGeneration) + 1n);
   const activation = { binding: { ...frozen, scopeGeneration: generation }, operationId, action };
   store.prepareActivation(activation);
-  store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action, admission: "open", operationId, workerId: identity.workerId, instanceEpoch: frozen.instanceEpoch, localEpoch: frozen.localEpoch, intentVersion: frozen.intentVersion, scopeGeneration: generation } });
+  store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action, admission: "open", operationId, workerId: identity.workerId, instanceId: frozen.instanceId, localEpoch: frozen.localEpoch, intentVersion: frozen.intentVersion, scopeGeneration: generation } });
   return activation.binding;
 };
 const enabled = () => {
-  const f = fixture(); f.store.bindInstance({ instanceId: id(3), instanceEpoch: "1", intentVersion: "1", desired: "enabled" }); ready(f.store);
+  const f = fixture(); f.store.bindInstance({ instanceId: id(3), intentVersion: "1", desired: "enabled" }); ready(f.store);
   return { ...f, binding: activate(f.store) };
 };
 const reserve = (store: LifecycleStore, frozen: LifecycleBinding, resourceId = id(10)) => store.reserveExecution({ binding: frozen, resourceId, operationId: resourceId, ownerKind: "controller", identity: { sessionId: id(4), operationId: resourceId } });
@@ -66,7 +66,7 @@ describe("persistent Worker lifecycle authority", () => {
     expect(() => f.store.reserveCleanupCommand({ binding: f.binding, task, resourceId: id(24) })).toThrow("binding is stale");
     expect(() => reserve(f.store, current, id(24))).toThrow(LifecycleAdmissionError);
     const resource = f.store.reserveCleanupCommand({ binding: current, task, resourceId: id(24) });
-    expect(resource).toMatchObject({ instanceId: f.binding.instanceId, instanceEpoch: f.binding.instanceEpoch, scopeGeneration: f.binding.scopeGeneration, stage: "reserved", identity: { kind: "cleanup_command", ...task } });
+    expect(resource).toMatchObject({ instanceId: f.binding.instanceId, scopeGeneration: f.binding.scopeGeneration, stage: "reserved", identity: { kind: "cleanup_command", ...task } });
     expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, desired: "disabled" });
     expect(f.store.snapshot().counts.pending).toBe(1);
     f.store.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: 3 }, saveState: "durable" });
@@ -102,7 +102,7 @@ describe("persistent Worker lifecycle authority", () => {
   it("clears recovered management transport errors only under the original binding", () => {
     const f = enabled(); f.store.markManagementFailure();
     expect(f.store.readState().errorCode).toBe("authority_unavailable");
-    expect(() => f.store.confirmManagementAuthority({ ...f.binding, instanceEpoch: "2" })).toThrow("binding is stale");
+    expect(() => f.store.confirmManagementAuthority({ ...f.binding, instanceId: id(7) })).toThrow("binding is stale");
     expect(f.store.readState().errorCode).toBe("authority_unavailable");
     f.store.confirmManagementAuthority(f.binding);
     expect(f.store.readState()).toMatchObject({ errorCode: null, admission: "closed" });
@@ -158,11 +158,11 @@ describe("persistent Worker lifecycle authority", () => {
     const activation = { binding: { ...binding(f.store), scopeGeneration: "2" }, operationId: id(21), action: "resume" as const };
     f.store.prepareActivation(activation);
     f.store.closeAdmission({ operationId: id(22), local: true });
-    expect(() => f.store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "resume", admission: "open", operationId: id(21), workerId: id(2), instanceEpoch: "1", intentVersion: "3", localEpoch: "2", scopeGeneration: "2" } })).toThrow("binding is stale");
+    expect(() => f.store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "resume", admission: "open", operationId: id(21), workerId: id(2), instanceId: id(3), intentVersion: "3", localEpoch: "2", scopeGeneration: "2" } })).toThrow("binding is stale");
     expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, localEpoch: "3" });
   });
 
-  it("requires the exact activation receipt and reopens only its prepared epoch", () => {
+  it("requires the exact activation receipt and reopens only its prepared local epoch", () => {
     const f = enabled(); f.store.closeAdmission({ operationId: id(20), local: true }); ready(f.store);
     f.store.observeAuthority({ intentVersion: "3", desired: "enabled", admission: "closed" });
     ready(f.store);
@@ -178,9 +178,9 @@ describe("persistent Worker lifecycle authority", () => {
     expect(() => f.store.assertAdmission(f.binding)).toThrow(LifecycleAdmissionError);
     close(f.store); const reopened = open(f.file);
     expect(reopened.readState()).toMatchObject({ admission: "closed", phase: "accepting", localVeto: false, bootstrapConsumed: true, activation: { action: "bootstrap" } });
-    reopened.bindInstance({ instanceId: id(7), instanceEpoch: "2", intentVersion: "1", desired: "enabled" }); ready(reopened);
+    reopened.bindInstance({ instanceId: id(7), intentVersion: "1", desired: "enabled" }); ready(reopened);
     activate(reopened, "reconnect", id(8));
-    expect(reopened.readState()).toMatchObject({ admission: "open", scopeGeneration: "2", instanceEpoch: "2" });
+    expect(reopened.readState()).toMatchObject({ admission: "open", scopeGeneration: "2", instanceId: id(7) });
     reopened.closeAdmission({ operationId: id(20), local: true });
     expect(reopened.closeForRestart()).toMatchObject({ phase: "disabling", admission: "closed", localVeto: true });
   });
@@ -190,7 +190,7 @@ describe("persistent Worker lifecycle authority", () => {
     const input = { binding: f.binding, resourceId: id(50), ownerKind: "controller" as const, identity: { sessionId: id(4) }, operationId: id(51) };
     expect(() => f.store.importResource(input)).toThrow("closed management admission");
     f.store.closeForRestart();
-    expect(f.store.importResource(input)).toMatchObject({ stage: "unknown", instanceEpoch: "1" });
+    expect(f.store.importResource(input)).toMatchObject({ stage: "unknown", instanceId: id(3) });
     expect(() => ready(f.store)).toThrow("unresolved responsibility");
     expect(() => f.store.importResource({ ...input, identity: { sessionId: id(8) } })).toThrow("original reservation");
     expect(f.store.importResource(input)).toMatchObject({ stage: "unknown" });
@@ -223,18 +223,18 @@ describe("persistent Worker lifecycle authority", () => {
 
   it("uses exact integers above JavaScript's safe range and rejects overflow", () => {
     const f = fixture();
-    f.store.bindInstance({ instanceId: id(3), instanceEpoch: "9007199254740993", intentVersion: "9007199254740995", desired: "enabled" });
-    expect(f.store.readState()).toMatchObject({ instanceEpoch: "9007199254740993", intentVersion: "9007199254740995" });
-    expect(() => f.store.bindInstance({ instanceId: id(4), instanceEpoch: "9223372036854775808", intentVersion: "9007199254740995", desired: "enabled" })).toThrow("int64");
+    f.store.bindInstance({ instanceId: id(3), intentVersion: "9007199254740995", desired: "enabled" });
+    expect(f.store.readState()).toMatchObject({ instanceId: id(3), intentVersion: "9007199254740995" });
+    expect(() => f.store.bindInstance({ instanceId: id(4), intentVersion: "9223372036854775808", desired: "enabled" })).toThrow("int64");
   });
 
   it("keeps immutable outbox payloads and does not let an old receipt hide newer pending reports", () => {
     const f = enabled();
-    for (const n of [1, 2]) f.store.appendOutbox({ id: id(40 + n), instanceEpoch: "1", intentVersion: "1", reportSequence: String(n), payload: { reportSequence: String(n) } });
-    const receipt = (sequence: string) => ({ protocolVersion: 1, accepted: true, instanceEpoch: "1", intentVersion: "1", reportSequence: sequence, receivedAt: "2026-11-21T00:00:00.000Z" });
+    for (const n of [1, 2]) f.store.appendOutbox({ id: id(40 + n), instanceId: id(3), intentVersion: "1", reportSequence: String(n), payload: { reportSequence: String(n) } });
+    const receipt = (sequence: string) => ({ protocolVersion: 1, accepted: true, instanceId: id(3), intentVersion: "1", reportSequence: sequence, receivedAt: "2026-11-21T00:00:00.000Z" });
     f.store.ackOutbox(id(41), "confirmed", receipt("1")); expect(f.store.readState().sync).toBe("pending");
     f.store.ackOutbox(id(42), "confirmed", receipt("2")); expect(f.store.readState().sync).toBe("complete");
-    expect(() => f.store.appendOutbox({ id: id(41), instanceEpoch: "1", intentVersion: "1", reportSequence: "1", payload: { reportSequence: "changed" } })).toThrow("frozen original report");
+    expect(() => f.store.appendOutbox({ id: id(41), instanceId: id(3), intentVersion: "1", reportSequence: "1", payload: { reportSequence: "changed" } })).toThrow("frozen original report");
     close(f.store); expect(open(f.file).listOutbox()).toHaveLength(2);
   });
 
@@ -258,21 +258,27 @@ describe("persistent Worker lifecycle authority", () => {
 
   it("retains covered reports as coverage evidence and never compresses unknown delivery", () => {
     const f = enabled();
-    for (const sequence of [1, 2, 3]) f.store.appendOutbox({ id: id(40 + sequence), instanceEpoch: "1", intentVersion: "1", reportSequence: String(sequence), payload: { sequence } });
+    for (const sequence of [1, 2, 3]) f.store.appendOutbox({ id: id(40 + sequence), instanceId: id(3), intentVersion: "1", reportSequence: String(sequence), payload: { sequence } });
     f.store.ackOutbox(id(41), "unknown"); f.store.ackOutbox(id(42), "unknown");
-    expect(() => f.store.coverOutbox(id(41), { instanceEpoch: "1", intentVersion: "1", reportSequence: "1", receivedAt: "2026-11-21T00:00:00Z" })).toThrow("does not supersede");
-    f.store.coverOutbox(id(41), { instanceEpoch: "1", intentVersion: "1", reportSequence: "3", receivedAt: "2026-11-21T00:00:00Z" });
+    expect(() => f.store.coverOutbox(id(41), { instanceId: id(3), intentVersion: "1", reportSequence: "1", receivedAt: "2026-11-21T00:00:00Z" })).toThrow("does not supersede");
+    f.store.coverOutbox(id(41), { instanceId: id(3), intentVersion: "1", reportSequence: "3", receivedAt: "2026-11-21T00:00:00Z" });
     f.store.compactHistory();
     expect(f.store.readOutboxHistory(id(41))).toMatchObject({ uploadState: "covered", reportSequence: "1", receipt: { reportSequence: "3" } });
     expect(f.store.readOutboxHistory(id(42))).toBeNull();
     expect(f.store.listOutbox().find(row => row.id === id(42))).toMatchObject({ uploadState: "unknown" });
+    f.store.bindInstance({ instanceId: id(7), intentVersion: "1", desired: "enabled" });
+    f.store.appendOutbox({ id: id(44), instanceId: id(7), intentVersion: "1", reportSequence: "1", payload: { sequence: 1 } });
+    expect(() => f.store.coverOutbox(id(44), { instanceId: id(3), intentVersion: "1", reportSequence: "3", receivedAt: "2026-11-21T00:00:00Z" })).toThrow("does not supersede");
+    f.store.coverOutbox(id(42), { instanceId: id(7), intentVersion: "1", reportSequence: null, receivedAt: "2026-11-21T00:00:00Z" });
+    expect(f.store.listOutbox().find(row => row.id === id(42))).toMatchObject({ uploadState: "covered", receipt: { instanceId: id(7) } });
+    expect(f.store.listOutbox().find(row => row.id === id(44))).toMatchObject({ uploadState: "pending" });
   });
 
   it("fails closed for mismatched identity, future format and invalid JSON", () => {
     const f = enabled();
     expect(() => openLifecycleStore({ file: f.file, identity: { ...identity, workerId: id(90) } })).toThrow("another identity");
-    const db = new Database(f.file); databases.add(db); db.pragma("user_version=2");
-    expect(() => f.store.assertAdmission(f.binding)).toThrow(); db.pragma("user_version=1");
+    const db = new Database(f.file); databases.add(db); db.pragma("user_version=3");
+    expect(() => f.store.assertAdmission(f.binding)).toThrow(); db.pragma("user_version=2");
     reserve(f.store, f.binding); db.prepare("UPDATE resource_owners SET identity_json='{}'").run();
     expect(() => f.store.snapshot()).toThrow("nonempty JSON object");
     db.close();

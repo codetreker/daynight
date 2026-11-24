@@ -35,15 +35,15 @@ const setup = () => {
   mkdirSync(paths.workerDirectory, { recursive: true, mode: 0o700 });
   const identity = { serverOrigin: f.owner.serverOrigin, userId: f.owner.ownerUserId, workerId: f.owner.workerId };
   const authority = openLifecycleStore({ file: path.join(paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-  authority.bindInstance({ instanceId: id(80), instanceEpoch: "1", intentVersion: "1", desired: "enabled" });
+  authority.bindInstance({ instanceId: id(80), intentVersion: "1", desired: "enabled" });
   const activate = (action: "bootstrap" | "resume", generation: string): LifecycleBinding => {
     const state = authority.readState();
     authority.markStopped({ localEpoch: state.localEpoch, inventoryRevision: state.inventoryRevision, owners: [] });
-    const binding = { ...identity, instanceId: id(80), instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: generation };
+    const binding = { ...identity, instanceId: id(80), intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: generation };
     const activation = { binding, action, operationId: id(action === "bootstrap" ? 81 : 82) };
     authority.prepareActivation(activation);
     authority.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action, operationId: activation.operationId,
-      workerId: identity.workerId, instanceEpoch: "1", intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration: generation } });
+      workerId: identity.workerId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration: generation } });
     return binding;
   };
   let binding = activate("bootstrap", "1");

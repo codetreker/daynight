@@ -20,7 +20,7 @@ func TestLifecycleIntentEncodingKeepsVariantNulls(t *testing.T) {
 			t.Fatal("omitted required null")
 		}
 		key := "originOperationId"
-		other := "instanceEpoch"
+		other := "instanceId"
 		if action == "resume" {
 			key, other = other, key
 		}

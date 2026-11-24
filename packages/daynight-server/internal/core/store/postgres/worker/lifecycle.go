@@ -32,10 +32,10 @@ func (d *Lifecycle) LockWorker(ctx context.Context, userID, workerID string) err
 func (d *Lifecycle) Lifecycle(ctx context.Context, userID, workerID string) (model.WorkerLifecycle, error) {
 	v := model.WorkerLifecycle{UserID: userID, WorkerID: workerID}
 	err := d.tx.QueryRow(ctx, `SELECT protocol_version,intent_version,desired,admission,current_operation_id::text,
-		instance_id::text,instance_epoch,capability_version,bootstrap_consumed,reconnect_allowed,updated_at
+		instance_id::text,capability_version,bootstrap_consumed,reconnect_allowed,updated_at
 		FROM worker_lifecycle WHERE user_id=$1 AND worker_id=$2`, userID, workerID).Scan(
 		&v.ProtocolVersion, &v.IntentVersion, &v.Desired, &v.Admission, &v.CurrentOperationID,
-		&v.InstanceID, &v.InstanceEpoch, &v.CapabilityVersion, &v.BootstrapConsumed, &v.ReconnectAllowed, &v.UpdatedAt)
+		&v.InstanceID, &v.CapabilityVersion, &v.BootstrapConsumed, &v.ReconnectAllowed, &v.UpdatedAt)
 	if err != nil {
 		return v, pg.QueryError("read worker lifecycle", err)
 	}
@@ -46,15 +46,15 @@ func (d *Lifecycle) Lifecycle(ctx context.Context, userID, workerID string) (mod
 func (d *Lifecycle) SaveLifecycle(ctx context.Context, v model.WorkerLifecycle) error {
 	_, err := d.tx.Exec(ctx, `INSERT INTO worker_lifecycle
 		(user_id,worker_id,protocol_version,intent_version,desired,admission,current_operation_id,instance_id,
-		instance_epoch,capability_version,bootstrap_consumed,reconnect_allowed,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		capability_version,bootstrap_consumed,reconnect_allowed,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (user_id,worker_id) DO UPDATE SET protocol_version=EXCLUDED.protocol_version,
 		intent_version=EXCLUDED.intent_version,desired=EXCLUDED.desired,admission=EXCLUDED.admission,
 		current_operation_id=EXCLUDED.current_operation_id,instance_id=EXCLUDED.instance_id,
-		instance_epoch=EXCLUDED.instance_epoch,capability_version=EXCLUDED.capability_version,
+		capability_version=EXCLUDED.capability_version,
 		bootstrap_consumed=EXCLUDED.bootstrap_consumed,reconnect_allowed=EXCLUDED.reconnect_allowed,updated_at=EXCLUDED.updated_at`,
 		v.UserID, v.WorkerID, v.ProtocolVersion, v.IntentVersion, v.Desired, v.Admission, v.CurrentOperationID, v.InstanceID,
-		v.InstanceEpoch, v.CapabilityVersion, v.BootstrapConsumed, v.ReconnectAllowed, v.UpdatedAt)
+		v.CapabilityVersion, v.BootstrapConsumed, v.ReconnectAllowed, v.UpdatedAt)
 	if err != nil {
 		return pg.QueryError("save worker lifecycle", err)
 	}
@@ -118,12 +118,12 @@ func (d *Lifecycle) SaveObservation(ctx context.Context, v model.LifecycleStored
 	}
 	e := v.Envelope
 	_, err = d.tx.Exec(ctx, `INSERT INTO worker_lifecycle_observations
-		(user_id,worker_id,instance_epoch,intent_version,local_epoch,scope_generation,report_sequence,observation,received_at)
-		VALUES ($1,$2,$3::text::bigint,$4::text::bigint,$5::text::bigint,$6::text::bigint,$7::text::bigint,$8,$9)
-		ON CONFLICT (user_id,worker_id) DO UPDATE SET instance_epoch=EXCLUDED.instance_epoch,intent_version=EXCLUDED.intent_version,
+		(user_id,worker_id,intent_version,local_epoch,scope_generation,report_sequence,observation,received_at)
+		VALUES ($1,$2,$3::text::bigint,$4::text::bigint,$5::text::bigint,$6::text::bigint,$7,$8)
+		ON CONFLICT (user_id,worker_id) DO UPDATE SET intent_version=EXCLUDED.intent_version,
 		local_epoch=EXCLUDED.local_epoch,scope_generation=EXCLUDED.scope_generation,report_sequence=EXCLUDED.report_sequence,
 		observation=EXCLUDED.observation,received_at=EXCLUDED.received_at`,
-		v.UserID, v.WorkerID, e.InstanceEpoch, e.IntentVersion, e.LocalEpoch, e.ScopeGeneration, e.ReportSequence, raw, v.ReceivedAt)
+		v.UserID, v.WorkerID, e.IntentVersion, e.LocalEpoch, e.ScopeGeneration, e.ReportSequence, raw, v.ReceivedAt)
 	if err != nil {
 		return pg.QueryError("save worker lifecycle observation", err)
 	}

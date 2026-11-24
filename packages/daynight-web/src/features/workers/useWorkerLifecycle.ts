@@ -53,13 +53,13 @@ const clear = (store: Store) => {
   notify(store, { journal: null, error: store.blockedStorage ? 'storage' : null });
 };
 
-/** A resource read may advance a fence, but can never publish an older intent or instance. */
+/** Server observation time orders snapshots across instance changes. Report sequences are scoped to an instance and intent. */
 export const lifecycleAdvances = (old: LifecycleResource, next: LifecycleResource): boolean => {
   if (BigInt(next.intentVersion) < BigInt(old.intentVersion)) return false;
-  if (old.instance !== null && (next.instance === null || BigInt(next.instance.instanceEpoch) < BigInt(old.instance.instanceEpoch))) return false;
+  if (old.instance !== null && next.instance === null) return false;
   const before = old.observation, after = next.observation;
-  if (before !== null && after === null && old.intentVersion === next.intentVersion && old.instance?.instanceEpoch === next.instance?.instanceEpoch) return false;
-  if (before !== null && after !== null && before.instanceEpoch === after.instanceEpoch && before.intentVersion === after.intentVersion
+  if (before !== null && after === null && old.intentVersion === next.intentVersion && old.instance?.instanceId === next.instance?.instanceId) return false;
+  if (before !== null && after !== null && before.instanceId === after.instanceId && before.intentVersion === after.intentVersion
     && BigInt(after.reportSequence) < BigInt(before.reportSequence)) return false;
   return Date.parse(next.observedAt) >= Date.parse(old.observedAt);
 };
@@ -110,7 +110,7 @@ export const useWorkerLifecycle = (workerId: string, options: WorkerReadOptions)
         if (action === 'resume' && !lifecycleFacts(resource, read.serverMilliseconds, read.stale).resumeEligible) return;
         const common = { protocolVersion: 1 as const, operationId: crypto.randomUUID(), expectedVersion: resource.intentVersion, source: 'web' as const };
         const request: LifecycleIntentRequest = action === 'disable' ? { ...common, action, localEpoch: null, originOperationId: null }
-          : { ...common, action, localEpoch: envelope!.localEpoch, instanceEpoch: envelope!.instanceEpoch };
+          : { ...common, action, localEpoch: envelope!.localEpoch, instanceId: envelope!.instanceId };
         journal = { request, hash: await lifecycleIntentHash(request) };
         if (!permitted()) return;
         const saved = persist(store, scope, workerId, journal);
@@ -160,7 +160,7 @@ export const useWorkerLifecycle = (workerId: string, options: WorkerReadOptions)
     if (resource !== null && store.receipt !== null && BigInt(resource.intentVersion) >= BigInt(store.receipt.intentVersion)) clear(store);
   }, [resource, store, operation]);
   const awaitingMachine = resource !== null && resource.admission === 'closed' && (envelope == null || envelope.intentVersion !== resource.intentVersion
-    || envelope.operationId !== resource.operationId || envelope.instanceEpoch !== resource.instance?.instanceEpoch);
+    || envelope.operationId !== resource.operationId || envelope.instanceId !== resource.instance?.instanceId);
   const checkAction = useRef(() => run());
   checkAction.current = () => run();
   useEffect(() => {

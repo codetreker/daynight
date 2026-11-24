@@ -34,7 +34,7 @@ func TestLifecycleScopedCredentialAdmissionUsesTransactionPolicy(t *testing.T) {
 	}
 	request := model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: queryID(4), InstanceID: queryID(5), Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "linux"}
 	receipt, err := workers.RegisterLifecycle(ctx, principal, workerID, request)
-	if err != nil || receipt.InstanceEpoch != "1" || receipt.InstanceID != request.InstanceID {
+	if err != nil || receipt.InstanceID != request.InstanceID {
 		t.Fatalf("scoped lifecycle registration: %+v %v", receipt, err)
 	}
 	if _, err := database.Pool.Exec(ctx, `UPDATE personal_access_tokens SET business_scopes=ARRAY['worker:read'],scope_version=2 WHERE id=$1`, principal.CredentialID); err != nil {
@@ -48,7 +48,7 @@ func TestLifecycleScopedCredentialAdmissionUsesTransactionPolicy(t *testing.T) {
 		t.Fatalf("reduced policy did not refuse lifecycle write: %v", err)
 	}
 	state, err := workers.Lifecycle(ctx, principal, workerID)
-	if err != nil || state.Instance == nil || state.Instance.InstanceID != receipt.InstanceID || state.Instance.InstanceEpoch != receipt.InstanceEpoch {
+	if err != nil || state.Instance == nil || state.Instance.InstanceID != receipt.InstanceID {
 		t.Fatalf("refused write changed original instance: %+v %v", state, err)
 	}
 }

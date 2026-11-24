@@ -24,19 +24,19 @@ func lcInstance() model.LifecycleInstanceRequest {
 	return model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: lcID, InstanceID: lcID, Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "macos"}
 }
 func lcObservation() model.LifecycleObservationEnvelope {
-	return model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lcID, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), ResourceCount: lcPtr(int64(0)), StoppedCount: lcPtr(int64(0)), PendingCount: lcPtr(int64(0)), BlockedCount: lcPtr(int64(0)), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
+	return model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: lcID, IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabled", Stop: "confirmed", Save: "durable", Sync: "complete", InventoryComplete: true, DetailsComplete: true, InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), ResourceCount: lcPtr(int64(0)), StoppedCount: lcPtr(int64(0)), PendingCount: lcPtr(int64(0)), BlockedCount: lcPtr(int64(0)), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}}
 }
 func TestLifecycleInstanceParsing(t *testing.T) {
 	raw := lcJSON(t, lcInstance())
 	if _, e := ParseLifecycleInstance(raw); e != nil {
 		t.Fatal(e)
 	}
-	for _, b := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`{}`), append(append([]byte{}, raw...), raw...), bytes.Replace(raw, []byte(`"previousInstanceEpoch":null,`), nil, 1), bytes.Replace(raw, []byte(`"disable":true`), []byte(`"disable":true,"disable":true`), 1), bytes.Replace(raw, []byte(`"platform":"macos"`), []byte(`"platform":null`), 1), bytes.Replace(raw, []byte(`"inventory":1`), []byte(`"inventory":"1"`), 1), bytes.Replace(raw, []byte(`"inventory":1`), []byte(`"extra":1,"inventory":1`), 1)} {
+	for _, b := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`{}`), append(append([]byte{}, raw...), raw...), bytes.Replace(raw, []byte(`"instanceId":"11111111-1111-4111-8111-111111111111",`), nil, 1), bytes.Replace(raw, []byte(`"disable":true`), []byte(`"disable":true,"disable":true`), 1), bytes.Replace(raw, []byte(`"platform":"macos"`), []byte(`"platform":null`), 1), bytes.Replace(raw, []byte(`"inventory":1`), []byte(`"inventory":"1"`), 1), bytes.Replace(raw, []byte(`"inventory":1`), []byte(`"extra":1,"inventory":1`), 1)} {
 		if _, e := ParseLifecycleInstance(b); e == nil {
 			t.Errorf("accepted %s", b)
 		}
 	}
-	for _, change := range []func(*model.LifecycleInstanceRequest){func(v *model.LifecycleInstanceRequest) { v.ProtocolVersion = 2 }, func(v *model.LifecycleInstanceRequest) { v.OperationID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }, func(v *model.LifecycleInstanceRequest) { v.InstanceID = "00000000-0000-0000-0000-000000000000" }, func(v *model.LifecycleInstanceRequest) { v.PreviousInstanceEpoch = lcPtr("0") }, func(v *model.LifecycleInstanceRequest) { v.Platform = "bsd" }, func(v *model.LifecycleInstanceRequest) { v.Capabilities.Resume = false }} {
+	for _, change := range []func(*model.LifecycleInstanceRequest){func(v *model.LifecycleInstanceRequest) { v.ProtocolVersion = 2 }, func(v *model.LifecycleInstanceRequest) { v.OperationID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }, func(v *model.LifecycleInstanceRequest) { v.InstanceID = "00000000-0000-0000-0000-000000000000" }, func(v *model.LifecycleInstanceRequest) { v.Platform = "bsd" }, func(v *model.LifecycleInstanceRequest) { v.Capabilities.Resume = false }} {
 		v := lcInstance()
 		change(&v)
 		if ValidateLifecycleInstance(v) == nil {
@@ -46,7 +46,7 @@ func TestLifecycleInstanceParsing(t *testing.T) {
 }
 func TestLifecycleIntentVariantsAndCanonicalHash(t *testing.T) {
 	disable := model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: lcID, Action: "disable", ExpectedVersion: "1", Source: "web"}
-	resume := model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: lcID, Action: "resume", ExpectedVersion: "1", Source: "local", LocalEpoch: lcPtr("1"), InstanceEpoch: lcPtr("1")}
+	resume := model.LifecycleIntentRequest{ProtocolVersion: 1, OperationID: lcID, Action: "resume", ExpectedVersion: "1", Source: "local", LocalEpoch: lcPtr("1"), InstanceID: lcPtr(lcID)}
 	local := disable
 	local.Source = "local"
 	local.LocalEpoch = lcPtr("2")
@@ -56,7 +56,7 @@ func TestLifecycleIntentVariantsAndCanonicalHash(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	for _, change := range []func(*model.LifecycleIntentRequest){func(v *model.LifecycleIntentRequest) { v.Action = "enable" }, func(v *model.LifecycleIntentRequest) { v.ExpectedVersion = "01" }, func(v *model.LifecycleIntentRequest) { v.Source = "worker" }, func(v *model.LifecycleIntentRequest) { v.InstanceEpoch = lcPtr("1") }, func(v *model.LifecycleIntentRequest) { v.LocalEpoch = lcPtr("1") }, func(v *model.LifecycleIntentRequest) { v.ProtocolVersion = 0 }, func(v *model.LifecycleIntentRequest) { v.Source = "local" }} {
+	for _, change := range []func(*model.LifecycleIntentRequest){func(v *model.LifecycleIntentRequest) { v.Action = "enable" }, func(v *model.LifecycleIntentRequest) { v.ExpectedVersion = "01" }, func(v *model.LifecycleIntentRequest) { v.Source = "worker" }, func(v *model.LifecycleIntentRequest) { v.InstanceID = lcPtr(lcID) }, func(v *model.LifecycleIntentRequest) { v.LocalEpoch = lcPtr("1") }, func(v *model.LifecycleIntentRequest) { v.ProtocolVersion = 0 }, func(v *model.LifecycleIntentRequest) { v.Source = "local" }} {
 		v := disable
 		change(&v)
 		if ValidateLifecycleIntent(v) == nil {
@@ -65,10 +65,10 @@ func TestLifecycleIntentVariantsAndCanonicalHash(t *testing.T) {
 	}
 	resume.LocalEpoch = nil
 	if ValidateLifecycleIntent(resume) == nil {
-		t.Fatal("missing resume epoch")
+		t.Fatal("missing resume local epoch")
 	}
 	raw := lcJSON(t, disable)
-	for _, b := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`{"action":2}`), bytes.Replace(raw, []byte(`"originOperationId":null`), []byte(`"originOperationId":null,"instanceEpoch":"1"`), 1), bytes.Replace(raw, []byte(`"source":"web"`), []byte(`"source":null`), 1), bytes.Replace(raw, []byte(`"localEpoch":null`), []byte(`"localEpoch":false`), 1)} {
+	for _, b := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`{"action":2}`), bytes.Replace(raw, []byte(`"originOperationId":null`), []byte(`"originOperationId":null,"instanceId":"11111111-1111-4111-8111-111111111111"`), 1), bytes.Replace(raw, []byte(`"source":"web"`), []byte(`"source":null`), 1), bytes.Replace(raw, []byte(`"localEpoch":null`), []byte(`"localEpoch":false`), 1)} {
 		if _, e := ParseLifecycleIntent(b); e == nil {
 			t.Fatal("accepted malformed intent")
 		}
@@ -93,7 +93,7 @@ func TestLifecycleIntentVariantsAndCanonicalHash(t *testing.T) {
 	}
 }
 func TestLifecycleActivationAndResolveParsing(t *testing.T) {
-	r := model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: lcID, InstanceID: lcID, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1"}
+	r := model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: lcID, InstanceID: lcID, IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1"}
 	for _, action := range []string{"", "bootstrap", "reconnect"} {
 		r.Action = action
 		raw := lcJSON(t, r)
@@ -109,11 +109,11 @@ func TestLifecycleActivationAndResolveParsing(t *testing.T) {
 		t.Fatal("ordinary action must be absent")
 	}
 	r.Action = ""
-	r.InstanceEpoch = "9223372036854775808"
+	r.IntentVersion = "9223372036854775808"
 	if ValidateLifecycleActivation(r) == nil {
 		t.Fatal("overflow")
 	}
-	r.InstanceEpoch = "1"
+	r.IntentVersion = "1"
 	raw := lcJSON(t, r)
 	for _, b := range [][]byte{[]byte(`null`), []byte(`[]`), bytes.Replace(raw, []byte(`"protocolVersion":1`), []byte(`"protocolVersion":null`), 1), bytes.Replace(raw, []byte(`"protocolVersion":1`), []byte(`"protocolVersion":"1"`), 1), append(append([]byte{}, raw[:len(raw)-1]...), []byte(`,"action":""}`)...)} {
 		if _, e := ParseLifecycleActivation(b); e == nil {

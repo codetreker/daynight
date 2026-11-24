@@ -44,15 +44,15 @@ const fixture = () => {
   const file = path.join(home, "tasks.sqlite");
   let store = openWebExecutionStore(file, { onMigration: () => {} });
   cleanups.push(() => { store.close(); authority.close(); rmSync(home, { recursive: true, force: true }); });
-  authority.bindInstance({ instanceId: id(80), instanceEpoch: "1", intentVersion: "1", desired: "enabled" });
+  authority.bindInstance({ instanceId: id(80), intentVersion: "1", desired: "enabled" });
   const activate = (action: "bootstrap" | "resume", scopeGeneration: string): LifecycleBinding => {
     const state = authority.readState();
     authority.markStopped({ localEpoch: state.localEpoch, inventoryRevision: state.inventoryRevision, owners: [] });
-    const binding = { ...identity, instanceId: id(80), instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration };
+    const binding = { ...identity, instanceId: id(80), intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration };
     const activation = { binding, action, operationId: id(action === "bootstrap" ? 81 : 82) };
     authority.prepareActivation(activation);
     authority.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action, operationId: activation.operationId,
-      workerId: identity.workerId, instanceEpoch: "1", intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration } });
+      workerId: identity.workerId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration } });
     return binding;
   };
   let binding = activate("bootstrap", "1"), complete = true;

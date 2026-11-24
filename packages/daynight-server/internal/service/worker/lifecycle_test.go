@@ -243,11 +243,11 @@ func TestLifecyclePublicWritesUseCurrentPermissionsAndOriginalScope(t *testing.T
 			return e
 		}},
 		{"activation", "worker:report", func(s *Workers) error {
-			_, e := s.ActivateLifecycle(ctx, p, id, model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: op, InstanceID: instance, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1"})
+			_, e := s.ActivateLifecycle(ctx, p, id, model.LifecycleActivationRequest{ProtocolVersion: 1, OperationID: op, InstanceID: instance, IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1"})
 			return e
 		}},
 		{"observation", "worker:report", func(s *Workers) error {
-			_, e := s.ObserveLifecycle(ctx, p, id, model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: instance, InstanceEpoch: "1", IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabling", Stop: "stopping", Save: "pending", Sync: "pending", InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}})
+			_, e := s.ObserveLifecycle(ctx, p, id, model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: instance, IntentVersion: "1", LocalEpoch: "1", ScopeGeneration: "1", ReportSequence: "1", Observation: model.LifecycleObservation{Phase: "disabling", Stop: "stopping", Save: "pending", Sync: "pending", InventoryRevision: "1", InventoryDigest: strings.Repeat("a", 64), Resources: []model.LifecycleResourceObservation{}, Recovery: []model.LifecycleRecoveryObservation{}}})
 			return e
 		}},
 		{"resolve", "worker:configure", func(s *Workers) error {

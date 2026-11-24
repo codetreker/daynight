@@ -151,7 +151,9 @@ which establishes the server-side Worker prerequisite without native probes. A
 registration refused because the Worker record was absent remains in the ledger;
 a new registration decision requires confirming that prerequisite again. Other
 refusals do not permit this retry. Unknown registrations retain their original
-request identity and must be resolved before another decision.
+request identity and must be resolved before another decision. The
+[registration decision](../simplification/2026-11-24-remove-worker-instance-epoch.md)
+allows a fresh local store to register and use existing server reconnect eligibility.
 Normal reconnect and initial bootstrap cannot clear a local veto. Their activation
 eligibility checks current persisted veto, desired state and intent version after
 registration and reconciliation awaits; an earlier initialization snapshot cannot

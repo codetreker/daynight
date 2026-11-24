@@ -7,12 +7,12 @@ import (
 
 // WorkerLifecycle is the persistent cloud admission authority for one Worker.
 type WorkerLifecycle struct {
-	UserID, WorkerID                    string
-	ProtocolVersion                     int
-	IntentVersion                       int64
-	Desired, Admission                  string
-	CurrentOperationID, InstanceID      *string
-	InstanceEpoch                       int64
+	UserID, WorkerID               string
+	ProtocolVersion                int
+	IntentVersion                  int64
+	Desired, Admission             string
+	CurrentOperationID, InstanceID *string
+
 	CapabilityVersion                   *int
 	BootstrapConsumed, ReconnectAllowed bool
 	UpdatedAt                           time.Time
@@ -41,12 +41,12 @@ type LifecycleCapabilities struct {
 }
 
 type LifecycleInstanceRequest struct {
-	ProtocolVersion       int                   `json:"protocolVersion"`
-	OperationID           string                `json:"operationId"`
-	InstanceID            string                `json:"instanceId"`
-	PreviousInstanceEpoch *string               `json:"previousInstanceEpoch"`
-	Capabilities          LifecycleCapabilities `json:"capabilities"`
-	Platform              string                `json:"platform"`
+	ProtocolVersion int    `json:"protocolVersion"`
+	OperationID     string `json:"operationId"`
+	InstanceID      string `json:"instanceId"`
+
+	Capabilities LifecycleCapabilities `json:"capabilities"`
+	Platform     string                `json:"platform"`
 }
 
 // LifecycleIntentRequest carries one of the two intent variants. The protocol
@@ -54,7 +54,7 @@ type LifecycleInstanceRequest struct {
 type LifecycleIntentRequest struct {
 	ProtocolVersion                              int
 	OperationID, Action, ExpectedVersion, Source string
-	LocalEpoch, OriginOperationID, InstanceEpoch *string
+	LocalEpoch, OriginOperationID, InstanceID    *string
 }
 
 func (r LifecycleIntentRequest) MarshalJSON() ([]byte, error) {
@@ -76,8 +76,8 @@ func (r LifecycleIntentRequest) MarshalJSON() ([]byte, error) {
 		ExpectedVersion string  `json:"expectedVersion"`
 		Source          string  `json:"source"`
 		LocalEpoch      *string `json:"localEpoch"`
-		InstanceEpoch   *string `json:"instanceEpoch"`
-	}{r.ProtocolVersion, r.OperationID, r.Action, r.ExpectedVersion, r.Source, r.LocalEpoch, r.InstanceEpoch})
+		InstanceID      *string `json:"instanceId"`
+	}{r.ProtocolVersion, r.OperationID, r.Action, r.ExpectedVersion, r.Source, r.LocalEpoch, r.InstanceID})
 }
 
 func (r *LifecycleIntentRequest) UnmarshalJSON(b []byte) error {
@@ -89,12 +89,12 @@ func (r *LifecycleIntentRequest) UnmarshalJSON(b []byte) error {
 		Source            string  `json:"source"`
 		LocalEpoch        *string `json:"localEpoch"`
 		OriginOperationID *string `json:"originOperationId"`
-		InstanceEpoch     *string `json:"instanceEpoch"`
+		InstanceID        *string `json:"instanceId"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}
-	*r = LifecycleIntentRequest{v.ProtocolVersion, v.OperationID, v.Action, v.ExpectedVersion, v.Source, v.LocalEpoch, v.OriginOperationID, v.InstanceEpoch}
+	*r = LifecycleIntentRequest{v.ProtocolVersion, v.OperationID, v.Action, v.ExpectedVersion, v.Source, v.LocalEpoch, v.OriginOperationID, v.InstanceID}
 	return nil
 }
 
@@ -103,7 +103,7 @@ type LifecycleActivationRequest struct {
 	OperationID     string `json:"operationId"`
 	Action          string `json:"action,omitempty"`
 	InstanceID      string `json:"instanceId"`
-	InstanceEpoch   string `json:"instanceEpoch"`
+
 	IntentVersion   string `json:"intentVersion"`
 	LocalEpoch      string `json:"localEpoch"`
 	ScopeGeneration string `json:"scopeGeneration"`
@@ -156,9 +156,9 @@ type LifecycleObservation struct {
 }
 
 type LifecycleObservationEnvelope struct {
-	ProtocolVersion int                  `json:"protocolVersion"`
-	InstanceID      string               `json:"instanceId"`
-	InstanceEpoch   string               `json:"instanceEpoch"`
+	ProtocolVersion int    `json:"protocolVersion"`
+	InstanceID      string `json:"instanceId"`
+
 	IntentVersion   string               `json:"intentVersion"`
 	OperationID     *string              `json:"operationId"`
 	LocalEpoch      string               `json:"localEpoch"`
@@ -180,9 +180,9 @@ type LifecycleObservedObservation struct {
 }
 
 type LifecycleObservedEnvelope struct {
-	ProtocolVersion int                          `json:"protocolVersion"`
-	InstanceID      string                       `json:"instanceId"`
-	InstanceEpoch   string                       `json:"instanceEpoch"`
+	ProtocolVersion int    `json:"protocolVersion"`
+	InstanceID      string `json:"instanceId"`
+
 	IntentVersion   string                       `json:"intentVersion"`
 	OperationID     *string                      `json:"operationId"`
 	LocalEpoch      string                       `json:"localEpoch"`
@@ -192,8 +192,7 @@ type LifecycleObservedEnvelope struct {
 }
 
 type LifecycleInstance struct {
-	InstanceID    string `json:"instanceId"`
-	InstanceEpoch string `json:"instanceEpoch"`
+	InstanceID string `json:"instanceId"`
 }
 
 type LifecycleResource struct {
@@ -210,10 +209,10 @@ type LifecycleResource struct {
 }
 
 type LifecycleInstanceReceipt struct {
-	ProtocolVersion  int       `json:"protocolVersion"`
-	WorkerID         string    `json:"workerId"`
-	InstanceID       string    `json:"instanceId"`
-	InstanceEpoch    string    `json:"instanceEpoch"`
+	ProtocolVersion int    `json:"protocolVersion"`
+	WorkerID        string `json:"workerId"`
+	InstanceID      string `json:"instanceId"`
+
 	IntentVersion    string    `json:"intentVersion"`
 	Desired          string    `json:"desired"`
 	Admission        string    `json:"admission"`
@@ -240,7 +239,7 @@ type LifecycleActivationReceipt struct {
 	WorkerID        string    `json:"workerId"`
 	OperationID     string    `json:"operationId"`
 	Action          string    `json:"action"`
-	InstanceEpoch   string    `json:"instanceEpoch"`
+	InstanceID      string    `json:"instanceId"`
 	IntentVersion   string    `json:"intentVersion"`
 	LocalEpoch      string    `json:"localEpoch"`
 	ScopeGeneration string    `json:"scopeGeneration"`
@@ -252,7 +251,7 @@ type LifecycleObservationReceipt struct {
 	ProtocolVersion int       `json:"protocolVersion"`
 	Accepted        bool      `json:"accepted"`
 	IntentVersion   string    `json:"intentVersion"`
-	InstanceEpoch   string    `json:"instanceEpoch"`
+	InstanceID      string    `json:"instanceId"`
 	ReportSequence  string    `json:"reportSequence"`
 	ReceivedAt      time.Time `json:"receivedAt"`
 }

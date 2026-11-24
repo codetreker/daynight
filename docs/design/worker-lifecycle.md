@@ -10,11 +10,11 @@
 
 ## 持久数据
 
-迁移 110 创建三个 Worker 子资源表，并同步 schema 快照：
+Worker 生命周期由三个子资源表持久化：
 
 | 表 | 责任 |
 |---|---|
-| `worker_lifecycle` | 当前意图版本、desired/admission、当前意图 ID、管理实例 epoch、能力、bootstrap 消费事实和 reconnect 资格 |
+| `worker_lifecycle` | 当前意图版本、desired/admission、当前意图 ID、管理实例 UUID、能力、bootstrap 消费事实和 reconnect 资格 |
 | `worker_lifecycle_operations` | 原请求及域分隔摘要、原回执、当前意图应用状态、activation 子阶段和未提交墓碑 |
 | `worker_lifecycle_observations` | 当前完整合法观察包、实例/意图/本地/scope/报告序号与服务端接收时间 |
 
@@ -40,11 +40,11 @@ Bot 保持 credential、Bot、Session 再 Worker 的顺序。需要 Worker 互�
 
 普通 activation 是 resume 意图的子阶段。账本分别保存 `request_hash` 和 `activation_hash`，以及 `activation_outcome`。原意图存在但 activation 尚无记录时，resolve 只关闭 activation；保留原意图及精确激活请求，防止迟到请求重新开门。
 
-新实例只撤销旧观察及服务端准入，不能替代旧进程停止证明。注册前 admission=open 且 desired=enabled 时保存 reconnect 资格；停用或恢复意图清除此资格。bootstrap 只允许没有意图历史且未消费的初始资源。
+新实例只撤销旧观察及服务端准入，不能替代旧进程停止证明。注册前 desired=enabled 且准入已开放或已有 reconnect 许可时保留该许可；新的意图和成功激活清除许可。本机状态从空库建立时也可以按服务端许可 reconnect。bootstrap 只允许没有意图历史且未消费的初始资源。
 
 ## Web 状态消费
 
-Web 的 `api/worker-lifecycle.ts` 独立协商并严格解析生命周期 v1，不改变旧 Worker list/detail 的解析合同。读取和操作都校验响应 principal；账号作用域、Worker 身份、意图版本、管理实例 epoch 与报告序号共同限制结果发布。较旧版本、实例、报告或服务端观察时间不能覆盖较新结果。`useWorkerObservation` 保留后台检查期间的视图，并用服务端 `observedAt` 加浏览器 monotonic 时间推进时效。生命周期读取在请求开始前记录时间锚，将整个请求耗时保守计入观察年龄，响应传输不能延长停止证明的有效期。稳定时每 30 秒读取；未知原操作、正在停用或恢复、尚待本机观察的新意图每 2 秒核对。隐藏页面停止轮询。
+Web 的 `api/worker-lifecycle.ts` 独立协商并严格解析生命周期 v1，不改变旧 Worker list/detail 的解析合同。读取和操作都校验响应 principal；账号作用域、Worker 身份、意图版本、管理实例 UUID 与报告序号共同限制结果发布。跨实例按服务端观察时间排序，同实例同意图内按报告序号排序。`useWorkerObservation` 保留后台检查期间的视图，并用服务端 `observedAt` 加浏览器 monotonic 时间推进时效。生命周期读取在请求开始前记录时间锚，将整个请求耗时保守计入观察年龄，响应传输不能延长停止证明的有效期。稳定时每 30 秒读取；未知原操作、正在停用或恢复、尚待本机观察的新意图每 2 秒核对。隐藏页面停止轮询。
 
 `useWorkerLifecycle` 在同一账号作用域内共享原操作记录和提交互斥。派发前先在同源 `sessionStorage` 保存 service origin、账号、Worker、原精确请求和域分隔 SHA-256 摘要。无法保存时不派发新意图，保留内存请求供核对；存储读取失败或记录损坏时禁止新操作。显式核对可以重新读取恢复后的存储。刷新只查询原 operationId；GET 404 后使用原请求 resolve，核实回执的 Worker、操作、阶段和摘要。查询与 resolve 都不重放业务请求，未知结果不能更换 ID 猜测成功。账号作用域结束时清理其恢复记录；退出账号也按账号前缀清理当前页面从未挂载过的 Worker 记录，失败沿账号私有状态清理提示及显式重试入口处理。
 
@@ -54,7 +54,7 @@ Web 的 `api/worker-lifecycle.ts` 独立协商并严格解析生命周期 v1，�
 
 ## 验证责任
 
-协议测试验证必填 null、判别联合、规范 ID/精确 int64、未知字段、完整聚合条件、明细限制和确定摘要。领域测试验证所有状态转换、幂等、墓碑、观察时效及 epoch 拒绝。service 验证当前凭据、事务绑定、锁后时间与 Completion；HTTP 验证真实路由、解析、错误码、取消和响应失败。
+协议测试验证必填 null、判别联合、规范 ID/精确 int64、未知字段、完整聚合条件、明细限制和确定摘要。领域测试验证所有状态转换、幂等、墓碑、观察时效及实例 ID 不匹配拒绝。service 验证当前凭据、事务绑定、锁后时间与 Completion；HTTP 验证真实路由、解析、错误码、取消和响应失败。
 
 真实隔离 PostgreSQL 验证迁移、持久化、行锁竞争、首次缺行、CAS、rollback、取消、跨连接重读以及原请求和 resolve 两种提交顺序。正常 API 集成贯穿注册、停用、观察、恢复和激活。平台本机停止证明和 UI 行为不由服务端单元测试代替。
 

@@ -46,12 +46,12 @@ const setup = async (initialInput: "none" | "prompt" = "prompt") => {
   const workerDirectory = resolveWorkerPaths(home).workerDirectory; await mkdir(workerDirectory, { recursive: true, mode: 0o700 });
   const identity = { serverOrigin: "https://daynight.example", userId: randomUUID(), workerId: randomUUID() };
   const store = openLifecycleStore({ file: path.join(workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true }); stores.push(store);
-  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
+  const binding: LifecycleBinding = { ...identity, instanceId: randomUUID(), intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
   store.bindInstance({ ...binding, desired: "enabled" });
   store.markStopped({ localEpoch: "1", inventoryRevision: store.readState().inventoryRevision });
   const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
   store.prepareActivation(activation);
-  store.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId, operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
+  store.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId, operationId: activation.operationId, instanceId: binding.instanceId, intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
   const ticket: ControllerLaunchTicket = { schemaVersion: 2, lifecycleBinding: binding, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: identity.serverOrigin, testExecutionId: randomUUID(), ownerUserId: identity.userId, provider: "claude", cwd: process.cwd(), nativeHome: path.join(home, "native"), configuration: { agent: "claude", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialInput, initialOperationId: randomUUID(), initialPrompt: initialInput === "none" ? "" : "accepted once", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: process.platform === "win32" ? `\\\\.\\pipe\\daynight-lifecycle-${randomUUID()}` : path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   await writeLaunchTicket(home, ticket);
   const running = runController({ homeDirectory: home, provider: "claude", launchId: ticket.launchId });

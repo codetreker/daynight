@@ -1,4 +1,4 @@
--- Schema snapshot version: 124
+-- Schema snapshot version: 125
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1660,7 +1660,6 @@ CREATE TABLE "worker_lifecycle" (
     "admission" "text" NOT NULL,
     "current_operation_id" "uuid",
     "instance_id" "uuid",
-    "instance_epoch" bigint NOT NULL,
     "capability_version" smallint,
     "bootstrap_consumed" boolean DEFAULT false NOT NULL,
     "reconnect_allowed" boolean DEFAULT false NOT NULL,
@@ -1668,7 +1667,6 @@ CREATE TABLE "worker_lifecycle" (
     CONSTRAINT "worker_lifecycle_admission_check" CHECK (("admission" = ANY (ARRAY['open'::"text", 'closed'::"text"]))),
     CONSTRAINT "worker_lifecycle_check" CHECK ((("desired" <> 'disabled'::"text") OR ("admission" = 'closed'::"text"))),
     CONSTRAINT "worker_lifecycle_desired_check" CHECK (("desired" = ANY (ARRAY['enabled'::"text", 'disabled'::"text"]))),
-    CONSTRAINT "worker_lifecycle_instance_epoch_check" CHECK (("instance_epoch" >= 0)),
     CONSTRAINT "worker_lifecycle_intent_version_check" CHECK (("intent_version" > 0)),
     CONSTRAINT "worker_lifecycle_protocol_version_check" CHECK (("protocol_version" = 1))
 );
@@ -1676,7 +1674,6 @@ CREATE TABLE "worker_lifecycle" (
 CREATE TABLE "worker_lifecycle_observations" (
     "user_id" "uuid" NOT NULL,
     "worker_id" "uuid" NOT NULL,
-    "instance_epoch" bigint NOT NULL,
     "intent_version" bigint NOT NULL,
     "local_epoch" bigint NOT NULL,
     "scope_generation" bigint NOT NULL,

@@ -20,7 +20,7 @@ import (
 
 func lifecycleRow(user, id string) model.WorkerLifecycle {
 	instance, operation, capability := uuid.NewString(), uuid.NewString(), 1
-	return model.WorkerLifecycle{UserID: user, WorkerID: id, ProtocolVersion: 1, IntentVersion: 9223372036854775807, Desired: "disabled", Admission: "closed", CurrentOperationID: &operation, InstanceID: &instance, InstanceEpoch: 4, CapabilityVersion: &capability, BootstrapConsumed: true, UpdatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	return model.WorkerLifecycle{UserID: user, WorkerID: id, ProtocolVersion: 1, IntentVersion: 9223372036854775807, Desired: "disabled", Admission: "closed", CurrentOperationID: &operation, InstanceID: &instance, CapabilityVersion: &capability, BootstrapConsumed: true, UpdatedAt: time.Now().UTC().Truncate(time.Microsecond)}
 }
 
 func lifecycleWrite(t *testing.T, db *postgres.Store, fn func(store.WorkerLifecycleScope) error) {
@@ -37,7 +37,7 @@ func TestLifecycleRowsPersistAndRemainOwnerScoped(t *testing.T) {
 	testutil.PutWorkerSnapshot(t, db, snapshot(user, id, time.Now().UTC()))
 	state := lifecycleRow(user, id)
 	op := model.LifecycleOperation{UserID: user, WorkerID: id, OperationID: *state.CurrentOperationID, Action: "disable", Source: "web", RequestKind: "intent", RequestHash: bytes.Repeat([]byte{1}, 32), Request: json.RawMessage(`{"action":"disable"}`), IntentVersion: state.IntentVersion, State: "accepted", Receipt: json.RawMessage(`{"state":"accepted"}`), ActivationOutcome: "not_started", CreatedAt: state.UpdatedAt, UpdatedAt: state.UpdatedAt}
-	observation := model.LifecycleStoredObservation{UserID: user, WorkerID: id, ReceivedAt: state.UpdatedAt, Envelope: model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: *state.InstanceID, InstanceEpoch: "4", IntentVersion: "9223372036854775807", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "5", OperationID: state.CurrentOperationID}}
+	observation := model.LifecycleStoredObservation{UserID: user, WorkerID: id, ReceivedAt: state.UpdatedAt, Envelope: model.LifecycleObservationEnvelope{ProtocolVersion: 1, InstanceID: *state.InstanceID, IntentVersion: "9223372036854775807", LocalEpoch: "2", ScopeGeneration: "3", ReportSequence: "5", OperationID: state.CurrentOperationID}}
 	lifecycleWrite(t, db, func(s store.WorkerLifecycleScope) error {
 		d := s.LifecycleDAO()
 		if err := d.LockWorker(t.Context(), user, id); err != nil {
