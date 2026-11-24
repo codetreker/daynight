@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Deleting a Task changes the project epoch. Retiring the old reading state and
+At the time, deleting a Task changed the project epoch. Retiring the old reading state and
 reopening the Goal after a fresh snapshot interrupts the graph, resets its
 viewport and can disturb valid interaction state even when the Goal remains.
 The old history and its write qualifications must still retire, and actual
@@ -47,8 +47,10 @@ viewport during every epoch replacement.
 revision and resource type observations qualify detail reads or writes after a
 history change, including a restore with matching IDs and versions.
 
-**Avoid rotating the epoch on deletion.** Delta sync has no deletion tombstone;
-other clients could retain deleted nodes indefinitely.
+**Avoid rotating the epoch on deletion.** At the time delta sync had no deletion
+tombstone, so other clients could retain deleted nodes indefinitely. The later
+[activation decision](../architecture/2026-11-24-activate-task-deletion-deltas.md)
+uses retained deletion facts after clients gained targeted withdrawal.
 
 ## Consequences
 

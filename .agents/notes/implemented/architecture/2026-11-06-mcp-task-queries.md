@@ -35,8 +35,10 @@ behavior; list fences and complete graph selection remain.
 
 ## Alternatives
 
-**Use the task synchronization epoch.** It changes on deletion but not on
-ordinary status or dependency updates, so it cannot detect priority changes.
+**Use the task synchronization epoch.** At the time it changed on deletion but not
+on ordinary status or dependency updates, so it could not detect priority changes.
+The later [activation decision](2026-11-24-activate-task-deletion-deltas.md)
+keeps ordinary deletion in the same epoch.
 
 **Sort after fetching a REST page.** Filtering and grouping after the limit can
 omit tasks or produce a different order between pages.

@@ -238,9 +238,6 @@ func (s *Tasks) writeTask(ctx context.Context, principal model.Principal, projec
 					return err
 				}
 			}
-			if err := tx.ProjectDAO().InvalidateTaskCache(ctx); err != nil {
-				return err
-			}
 			if mutation.Current.Type == model.TaskTypeGoal {
 				return nil
 			}

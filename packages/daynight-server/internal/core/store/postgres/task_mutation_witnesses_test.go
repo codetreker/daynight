@@ -248,17 +248,14 @@ func TestTaskQueryCancellationPreservesCauseAndCompleteState(t *testing.T) {
 
 func TestTaskDeletionAndDependencyRemovalFailuresRollBackAllFacts(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, failure := range []string{"epoch", "source-overflow"} {
+	for _, failure := range []string{"after-delete", "source-overflow"} {
 		t.Run(failure, func(t *testing.T) {
 			database := isolatedStore(t)
 			ctx := context.Background()
 			project := queryProject(t, database, 1)
 			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
 			source := queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID)
-			if failure == "epoch" {
-				mustQueryExec(t, database, `CREATE FUNCTION reject_dependency_delete_epoch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1004',MESSAGE='epoch rotation failed'; END $$;
-				CREATE TRIGGER reject_dependency_delete_epoch BEFORE UPDATE OF task_cache_epoch ON projects FOR EACH ROW EXECUTE FUNCTION reject_dependency_delete_epoch()`)
-			} else {
+			if failure == "source-overflow" {
 				mustQueryExec(t, database, "UPDATE tasks SET version=9223372036854775807 WHERE id=$1", source.ID)
 			}
 			before := taskMutationProjectFacts(t, database, project.ID)
@@ -266,10 +263,10 @@ func TestTaskDeletionAndDependencyRemovalFailuresRollBackAllFacts(t *testing.T) 
 				if _, err := scope.TaskDAO().DeleteTask(ctx, target.ID, true); err != nil {
 					return err
 				}
-				return scope.ProjectDAO().InvalidateTaskCache(ctx)
+				return errors.New("failure after deletion")
 			})
 			var cause *pgconn.PgError
-			if completion.Outcome != TransactionNotCommitted || !errors.As(err, &cause) || before != taskMutationProjectFacts(t, database, project.ID) {
+			if completion.Outcome != TransactionNotCommitted || err == nil || (failure == "source-overflow" && !errors.As(err, &cause)) || before != taskMutationProjectFacts(t, database, project.ID) {
 				t.Fatalf("failed deletion committed tombstone, source version, edges or epoch: %#v %v", completion, err)
 			}
 		})

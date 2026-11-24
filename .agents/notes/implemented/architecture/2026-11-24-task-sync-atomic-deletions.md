@@ -46,8 +46,8 @@ committed baseline. Real history replacement clears old removals and keeps its
 existing history fences.
 The [sync design](../../../../docs/design/daynight-task-sync.md) owns mechanisms,
 and the [deletion data decision](2026-11-24-task-sync-deletion-data.md) owns the
-server snapshot. Deletion callers and the server still use their epoch rotation
-contract; the [targeted read-admission decision](2026-11-24-task-removal-read-admission.md)
+server snapshot. The [activation decision](2026-11-24-activate-task-deletion-deltas.md)
+keeps ordinary deletion in the same project history; the [targeted read-admission decision](2026-11-24-task-removal-read-admission.md)
 owns independent reader withdrawal. The [manual resynchronization decision](../feature/2026-11-24-project-task-resync.md)
 owns the settings entry and its single-request history replacement.
 

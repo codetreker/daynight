@@ -24,7 +24,7 @@ func taskSessionTransitionFacts(t *testing.T, database *Store) map[string]string
 	return facts
 }
 
-func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
+func TestTaskDeletionSessionFreezeIsAtomicAndPreservesEpoch(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
@@ -63,10 +63,10 @@ func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
 			}); err != nil {
 				return err
 			}
-			return scope.ProjectDAO().InvalidateTaskCache(ctx)
+			return nil
 		})
 	}
-	for _, failure := range []struct{ table, columns string }{{"task_sessions", ""}, {"projects", " OF task_cache_epoch"}} {
+	for _, failure := range []struct{ table, columns string }{{"task_sessions", ""}, {"session_operations", ""}} {
 		t.Run(failure.table, func(t *testing.T) {
 			mustQueryExec(t, database, `CREATE FUNCTION refuse_task_deletion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'deletion failure'; END $$`)
 			mustQueryExec(t, database, `CREATE TRIGGER refuse_task_deletion BEFORE UPDATE`+failure.columns+` ON `+failure.table+` FOR EACH ROW EXECUTE FUNCTION refuse_task_deletion()`)
@@ -101,7 +101,7 @@ func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `SELECT receipt->>'state' FROM session_operations WHERE operation_id=$1`, operation).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if !deleted || version != task.Version+1 || epoch == beforeEpoch || lifecycle != "draining" || state != "rejected" {
+	if !deleted || version != task.Version+1 || epoch != beforeEpoch || lifecycle != "draining" || state != "rejected" {
 		t.Fatalf("incomplete committed deletion: %t %d %s %s %s", deleted, version, epoch, lifecycle, state)
 	}
 }

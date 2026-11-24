@@ -56,10 +56,10 @@ func TestTaskDeletionRemoveDependsWithoutReferences(t *testing.T) {
 }
 
 func TestTaskDeletionRemoveDependsRefusalsAndFailuresPreserveCause(t *testing.T) {
-	for _, scenario := range []string{"stale", "target-worker", "unauthorized", "epoch", "source-overflow"} {
+	for _, scenario := range []string{"stale", "target-worker", "unauthorized", "source-overflow"} {
 		t.Run(scenario, func(t *testing.T) {
 			outcome := store.TransactionCommitted
-			if scenario == "epoch" || scenario == "source-overflow" {
+			if scenario == "source-overflow" {
 				outcome = store.TransactionNotCommitted
 			}
 			f := newTaskFailureFixture(t, t.Context(), outcome)
@@ -85,11 +85,6 @@ func TestTaskDeletionRemoveDependsRefusalsAndFailuresPreserveCause(t *testing.T)
 			}
 			f.expectTask(t, target)
 			tasks := taskservice.NewTasks(f.database)
-			if scenario == "epoch" {
-				expectTaskDeletion(t, f, target, true)
-				tasks = taskDeletionService(t, f, target, 0)
-				f.projects.InvalidateTaskCacheFn = func(context.Context) error { return cause }
-			}
 			if scenario == "source-overflow" {
 				f.tasks.DeleteTaskFn = func(actual context.Context, id string, remove bool) (model.TaskTombstone, error) {
 					if actual != f.ctx || id != target.ID || !remove {

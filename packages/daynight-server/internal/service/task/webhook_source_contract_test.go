@@ -57,9 +57,7 @@ type sourceCaptureDAO struct{ store.WebhookCaptureDAO }
 
 type sourceProjectDAO struct {
 	store.ProjectWriteDAO
-	t          *testing.T
-	calls      *[]string
-	invalidate bool
+	t *testing.T
 }
 
 func (d sourceProjectDAO) ProjectAccess(_ context.Context, principal model.Principal) (model.ProjectAccess, error) {
@@ -72,10 +70,7 @@ func (d sourceProjectDAO) ProjectAccess(_ context.Context, principal model.Princ
 
 func (d sourceProjectDAO) InvalidateTaskCache(context.Context) error {
 	d.t.Helper()
-	if !d.invalidate {
-		d.t.Fatal("unexpected source cache invalidation")
-	}
-	*d.calls = append(*d.calls, "invalidate")
+	d.t.Fatal("unexpected source cache invalidation")
 	return nil
 }
 
@@ -303,7 +298,7 @@ func newSourceWrite(t *testing.T, current, updated model.Task) (*sourceWriteStor
 	record := &sourceCapture{t: t, dao: marker, trace: &calls}
 	dao := &sourceTaskDAO{t: t, current: current, updated: updated, clock: current.UpdatedAt.Add(time.Second), calls: &calls}
 	ctx := context.WithValue(t.Context(), sourceContextKey{}, record)
-	database := &sourceWriteStore{t: t, ctx: ctx, scope: sourceWriteScope{tasks: dao, projects: sourceProjectDAO{t: t, calls: &calls}, sessions: sourceSessionDAO{t: t, calls: &calls}, capture: marker}}
+	database := &sourceWriteStore{t: t, ctx: ctx, scope: sourceWriteScope{tasks: dao, projects: sourceProjectDAO{t: t}, sessions: sourceSessionDAO{t: t, calls: &calls}, capture: marker}}
 	return database, record, ctx, &calls
 }
 
@@ -500,11 +495,11 @@ func TestTaskDeletionCapturesAuthoritativeTombstone(t *testing.T) {
 	current := sourceTask(model.TaskTodo)
 	db, record, ctx, calls := newSourceWrite(t, current, model.Task{})
 	tombstone := model.TaskTombstone{ID: sourceTaskID, ProjectID: sourceProjectID, Version: 8, DeletedAt: current.UpdatedAt.Add(2 * time.Second)}
-	db.scope.tasks.tombstone, db.scope.projects.invalidate = &tombstone, true
+	db.scope.tasks.tombstone = &tombstone
 	if err := NewTasks(db, record).Delete(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.DeleteTask{Version: 7, RemoveDepends: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"delete", "drain", "receipts", "invalidate", "capture"}) {
+	if len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"delete", "drain", "receipts", "capture"}) {
 		t.Fatalf("deletion source order: %#v %v", record.facts, *calls)
 	}
 	f := record.facts[0]
