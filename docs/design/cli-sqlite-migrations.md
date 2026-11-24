@@ -22,7 +22,7 @@
 | Owner | SQL 主链目录 | 当前文件 |
 |---|---|---|
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
-| Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql` 至 `021-drop-lifecycle-adoption.sql` |
+| Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql` 至 `021-worker-claim-reservations.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql`、`003-orchestration-blockers.sql` |
 | Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql`、`012-direct-capture.sql`、`013-native-index-lease.sql`、`014-usage.sql`、`015-online-content.sql`、`016-worker-lifecycle.sql`、`017-stopped-generations.sql`、`018-online-mode.sql`、`019-codex-response-usage.sql`、`020-drop-worker-lifecycle.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
@@ -55,7 +55,7 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 
 | 库 | 基线及迁移 |
 |---|---|
-| Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；当前版本 21 删除历史版本 20 的 lifecycle_adoption，原任务和清理记录保持；非零旧详细库 1–4 拒绝 |
+| Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；当前版本 21 删除历史版本 20 的 lifecycle_adoption，按 claimId 保留同一 Task 的各次认领配置，原任务和清理记录保持；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
 | Web 执行状态 | 基线 1；版本 2 移除 cleanup 的重复操作回执及资源完成标记，保留意图、期限和操作身份；版本 3 新增独立编排阻塞表 |
 | Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休；版本 11 建立 outbox UTF-8 字节累计值；版本 12 转换 direct submit 的持久采集状态并保留原身份和未结责任；版本 13 移除有效 native index lease 对象中的 maximumBytes 并保留其余字段；版本 14 增加独立用量来源、队列及元数据；版本 15 保存历史策略并新增在线详情及统计，旧 execution 默认 legacy；历史版本 16 增加 worker_lifecycle_bindings；版本 17 按原 ticket_hash 保存完整停止快照；版本 18 保存在线模式与原生图片位置证明；版本 19 固定 Codex 用量归属；当前版本 20 删除 worker_lifecycle_bindings |

@@ -61,7 +61,7 @@ describe("claim tool reservations", () => {
     expect(reopened.getNativeConfiguration(reservation)).toBeNull();
   });
 
-  it.each(["claimId", "worktreeId", "workerId", "version", "agentControlMode", "nativeConfiguration"] as const)("refuses to replace an unknown request's %s", field => {
+  it.each(["worktreeId", "workerId", "version", "agentControlMode", "nativeConfiguration"] as const)("refuses to replace an unknown request's %s", field => {
     const { store, reservation } = fixture(); store.reserveClaimTools(reservation);
     const changed = { ...reservation, [field]: field === "version" ? reservation.version + 1n : field === "agentControlMode" ? "herdr" : field === "nativeConfiguration" ? { ...reservation.nativeConfiguration, model: "replacement" } : uuid(99) };
     expect(() => store.reserveClaimTools(changed)).toThrow();
@@ -79,7 +79,7 @@ describe("claim tool reservations", () => {
     expect(open(db).getNativeConfiguration(reservation)).toEqual(reservation.nativeConfiguration);
   });
 
-  it.each(["claimId", "worktreeId", "workerId", "agent", "agentControlMode", "state"] as const)("retains the original reservation when a grant changes %s", field => {
+  it.each(["worktreeId", "workerId", "agent", "agentControlMode", "state"] as const)("retains the original reservation when a grant changes %s", field => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
     const value = field === "agent" ? "copilot" : field === "agentControlMode" ? "herdr" : field === "state" ? "released" : uuid(99);
     expect(() => store.acceptClaimToolReservation(granted({ [field]: value }), reservation.workerId)).toThrow();
@@ -87,9 +87,9 @@ describe("claim tool reservations", () => {
     expect(store.listTasks()).toEqual([]);
   });
 
-  it.each(["status", "version", "worker"] as const)("does not consume an unconfirmed grant with invalid %s", field => {
+  it.each(["status", "version"] as const)("does not consume an unconfirmed grant with invalid %s", field => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
-    const task = granted({}, field === "status" ? { status: "todo" } : field === "version" ? { version: reservation.version } : { properties: {} });
+    const task = granted({}, field === "status" ? { status: "todo" } : { version: reservation.version });
     expect(() => store.acceptClaimToolReservation(task, reservation.workerId)).toThrow();
     expect(store.listClaimToolReservations()).toEqual([reservation]);
     expect(store.listTasks()).toEqual([]);
@@ -107,6 +107,8 @@ describe("claim tool reservations", () => {
   it("does not consume another worker's or task's reservation", () => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
     expect(() => store.acceptClaimToolReservation(granted(), uuid(99))).toThrow();
+    expect(store.acceptClaimToolReservation(granted({ claimId: uuid(96) }), reservation.workerId)).toBeNull();
+    expect(store.acceptClaimToolReservation(granted({}, { properties: {} }), reservation.workerId)).toBeNull();
     expect(store.acceptClaimToolReservation(granted({}, { id: uuid(98) }), reservation.workerId)).toBeNull();
     expect(store.acceptClaimToolReservation(granted({}, { projectId: uuid(97) }), reservation.workerId)).toBeNull();
     expect(store.listClaimToolReservations()).toEqual([reservation]);
@@ -134,7 +136,7 @@ describe("claim tool reservations", () => {
   it("releases only an exact reservation and does not infer a grant or absence from local tasks", () => {
     const { store, reservation } = fixture(); store.reserveClaimTools(reservation);
     expect(() => store.releaseClaimToolReservation({ ...reservation, version: reservation.version + 1n })).toThrow();
-    expect(() => store.releaseClaimToolReservation({ ...reservation, claimId: uuid(98) })).toThrow();
+    expect(store.releaseClaimToolReservation({ ...reservation, claimId: uuid(98) })).toBe(false);
     expect(() => store.releaseClaimToolReservation({ ...reservation, nativeConfiguration: { ...reservation.nativeConfiguration, model: "replacement" } })).toThrow();
     expect(store.listClaimToolReservations()).toEqual([reservation]);
     expect(store.releaseClaimToolReservation(reservation)).toBe(true);

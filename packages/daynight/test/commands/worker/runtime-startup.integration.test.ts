@@ -1643,6 +1643,37 @@ describe("worker cloud-first startup", () => {
     try { expect(next).not.toBeNull(); } finally { await next?.release(); }
   });
 
+  it.each([["task", "principal"], ["bot", "principal"], ["task", "configuration"], ["bot", "configuration"]] as const)(
+    "reports original %s stop unknown while startup is waiting for %s", async (kind, stage) => {
+    const f = await fixture(true, false);
+    if (kind === "task") {
+      f.store!.registerProject({ projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path });
+      f.store!.registerPending({ projectId: uuid(1), taskId: uuid(71), claimId: uuid(72), agent: "codex", agentControlMode: "web" });
+    } else {
+      await mkdir(path.join(f.paths.stateDirectory, "bots", uuid(73)), { recursive: true });
+    }
+    const entered = Promise.withResolvers<void>();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    const unavailable = async (signal: AbortSignal): Promise<never> => {
+      signal.throwIfAborted();
+      entered.resolve();
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    };
+    if (stage === "principal") remote.currentUserId.mockImplementation(unavailable);
+    else remote.configuration.mockImplementation((_workerId: string, signal: AbortSignal) => unavailable(signal));
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await entered.promise;
+      const results = await control!.stop({ deadline: Date.now() + 5_000 });
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: kind === "task" ? "tasks" : "bots", stop: "unknown",
+        error: expect.objectContaining({ message: expect.stringContaining("could not initialize their owner") }) }));
+      expect(control!.snapshot().stopped).toBe(false);
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      expect(mocks.bots).not.toHaveBeenCalled();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
   it("retries startup identity under the same lock without reading account-bound cache early", async () => {
     const f = await fixture(), failure = new ApiError({ operation: "me.show" }, "request", { cause: new Error("Temporary identity connection refusal") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -2030,17 +2061,28 @@ it("retains committed Worker state while a Web state failure leaves the configur
   const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
   const invalid = new Database(webFile);
   invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=999"); invalid.close();
-  mocks.emit.mockImplementation((event: { error?: unknown }) => { if (event.error !== undefined) cancellation.abort(); });
-  await runWorker({ ...f, signal: cancellation.signal });
+  const problem = Promise.withResolvers<void>();
+  let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+  mocks.emit.mockImplementation((event: { error?: unknown }) => { if (event.error !== undefined) problem.resolve(); });
+  const running = runWorker({ ...f, signal: cancellation.signal, onExecutionScope: value => { control = value; } });
+  await problem.promise;
+  const results = await control!.stop({ deadline: Date.now() + 5_000 });
+  expect(results).toContainEqual(expect.objectContaining({ resourceId: "tasks", stop: "unknown",
+    error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
+  expect(control!.snapshot().stopped).toBe(false);
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
-  expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
   const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(999);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
   web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT; PRAGMA user_version=1"); web.close();
+  await control!.reconcile({ deadline: Date.now() + 5_000 });
+  expect(control!.snapshot().stopped).toBe(true);
+  cancellation.abort();
+  await running;
+  expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
   mocks.emit.mockImplementation(() => {});
   const repaired = new AbortController(); cancellations.add(repaired); finishAtTick(repaired);
   await runWorker({ ...f, signal: repaired.signal });

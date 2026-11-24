@@ -13,7 +13,7 @@ import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
-import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
+import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "./controller-process.js";
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import { matchesLaunchConfiguration, readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
@@ -199,6 +199,9 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
           try { grantObserver?.checked(task); } catch { /* Optional monitoring cannot alter renewal. */ }
         }
         if (!needsRefresh) return;
+        if (ticket.schemaVersion === 2 && task.webExecution!.launchSubmission !== "not-submitted") {
+          await observeControllerProcess(ticket, signal);
+        }
         signal.throwIfAborted();
         started = true;
         try { onStarting?.(); } catch { /* Optional monitoring cannot alter renewal. */ }

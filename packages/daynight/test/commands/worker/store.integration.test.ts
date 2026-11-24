@@ -51,21 +51,31 @@ describe("minimal worker SQLite schema", () => {
     expect(() => reopened.saveCleanupSchedule(owner, { ...reopened.getCleanupSchedule(owner)!, deadline: 101 })).toThrow("deadline");
   });
 
-  it("removes v20 adoption while retaining the original project, claim, and native Session", () => {
+  it("removes v20 adoption while retaining the original project, claim, and frozen tool reservation", () => {
     const f = fixture();
     const original = f.store.activateTask(f.register());
     f.store.setSessionId(original, uuid(9));
     const task = f.store.getTask(claim);
     close(f.store);
-    const db = connect(f.file);
+
+    const file = path.join(f.directory, "version20.sqlite"), db = connect(file);
     const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
-    db.exec(steps.find(step => step.version === 20)!.sql);
+    for (const step of steps) if (step.version <= 20) db.exec(step.sql);
+    db.prepare("INSERT INTO projects VALUES(?,?,?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES(?,?,?,'active','codex',?,'web')").run(claim.projectId, claim.taskId, claim.claimId, uuid(9));
     db.prepare("INSERT INTO lifecycle_adoption VALUES (1, ?, ?, ?)").run("https://daynight.example", uuid(7), uuid(8));
+    const frozen = { agent: "codex" as const, model: "original", args: [] };
+    const pending = { ...claim, taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12), workerId: uuid(8),
+      version: 9007199254740993n, agentControlMode: "web" as const, nativeConfiguration: frozen };
+    db.prepare("INSERT INTO claim_tool_reservations VALUES(?,?,?,?,?,?,?,?)").run(
+      pending.projectId, pending.taskId, pending.claimId, pending.worktreeId, pending.workerId, pending.version.toString(), "web", JSON.stringify(frozen));
     db.pragma("user_version=20"); db.close();
-    const migrated = open(f.file);
+
+    const migrated = open(file);
     expect(migrated.getProject(f.project)).toEqual(f.project);
     expect(migrated.getTask(claim)).toEqual(task);
-    const readback = connect(f.file);
+    expect(migrated.getClaimToolReservation(pending)).toEqual(pending);
+    const readback = connect(file);
     expect(readback.pragma("user_version", { simple: true })).toBe(21);
     expect(readback.prepare("SELECT 1 FROM sqlite_schema WHERE name='lifecycle_adoption'").get()).toBeUndefined();
   });
@@ -106,23 +116,17 @@ describe("minimal worker SQLite schema", () => {
   it("upgrades version 16 archive schedules without changing their identities or deadlines", () => {
     const f = fixture();
     close(f.store);
-    const db = connect(f.file);
-    db.exec("DROP TABLE bot_migrations");
-    db.exec("DROP TABLE archive_backfill_schedules");
-    const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
-    const old = steps.find(step => step.version === 13)!;
-    db.exec(old.sql.slice(old.sql.indexOf("CREATE TABLE archive_backfill_schedules")));
-    db.exec("DROP TABLE cleanup_schedules");
-    db.exec(sqliteSchemaSnapshots(steps).get(16)!.find(object => object.name === "cleanup_schedules")!.sql!);
+    const file = path.join(f.directory, "version16-archive.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 16) db.exec(step.sql);
     const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
     db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
       VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, 'projection_gap', 900000)`).run(identity);
     db.pragma("user_version=16"); db.close();
-    const upgraded = open(f.file);
+    const upgraded = open(file);
     expect(upgraded.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: "projection_gap", nextAttemptAt: 900000 });
     upgraded.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: 901000, legacyError: "original failure" });
     close(upgraded);
-    const reopened = open(f.file);
+    const reopened = open(file);
     expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: null, nextAttemptAt: 901000, legacyError: "original failure" });
     reopened.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: 902000 });
     expect(reopened.getArchiveBackfillSchedule(identity)?.legacyError).toBe("original failure");
@@ -130,16 +134,13 @@ describe("minimal worker SQLite schema", () => {
 
   it("preserves version 17 Markdown repair schedules when upgrading to version 18", () => {
     const f = fixture(); close(f.store);
-    const db = connect(f.file);
-    db.exec("DROP TABLE bot_migrations");
-    db.exec("DROP TABLE archive_backfill_schedules");
-    const schema = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(17)!;
-    db.exec(schema.find(object => object.name === "archive_backfill_schedules")!.sql!);
+    const file = path.join(f.directory, "version17.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 17) db.exec(step.sql);
     const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
     db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
       VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, 'markdown_projection_failed', 900000)`).run(identity);
     db.pragma("user_version=17"); db.close();
-    const upgraded = open(f.file);
+    const upgraded = open(file);
     expect(upgraded.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 900000 });
     upgraded.saveArchiveBackfillSchedule(identity, { archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 901000, legacyError: "original failure" });
     expect(upgraded.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: "markdown_projection_failed", legacyError: "original failure" });

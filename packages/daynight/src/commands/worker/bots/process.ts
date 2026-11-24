@@ -7,7 +7,7 @@ import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
+import { ControllerIpcOutcomeUnknownError, LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
@@ -254,7 +254,19 @@ export const createBotProcess = (options: {
         }
         throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
       }
-      const observation = await reconcileLaunch({ journalFile: record.intent!.journalPath, ticket, spawnProof: prior.controllerProcess, signal });
+      const reconcileOriginal = () => reconcileLaunch({ journalFile: record.intent!.journalPath, ticket, spawnProof: prior.controllerProcess!, signal });
+      let observation = await reconcileOriginal();
+      if (observation.kind === "observed" && observation.workerLifecycleProtocol === 1) {
+        try {
+          await shutdown(record, signal);
+          signal.throwIfAborted();
+          observation = await reconcileOriginal();
+          if (observation.kind !== "controller-exited") throw new Error("Original Controller exit could not be verified after shutdown.");
+        } catch (cause) {
+          signal.throwIfAborted();
+          throw new LegacyWorkerControllerError(ticket, { cause });
+        }
+      }
       if (observation.kind === "observed") {
         await jobLeases.retain(ticket.launchId, prior.controllerProcess, Date.now() + 10_000);
         const observed = remember(record, observation.snapshot);
@@ -282,8 +294,9 @@ export const createBotProcess = (options: {
       }
       const toolLaunch = ticket.provider === "claude" ? undefined : record.intent!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
       if (ticket.provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
-      if (prior.recoveryBlocked !== null) throw new Error(prior.recoveryBlocked);
-      if (!(prior.restartAfterShutdown && saved.error === null) && prior.recoveryCount >= record.intent!.recoveryLimit) {
+      const recovery = options.executions.get(record)!;
+      if (recovery.recoveryBlocked !== null) throw new Error(recovery.recoveryBlocked);
+      if (!(recovery.restartAfterShutdown && saved.error === null) && recovery.recoveryCount >= record.intent!.recoveryLimit) {
         const reason = "Bot execution recovery budget is exhausted.";
         options.executions.blockRecovery(record, reason);
         throw new Error(reason);

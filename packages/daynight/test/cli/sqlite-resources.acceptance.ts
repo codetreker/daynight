@@ -56,7 +56,7 @@ it("ships exact SQL resources and executes installed stores and canonical timeli
   expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
   const workerSql = expectedResources.find(({ directory }) => directory === "commands/worker/sqlite")!.source;
   expect(workerSql).toHaveProperty("020-lifecycle-adoption.sql");
-  expect(workerSql).toHaveProperty("021-drop-lifecycle-adoption.sql");
+  expect(workerSql).toHaveProperty("021-worker-claim-reservations.sql");
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   expect(workerVersion).toBe(21);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))

@@ -9,7 +9,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | 数据库 | 路径 | 当前版本与受支持非零来源 |
 |---|---|---|
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
-| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 21，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；17、18 扩展 Markdown 修复和补归档调度，19 保存 Bot 迁移来源；21 删除历史 20 的 lifecycle_adoption，保留原 claim 和执行资料；旧详细库 1–4 明确拒绝 |
+| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 21，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；17、18 扩展 Markdown 修复和补归档调度，19 保存 Bot 迁移来源；21 删除历史 20 的 lifecycle_adoption，并按原 claimId 保留未结认领；原 claim 和执行资料保持；旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
 | Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 20，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 曾增加 worker_lifecycle_bindings；17 保存原 ticket_hash 的完整停止快照；18 保存在线模式；19 保存 Codex 逐响应计量语义；20 删除 worker_lifecycle_bindings，保留原执行、回执和停止证据 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |

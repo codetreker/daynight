@@ -94,13 +94,20 @@ test("original v2 stop uses the launch secret and process identity", async () =>
   } };
   let received: ControllerLocalRequest | undefined;
   let responseSnapshot = snapshot(base);
+  let legacyCapability: unknown;
   const t = await listen(base, req => {
     received = req;
-    return { requestId: req.requestId, ok: true, snapshot: responseSnapshot };
+    return { requestId: req.requestId, ok: true, snapshot: responseSnapshot, ...(legacyCapability === undefined ? {} : { workerLifecycleProtocol: legacyCapability }) };
   });
   const stop = { kind: "stop", deadline: Date.now() + 10_000 } as const;
   expect((await requestController(t, stop)).snapshot).toEqual(responseSnapshot);
   expect(received).toMatchObject({ secret: base.ipcSecret, controllerInstanceId: base.controllerInstanceId, action: stop });
+  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBeUndefined();
+  legacyCapability = 1;
+  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBe(1);
+  legacyCapability = 2;
+  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+  legacyCapability = 1;
   responseSnapshot = { ...responseSnapshot, controllerInstanceId: randomUUID() };
   await expect(requestController(t, stop)).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });

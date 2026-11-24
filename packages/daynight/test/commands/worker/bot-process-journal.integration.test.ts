@@ -63,9 +63,28 @@ test.each(["recovery", "shutdown"] as const)("reconciles an exited ordinary v16 
   }
   expect(f.reconcile).toHaveBeenCalledOnce();
   const db = new Database(sqliteFilename(f.original.journalPath), { readonly: true });
-  try { expect(db.pragma("user_version", { simple: true })).toBe(19); }
+  try { expect(db.pragma("user_version", { simple: true })).toBe(20); }
   finally { db.close(); }
   expect(f.leases.release).toHaveBeenCalledWith(f.ticket.launchId);
+});
+
+test("stops the original legacy Bot Controller before recovering the same Session", async () => {
+  const f = await stoppedJournalFixture();
+  const live = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, nativeStopped: false, stoppedAt: null,
+    startup: { state: "ready" as const, reasonCode: "ready" as const } };
+  const response = { kind: "observed" as const, snapshot: live, workerLifecycleProtocol: 1 as const };
+  const exited = { kind: "controller-exited" as const, process: f.snapshot.controllerProcess!, snapshot: f.snapshot };
+  const reconcile = vi.fn<typeof reconcileSubmittedControllerLaunch>().mockResolvedValue(exited)
+    .mockResolvedValueOnce(response).mockResolvedValueOnce(response);
+  const stopBootstrap = vi.fn(async () => {});
+  const request = vi.fn<typeof localClient.requestController>().mockResolvedValue({ ok: true, requestId: id(91), snapshot: live, workerLifecycleProtocol: 1 });
+  const manager = f.createProcess({ reconcileLaunch: reconcile, request, stopBootstrap, prepareStorage: prepareControllerStorage }, 3, f.leases);
+  await expect(manager.advance(f.current(), f.signal)).resolves.toMatchObject({
+    sessionId: f.ticket.sessionId, executionId: f.original.executionId, nativeSessionId: f.snapshot.nativeSessionId, executionGeneration: "2",
+  });
+  expect(request).toHaveBeenCalledWith(f.ticket, expect.objectContaining({ kind: "stop" }), expect.anything());
+  expect(stopBootstrap).toHaveBeenCalledWith(f.snapshot.controllerProcess, expect.any(Number));
+  expect(f.launch).toHaveBeenCalledTimes(2);
 });
 
 test.each([

@@ -6,7 +6,7 @@ import { createSuspendedProcess, type WindowsSuspendedProcess } from "../../../p
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../controller/windows-job.js";
 import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { requestController } from "../../controller/local-client.js";
+import { LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
@@ -55,8 +55,11 @@ export const createControllerExecutionSerializer = () => {
 };
 
 /** IPC authenticates the original execution fence; observing never submits input. */
-export const observeControllerProcess = async (ticket: ControllerLaunchTicket, signal: AbortSignal, timeoutMs = 1000): Promise<ControllerSnapshot> =>
-  (await requestController(ticket, { kind: "observe" }, { signal, timeoutMs })).snapshot;
+export const observeControllerProcess = async (ticket: ControllerLaunchTicket, signal: AbortSignal, timeoutMs = 1000): Promise<ControllerSnapshot> => {
+  const response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs });
+  if (response.workerLifecycleProtocol === 1) throw new LegacyWorkerControllerError(ticket);
+  return response.snapshot;
+};
 
 /**
  * Launch only after the caller has established that its durable intent is unsubmitted.

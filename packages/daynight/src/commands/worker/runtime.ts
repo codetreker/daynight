@@ -62,6 +62,7 @@ import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { importInterruptedWorkerClaims } from "./legacy-claims.js";
+import { assertNoUnobservedExecutions } from "./unobserved-executions.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { BotCliProbeCleanupError } from "./bots/cli-probe.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
@@ -513,7 +514,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   const stopTasks = (deadline: number): Promise<void> => {
     if (taskStop !== undefined) return taskStop;
     const work = (async () => {
-      if (coordinator !== undefined && !await coordinator.shutdown({ deadline })) throw new Error("Some original task resources remain unconfirmed.");
+      if (coordinator === undefined) await assertNoUnobservedExecutions(paths, "task", deadline);
+      else if (!await coordinator.shutdown({ deadline })) throw new Error("Some original task resources remain unconfirmed.");
     })();
     taskStop = work;
     void work.catch(() => { if (taskStop === work) taskStop = undefined; });
@@ -546,7 +548,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     stop: ({ deadline }) => stopTasks(deadline) });
   registerOwner({ resourceId: "bots", ownerKind: "bot",
     closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
-    stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
+    stop: async ({ deadline }) => {
+      if (bots === undefined) await assertNoUnobservedExecutions(paths, "bot", deadline);
+      else { await bots.shutdown({ deadline }); await botRun; await bots.close?.(); }
+    } });
   registerOwner({ resourceId: "reviewer", ownerKind: "assistant",
     snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
     stop: stopReviewer });

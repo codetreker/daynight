@@ -2100,6 +2100,30 @@ describe("worker task tag filter admission", () => {
     expect(f.remote.claim).toHaveBeenCalledOnce();
   });
 
+  it("continues scheduling at the same version while preserving an earlier attempt's exact tools", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const task = f.candidates[0]!;
+    const original = { projectId: task.projectId, taskId: task.id, claimId: uuid(9911), worktreeId: uuid(9912), workerId,
+      version: task.version, agentControlMode: "web" as const, nativeConfiguration: { agent: "codex" as const, model: "original", args: [] } };
+    f.store.reserveClaimTools(original);
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => {
+      expect(candidate.version).toBe(original.version);
+      expect(descriptor.claimId).not.toBe(original.claimId);
+      expect(f.store.listClaimToolReservations()).toHaveLength(2);
+      f.grant(candidate, { claimId: original.claimId, worktreeId: original.worktreeId, workerId, machine: f.options.machine,
+        platform: "linux", agent: "codex", agentControlMode: "web" });
+      throw apiError(409, "version_conflict", "Another request won the claim.");
+    });
+    const runner = createWorkerCoordinator(f.options);
+    await runner.tick();
+    expect(f.store.listTasks()).toEqual([]);
+    expect(f.store.listClaimToolReservations()).toEqual([original]);
+    await runner.tick();
+    expect(f.store.getNativeConfiguration(original)).toEqual(original.nativeConfiguration);
+    expect(f.store.listClaimToolReservations()).toEqual([]);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+
   it("uses the exact grant when two inherited attempts targeted the same task version", async () => {
     const f = await fixture(); f.candidates.splice(1);
     const task = f.candidates[0]!;

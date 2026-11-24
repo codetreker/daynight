@@ -611,26 +611,31 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const invalidated = (id: string): boolean => (projectInvalidations.get(id) ?? 0) !== (initialInvalidations.get(id) ?? 0);
     const observedTasks = [...observation.tasks];
     const covered = new Set(observation.coveredProjectIds.filter(id => !invalidated(id)));
-    const reservations = new Map(options.store.listClaimToolReservations().map(reservation => [taskKey(reservation), reservation]));
+    const reservations = Map.groupBy(options.store.listClaimToolReservations(), taskKey);
     const observeReservation = (task: Task) => {
       const target = { projectId: task.projectId, taskId: task.id };
-      const targetKey = taskKey(target), reservation = reservations.get(targetKey);
+      const targetKey = taskKey(target);
       const claim = readWorkerClaim(task.properties);
       const active = task.status === "in_progress" && claim?.state === "active" ? claim : undefined;
-      if (reservation !== undefined && reservation.claimId !== active?.claimId && task.version > reservation.version) {
+      const pending = (reservations.get(targetKey) ?? []).filter(reservation => {
+        if (reservation.claimId === active?.claimId || task.version <= reservation.version) return true;
         options.store.releaseClaimToolReservation(reservation);
-        reservations.delete(targetKey);
-      }
+        return false;
+      });
+      if (pending.length === 0) reservations.delete(targetKey);
+      else reservations.set(targetKey, pending);
       if (active === undefined) return null;
       const owner = { ...target, claimId: active.claimId };
-      const pending = reservations.get(targetKey);
-      const retained = pending === undefined && options.store.getTask(owner) === null
+      const matching = pending.find(reservation => reservation.claimId === active.claimId);
+      const retained = matching === undefined && options.store.getTask(owner) === null
         ? options.retainedClaimRequests?.get(key(owner)) : undefined;
-      if (pending?.claimId !== active.claimId && retained === undefined) return null;
+      if (matching === undefined && retained === undefined) return null;
       if (active.userId !== options.userId) throw new Error("The original claim grant belongs to another user.");
       if (retained !== undefined) options.store.reserveClaimTools(retained);
       const accepted = options.store.acceptClaimToolReservation(task, options.workerId);
-      reservations.delete(targetKey);
+      const unresolved = pending.filter(reservation => reservation.claimId !== active.claimId);
+      if (unresolved.length > 0) reservations.set(targetKey, unresolved);
+      else reservations.delete(targetKey);
       return accepted;
     };
     const result = new Map<string, Task>();
@@ -655,8 +660,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       confirmWebClaim(owner);
       if (options.store.getProject(owner) !== null && observeReservation(task) === null && !reservations.has(taskKey(owner))) options.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: owner.claimId, agent: readWorkerClaim(task.properties)!.agent, agentControlMode: readWorkerClaim(task.properties)!.agentControlMode });
     }
-    for (const reservation of reservations.values()) {
-      if (!covered.has(reservation.projectId)) continue;
+    for (const [reservation] of reservations.values()) {
+      if (reservation === undefined || !covered.has(reservation.projectId)) continue;
       try {
         const task = await options.remote.readTask(reservation.projectId, reservation.taskId, signal);
         if (task.projectId !== reservation.projectId || task.id !== reservation.taskId) throw new Error("Claim observation returned a different task.");
@@ -1725,7 +1730,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
               : await options.remote.claim(candidate, descriptor, normalSignal);
             replyReceived = true;
             const claim = readWorkerClaim(granted.properties);
-            if (granted.projectId !== candidate.projectId || granted.id !== candidate.id || claim?.userId !== options.userId) throw new Error("The granted claim differs from the original request.");
+            if (granted.projectId !== candidate.projectId || granted.id !== candidate.id || claim?.claimId !== claimId || claim.userId !== options.userId) throw new Error("The granted claim differs from the original request.");
             const local = options.store.acceptClaimToolReservation(granted, options.workerId);
             if (local === null) throw new Error("The original claim tool reservation is missing.");
             const owner = remoteOwner(granted);
@@ -1769,7 +1774,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
     normalSignal.throwIfAborted();
-    if (options.store.listClaimToolReservations().some(reservation => reservation.projectId === target.projectId && reservation.taskId === target.taskId)) throw new Error("The original claim request remains unconfirmed; its frozen selection is reserved.");
     // A Git mutation may have removed its visible worktree before its owned
     // process joins. Consult persisted responsibilities too, including before
     // the first reconciliation after restart. Settled metadata alone is not a barrier.

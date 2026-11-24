@@ -96,6 +96,8 @@ describe("legacy Bot storage migration", () => {
     const manifest = await migrateLegacyBot(f.input);
     const source = f.openRaw(f.legacyDatabaseFile, false);
     const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+    source.exec("DROP TABLE claim_tool_reservations");
+    source.exec(steps.find(step => step.version === 16)!.sql);
     source.exec(steps.find(step => step.version === 20)!.sql);
     source.pragma("user_version=20");
     expect(await migrateLegacyBot(f.input)).toEqual(manifest);

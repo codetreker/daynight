@@ -10,7 +10,7 @@ Worker 与 Daynight Server 通过业务协议协作。服务端提供候选查�
 
 服务端可以检查 Task 资格、当前 claim、Bot 宿主、Session 执行代次及调用者权限。Worker 的正常接单、正常启动或本机恢复不要求额外的管理实例注册、全机停止证明、保存回执或激活许可。进程与资源观测供诊断使用，调度不得依赖独立的本机生命周期握手。针对具体业务资源的停止证明仍由拥有该操作的协议定义，例如原 claim 的显式释放。
 
-本机关闭时由 Worker 停止新生产者，等待原 owner 收尾并保存各自证据。网络不可用时仍可进行本机停止和保存。服务端负责对具体业务写入给出准确结果，本机停止结论由原资源 owner 核实。取舍和后果见[职责边界决策](../../.agents/notes/implemented/architecture/2026-11-24-worker-scheduling-boundary.md)。
+本机关闭时由 Worker 停止新生产者，等待原 owner 收尾并保存各自证据。已初始化的 owner 可以在网络不可用时继续本机停止和保存。启动中断且 owner 尚未建立时，只读检查原本机清单；存在原资源责任或清单无法核验时保留未知停止结果。服务端负责对具体业务写入给出准确结果，本机停止结论由原资源 owner 核实。取舍和后果见[职责边界决策](../../.agents/notes/implemented/architecture/2026-11-24-worker-scheduling-boundary.md)。
 
 ## 总体结构
 
@@ -357,7 +357,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 原 claim 在成功完整自有清单中缺席后，coordinator 保留该原 project/task/claim 已失去当前归属的结论，取消其执行入口；即使全局资源快照未发现它，本机未完成行也进入同一 Task 串行清理 job。具有可用 Web 执行来源时终态请求设置 immediateStop，复用原 Controller 停止与 Git 删除；来源缺失或不足时由本机适配器补定位和停止原资源，再完成同一终态 Git 清理，结清本机索引、调度、配额和旧 claim 屏障；当前或历史 Session 不提供这项归属结论。持久调度只发现责任，重启后仍需重新分类归属。清理目标保留原 claim 身份及可选真实 worktreeId，Web journal 证明完整 owner 后沿用该身份；尚无 worktreeId 时不创建虚假 owner 或另建台账。本机补定位按批次读取原 Worker 状态目录的 Task ticket。旧版本保存在 `lifecycle.sqlite` 的资源位置和原进程身份证据仅供原执行核对，以只读方式验证，不参与新执行准入。清理逐个匹配原 claim 的所有执行代际和对应 journal，不只选择最新 ticket。同一代际的合法 launch replacement 按 launchId 分别保留，以 journal 的精确 ticket_hash 选择实际运行票据，再验证完整原身份；不按 generation 合并或任意选择。未提交票据没有独立进程证据时不产生虚构停止回执；原启动结果未知时，须由原启动 owner 核对实际未派发、启动门关闭或进程停止证据；证据不足时保留责任。launcher 与 Controller 自采的进程证明复用原身份比较规则：POSIX 保持 PID、出生标识、命令摘要和非空进程组时允许合法父进程变化，Windows 继续核对父 PID 与原 Job。Windows 以原 ticket 绑定的完整历史 stopped 回执核对已销毁的旧 Job；journal 的跨代停证保留、身份校验及缺证失败由 [Controller 协议](task-session-protocol.md#关闭与清理)拥有。已覆盖且从未保存完整停证的旧历史不能重建，后继代际存在或原 Job 名称消失均不能替代原边界停止证明。票据、journal 与进程出生证明须识别同一服务、账号、Worker 和原执行，其他 claim、Test Session 与 Bot 资源不进入目标。没有完整 owner 时不推测目录；完整本机观察确认没有原资源时直接结清。已识别的同 Task 后继资源保持不变，旧 claim 的实际资源已消失便结束旧索引。身份不完整的失败使用进程内退避，重启从保留的未完成行重新发现；完整 owner 才持久保存 cleanup_schedules。
 
-新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
+新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求前按原 claimId 持久保存冻结参数。结果未知时记录 Warning 并等待原归属回读；新候选仍可发起独立的版本化认领。服务端同一 Task 版本至多批准一次。回读获胜 claim 后只采用其冻结配置，任务版本已经超过的其他预留随之结清。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 
 coordinator 接受可选 `taskTagFilterKey`：缺失表示旧服务，null 表示应用证明不可用，只暂停新领取；有效摘要参与配置身份。有效摘要下每页候选查询附带 `candidateWorkerId`，claim 附带捕获的摘要。配置身份改变时停止发送旧轮次尚未发出的 claim，已经发送的 claim 由服务端原子准入和既有对账处理。筛选上下文中的游标失效或确定性 claim 冲突通过可选回调提示重新读取配置；这只是重新核对提示，不证明冲突原因。runWorker 从有效配置快照提供该摘要，并将失效提示接到 exchange.markNeedsRead() 与 reporter.trigger()，由原交换路径重新核对权威配置。runWorkerControl 同样投影有效值，只管理已有执行并保留原显式读取或单次同步，不新增报告循环或候选查询。
 

@@ -86,7 +86,7 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 ## Controller 与原生会话
 
-worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、当前 timeline、投影状态及有界 outbox，资源 descriptor/blob/pin 继续由相邻文件拥有者保存。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。 新票据使用 v1；已持久的 v2 票据按原完整内容计算摘要并核对原执行，原不可变文件及停止证据继续可读。
+worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、当前 timeline、投影状态及有界 outbox，资源 descriptor/blob/pin 继续由相邻文件拥有者保存。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。 新票据使用 v1；已持久的 v2 票据按原完整内容计算摘要并核对原执行，原不可变文件及停止证据继续可读。旧 Controller 若仍在原认证 IPC 中报告 `workerLifecycleProtocol: 1`，Worker 先核对并停止原进程边界，再按原 Session 身份恢复。停证缺失时保留原执行并报告受阻。
 
 受管 Task 换代后恢复未派发的首次输入时，Controller 在原生输入队列内重新核验当前 claim、就绪状态、冻结 ticket 与 journal 的当前快照和相邻前代停证。原 operation 缺失时创建原 ID，或在单写者事务中将正文、hash 和 kind 精确匹配且仍为 `accepted` 的记录绑定当前 generation；随后沿既有路径先持久化 `dispatching`，再调用 Provider。已进入派发、未知或终态的记录不能重新变为 `accepted`。重复 IPC 共享原操作，不能产生第二次可能的 native dispatch；journal 证据不完整或冲突时保留责任并拒绝发送。Worker 的工作树和恢复入口规则见 [Worker 设计](daynight-worker.md#web-backend-与执行证据)。
 
