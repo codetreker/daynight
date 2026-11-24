@@ -173,12 +173,17 @@ export class TaskDetailSessions {
         }
         if (event.baselineRebuilt) {
           const opening = entry.openingGeneration;
-          void this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal).then(qualification => {
+          void this.scope.taskReadQualification(entry.projectId, entry.taskId, this.scope.signal).then(async qualification => {
             if (this.disposed || opening !== entry.openingGeneration || entry.state.status === "deleted") return;
             if (qualification.removed) {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
             } else if (!qualification.inBaseline) this.requireResourceRecheck(entry);
+            else if (entry.source === "direct") {
+              const receipt = entry.receipt;
+              const valid = receipt !== null && await this.scope.verifyTaskRead(receipt.fence, this.scope.signal);
+              if (!this.disposed && opening === entry.openingGeneration && entry.receipt === receipt && !valid) this.requireResourceRecheck(entry);
+            }
           }).catch(error => {
             if (!this.disposed && opening === entry.openingGeneration && !isAbortError(error)) this.failRead(entry, error, false);
           });

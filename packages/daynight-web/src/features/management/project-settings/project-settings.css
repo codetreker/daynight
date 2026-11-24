@@ -15,6 +15,9 @@
 .auth-dialog.project-settings-dialog .dialog-body, .project-settings-dialog .field, .project-settings-dialog .field label, .project-settings-dialog .field .hint, .project-settings-dialog .notice, .project-settings-dialog code { font-size: var(--text-sm); line-height: 1.5; }
 .project-settings-dialog .project-transfer-impact-heading { font-size: inherit; }
 .project-settings-tab-state { color: #805b27; font-size: var(--text-sm); font-weight: 400; }
+.task-sync-result:not(:empty) { padding: 0 23px 20px; }
+.task-sync-result .notice { margin: 0; }
+.task-sync-card .panel-heading { border-bottom: 0; }
 .project-settings-content { min-width: 0; }
 .project-settings-content > [hidden] { display: none !important; }
 .project-ownership-panel .panel-body .project-ownership-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
@@ -22,6 +25,7 @@
 .project-ownership-panel .panel-body .project-ownership-row > .button { flex: none; }
 @media (max-width: 800px), (pointer: coarse) { .project-settings-panel .field :is(input, textarea), .project-settings-dialog .field :is(input, textarea) { min-height: 44px; } }
 @media (max-width: 740px) {
+  .task-sync-result:not(:empty) { padding: 0 17px 17px; }
   .project-settings-layout { display: block; }
   .project-settings-tabs { top: 0; z-index: 3; flex-direction: row; overflow-x: auto; scrollbar-width: thin; padding: 4px; background: #eeeef6; border-radius: 8px; margin-bottom: 20px; }
   .project-settings-tabs a { flex: 0 0 auto; align-items: center; white-space: nowrap; }

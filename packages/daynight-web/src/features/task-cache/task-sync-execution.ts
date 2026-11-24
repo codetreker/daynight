@@ -24,7 +24,7 @@ export const executeTaskSync = async ({ scope, projectId, signal: callerSignal, 
   readonly projectId: string;
   readonly signal: AbortSignal;
   readonly ticket?: TaskSyncTicket;
-  readonly trigger?: 'refresh' | 'automatic' | 'deletion-recheck';
+  readonly trigger?: 'refresh' | 'automatic' | 'deletion-recheck' | 'manual-rebuild';
   readonly observingHistory?: (observing: boolean) => void;
 }): Promise<TaskSyncExecution> => {
   const cycleId = crypto.randomUUID();
@@ -33,11 +33,13 @@ export const executeTaskSync = async ({ scope, projectId, signal: callerSignal, 
   try {
     const ticket = preparedTicket ?? await scope.beginSync(projectId, signal);
     if (ticket.userId !== scope.userId || ticket.projectId !== projectId) throw new ApiError('protocol');
-    const read = await getTaskSync(projectId, taskSyncQuery(ticket), scope.userId, signal, scope.principalMismatch);
+    const rebuild = trigger === 'manual-rebuild';
+    const read = await getTaskSync(projectId, rebuild ? {} : taskSyncQuery(ticket), scope.userId, signal, scope.principalMismatch);
     signal.throwIfAborted();
+    if (rebuild && read.sync.mode !== 'snapshot') throw new ApiError('protocol');
     observingHistory?.(true);
     let history: 'current' | 'retired' | 'confirm';
-    try { history = await scope.observeHistory(ticket, read.sync.epoch, signal); }
+    try { history = rebuild ? 'current' : await scope.observeHistory(ticket, read.sync.epoch, signal); }
     finally { observingHistory?.(false); }
     if (history === 'retired') return { history };
     if (history === 'confirm') return { history };
@@ -45,7 +47,7 @@ export const executeTaskSync = async ({ scope, projectId, signal: callerSignal, 
     const observedVersions = deriveTaskSyncVersions(ticket, read.sync);
     validateTaskSyncObservationBindings(read.sync, observedBindings, observedVersions);
     const completeParentObservation = read.sync.mode === 'snapshot' || ticket.parentTaskFullSync || ticket.coverageUpdatedAt === null;
-    const result = await scope.applySync(ticket, read.sync, signal, completeParentObservation);
+    const result = await scope.applySync(ticket, read.sync, signal, completeParentObservation, rebuild ? { rebuild: true, atomicHistory: true } : undefined);
     if (!await scope.isSyncCommitCurrent(result.project.manifest, signal)) throw new TaskCacheLifecycleChanged();
     signal.throwIfAborted();
     console.debug('Task sync', { cycle_id: cycleId, project_id: projectId, trigger, received: read.sync.tasks.length,

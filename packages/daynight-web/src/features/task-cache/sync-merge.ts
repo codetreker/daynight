@@ -23,6 +23,13 @@ export const mergeTaskSync = (
   if (replacing) {
     const visible = new Set(response.tasks.map(task => task.id));
     for (const task of previous.tasks) if (!visible.has(task.id)) deletedTaskIds.add(task.id);
+    const old = new Map(previous.tasks.map(task => [task.id, task]));
+    for (const task of response.tasks) {
+      const existing = old.get(task.id);
+      if (existing === undefined) continue;
+      if (existing.version > task.version || existing.version === task.version && !sameSummary(existing, task) ||
+        existing.parentTaskId !== undefined && task.parentTaskId !== undefined && existing.parentTaskId !== task.parentTaskId) return protocol();
+    }
   }
   const changedTaskIds = new Set<string>();
   const intrinsicChanged = new Set<string>();

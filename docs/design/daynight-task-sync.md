@@ -1,6 +1,6 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口、覆盖水位与删除 ID、完整属性、10s 配置、项目 epoch、认证响应归属、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 15、原子删除与权威依赖状态、跨读取面的定向资格核对及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口、覆盖水位与删除 ID、完整属性、10s 配置、项目 epoch、认证响应归属、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 15、原子删除与权威依赖状态、跨读取面的定向资格核对及本地图投影、项目设置手动重新同步、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
 [需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用权威项目覆盖更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍；[完整标题决策](../../.agents/notes/implemented/architecture/2026-11-15-task-sync-full-titles.md)记录标题传输及缓存重建的权衡；[删除数据决策](../../.agents/notes/implemented/architecture/2026-11-24-task-sync-deletion-data.md)记录覆盖水位和有效删除事实的取舍；[定向读取撤回决策](../../.agents/notes/implemented/architecture/2026-11-24-task-removal-read-admission.md)记录提示与权威提交分离、批量候选资格和界面连续性的取舍。
 
@@ -195,7 +195,7 @@ Web 分别消费 `sessions` 与完整观测。后者按 Task 版本和执行绑�
 
 `task-cache/execution-binding.ts` 的 `TaskExecutionBinding` 保存 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode，缺少 Worker 明确为 null。`TaskSyncTicket` 扩展原 SyncTicket，将这些 slim bindings 和精确 Task 版本从 beginSync 已有的完整 stored Tasks 读取结果分别建立为不可变 map，与 epoch、水位和 manifest 位于同一事务；不增加事务、持久字段或 Session version。`deriveTaskSyncBindings` 与 `deriveTaskSyncVersions` 对 snapshot 从响应 Tasks 建立基线，对 delta 使用 ticket 中各自基线并覆盖响应实际 Tasks。`applySync` 继续按版本合并此刻的持久集合，但该最终集合不能反向改变响应的执行观察。
 
-`useTaskGraph` 保留唯一项目 HTTP 调度与原有 history/applySync 顺序，拥有稳定且相互独立的 `TaskSessionSummaryStore` 与完整项目观测 store。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，分别向两个 store 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。两个 store 经各自 Provider 传给项目列表，Provider 只负责 context 与展示活动。
+`useTaskGraph` 拥有项目图的 HTTP 调度与原有 history/applySync 顺序，拥有稳定且相互独立的 `TaskSessionSummaryStore` 与完整项目观测 store。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，分别向两个 store 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。两个 store 经各自 Provider 传给项目列表，Provider 只负责 context 与展示活动。
 
 四态汇总的状态值与 map 的键缺席使用相同 observed/current eligible binding 比较；旧 claim 的状态及缺席都不能影响较新执行或续期它的 receipt。其它 cache producer 和标签页只通过既有 Task 通知撤销不匹配绑定，不向本页发布 Session map。响应 key 不属于其 observed eligible Task 为协议错误。entry 的 30 秒期限从 API body receipt 起算，发布前、恢复展示与文档可见时复核；解码和 IDB 延迟不续期。普通在途同步保留尚有效状态，当前失败、auth pause、scope 失效和执行变化撤销相应贡献。
 
@@ -261,6 +261,14 @@ Session 记录目录复用共享 scope 的事务及身份准入，按用户、�
 5. 等 tx.done 后复核当前持久 syncRevision，再发布实际合并的快照。共享 executeTaskSync 负责单次票据、请求、历史观察、执行绑定和事务；useTaskGraph 保留轮询、有限重试、页面反馈与 Session 内存观察。绑定和版本地图先移除删除 ID。自身字段和状态均未变化的重复行不重写、不触发详情失效，不改变可见任务/索引/布局引用；仍能提供本页新的访问确认、完整人员版本清单与时钟样本。
 
 仅比较 M 不足以保证内容 CAS：不同提交可以共享覆盖时间。syncRevision 是每项目本地 UUID，不上网，也不表示服务端历史。每次实质改变摘要、依赖、删除、覆盖、项目元数据或显式重建时更新；重复相同事实可保持修订。票据与事务比较修订，迟到请求整体拒绝。事务内只等待 IDB 请求并做有界纯计算，不等待 fetch、timer 或异步 crypto。每轮可能读取和验证全部本地摘要及属性，其成本随实际任务、依赖和属性内容增长；这个成本实测，不声称本地工作量严格为变化量。网络、HTTP、解码和 IDB 配额/提交失败不安装部分摘要或推进水位，保持旧有效缓存与明确错误。
+
+### 设置页的完整重建
+
+Project Management 顶部的任务同步卡片使用现有项目访问会话与用户级缓存 scope。它拥有本次读取的进行中、成功、空结果和可重试失败反馈，合并重复点击，并在离开该分组或作用域失效时取消读取。访问资格独立于项目设置编辑权限；可信项目拒绝仍按捕获的读取票据执行撤权。
+
+卡片调用共享 `executeTaskSync`，捕获本地票据后发送一次省略 `epoch` 与 `since` 的请求，并要求响应为完整 snapshot。无 epoch 请求是显式重建；父项元数据恢复使用有 epoch、无 since 的 delta，仍按合并语义处理。同 epoch 重建在一个事务中替换完整摘要及依赖状态，保留历史 generation 和已确认删除，将旧完整集合的差集记录为删除；只有版本及内容一致的详情可复用。即使差集为空，提交也发布重建证据，独立读取按当前完整集合重新核对资格。
+
+首份新 epoch snapshot 在原票据和已观察历史仍有效且响应未退休时，原子替换旧摘要、详情、删除记录、项目及水位，并在提交后退休旧历史和发布新投影。请求或提交前不清空旧基线；历史不确定、并发修订冲突及失败终止本次尝试并提供重试，不自动发出第二次全量请求。普通图读取保留其有界历史确认。两种路径均复核已提交修订后发布，之后继续使用提交的 epoch 和水位进行普通增量。[手动重建决策](../../.agents/notes/implemented/feature/2026-11-24-project-task-resync.md)记录这些边界及取舍。
 
 项目 manifest 不合法或完整摘要集合损坏时，先定向清除本项目摘要/详情、建立符合 null/零值约束的新 invalidated manifest 及 cacheGeneration，再无时间边界取 snapshot。相同 epoch 的空项目后续走 delta，不因重复空集合不断轮换 generation。
 

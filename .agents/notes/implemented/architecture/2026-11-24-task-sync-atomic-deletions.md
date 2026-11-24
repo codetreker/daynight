@@ -46,7 +46,8 @@ The [sync design](../../../../docs/design/daynight-task-sync.md) owns mechanisms
 and the [deletion data decision](2026-11-24-task-sync-deletion-data.md) owns the
 server snapshot. Deletion callers and the server still use their epoch rotation
 contract; the [targeted read-admission decision](2026-11-24-task-removal-read-admission.md)
-owns independent reader withdrawal, and the settings UI has a separate owner.
+owns independent reader withdrawal. The [manual resynchronization decision](../feature/2026-11-24-project-task-resync.md)
+owns the settings entry and its single-request history replacement.
 
 ## Alternatives
 

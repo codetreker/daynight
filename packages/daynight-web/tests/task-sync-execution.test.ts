@@ -23,6 +23,7 @@ const scope = () => { const cache = createTaskCacheScope({ userId: TEST_VIEWER_I
 const signal = () => new AbortController().signal;
 const seed = async (cache: TaskCacheScope) => {
   const ticket = await cache.beginSync(projectId, signal());
+  await cache.observeHistory(ticket, response().epoch, signal());
   await cache.applySync(ticket, response(), signal());
 };
 beforeEach(() => vi.mocked(getTaskSync).mockReset());
@@ -95,6 +96,93 @@ it('preserves the baseline and original error when the HTTP read fails', async (
   await expect(executeTaskSync({ scope: cache, projectId, signal: signal() })).rejects.toBe(failure);
   const after = await cache.beginSync(projectId, signal());
   expect(after.syncRevision).toBe(before.syncRevision); expect(after.coverageUpdatedAt).toBe(before.coverageUpdatedAt);
+});
+
+it('rebuilds the same history with one unparameterized request and fences an older ticket', async () => {
+  const cache = scope(); await seed(cache);
+  const stale = await cache.beginSync(projectId, signal());
+  const events: unknown[] = []; const unsubscribe = cache.subscribe(event => events.push(event));
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { tasks: [], dependencyStates: {} })));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current');
+  expect(getTaskSync).toHaveBeenCalledOnce(); expect(vi.mocked(getTaskSync).mock.calls[0]![1]).toEqual({});
+  expect(cache.getAuthorizedProject(projectId)?.summaries.size).toBe(0);
+  expect(events).toContainEqual(expect.objectContaining({ baselineRebuilt: true, deletedTaskIds: [taskId] }));
+  await expect(cache.applySync(stale, response({ epoch: stale.epoch! }), signal())).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
+  unsubscribe();
+});
+
+it('installs a first eligible replacement history atomically with a single request', async () => {
+  const cache = scope(); await seed(cache);
+  const observed = await cache.beginSync(projectId, signal());
+  await cache.observeHistory(observed, observed.epoch!, signal());
+  const stale = await cache.beginSync(projectId, signal());
+  const direct = await cache.beginTaskRead(projectId, taskId, 1, 1, signal());
+  const replacement = crypto.randomUUID();
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null })));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
+  const current = await cache.beginSync(projectId, signal());
+  expect(current.epoch).toBe(replacement); expect(current.coverageUpdatedAt).toBeNull();
+  expect(current.cacheGeneration).not.toBe(stale.cacheGeneration);
+  expect(cache.isTaskReadCurrent(direct)).toBe(false);
+  await expect(cache.observeHistory(stale, stale.epoch!, signal())).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
+});
+
+it('installs a replacement history from a cold scope using the persisted baseline', async () => {
+  const first = scope(); await seed(first); first.dispose();
+  const cold = scope(); const before = await cold.beginSync(projectId, signal());
+  const replacement = crypto.randomUUID();
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null })));
+  const result = await executeTaskSync({ scope: cold, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
+  expect((await cold.beginSync(projectId, signal())).epoch).toBe(replacement);
+  expect((await cold.beginSync(projectId, signal())).cacheGeneration).not.toBe(before.cacheGeneration);
+});
+
+it('rebuilds when a direct reader observed the history before a project baseline existed', async () => {
+  const cache = scope();
+  const direct = await cache.beginTaskRead(projectId, taskId, 1, 1, signal());
+  await cache.observeHistory(direct, response().epoch, signal());
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response()));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
+  expect((await cache.beginSync(projectId, signal())).epoch).toBe(response().epoch);
+});
+
+it.each([false, true])('publishes a committed rebuild when the page cancels at completion (replacement=%s)', async replacement => {
+  const cache = scope(); await seed(cache);
+  const prior = await cache.beginSync(projectId, signal());
+  const nextEpoch = replacement ? crypto.randomUUID() : prior.epoch!;
+  const controller = new AbortController(); const events: unknown[] = [];
+  cache.subscribe(event => events.push({ event, size: cache.getAuthorizedProject(projectId)?.summaries.size }));
+  const put = IDBObjectStore.prototype.put;
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'projects' && (args[0] as { epoch?: string }).epoch === nextEpoch) {
+      this.transaction.addEventListener('complete', () => controller.abort(), { once: true });
+    }
+    return put.apply(this, args);
+  });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: nextEpoch, tasks: [], dependencyStates: {}, coverageUpdatedAt: replacement ? null : prior.coverageUpdatedAt })));
+  await expect(executeTaskSync({ scope: cache, projectId, signal: controller.signal, trigger: 'manual-rebuild' })).rejects.toMatchObject({ name: 'AbortError' });
+  expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ baselineRebuilt: true }), size: 0 }));
+  const current = await cache.beginSync(projectId, signal());
+  expect(current.epoch).toBe(nextEpoch); expect(cache.getAuthorizedProject(projectId)?.summaries.size).toBe(0);
+  if (replacement) expect(cache.getHistoryGeneration(projectId)).toBe(1);
+});
+
+it('keeps the previous history if a manual snapshot loses its commit race', async () => {
+  const cache = scope(); await seed(cache);
+  const observed = await cache.beginSync(projectId, signal()); await cache.observeHistory(observed, observed.epoch!, signal());
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => {
+    const ticket = await cache.beginSync(projectId, signal());
+    await cache.applySync(ticket, response({ epoch: ticket.epoch! }, { coverageUpdatedAt: later, tasks: [], dependencyStates: {} }), signal());
+    return taskSyncReadFixture(response({}, { epoch: crypto.randomUUID(), tasks: [], dependencyStates: {}, coverageUpdatedAt: null }));
+  });
+  await expect(executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' })).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
+  const after = await cache.beginSync(projectId, signal());
+  expect(after.epoch).toBe(observed.epoch); expect(after.coverageUpdatedAt).toBe(later);
+  expect(cache.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(true);
 });
 
 it('does not apply a response from a cancelled read', async () => {

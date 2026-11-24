@@ -96,6 +96,36 @@ it("admits a direct opening without a manifest", async () => {
   expect(scope.getAuthorizedProject(project)).toBeNull();
 });
 
+it('rechecks an open direct detail when a rebuild advances its summary', async () => {
+  const { sessions, scope } = world(); const ticket = await scope.beginSync(project, signal());
+  const syncFor = (value: ReturnType<typeof body>) => taskSyncFromGraph(graphFixture([value]), { epoch, versionForTask: () => value.version, propertiesForTask: () => value.properties });
+  await scope.observeHistory(ticket, epoch, signal()); await scope.applySync(ticket, syncFor(body()), signal());
+  const delayed = deferred<Response>(); let reads = 0;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+    reads++; return reads === 1 ? Promise.resolve(response(body())) : reads === 2 ? delayed.promise : Promise.resolve(response(body(2n, 'Updated')));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  sessions.load(project, task, 2, 'refresh'); await waitFor(() => expect(reads).toBe(2));
+  const next = await scope.beginSync(project, signal());
+  await scope.applySync(next, syncFor(body(2n, 'Updated')), signal(), true, { rebuild: true });
+  await waitFor(() => expect(sessions.snapshot(project, task).detail?.version).toBe(2n));
+  delayed.resolve(response(body()));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sessions.snapshot(project, task).detail?.version).toBe(2n);
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+});
+
+it('rechecks an open direct detail when the first manual baseline includes it', async () => {
+  const { sessions, scope } = world(); const fetcher = vi.fn().mockImplementation(() => Promise.resolve(response(body()))); vi.stubGlobal('fetch', fetcher);
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  const ticket = await scope.beginSync(project, signal());
+  const sync = taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties });
+  await scope.applySync(ticket, sync, signal(), true, { rebuild: true, atomicHistory: true });
+  await waitFor(() => expect(fetcher.mock.calls.length).toBeGreaterThan(1));
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', requiresFreshRead: false }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+});
+
 it("preserves a confirmed write when the required refresh fails and never replays it", async () => {
   const { sessions } = world(); let writes = 0; let reads = 0;
   vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {

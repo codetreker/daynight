@@ -98,6 +98,43 @@ it('requires a fresh projection for an unknown resource crossing a same-epoch re
   expect((await cache.qualifyProjection(fresh, [{ projectId, id: unknownId }], signal())).size).toBe(1);
 });
 
+it('rejects old reads of changed tasks across a rebuild while retaining unchanged readers', async () => {
+  const cache = scope(); await seed(cache);
+  const changed = await cache.beginTaskRead(projectId, rootId, 1, 1, signal());
+  const unchanged = await cache.beginTaskRead(projectId, siblingId, 1, 1, signal());
+  const projection = await cache.prepareProjection(signal());
+  const snapshot = response();
+  const tasks = snapshot.tasks.map(task => task.id === rootId ? { ...task, version: 2n } : task);
+  await cache.applySync(await cache.beginSync(projectId, signal()), { ...snapshot, tasks,
+    dependencyStates: { ...snapshot.dependencyStates, [rootId]: { ...snapshot.dependencyStates[rootId]!, taskVersion: 2n } } }, signal(), true, { rebuild: true });
+  expect(await cache.verifyTaskRead(changed, signal())).toBe(false);
+  expect(await cache.verifyTaskRead(unchanged, signal())).toBe(true);
+  expect((await cache.qualifyProjection(projection, [{ projectId, id: rootId }], signal())).size).toBe(0);
+});
+
+it('rechecks a direct read begun while its baseline was unreadable after a rebuild', async () => {
+  const cache = scope(); await seed(cache);
+  const unknownId = '20000000-0000-4000-8000-000000000004';
+  const get = IDBObjectStore.prototype.get;
+  const failure = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'projects') throw new Error('Temporary storage failure');
+    return get.apply(this, args);
+  });
+  const fence = await cache.beginTaskRead(projectId, unknownId, 1, 1, signal());
+  failure.mockRestore();
+  await cache.applySync(await cache.beginSync(projectId, signal()), response(), signal(), true, { rebuild: true });
+  expect(await cache.verifyTaskRead(fence, signal())).toBe(false);
+  expect((await cache.taskReadQualification(projectId, unknownId, signal())).removed).toBe(false);
+});
+
+it('retains a direct reader across same-history session cache generation rotation', async () => {
+  const cache = scope(); await seed(cache);
+  const fence = await cache.beginTaskRead(projectId, rootId, 1, 1, signal());
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(await cache.rotateSessionHistoryGeneration(ticket, 0, signal())).toBe(true);
+  expect(await cache.verifyTaskRead(fence, signal())).toBe(true);
+});
+
 it('does not treat retained detail rows as corrupt while a precise deletion is awaiting sync', async () => {
   const cache = scope(); await seed(cache);
   const ticket = await cache.beginSync(projectId, signal());
