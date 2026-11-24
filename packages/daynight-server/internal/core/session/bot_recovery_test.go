@@ -110,7 +110,7 @@ func TestBotRecoveryGrantRejectsChangedIdentityAndUnsafeTokensBeforeWrites(t *te
 		t.Run(name, func(t *testing.T) {
 			f, op, a, input, ctx := recoveryAccess(t, map[string]int{})
 			mutate(a, &input)
-			result, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+			result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 			if err == nil || result.Token != "" {
 				t.Fatalf("unsafe recovery admitted: %+v, %v", result, err)
 			}
@@ -124,7 +124,7 @@ func TestBotRecoveryGrantPreservesExecutionAndRevokesOldConnection(t *testing.T)
 	if err := op.BindController(a, &TaskAccess{}, before.ControllerFence); err != nil {
 		t.Fatalf("fixture lacks an authorized old connection: %v", err)
 	}
-	result, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+	result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestBotRecoveryNewProcessRequiresOriginalStopProof(t *testing.T) {
 	input.Grant.PreviousGeneration, input.Grant.ExecutionGeneration = &previous, "2"
 	input.Grant.ControllerInstanceID = uuid.NewString()
 	input.Grant.StopProof = &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: before.Identity.ControllerInstanceID, StoppedAt: f.s.now().UTC().Format(time.RFC3339Nano)}
-	result, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+	result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestBotRecoveryGrantPreservesStorageFailures(t *testing.T) {
 					return original(ctx, record)
 				}
 			}
-			result, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+			result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 			if !errors.Is(err, failure) || result.Token != "" {
 				t.Fatalf("storage failure lost: %+v, %v", result, err)
 			}
@@ -210,7 +210,7 @@ func TestBotRecoveryGrantPreservesStorageFailures(t *testing.T) {
 
 func TestBotRecoveryReceiptSeparatesHistoricalSuccessFromCurrentGrant(t *testing.T) {
 	f, op, a, input, ctx := recoveryAccess(t, map[string]int{"SetSessionGrant": 1, "SaveSession": 2, "DisconnectSession": 1})
-	result, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
+	result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,84 +252,5 @@ func TestBotRecoveryReceiptSeparatesHistoricalSuccessFromCurrentGrant(t *testing
 				t.Fatal("historical receipt restored replaced authority")
 			}
 		})
-	}
-}
-
-func TestBotRecoveryGenerationChecksDestinationWorker(t *testing.T) {
-	for _, admitted := range []bool{true, false} {
-		name := "destination disabled"
-		if admitted {
-			name = "disabled original host and open destination"
-		}
-		t.Run(name, func(t *testing.T) {
-			counts := map[string]int{}
-			if admitted {
-				counts = map[string]int{"SetSessionGenerationStop": 1, "SetSessionGrant": 1, "SaveSession": 2, "DisconnectSession": 1}
-			}
-			f, op, a, input, ctx := recoveryAccess(t, counts)
-			before := fixtureCopy(a.record.Snapshot)
-			oldWorker, destination := a.record.ExecutionWorkerID, uuid.NewString()
-			if oldWorker == "" || oldWorker == destination {
-				t.Fatal("fixture must have distinct original and destination Workers")
-			}
-			previous := before.ExecutionGeneration
-			input.Grant.PreviousGeneration, input.Grant.ExecutionGeneration = &previous, "2"
-			input.Grant.ControllerInstanceID = uuid.NewString()
-			input.Grant.StopProof = &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: before.Identity.ControllerInstanceID, StoppedAt: f.s.now().UTC().Format(time.RFC3339Nano)}
-			checks := 0
-			f.writer.WorkerCheck = func(actualCtx context.Context, owner, worker string) error {
-				checks++
-				if actualCtx != ctx || owner != f.p.UserID || worker != destination {
-					t.Fatalf("grant checked original or unrelated Worker: %s %s", owner, worker)
-				}
-				if !admitted {
-					return &model.Fault{Code: "worker_disabled"}
-				}
-				return nil
-			}
-			grant, err := op.GrantBotRecovery(ctx, a, f.p, destination, input)
-			if checks != 1 {
-				t.Fatalf("destination admission calls = %d", checks)
-			}
-			if !admitted {
-				botFault(t, err, "worker_disabled")
-				if grant.Token != "" || !reflect.DeepEqual(a.record.Snapshot, before) {
-					t.Fatal("refused destination changed the original execution")
-				}
-				return
-			}
-			if err != nil || grant.ExecutionGeneration != "2" || grant.SessionID != before.SessionID || grant.TestExecutionID != before.TestExecutionID || !equalNative(a.record.Snapshot.Identity.NativeSessionID, before.Identity.NativeSessionID) {
-				t.Fatalf("destination generation grant: %+v %v", grant, err)
-			}
-			if a.record.ExecutionWorkerID != oldWorker || a.record.Snapshot.Identity.WorkerID != before.Identity.WorkerID || !jsonEqual(f.writes.StopProof, encode(input.Grant.StopProof)) {
-				t.Fatal("grant rewrote the loaded host or lost original stop evidence")
-			}
-		})
-	}
-}
-
-func TestBotRecoveryDestinationCannotBypassWorkerAdmission(t *testing.T) {
-	for _, destination := range []string{"", "invalid", "00000000-0000-0000-0000-000000000000", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"} {
-		t.Run(destination, func(t *testing.T) {
-			f, op, a, input, ctx := recoveryAccess(t, map[string]int{})
-			grant, err := op.GrantBotRecovery(ctx, a, f.p, destination, input)
-			botFault(t, err, "invalid_input")
-			if grant.Token != "" {
-				t.Fatal("invalid destination received a grant")
-			}
-		})
-	}
-}
-
-func TestBotRecoverySameExecutionReconnectPreservesDisabledHostChannel(t *testing.T) {
-	f, op, a, input, ctx := recoveryAccess(t, map[string]int{"SetSessionGrant": 1, "SaveSession": 2, "DisconnectSession": 1})
-	before := fixtureCopy(a.record.Snapshot)
-	f.writer.WorkerCheck = func(context.Context, string, string) error {
-		t.Fatal("same-execution reconnect must preserve the stop/upload channel")
-		return &model.Fault{Code: "worker_disabled"}
-	}
-	grant, err := op.GrantBotRecovery(ctx, a, f.p, a.record.ExecutionWorkerID, input)
-	if err != nil || grant.ExecutionGeneration != before.ExecutionGeneration || grant.ControllerInstanceID != before.Identity.ControllerInstanceID || grant.SessionID != before.SessionID || !equalNative(a.record.Snapshot.Identity.NativeSessionID, before.Identity.NativeSessionID) {
-		t.Fatalf("same-execution reconnect changed identity: %+v %v", grant, err)
 	}
 }

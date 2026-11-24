@@ -39,11 +39,6 @@ type recoveryFixture struct {
 	completion                                             store.TransactionOutcome
 	transactionError                                       error
 	tokenUsed                                              bool
-	executionError                                         error
-	executionChecks                                        int
-	executionErrors                                        map[string]error
-	executionWorkers                                       []string
-	expectedStopProof                                      *sp.StopProof
 }
 
 func (f *recoveryFixture) BotDAO() store.BotWriteDAO    { return f }
@@ -139,19 +134,18 @@ func (f *recoveryFixture) SetSessionGrant(ctx context.Context, grant store.Sessi
 	}
 	return f.stage(ctx, "grant")
 }
-func (f *recoveryFixture) SetSessionGenerationStop(ctx context.Context, id string, proof []byte) error {
-	expected, err := json.Marshal(f.expectedStopProof)
-	if err != nil || f.expectedStopProof == nil || id != *f.bot.SessionID || !bytes.Equal(proof, expected) {
-		f.t.Fatal("changed or unexpected generation stop proof")
-	}
-	return f.stage(ctx, "generationStop")
-}
 func (f *recoveryFixture) SaveSession(ctx context.Context, v store.SessionRecord) error {
 	f.saves++
 	if v.Snapshot.SessionID != *f.bot.SessionID || v.Snapshot.Identity.NativeSessionID == nil || *v.Snapshot.Identity.NativeSessionID != "original-native" {
 		f.t.Fatal("lost native Session")
 	}
 	return f.stage(ctx, "saveSession")
+}
+func (f *recoveryFixture) RejectUnsentSessionOperations(ctx context.Context, id string, reason sp.OperationError) error {
+	if id != *f.bot.SessionID || reason.Code != "permission_or_state_changed" {
+		f.t.Fatalf("changed takeover refusal: %q %+v", id, reason)
+	}
+	return f.stage(ctx, "rejectUnsent")
 }
 func (f *recoveryFixture) DisconnectSession(ctx context.Context, id string) error {
 	f.disconnected++
@@ -211,7 +205,7 @@ func TestRecoveryTakeoverCoordinatesOriginalSessionAndCurrentCredential(t *testi
 	if !out.Current || out.Receipt.WorkerID != worker || out.Receipt.HostingGeneration != 2 || out.Receipt.ExecutionGeneration != "1" || out.Receipt.NativeSessionID == nil || *out.Receipt.NativeSessionID != "original-native" || f.credentials != 2 || f.advanced != 1 || f.disconnected != 1 || f.saves != 2 {
 		t.Fatalf("incomplete takeover: %+v stages %v", out, f.stages)
 	}
-	want := []string{"credential", "bot", "session", "receipt", "worker", "tokenHistory", "grant", "saveSession", "disconnect", "saveSession", "advance", "saveReceipt", "credential"}
+	want := []string{"credential", "bot", "session", "receipt", "worker", "tokenHistory", "grant", "saveSession", "rejectUnsent", "disconnect", "saveSession", "advance", "saveReceipt", "credential"}
 	if !reflect.DeepEqual(f.stages, want) {
 		t.Fatalf("transaction ordering: %v", f.stages)
 	}
@@ -219,6 +213,51 @@ func TestRecoveryTakeoverCoordinatesOriginalSessionAndCurrentCredential(t *testi
 		t.Fatal("receipt leaked secret or was not written")
 	}
 }
+func TestRecoveryRenewsOnlyTheCurrentExecution(t *testing.T) {
+	for _, variant := range []string{"renew", "producer denied", "changed controller", "changed execution"} {
+		t.Run(variant, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			expired := time.Now().Add(-time.Minute)
+			f.record.GrantExpiry = &expired
+			checks := 0
+			f.service.producer = func(ctx context.Context, scope store.SessionScope, p model.Principal) (model.CredentialAuthorization, error) {
+				checks++
+				if ctx != t.Context() || scope != f || p != f.p {
+					t.Fatal("renewal changed producer authority")
+				}
+				if variant == "producer denied" {
+					return producerPolicy(t, p, "session:read"), nil
+				}
+				return producerPolicy(t, p, "session:produce"), nil
+			}
+			input := f.input()
+			if variant == "changed controller" {
+				input.Grant.ControllerInstanceID = uuid.NewString()
+			} else if variant == "changed execution" {
+				input.Grant.ExecutionGeneration = "2"
+			}
+			out, err := f.service.GrantBotRecovery(t.Context(), f.p, f.bot.WorkerID, f.bot.ID, input)
+			if checks != 1 || f.advanced != 0 || f.registered != 0 {
+				t.Fatalf("renewal changed admission or hosting: checks=%d advanced=%d registered=%d", checks, f.advanced, f.registered)
+			}
+			if variant == "renew" {
+				if err != nil || !out.Current || f.grant == nil || !f.grant.ExpiresAt.After(time.Now()) || f.saved == nil || f.disconnected != 1 || f.credentials != 2 || out.Receipt.HostingGeneration != 1 || out.Receipt.ExecutionGeneration != "1" || out.Receipt.ControllerInstanceID != input.Grant.ControllerInstanceID {
+					t.Fatalf("renewal lost current authority: out=%+v err=%v stages=%v", out, err, f.stages)
+				}
+			} else {
+				code := "session_conflict"
+				if variant == "producer denied" {
+					code = "insufficient_scope"
+				}
+				requireRuntimeFault(t, err, code)
+				if f.grant != nil || f.saved != nil || f.disconnected != 0 || f.saves != 0 {
+					t.Fatalf("invalid renewal wrote state: %v", f.stages)
+				}
+			}
+		})
+	}
+}
+
 func TestRecoveryRegistrationUsesCurrentPATAndFreezesMachine(t *testing.T) {
 	f := newRecoveryFixture(t)
 	f.bot.Recovery = nil
@@ -230,12 +269,6 @@ func TestRecoveryRegistrationUsesCurrentPATAndFreezesMachine(t *testing.T) {
 }
 func TestRecoveryReplayReturnsOriginalReceiptWithoutAnotherWrite(t *testing.T) {
 	f := newRecoveryFixture(t)
-	f.executionError = &model.Fault{Code: "worker_disabled"}
-	t.Cleanup(func() {
-		if f.executionChecks != 0 {
-			t.Fatal("replay consulted execution admission")
-		}
-	})
 	input := f.input()
 	receipt := sc.BotRecoveryReceipt{BotRecoveryVersion: 1, OperationID: input.OperationID, Kind: "takeover", WorkerID: f.bot.WorkerID, HostingGeneration: 1, BotRecoveryBinding: f.binding()}
 	raw, _ := json.Marshal(receipt)
@@ -260,7 +293,7 @@ func TestRecoveryOperationQueryDoesNotReissueGrant(t *testing.T) {
 	}
 }
 func TestRecoveryFailuresStopSubsequentTransactionWork(t *testing.T) {
-	for _, stage := range []string{"credential", "bot", "session", "receipt", "worker", "tokenHistory", "grant", "saveSession", "disconnect", "advance", "saveReceipt"} {
+	for _, stage := range []string{"credential", "bot", "session", "receipt", "worker", "tokenHistory", "grant", "saveSession", "rejectUnsent", "disconnect", "advance", "saveReceipt"} {
 		t.Run(stage, func(t *testing.T) {
 			f := newRecoveryFixture(t)
 			f.failStage = stage
@@ -336,12 +369,6 @@ func (f *recoveryFixture) SetBotStartup(ctx context.Context, id string, version 
 
 func TestRecoveryCurrentHostingReportUsesOriginalFence(t *testing.T) {
 	f := newRecoveryFixture(t)
-	f.executionError = &model.Fault{Code: "worker_disabled"}
-	t.Cleanup(func() {
-		if f.executionChecks != 0 {
-			t.Fatal("management report consulted execution admission")
-		}
-	})
 	v := f.record.Snapshot
 	code := "provider_unavailable"
 	input := sc.BotRecoveryReport{BotRecoveryIdentity: f.identity, HostingGeneration: 1, Report: sc.BotReport{BotVersion: f.bot.Version, Fence: &v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, NativeSessionID: v.Identity.NativeSessionID, Result: model.BotStartupResult{State: "failed", Code: &code}}}
@@ -512,25 +539,4 @@ func TestRecoveryReportFailurePreservesStartupAndStopsFollowupWork(t *testing.T)
 			}
 		})
 	}
-}
-
-func (f *recoveryFixture) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return f }
-func (f *recoveryFixture) CheckWorkerExecution(ctx context.Context, owner, worker string) error {
-	if ctx != f.t.Context() || owner != f.p.UserID || worker == "" {
-		f.t.Fatal("changed execution admission identity")
-	}
-	f.executionChecks++
-	f.executionWorkers = append(f.executionWorkers, worker)
-	if f.executionErrors != nil {
-		err, exists := f.executionErrors[worker]
-		if !exists {
-			f.t.Fatal("unconfigured execution Worker")
-		}
-		return err
-	}
-	return f.executionError
-}
-
-func (m *recoveryFixture) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
-	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }

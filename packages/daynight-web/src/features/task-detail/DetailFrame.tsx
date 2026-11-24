@@ -27,11 +27,11 @@ export const useDetailOverlay = ({ root, initialFocus, modal, fullscreen, scope,
     const element = root.current!;
     const parent = modal ? parentOverlay?.current ?? document.getElementById('root') : null;
     if (modal && parent === null) throw new Error('The application root is required for the detail dialog.');
-    const release = registerOverlay(element, parent);
+    const release = registerOverlay(element, parent, modal ? element.closest<HTMLElement>('.task-detail-backdrop') : element);
     // Reparenting an existing layer must preserve focus and any selection in it.
     if (isTopOverlay(element) && !element.contains(document.activeElement)) (modal ? initialFocus.current : element)?.focus();
     return release;
-  }, [scope, modal, parentOverlay, root, initialFocus]);
+  }, [scope, modal, fullscreen, parentOverlay, root, initialFocus]);
   useLayoutEffect(() => {
     if (!modal && !fullscreen) return;
     const onKeyDown = (event: KeyboardEvent) => {

@@ -49,6 +49,11 @@ export const validateControllerLocalRequest = (value: unknown, ticket: Controlle
 // reached the controller. Callers may observe its journal, but must not replay it.
 export class ControllerIpcOutcomeUnknownError extends Error {}
 export class ControllerIpcIdentityConflictError extends Error {}
+export class LegacyWorkerControllerError extends Error {
+  constructor(ticket: ControllerLaunchTicket, options?: ErrorOptions) {
+    super(`Original Controller ${ticket.launchId} generation ${ticket.executionGeneration} uses retired Worker lifecycle dispatch. Stop this Controller and confirm its native processes exit on the original host before recovering the same Session.`, options);
+  }
+}
 
 const validateWorkerInputResult = (response: ControllerLocalResponse & { ok: true }, action: WorkerInputAction, ticket: ControllerLaunchTicket): void => {
   const result = response.inputResult;
@@ -81,9 +86,11 @@ export const requestController = (ticket: ControllerLaunchTicket, action: Contro
       if (response === null || typeof response !== "object" || response.requestId !== request.requestId || (response.ok !== true && response.ok !== false)) throw new ControllerIpcIdentityConflictError("Controller IPC response identity mismatch.");
       if (!response.ok) throw new Error(response.error);
       if (response.snapshot === null || typeof response.snapshot !== "object" || response.snapshot.executionId !== ticket.executionId || response.snapshot.claimId !== ticket.claimId || response.snapshot.testExecutionId !== ticket.testExecutionId || response.snapshot.executionGeneration !== ticket.executionGeneration || response.snapshot.controllerInstanceId !== ticket.controllerInstanceId || response.snapshot.sessionId !== ticket.sessionId) throw new ControllerIpcIdentityConflictError("Controller IPC snapshot fence mismatch.");
-      if (ticket.schemaVersion === 2 && response.workerLifecycleProtocol !== 1 || Object.hasOwn(response, "workerLifecycleProtocol") && response.workerLifecycleProtocol !== 1) throw new ControllerIpcIdentityConflictError("Controller persistent Worker lifecycle protocol is unsupported.");
+      if (Object.hasOwn(response, "workerLifecycleProtocol") && (ticket.schemaVersion !== 2 || response.workerLifecycleProtocol !== 1)) throw new ControllerIpcIdentityConflictError("Controller legacy Worker lifecycle capability is invalid.");
       if (action.kind === "submit_worker_input") {
-        if (Object.keys(response).sort().join() !== ["inputResult", "ok", "requestId", "snapshot", ...(ticket.schemaVersion === 2 ? ["workerLifecycleProtocol"] : [])].sort().join()) throw new ControllerIpcIdentityConflictError("Controller Worker input response fields are invalid.");
+        // The original v2 Controller can still report its retired capability.
+        const fields = Object.keys(response).filter(key => !(ticket.schemaVersion === 2 && key === "workerLifecycleProtocol"));
+        if (fields.sort().join() !== "inputResult,ok,requestId,snapshot") throw new ControllerIpcIdentityConflictError("Controller Worker input response fields are invalid.");
         validateWorkerInputResult(response, action, ticket);
       }
       if (action.kind === "observe" && Object.hasOwn(response, "workerInputProtocol") && response.workerInputProtocol !== 1) throw new ControllerIpcIdentityConflictError("Controller Worker input protocol is unsupported.");

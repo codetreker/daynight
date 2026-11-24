@@ -191,22 +191,6 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (typeof reason !== "string" || reason.trim() === "" || !reason.isWellFormed()) throw new Error("Bot recovery block requires a nonempty reason.");
       return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
     }),
-    /** The caller holds the Bot lock and publishes the replacement ticket first.
-     * Only local dispatch identity changes; the remote recovery fence may already be granted.
-     */
-    replaceUnsubmittedLaunch: (record: BotRecord, launchId: string, homeDirectory: string): BotRecord => atomic(() => {
-      const saved = current(record), execution = get(saved), intent = saved.intent!;
-      botUUID(launchId, "Bot launch ID");
-      if (saved.observed.deletion !== null || execution === null || execution.launchSubmission !== "not-submitted"
-        || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot launch replacement requires proven never-submitted execution.");
-      if (launchId === intent.launchId || execution.retainedLaunchIds.includes(launchId)
-        || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot launch replacement requires a new identity in its original private home.");
-      const next: BotRecord = { ...saved, intent: { ...intent, launchId,
-        ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) } };
-      db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
-      put(next, { ...execution, launchId, retainedLaunchIds: [...execution.retainedLaunchIds, intent.launchId] });
-      return next;
-    }),
     /** The caller first proves process-tree stop and commits the matching journal snapshot. */
     beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch): BotRecord => atomic(() => {
       const saved = current(record), previous = get(saved), intent = saved.intent!;

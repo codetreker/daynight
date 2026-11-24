@@ -93,6 +93,6 @@ export const combineGoalRelations = (projectId: string, baseline: GoalAcceptance
   const { goals, edges } = mergedRelations(projectId, baseline, legal.accepted, denied);
   const prerequisites = new Map([...goals.keys()].map(id => [id, [] as string[]])), successors = new Map([...goals.keys()].map(id => [id, [] as string[]]));
   for (const edge of edges) { prerequisites.get(edge.target)!.push(edge.source); successors.get(edge.source)!.push(edge.target); }
-  return { goals, edges, availableGoals: baseline.availableGoals, availableEdges: baseline.availableEdges, prerequisites, successors, progress: baseline.progress,
+  return { goals, edges, rootIds: baseline.rootIds, availableGoals: baseline.availableGoals, availableEdges: baseline.availableEdges, prerequisites, successors, progress: baseline.progress,
     mainIds: new Set([...goals].filter(([, goal]) => goal.project === undefined).map(([id]) => id)), externalIds: new Set([...goals].filter(([, goal]) => goal.project !== undefined).map(([id]) => id)) };
 };

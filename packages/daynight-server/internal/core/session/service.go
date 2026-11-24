@@ -86,8 +86,6 @@ func next(s string) string   { return decimal(number(s) + 1) }
 func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 
 type record struct {
-	// ExecutionWorkerID is derived from locked Task/Session or Bot ownership.
-	ExecutionWorkerID                                   string
 	OnlineMode                                          string
 	HistoryContentPolicy                                *string
 	BotID                                               *string
@@ -120,13 +118,6 @@ func loadWithBot(ctx context.Context, tx *operationTx, id string, bot *model.Bot
 	r := &record{OnlineMode: persisted.OnlineMode, HistoryContentPolicy: persisted.HistoryContentPolicy, BotID: persisted.BotID, ServerInstance: persisted.ServerInstance, FirstInputBlocked: persisted.FirstInputBlocked, DrainTimelineSeq: persisted.DrainTimelineSeq, Snapshot: persisted.Snapshot, Owner: persisted.Owner, Parent: persisted.Parent, ConnectionParent: persisted.ConnectionParent, Registration: persisted.Registration, StopProof: persisted.StopProof, SourceEpoch: persisted.SourceEpoch, SourceEpochs: persisted.SourceEpochs, SourceSeq: persisted.SourceSeq, OperationSeq: persisted.OperationSeq, GrantHash: persisted.GrantHash, GrantExpiry: persisted.GrantExpiry, ConnectionExpiry: persisted.ConnectionExpiry, LastSeen: persisted.LastSeen, DrainUntil: persisted.DrainUntil, GrantKind: persisted.GrantKind, Consumed: persisted.Consumed}
 	if !validSessionBot(bot, r) {
 		return nil, conflict()
-	}
-	r.ExecutionWorkerID = r.Snapshot.Identity.WorkerID
-	if bot != nil {
-		r.ExecutionWorkerID = bot.WorkerID
-		if bot.Recovery != nil {
-			r.ExecutionWorkerID = bot.Recovery.WorkerID
-		}
 	}
 	r.Snapshot = durableSnapshot(r.Snapshot)
 	err = attachLive(tx, r)
@@ -299,21 +290,13 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 }
 
 func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
-	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "", r.ExecutionWorkerID)
+	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "")
 }
 
-func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token, executionWorkerID string) (GrantResult, error) {
+func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token string) (GrantResult, error) {
 	var out GrantResult
 	id := r.Snapshot.SessionID
 	v := &r.Snapshot
-	// A grant for the same execution maintains the stop/upload channel. New
-	// execution generations and bootstrap grants require business admission on
-	// their destination Worker, which may differ from the old Bot host.
-	if g.Kind == "bootstrap" || g.PreviousGeneration != nil {
-		if err := RequireWorkerExecution(ctx, tx.scope, r.Owner, executionWorkerID); err != nil {
-			return out, err
-		}
-	}
 	if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
 		return out, conflict()
 	}

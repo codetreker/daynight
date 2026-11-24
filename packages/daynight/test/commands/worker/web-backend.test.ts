@@ -40,6 +40,38 @@ it("stops the proven native boundary without mutating its Task writer or releasi
   expect(f.source.request).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled(); expect(leases.close).not.toHaveBeenCalled();
 });
 
+it.each([false, true])("stops an observed retired Controller only with original process proof (proof=%s)", async proof => {
+  const f = await orchestrationFixture();
+  const ticket: ControllerLaunchTicket = { ...f.source.ticket, schemaVersion: 2, lifecycleBinding: {
+    serverOrigin: f.task.serverOrigin, userId: f.task.userId!, workerId: f.task.workerId, instanceId: randomUUID(),
+    instanceEpoch: "1", intentVersion: "1", scopeGeneration: "1", localEpoch: "1",
+  } };
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(ticket);
+  f.launcher.prepare.mockResolvedValue(ticket);
+  const stopped = { ...f.snapshot, lifecycle: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  if (!proof) f.source.saved.mockReturnValue({ ...f.snapshot, controllerProcess: null });
+  f.source.stopped.mockResolvedValue(false);
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => {
+    f.source.stopped.mockResolvedValue(true);
+    f.source.saved.mockReturnValue(stopped);
+  });
+  vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(stopped);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: f.snapshot, workerLifecycleProtocol: 1 });
+  const result = f.backend.advanceResult(f.task, new AbortController().signal);
+  if (proof) {
+    await expect(result).resolves.toMatchObject({ kind: "waiting_input", task: { cleanup: null, webExecution: { restartAfterShutdown: true } } });
+    expect(stop).toHaveBeenCalledWith(f.snapshot.controllerProcess, f.snapshot.nativeProcesses, expect.any(Number));
+    expect(f.source.request.mock.calls.some(([, action]) => action.kind === "stop")).toBe(true);
+  } else {
+    await expect(result).rejects.toThrow("retired Worker lifecycle dispatch");
+    expect(stop).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)?.recovery.reasonCode).toBe("recovery_blocked");
+  }
+  expect(f.source.request.mock.calls.every(([, action]) => action.kind === "observe" || action.kind === "stop")).toBe(true);
+  expect(f.launcher.refreshGrant).not.toHaveBeenCalled();
+  expect(f.store.getTask(f.task)?.webExecution).toMatchObject({ launchId: ticket.launchId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration });
+});
+
 it.each(["ticket", "journal", "owner"] as const)("refuses native cancellation when the original %s identity conflicts", async source => {
   const f = await orchestrationFixture();
   const stop = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();

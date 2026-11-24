@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestScopedBotRecoveryRenewsDisabledExecutionWithCurrentParent(t *testing.T) {
+func TestScopedBotRecoveryReplacesRetiredConnectionParent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	files, err := local.New(t.TempDir())
@@ -67,10 +67,6 @@ func TestScopedBotRecoveryRenewsDisabledExecutionWithCurrentParent(t *testing.T)
 	if _, err = svc.RegisterBotRecovery(ctx, f.owner, registered.Bot.WorkerID, registered.Bot.ID, core.BotRecoveryRegistration{BotRecoveryIdentity: identity, BotRecoveryBinding: binding, OperationID: uuid.NewString(), BotVersion: registered.Bot.Version}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,updated_at)
-VALUES($1,$2,1,1,'disabled','closed',now())`, f.owner.UserID, registered.Bot.WorkerID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET grant_expires_at=now()-interval '1 second' WHERE id=$1`, v.SessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -113,10 +109,6 @@ VALUES($1,$2,1,1,'disabled','closed',now())`, f.owner.UserID, registered.Bot.Wor
 	}
 	if _, err = svc.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: next.ControllerFence}); err != nil {
 		t.Fatalf("B connection not usable: %v", err)
-	}
-	var closed bool
-	if err = f.db.Pool.QueryRow(ctx, `SELECT desired='disabled' AND admission='closed' FROM worker_lifecycle WHERE user_id=$1 AND worker_id=$2`, f.owner.UserID, registered.Bot.WorkerID).Scan(&closed); err != nil || !closed {
-		t.Fatalf("management renewal changed Worker admission: closed=%v err=%v", closed, err)
 	}
 	if _, err = f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET business_scopes=ARRAY['session:read'],scope_version=2 WHERE id=$1`, second.CredentialID); err != nil {
 		t.Fatal(err)

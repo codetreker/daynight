@@ -141,6 +141,15 @@ original circumstances. Explicit archives remain immutable.
 
 ## Decision workflow
 
+- Keep Worker execution independent of server scheduling. The server owns Task
+  eligibility, claims and business-resource authorization. The Worker owns
+  local process startup, shutdown, saved state and recovery. Server review must
+  reject any requirement for a Worker management registration, host stop/save
+  proof or activation handshake as a prerequisite to ordinary scheduling.
+  Preserve authorization and evidence for individual claims, Bot hosts and
+  Session executions. The [Worker design](docs/design/daynight-worker.md#worker-与服务端的职责边界)
+  owns the boundary and its rationale.
+
 A nontrivial change alters behavior, architecture, a shared contract, tooling,
 verification strategy, a stored or exchanged format, or a decision worth
 reconsidering. Purely mechanical or local changes are exempt from note creation.

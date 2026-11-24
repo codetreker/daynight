@@ -1,49 +1,20 @@
-import { openControllerWorkerLifecycle, settleControllerLaunch } from "../../controller/worker-lifecycle.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuspendedProcess, type WindowsSuspendedProcess } from "../../../platform/windows-suspended-process.js";
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../controller/windows-job.js";
-import { controllerExecutionDirectory, controllerPayloadHash, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
-import { openLifecycleStore } from "../lifecycle-store.js";
-import { resolveWorkerPaths } from "../paths.js";
-import { resolveControllerStateDirectory } from "../../controller/paths.js";
+import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { requestController } from "../../controller/local-client.js";
+import { LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
-
-/** A terminal reservation needs a new launch identity; uncertain dispatch stays fenced.
- * The caller must independently prove that its execution was never submitted.
- */
-export const controllerLaunchNeedsReplacement = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): boolean => {
-  const binding = ticket.lifecycleBinding;
-  if (binding === undefined) return false;
-  const store = openLifecycleStore({ file: path.join(resolveWorkerPaths(homeDirectory).workerDirectory, "lifecycle.sqlite"),
-    identity: { serverOrigin: binding.serverOrigin, userId: binding.userId, workerId: binding.workerId }, allowCreate: false });
-  try {
-    const resource = store.getResource(ticket.launchId);
-    if (resource === null) return false;
-    if (resource.ownerKind !== "controller" || resource.operationId !== ticket.launchId
-      || resource.instanceId !== binding.instanceId || resource.scopeGeneration !== binding.scopeGeneration
-      || resource.identity.kind !== "launch" || resource.identity.launchId !== ticket.launchId
-      || resource.identity.executionId !== ticket.executionId || resource.identity.sessionId !== ticket.sessionId
-      || resource.identity.executionGeneration !== ticket.executionGeneration || resource.identity.controllerInstanceId !== ticket.controllerInstanceId
-      || resource.identity.controllerId !== ticket.controllerId
-      || resource.identity.ticketHash !== controllerPayloadHash(ticket)
-      || resource.identity.storageStateDirectory !== resolveControllerStateDirectory(homeDirectory, storageStateDirectory)
-      || resource.identity.journalFile !== path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite")
-      || resource.stage !== "not_dispatched" || resource.saveState !== "durable" || resource.processProof !== null || resource.stopProof !== null) {
-      throw new Error("Controller launch reservation does not prove the original attempt was never dispatched.");
-    }
-    return true;
-  } finally { store.close(); }
-};
+import { replaceFileAtomically } from "../../../platform/files.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 
 export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): void => {
   const journalFile = path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite");
@@ -84,8 +55,11 @@ export const createControllerExecutionSerializer = () => {
 };
 
 /** IPC authenticates the original execution fence; observing never submits input. */
-export const observeControllerProcess = async (ticket: ControllerLaunchTicket, signal: AbortSignal, timeoutMs = 1000): Promise<ControllerSnapshot> =>
-  (await requestController(ticket, { kind: "observe" }, { signal, timeoutMs })).snapshot;
+export const observeControllerProcess = async (ticket: ControllerLaunchTicket, signal: AbortSignal, timeoutMs = 1000): Promise<ControllerSnapshot> => {
+  const response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs });
+  if (response.workerLifecycleProtocol === 1) throw new LegacyWorkerControllerError(ticket);
+  return response.snapshot;
+};
 
 /**
  * Launch only after the caller has established that its durable intent is unsubmitted.
@@ -111,12 +85,13 @@ export const launchControllerProcess = async (options: {
   prepareControllerLaunchStorage(options.homeDirectory, ticket, options.storageStateDirectory);
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId, options.storageStateDirectory);
   const log = await open(path.join(directory, "controller.log"), "a", 0o600);
-  let lifecycle: ReturnType<typeof openControllerWorkerLifecycle> = null;
-  let reserved = false, creation: "not_started" | "unknown" | "created" | "rejected" = "not_started";
-  const creationRejected = (): boolean => creation === "rejected";
   try {
-    lifecycle = openControllerWorkerLifecycle(options.homeDirectory, ticket, options.storageStateDirectory);
-    lifecycle?.reserveLaunch(); reserved = lifecycle !== null;
+    if (ticket.schemaVersion === 2 && ticket.claimId !== undefined) {
+      // A new attempt invalidates any legacy receipt saying this launch never ran.
+      const marker = `${controllerTicketPath(options.homeDirectory, ticket.launchId, options.storageStateDirectory)}.submitted`;
+      await replaceFileAtomically(marker, "", 0o600);
+      syncDurableDirectory(path.dirname(marker));
+    }
     signal.throwIfAborted();
     // Synchronous admission checks and submission records must be kept in the same turn as spawn.
     const submission = options.onSubmitting();
@@ -128,25 +103,17 @@ export const launchControllerProcess = async (options: {
       ...(process.platform === "win32" ? { DAYNIGHT_CONTROLLER_ASSIGNED_JOB: ticket.launchId } : {}) };
     for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key as keyof typeof environment];
     let child: ChildProcess | undefined, suspended: WindowsSuspendedProcess | undefined, lease: ControllerJobLease | undefined;
-    let spawnProof: ProcessProof | undefined, released = false;
+    let spawnProof: ProcessProof, released = false;
     try {
       try {
-      creation = "unknown";
-      if (process.platform === "win32") {
-        try { suspended = await createSuspendedProcess({ file: process.execPath, args, cwd: ticket.cwd, environment }); creation = "created"; }
-        catch (error) { if (error instanceof Error && "stage" in error && error.stage === "create") creation = "rejected"; throw error; }
-      }
-      else {
-        try { child = spawn(process.execPath, args, { cwd: ticket.cwd, env: environment, detached: true, stdio: ["ignore", log.fd, log.fd, "ipc"], windowsHide: true }); }
-        catch (error) { creation = "rejected"; throw error; }
-        await new Promise<void>((resolve, reject) => {
-          child!.once("spawn", () => { creation = "created"; resolve(); });
-          child!.once("error", cause => {
-            if (child!.pid === undefined) creation = "rejected";
-            reject(new ControllerStartupError({ state: "failed", reasonCode: "controller_launch_failed" }, "The operating system rejected the controller launch.", { cause }));
+        if (process.platform === "win32") suspended = await createSuspendedProcess({ file: process.execPath, args, cwd: ticket.cwd, environment });
+        else {
+          child = spawn(process.execPath, args, { cwd: ticket.cwd, env: environment, detached: true, stdio: ["ignore", log.fd, log.fd, "ipc"], windowsHide: true });
+          await new Promise<void>((resolve, reject) => {
+            child!.once("spawn", resolve);
+            child!.once("error", cause => reject(new ControllerStartupError({ state: "failed", reasonCode: "controller_launch_failed" }, "The operating system rejected the controller launch.", { cause })));
           });
-        });
-      }
+        }
       } catch (cause) {
         if (cause instanceof ControllerStartupError) throw cause;
         throw new ControllerStartupError({ state: "failed", reasonCode: "controller_launch_failed" }, "The operating system rejected the controller launch.", { cause });
@@ -158,20 +125,20 @@ export const launchControllerProcess = async (options: {
         spawnProof = { ...spawnProof, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
         lease = await createControllerJobLease(ticket.launchId, spawnProof, Date.now() + 15_000);
       }
-      lifecycle?.bindLaunch(spawnProof);
       await options.onSpawned(spawnProof, lease === undefined ? undefined : { lease, closeHandles: () => suspended!.close() });
       if (lease !== undefined) lease = undefined;
       signal.throwIfAborted();
       if (suspended !== undefined) {
-        released = true; suspended.resume();
-
+        released = true;
+        suspended.resume();
       } else {
         if (!child!.connected) throw new Error("Controller launch gate disconnected before dispatch.");
-        released = true; child!.send({ launchId: ticket.launchId });
+        released = true;
+        child!.send({ launchId: ticket.launchId });
         child!.unref(); child!.channel?.unref();
       }
     } catch (error) {
-      if (!released && !creationRejected() && (suspended !== undefined || child !== undefined)) {
+      if (!released && (suspended !== undefined || child?.pid !== undefined)) {
         let closedLeaseFailure: unknown;
         const cleanup = async (deadline: number): Promise<void> => {
           if (closedLeaseFailure !== undefined) throw closedLeaseFailure;
@@ -192,9 +159,6 @@ export const launchControllerProcess = async (options: {
               child!.once("close", finished);
             });
           }
-          const pid = suspended?.pid ?? child?.pid;
-          if (pid === undefined) throw new Error("Controller launch cleanup has no original process identity.");
-          if (reserved) settleControllerLaunch(options.homeDirectory, ticket, { kind: "stopped", pid, proof: spawnProof ?? null }, options.storageStateDirectory);
         };
         const forget = options.retainBirthCleanup(cleanup);
         try { await cleanup(Date.now() + 5000); forget(); }
@@ -205,7 +169,7 @@ export const launchControllerProcess = async (options: {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       signal.throwIfAborted();
-      const observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(directory, "journal.sqlite"), ticket, spawnProof: spawnProof!, signal });
+      const observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(directory, "journal.sqlite"), ticket, spawnProof, signal });
       if (observation.kind === "observed") {
         await options.onObserved(observation.snapshot);
         return observation.snapshot;
@@ -215,13 +179,5 @@ export const launchControllerProcess = async (options: {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller startup outcome is unknown; the original process and launch intent are retained.");
-  } catch (error) {
-    if (reserved && (creation === "not_started" || creationRejected())) {
-      const closeReservation = async (): Promise<void> => settleControllerLaunch(options.homeDirectory, ticket, { kind: "not_dispatched" }, options.storageStateDirectory);
-      const forget = options.retainBirthCleanup(closeReservation);
-      try { await closeReservation(); forget(); }
-      catch (failure) { throw new AggregateError([error, failure], "Unstarted Controller launch responsibility could not be saved; the original cleanup is retained.", { cause: error }); }
-    }
-    throw error;
-  } finally { try { lifecycle?.close(); } finally { await log.close(); } }
+  } finally { await log.close(); }
 };

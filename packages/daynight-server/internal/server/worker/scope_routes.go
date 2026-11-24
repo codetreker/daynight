@@ -30,8 +30,6 @@ const (
 	routeProduceNoHead
 	routeInspect
 	routeReviewRead
-	routeLifecycleReport
-	routeLifecycleResolve
 	routeFallback
 )
 
@@ -56,11 +54,6 @@ func (r routeRegistry) handle(pattern string, handler http.HandlerFunc, class ro
 		entry.Operations = []scopepolicy.Operation{scopepolicy.WorkerInspect}
 	case routeReviewRead:
 		entry.Operations = []scopepolicy.Operation{scopepolicy.WorkerRead, scopepolicy.ProjectRead}
-	case routeLifecycleReport:
-		entry.Operations = []scopepolicy.Operation{scopepolicy.WorkerReport, scopepolicy.WorkerRead}
-	case routeLifecycleResolve:
-		entry.Operations = []scopepolicy.Operation{scopepolicy.WorkerRead}
-		entry.Dynamic = "resolve: intent requires worker:configure; instance and activation require worker:report"
 	case routeFallback:
 		entry.Fallback = true
 	default:

@@ -386,6 +386,9 @@ var dropTaskStepsSQL string
 //go:embed schema/migrations/125_worker_instance_identity.sql
 var workerInstanceIdentitySQL string
 
+//go:embed schema/migrations/126_drop_worker_lifecycle.sql
+var dropWorkerLifecycleSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -517,6 +520,7 @@ var schemaMigrations = []migration{
 	{version: 123, sql: taskAncestorVisibilitySQL},
 	{version: 124, sql: dropTaskStepsSQL},
 	{version: 125, sql: workerInstanceIdentitySQL},
+	{version: 126, sql: dropWorkerLifecycleSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

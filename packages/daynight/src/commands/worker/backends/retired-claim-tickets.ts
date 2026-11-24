@@ -5,10 +5,9 @@ import type { Operation } from "../../../api/operation.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { resolveControllerStateDirectory } from "../../controller/paths.js";
 import type { CleanupTarget } from "../execution-stop.js";
-import { readLifecycleControllerLocation } from "../lifecycle-controller-ticket.js";
-import type { LifecycleIdentity, LifecycleResource, LifecycleStore } from "../lifecycle-store.js";
+import { readLegacyControllerLocation, readLegacyWorkerResources, type LegacyWorkerIdentity, type LegacyWorkerResource } from "./legacy-retired-evidence.js";
 
-export type LocatedClaimController = { ticket: ControllerLaunchTicket; journalFile: string; storageStateDirectory: string; resources: LifecycleResource[] };
+export type LocatedClaimController = { ticket: ControllerLaunchTicket; journalFile: string; storageStateDirectory: string; resources: LegacyWorkerResource[] };
 export type LocatedClaimNative = { target: CleanupTarget; controllers: LocatedClaimController[] };
 export type ClaimNativeLocation = { target: CleanupTarget; located: LocatedClaimNative } | { target: CleanupTarget; error: unknown };
 export const retiredClaimKey = (target: CleanupTarget): string => `${target.projectId}/${target.taskId}/${target.claimId}`;
@@ -20,13 +19,12 @@ const attemptIntent = (ticket: ControllerLaunchTicket): string => {
 
 /** Batch discovery stays inside the Worker's inventory; lifecycle records bind their own original roots. */
 export const locateRetiredClaimControllers = async (options: {
-  homeDirectory: string; identity: LifecycleIdentity; storageStateDirectory?: string;
-  lifecycle?: Pick<LifecycleStore, "listResources">;
+  homeDirectory: string; identity: LegacyWorkerIdentity; storageStateDirectory?: string;
 }, targets: readonly CleanupTarget[], operation: Operation): Promise<ReadonlyMap<string, ClaimNativeLocation>> => {
   const entries = new Map(targets.map(target => [retiredClaimKey(target), { target, located: { target, controllers: [] } } as ClaimNativeLocation]));
   operation.check();
   if (targets.length === 0) return entries;
-  const add = (target: CleanupTarget, ticket: ControllerLaunchTicket, root: string, resource?: LifecycleResource): void => {
+  const add = (target: CleanupTarget, ticket: ControllerLaunchTicket, root: string, resource?: LegacyWorkerResource): void => {
     const key = retiredClaimKey(target), result = entries.get(key)!;
     if ("error" in result) return;
     if (ticket.serverOrigin !== options.identity.serverOrigin || ticket.workerId !== options.identity.workerId || ticket.userId !== options.identity.userId)
@@ -44,13 +42,12 @@ export const locateRetiredClaimControllers = async (options: {
     }
     result.located.controllers.push({ ticket, journalFile: path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId, root), "journal.sqlite"), storageStateDirectory: root, resources: resource === undefined ? [] : [resource] });
   };
-  for (const resource of options.lifecycle?.listResources() ?? []) {
+  for (const resource of readLegacyWorkerResources(options.homeDirectory, options.identity, "controller")) {
     operation.check();
-    if (resource.ownerKind !== "controller") continue;
     const target = targets.find(item => resource.identity.projectId === item.projectId && resource.identity.taskId === item.taskId && resource.identity.claimId === item.claimId);
     if (target === undefined) continue;
     try {
-      const location = await readLifecycleControllerLocation(options.homeDirectory, options.identity, resource);
+      const location = await readLegacyControllerLocation(options.homeDirectory, options.identity, resource);
       add(target, location.ticket, location.storageStateDirectory, resource);
     }
     catch (error) { entries.set(retiredClaimKey(target), { target, error }); }

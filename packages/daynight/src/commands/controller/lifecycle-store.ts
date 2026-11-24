@@ -34,7 +34,7 @@ import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
-import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, MAX_TICKET_BYTES, parseControllerLifecycleBinding, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, MAX_TICKET_BYTES, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
@@ -153,13 +153,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
           })() }));
         }
         db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
-      }
-      const lifecycle = db.prepare("SELECT ticket_hash,binding_json FROM worker_lifecycle_bindings WHERE execution_generation=?").get(ticket.executionGeneration) as { ticket_hash: string; binding_json: string } | undefined;
-      if (lifecycle !== undefined) {
-        const binding = parseControllerLifecycleBinding(json(lifecycle.binding_json));
-        if (lifecycle.ticket_hash !== controllerPayloadHash(ticket) || controllerPayloadHash(binding) !== controllerPayloadHash(ticket.lifecycleBinding)) throw new Error("Controller journal lifecycle binding changed.");
-      } else if (ticket.lifecycleBinding !== undefined) {
-        db.prepare("INSERT INTO worker_lifecycle_bindings(execution_generation,ticket_hash,binding_json) VALUES(?,?,?)").run(ticket.executionGeneration, controllerPayloadHash(ticket), JSON.stringify(ticket.lifecycleBinding));
       }
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
       sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite }, options.maxOnlineBytes === undefined ? {} : { maxOnlineBytes: options.maxOnlineBytes });
@@ -475,13 +468,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       }
       return operation.executionGeneration === ticket.executionGeneration ? operation : writeOperation({ ...operation, executionGeneration: ticket.executionGeneration, updatedAt: Date.now() });
     }),
-    assertRecoveredInitialReservation: (previousTicket: ControllerLaunchTicket, reservationTicket: ControllerLaunchTicket): void => read(() => {
-      recoverableInitialEvidence(db, ticket, previousTicket);
-      if (BigInt(reservationTicket.executionGeneration) >= BigInt(ticket.executionGeneration)) throw new Error("Recovered reservation generation is not stopped.");
-      const row = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(reservationTicket)) as { snapshot: string; ticket_hash: string } | undefined;
-      if (!row) throw new Error("Recovered reservation lacks its original stopped generation.");
-      validateStoppedInitialTicket(ticket, reservationTicket, row);
-    }),
     getInputIntent: (operationId: string): { canonical: string; sha256: string } | null => read(() => {
       const row = db.prepare("SELECT canonical,sha256 FROM input_intents WHERE operation_id=?").get(operationId) as { canonical: string; sha256: string } | undefined;
       return row ?? null;
@@ -752,32 +738,6 @@ export const readRecoverableInitialInput = async (file: string, ticket: Controll
   return result;
 };
 
-/** Management may close a stranded reservation only after the current native boundary stopped. */
-export const readStoppedRecoverableInitialInput = async (file: string, ticket: ControllerLaunchTicket, home: string, reservationTicket: ControllerLaunchTicket, deadline?: number, storageStateDirectory?: string): Promise<RecoverableInitialEvidence> => {
-  const observed = await readRecoverableInitialInput(file, ticket, home, deadline, storageStateDirectory);
-  const timeout = deadline === undefined ? 5000 : Math.max(1, Math.min(5000, deadline - Date.now()));
-  if (deadline !== undefined && Date.now() >= deadline) throw new Error("Recovered reservation observation exceeded its deadline.");
-  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout });
-  let result!: RecoverableInitialEvidence;
-  closeJournal(db, file, () => { result = db.transaction(() => {
-    inspectReadCompatibleControllerJournal(db);
-    const evidence = recoverableInitialEvidence(db, ticket, observed.previousTicket);
-    if (evidence.operation === null || evidence.snapshot.lifecycle !== "stopped" || !evidence.snapshot.nativeStopped || evidence.snapshot.controllerProcess === null || evidence.snapshot.stoppedAt === null)
-      throw new Error("Recovered reservation requires a stopped Controller and a prepared original operation.");
-    const currentStop = db.prepare("SELECT snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(ticket)) as { snapshot: string } | undefined;
-    if (!currentStop || controllerPayloadHash(json(currentStop.snapshot)) !== controllerPayloadHash(evidence.snapshot)) throw new Error("Recovered reservation lacks the current stopped boundary.");
-    if (process.platform === "win32") validateWindowsControllerStopProof(evidence.snapshot, ticket, controllerPayloadHash(ticket));
-    if (controllerPayloadHash(reservationTicket) !== controllerPayloadHash(ticket)) {
-      const prior = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(reservationTicket)) as { snapshot: string; ticket_hash: string } | undefined;
-      if (!prior || BigInt(reservationTicket.executionGeneration) >= BigInt(ticket.executionGeneration)) throw new Error("Recovered reservation lacks its original stopped generation.");
-      validateStoppedInitialTicket(ticket, reservationTicket, prior);
-    }
-    if (deadline !== undefined && Date.now() >= deadline) throw new Error("Recovered reservation observation exceeded its deadline.");
-    return evidence;
-  }).deferred(); }, "not-started");
-  return result;
-};
-
 const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline: number | undefined, allowPreviousFormat: boolean): ControllerSnapshot => {
   try {
     const row = readControllerStopRow(file, deadline, true, undefined, undefined, allowPreviousFormat);
@@ -794,7 +754,7 @@ const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchT
 /** Read the current journal without migration and verify its original ticket fence. */
 export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, false);
 
-/** Read a validated v16, v17 or current snapshot without modifying protected or retained evidence. */
+/** Read a validated v16–v19 or current snapshot without modifying protected or retained evidence. */
 export const readCompatibleControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, true);
 
 /** Immutable launch attempts can share a generation; only the journal's exact ticket owns its snapshot. */

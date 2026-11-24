@@ -121,7 +121,9 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
         for (const suffix of ["-wal", "-shm"]) if (existsSync(`${options.legacyDatabaseFile}${suffix}`)) assertMigrationPhysicalPath(`${options.legacyDatabaseFile}${suffix}`, "file");
         const source = new Database(sqliteFilename(options.legacyDatabaseFile), { readonly: true, fileMustExist: true });
         try {
-          if (inspectSqlite(source, workerStoreFormat).kind !== "current" || receipt(source, target) !== botMigrationHash(manifest)
+          const format = inspectSqlite(source, workerStoreFormat);
+          if (!(format.kind === "current" || format.kind === "outdated" && format.version >= 19)
+            || receipt(source, target) !== botMigrationHash(manifest)
             || source.prepare("SELECT 1 FROM bots WHERE bot_id=? UNION ALL SELECT 1 FROM bot_executions WHERE bot_id=? LIMIT 1").get(botId, botId) !== undefined) throw new Error("Committed Bot migration conflicts with the retained original Worker authority or receipt.");
         } finally { source.close(); }
       }

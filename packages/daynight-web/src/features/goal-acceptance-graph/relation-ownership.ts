@@ -4,8 +4,7 @@ import { selectLegalContributions } from './relation-projection';
 import { canDiscoverGoalRelation } from './relation-discovery';
 import type { GoalRelationSnapshot, GoalRelationSource } from './relation-session';
 
-const isCanvasSource = (baseline: GoalAcceptanceProjection, source: GoalRelationSource) => source.mode === 'expanded' || source.mode === 'root' &&
-  (baseline.availableGoals.get(source.goalId)?.status === 'todo' || baseline.availableGoals.get(source.goalId)?.status === 'in_progress');
+const isCanvasSource = (baseline: GoalAcceptanceProjection, source: GoalRelationSource) => source.mode === 'expanded' || source.mode === 'root' && baseline.rootIds.has(source.goalId);
 
 export const reachableGoalSources = (projectId: string, baseline: GoalAcceptanceProjection, snapshot: GoalRelationSnapshot): ReadonlyMap<string, GoalRelationSource> => {
   let sources = new Map(snapshot.sources);

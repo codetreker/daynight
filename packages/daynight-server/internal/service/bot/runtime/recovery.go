@@ -166,9 +166,6 @@ func (s *Recovery) RegisterBotRecovery(ctx context.Context, p model.Principal, w
 		if err = op.CheckBotRecoveryBinding(a, input.BotRecoveryBinding); err != nil {
 			return err
 		}
-		if err := sessioncore.RequireWorkerExecution(ctx, scope, p.UserID, workerID); err != nil {
-			return err
-		}
 		machine, err := dao.RecoveryWorker(ctx, p.UserID, workerID)
 		if err != nil {
 			return err
@@ -216,14 +213,6 @@ func (s *Recovery) grant(ctx context.Context, p model.Principal, workerID, id st
 		if err = requireProducer(ctx, scope, p, s.producer); err != nil {
 			return err
 		}
-		// Current-host reconnects renew the stop and receipt channel. Session
-		// grant validation still requires the original execution and Controller.
-		renewal := !takeover && bot.Recovery.WorkerID == workerID && bot.Recovery.HostingGeneration == input.ExpectedHostingGeneration && input.Grant.Kind == "reconnect" && input.Grant.PreviousGeneration == nil
-		if !renewal {
-			if err := sessioncore.RequireWorkerExecution(ctx, scope, p.UserID, workerID); err != nil {
-				return err
-			}
-		}
 		machine, err := dao.RecoveryWorker(ctx, p.UserID, workerID)
 		if err != nil {
 			return err
@@ -247,7 +236,8 @@ func (s *Recovery) grant(ctx context.Context, p model.Principal, workerID, id st
 		if used {
 			return recoveryFault("resource_conflict", "A recovery controller token cannot be reused.")
 		}
-		grant, err := op.GrantBotRecovery(ctx, a, p, workerID, input)
+		hostChanged := takeover && bot.Recovery.WorkerID != workerID
+		grant, err := op.GrantBotRecovery(ctx, a, p, input, hostChanged)
 		if err != nil {
 			return err
 		}

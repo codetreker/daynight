@@ -4,6 +4,7 @@ import type { GoalDependencies, RelatedGoal } from '../../src/api/goal-dependenc
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { unsupportedSessionObservation } from '../../../daynight/src/api/task-observation';
 
 const projectId = '00000000-0000-4000-8000-000000000100';
 const activeId = '00000000-0000-4000-8000-000000000401';
@@ -19,6 +20,7 @@ const externalProjectId = '00000000-0000-4000-8000-000000000101';
 const externalId = '00000000-0000-4000-8000-000000000501';
 const externalSuccessorId = '00000000-0000-4000-8000-000000000502';
 const nextSuccessorId = '00000000-0000-4000-8000-000000000503';
+const externalChildId = '00000000-0000-4000-8000-000000000504';
 const time = '2026-10-22T10:00:00Z';
 
 const graphDialog = (page: Page) => page.getByRole('dialog', { name: 'Goal acceptance dependencies', exact: true });
@@ -50,6 +52,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     detailFixture(externalProjectId, externalId, { type: 'goal', title: 'External authentication', status: 'in_progress', startedAt: time, ready: false }),
     detailFixture(externalProjectId, externalSuccessorId, { type: 'goal', title: 'External rollout', ready: false }),
     detailFixture(externalProjectId, nextSuccessorId, { type: 'goal', title: 'External second rollout', ready: false }),
+    detailFixture(externalProjectId, externalChildId, { parentId: externalId, title: 'Owned authentication task', status: 'in_progress', startedAt: time, ready: false }),
   ];
   let syncDetails = details;
   let epoch = taskSyncEpoch(projectId);
@@ -59,11 +62,13 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   let releaseReplacement: (() => void) | null = null;
   const syncRequests: string[] = [];
   const relationRequests: string[] = [];
+  const tagRequests: string[] = [];
   const failedSources = new Set<string>(), failedPages = new Set<string>(), heldSources = new Set<string>();
   const heldReplies = new Map<string, () => void>();
   const heldPages = new Set<string>(), heldPageReplies = new Map<string, () => void>();
   const cancelledRequests: string[] = [];
   const revokedProjects = new Set<string>();
+  const deniedGoals = new Set<string>();
   const sourceReplies = new Map<string, (cursor: string | null) => GoalDependencies>();
   let relationInFlight = 0, maxRelationInFlight = 0;
   const related = (detail: TaskDetail, sourceProject = projectId): RelatedGoal => ({ projectId: detail.projectId, projectName: detail.projectId === projectId ? 'Client' : 'Authentication',
@@ -81,20 +86,29 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
       nextCursor: options.external && source.id === activeId && cursor === null ? 'second-page' : null };
   };
   const unexpected: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
   await page.clock.install({ time: new Date(time) });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   page.on('requestfailed', request => { if (new URL(request.url()).pathname.endsWith('/goal-dependencies')) cancelledRequests.push(request.url()); });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (path.endsWith('/tags')) tagRequests.push(`${path}${url.search}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body),
       headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const fail = () => send({ error: { code: 'not_found', message: 'Not found', requestId: activeId } }, 404);
     const graph = graphFixture(syncDetails), base = `/api/v1/projects/${projectId}`;
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: teamId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
+    if (path === '/api/v1/me/in-progress-tasks') return send({ observedAt: time, responseTaskAt: time, responseSessionAt: time, inventoryRevision: 'a'.repeat(64), totalTaskCount: 1, totalProjectCount: 1, sessionPartial: false, nextCursor: null,
+      items: [{ project: { id: externalProjectId, name: 'Authentication', ownerTeam: { id: teamId, kind: 'personal', name: null }, executionWarningMinutes: 120, matchedTaskCount: 1 },
+        task: { id: externalChildId, version: '1', title: 'Owned authentication task', status: 'in_progress', startedAt: time, createdAt: time, requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: false, paused: false, worker: null, goal: { id: externalId, title: 'External authentication' } },
+        session: { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: time, freshUntil: '2026-10-22T11:00:00Z' },
+        sessionRow: { taskVersion: '1', state: 'no_session', observedAt: time, freshUntil: '2026-10-22T11:00:00Z', needsAttention: false, canOpen: false } }] });
     if (path === '/api/v1/projects') return send({ items: [graph.project, ...(options.external ? [graphFixture(externalDetails).project] : [])], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send({ id: teamId, kind: 'personal', name: null, version: 1n, createdAt: time, updatedAt: time,
       membership: { teamId, userId: TEST_VIEWER_ID, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
+    if (path.startsWith(base) && revokedProjects.has(projectId)) return fail();
     if (path === base) return send(graph.project);
     if (path === `${base}/access`) return send(directAccessFixture(projectId));
     if (path === `${base}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null });
@@ -112,6 +126,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     if (path.endsWith('/goal-dependencies')) {
       relationRequests.push(`${path}${url.search}`);
       const goalId = path.split('/').at(-2)!;
+      if (deniedGoals.has(goalId)) return fail();
       const source = [...syncDetails, ...externalDetails].find(detail => detail.id === goalId);
       if (source === undefined) throw new Error(`Unexpected Goal relation source: ${goalId}`);
       const pageKey = `${goalId}:${url.searchParams.get('cursor')}`;
@@ -131,13 +146,14 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     if (path.startsWith(externalBase) && revokedProjects.has(externalProjectId)) return fail();
     if (path === externalBase) return send(externalGraph.project);
     if (path === `${externalBase}/access`) return send(directAccessFixture(externalProjectId));
-    if (path === `${externalBase}/task-sync`) return send(taskSyncFixture(externalGraph, { query: taskSyncQuery(url), versionForTask: () => 1n }));
+    if (path === `${externalBase}/task-sync`) { syncRequests.push(`${path}${url.search}`); return send(taskSyncFixture(externalGraph, { query: taskSyncQuery(url), versionForTask: () => 1n })); }
     if (path === `${externalBase}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(externalProjectId), nextCursor: null });
     if (path === `${externalBase}/task-assignees`) return send({ items: [], unresolvedUserIds: [] });
     const externalDetail = externalDetails.find(detail => path === `${externalBase}/tasks/${detail.id}`);
     if (externalDetail !== undefined) return send(externalDetail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(externalProjectId) });
     const detail = details.find(detail => path === `${base}/tasks/${detail.id}`);
     if (detail !== undefined) {
+      if (deniedGoals.has(detail.id)) return fail();
       if (request.method() === 'PATCH') {
         const input = request.postDataJSON() as { title: string; description: string };
         const next = { ...detail, title: input.title, description: input.description, version: detail.version + 1n, updatedAt: '2026-10-22T10:01:00Z' };
@@ -154,7 +170,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   const releaseAll = () => { heldSources.clear(); heldPages.clear(); for (const release of [...heldReplies.values(), ...heldPageReplies.values()]) release(); heldReplies.clear(); heldPageReplies.clear(); releaseReplacement?.(); };
   pendingFixtures.add(releaseAll);
   return {
-    syncRequests, relationRequests, unexpected, cancelledRequests,
+    syncRequests, relationRequests, tagRequests, unexpected, cancelledRequests, pageErrors,
     externalGoal: related(externalDetails[0]!),
     relatedGoal: (id: string, sourceProject = projectId) => related([...syncDetails, ...externalDetails].find(detail => detail.id === id)!, sourceProject),
     versionOf: (id: string) => syncDetails.find(detail => detail.id === id)!.version,
@@ -175,6 +191,8 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     holdAllRoots: () => { for (const detail of syncDetails) if (detail.type === 'goal' && ['todo', 'in_progress'].includes(detail.status)) heldSources.add(detail.id); },
     releaseAll,
     revokeExternal: () => revokedProjects.add(externalProjectId),
+    revokeProject: () => revokedProjects.add(projectId),
+    denyGoal: (id: string) => deniedGoals.add(id),
     changeEdges: (dependsOn: readonly string[]) => {
       syncDetails = syncDetails.map(detail => detail.id === activeId ? { ...detail, dependsOn, version: detail.version + 1n, updatedAt: '2026-10-22T10:01:00Z' } : detail);
       details = syncDetails;
@@ -276,38 +294,38 @@ test('Goal detail title receipts preserve committed edges until normal synchroni
   await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
 });
 
-test('normal epoch retirement preserves the graph viewport and selection while retiring nested detail', async ({ page }) => {
+test('project history retirement removes its graph and nested detail until an explicit fresh entry', async ({ page }) => {
   const state = await install(page), { dialog } = await open(page, state.syncRequests);
+  state.holdSource(doneId);
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect.poll(() => state.sourceHeld(doneId)).toBe(true);
   await card(dialog, activeId).locator('.task-node-body').click();
-  const canvas = dialog.locator('.task-graph-canvas'), bounds = await canvas.boundingBox();
-  if (bounds === null) throw new Error('Goal canvas bounds are missing.');
-  await page.mouse.move(bounds.x + bounds.width - 20, bounds.y + 20);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + bounds.width - 80, bounds.y + 70);
-  await page.mouse.up();
-  const viewport = dialog.locator('.react-flow__viewport');
-  const dialogNode = await dialog.elementHandle(), viewportNode = await viewport.elementHandle();
-  const position = await viewport.getAttribute('style');
+  const oldDialog = await dialog.elementHandle();
   await dialog.getByRole('button', { name: 'Details: Release client', exact: true }).click();
-  const detail = page.locator('.goal-detail-surface').last();
-  await expect(detail.locator('.task-detail-title')).toHaveText('Release client');
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Release client');
   state.rotateEpoch();
   await page.clock.fastForward(16_000);
   await expect.poll(state.replacementHeld).toBe(true);
-  await expect(detail).toHaveCount(0);
-  await expect(dialog).toBeVisible();
-  expect(await dialog.evaluate((node, original) => node === original, dialogNode)).toBe(true);
-  expect(await viewport.evaluate((node, original) => node === original, viewportNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
-  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  expect(await oldDialog!.evaluate(node => node.isConnected)).toBe(false);
+  await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toBeVisible();
+  await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${doneId}/goal-dependencies`))).toBe(true);
+  state.releaseSource(doneId);
   state.releaseReplacement();
-  await expect.poll(state.replacementHeld).toBe(false);
+  await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: /^Goals/ }).click();
+  const trigger = page.getByRole('button', { name: 'Acceptance graph', exact: true });
+  await expect(trigger).toBeEnabled();
+  await expect(dialog).toHaveCount(0);
+  const requests = [...state.syncRequests];
+  await trigger.click();
   await expect(card(dialog, activeId)).toContainText('0 / 1 child Tasks done');
-  expect(await viewport.evaluate((node, original) => node === original, viewportNode)).toBe(true);
-  await expect(viewport).toHaveAttribute('style', position!);
+  expect(await dialog.evaluate((node, original) => node === original, oldDialog)).toBe(false);
+  await card(dialog, activeId).locator('.task-node-body').click();
   await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(state.syncRequests).toEqual(requests);
 });
-
 test('transient TaskSync failures show an in-dialog retry and retain the readable graph', async ({ page }) => {
   const state = await install(page), { dialog } = await open(page, state.syncRequests);
   await card(dialog, activeId).locator('.task-node-body').click();
@@ -562,14 +580,21 @@ test('refreshing a complete paginated source retains its selected last-page Goal
   await retryRelations(dialog, 'Release client').click();
   await expect.poll(() => state.pageHeld(activeId, 'second-page')).toBe(true);
   await expect(card(dialog, nextSuccessorId)).toHaveCount(1);
+  expect(state.syncRequests).toEqual(requests);
   await inspector.getByRole('button', { name: 'Details', exact: true }).click();
   await expect(reader.locator('.task-detail-title')).toHaveText('External second rollout');
+  await expect(detailGraphButton(reader)).toBeEnabled();
+  await expect.poll(() => state.syncRequests.length).toBe(requests.length + 1);
+  const readerReentry = state.syncRequests.at(-1)!;
+  expect(readerReentry).toMatch(new RegExp(`^/api/v1/projects/${externalProjectId}/task-sync\\?epoch=.+&since=`));
+  expect(state.syncRequests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/task-sync`))).toEqual(requests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/task-sync`)));
+  const reopenedRequests = [...state.syncRequests];
   state.releasePage(activeId, 'second-page');
   await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
   await expect(card(dialog, nextSuccessorId)).toHaveCount(0);
   await expect(edge(dialog, activeId, nextSuccessorId)).toHaveCount(0);
   await expect(reader).toHaveCount(0);
-  expect(state.syncRequests).toEqual(requests);
+  expect(state.syncRequests).toEqual(reopenedRequests);
 });
 
 test('local inspection follows other Goals committed TaskSync changes while the selected source raw relationships remain cached', async ({ page }) => {
@@ -869,5 +894,335 @@ test('an expanded foreign successor cannot retain a withdrawn local terminal Goa
   await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('Release client');
   await expect(dialog.locator('.goal-acceptance-inspection')).toContainText('External authentication');
   await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  expect(state.syncRequests).toEqual(requests);
+});
+
+const detailGraphButton = (detail: Locator) => detail.locator('.goal-information').getByRole('button', { name: 'Acceptance graph', exact: true });
+const goalSurface = async (page: Page, title: string) => {
+  const heading = page.locator('.goal-detail-surface:not([inert]) .task-detail-title').filter({ hasText: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+  await expect(heading).toHaveCount(1);
+  const id = await heading.getAttribute('id');
+  if (id === null) throw new Error('Goal reader heading has no identity.');
+  return page.locator(`.goal-detail-surface:has(.task-detail-title[id="${id}"])`);
+};
+const openProjectGoal = async (page: Page) => {
+  await page.goto(`/projects/${projectId}?tab=tasks`);
+  await page.getByRole('tab', { name: /^Goals/ }).click();
+  await page.getByRole('button', { name: 'Release client, Goal details', exact: true }).click();
+  const detail = page.locator('.goal-detail-surface').last();
+  await expect(detail.locator('.task-detail-title')).toHaveText('Release client');
+  await expect(detailGraphButton(detail)).toBeEnabled();
+  return detail;
+};
+
+test('Project Goal description opens the focused graph and preserves its background reader, list, and sync schedule', async ({ page }) => {
+  const state = await install(page), detail = await openProjectGoal(page), button = detailGraphButton(detail);
+  const list = page.getByRole('region', { name: 'Goals', exact: true }), listNode = await list.elementHandle(), detailNode = await detail.elementHandle();
+  const url = page.url(), requests = [...state.syncRequests];
+  await button.click();
+  const dialog = graphDialog(page);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(await detail.evaluate((node, original) => node === original, detailNode)).toBe(true);
+  expect(await list.evaluate((node, original) => node === original, listNode)).toBe(true);
+  expect(page.url()).toBe(url);
+  expect(state.syncRequests).toEqual(requests);
+  await dialog.getByRole('button', { name: 'Close acceptance graph', exact: true }).click();
+  await expect(button).toBeFocused();
+  await expect(detail.locator('.task-detail-title')).toHaveText('Release client');
+  expect(state.syncRequests).toEqual(requests);
+  await button.click();
+  await page.goBack();
+  await expect(graphDialog(page)).toHaveCount(0);
+  await expect(detail).toHaveCount(0);
+  await expect(list).toBeVisible();
+  expect(new URL(page.url()).search).not.toContain('goalGraph=');
+});
+
+for (const [id, title, status] of [[unrelatedId, 'Unrelated finished Goal', 'done'], [cancelledId, 'Cancelled migration', 'cancelled']] as const) test(`standalone ${status} Goal initializes its actual focus and one-hop source without another TaskSync owner`, async ({ page }) => {
+  const state = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${id}`);
+  const detail = page.locator('.goal-detail-surface'), button = detailGraphButton(detail);
+  await expect(detail.locator('.task-detail-title')).toHaveText(title);
+  await expect(button).toBeEnabled();
+  const url = page.url(), requests = [...state.syncRequests];
+  await button.click();
+  const dialog = graphDialog(page);
+  await expect(card(dialog, id)).toHaveAttribute('data-goal-status', status);
+  await expect(card(dialog, id).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(sourceStatus(dialog, id)).toHaveAttribute('data-phase', 'ready');
+  expect(sourceReads(state.relationRequests, id).every(value => value.startsWith(relationPath(id)))).toBe(true);
+  await dialog.locator('.react-flow__controls-zoomout').click();
+  await page.clock.runFor(300);
+  expect(page.url()).toBe(url);
+  expect(state.syncRequests).toEqual(requests);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(button).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('My Tasks Goal detail uses its actual source Project and retains the personal inventory behind the graph', async ({ page }) => {
+  const state = await install(page, { external: true });
+  await page.goto('/my-tasks');
+  const inventory = page.locator('.my-task-groups');
+  await expect.poll(async () => await inventory.count() > 0 || state.pageErrors.length > 0).toBe(true);
+  expect(state.pageErrors).toEqual([]);
+  const inventoryNode = await inventory.elementHandle();
+  await page.getByRole('link', { name: 'View Goal: External authentication', exact: true }).click();
+  const detail = page.locator('.goal-detail-surface'), button = detailGraphButton(detail);
+  await expect(detail.locator('.task-detail-title')).toHaveText('External authentication');
+  await expect(button).toBeEnabled();
+  const requests = [...state.syncRequests], url = page.url();
+  await button.click();
+  const dialog = graphDialog(page);
+  await expect(card(dialog, externalId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  expect(sourceReads(state.relationRequests, externalId).every(value => value.startsWith(`/api/v1/projects/${externalProjectId}/`))).toBe(true);
+  expect(state.syncRequests.every(value => value.startsWith(`/api/v1/projects/${externalProjectId}/`))).toBe(true);
+  expect(await inventory.evaluate((node, original) => node === original, inventoryNode)).toBe(true);
+  expect(page.url()).toBe(url);
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+  await page.goBack();
+  await expect(detail).toHaveCount(0);
+  await expect(inventory).toBeVisible();
+});
+
+test('focused graph nested Details trap Escape and protect their discussion draft with Keep and Discard', async ({ page }) => {
+  const state = await install(page), source = await openProjectGoal(page);
+  await detailGraphButton(source).click();
+  const dialog = graphDialog(page);
+  await dialog.getByRole('button', { name: 'View fullscreen', exact: true }).click();
+  await page.clock.runFor(300);
+  await dialog.getByRole('button', { name: 'Details: Accepted identity', exact: true }).click();
+  const nested = await goalSurface(page, 'Accepted identity');
+  await expect(nested.locator('.task-detail-title')).toHaveText('Accepted identity');
+  await nested.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = nested.getByRole('textbox', { name: 'Discussion message', exact: true });
+  await draft.fill('Keep this acceptance discussion draft');
+  const requests = [...state.syncRequests];
+  await page.keyboard.press('Escape');
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?', exact: true });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(draft).toHaveValue('Keep this acceptance discussion draft');
+  await draft.focus();
+  await page.keyboard.press('Escape');
+  await confirmation.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(1);
+  await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toHaveClass(/task-chain-dialog-fullscreen/);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(detailGraphButton(source)).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('standalone focused graph protects a nested Goal edit draft during manual history traversal', async ({ page }) => {
+  const state = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${activeId}`);
+  const source = page.locator('.goal-detail-surface');
+  await source.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await source.getByRole('tab', { name: 'Description', exact: true }).click();
+  await detailGraphButton(source).click();
+  const dialog = graphDialog(page);
+  await dialog.getByRole('button', { name: 'Details: Accepted identity', exact: true }).click();
+  const nested = await goalSurface(page, 'Accepted identity');
+  try { await nested.getByRole('button', { name: 'Edit', exact: true }).click({ timeout: 5_000 }); }
+  catch (error) {
+    const layers = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.goal-detail-surface')].map((surface, index) => {
+      const backdrop = surface.closest<HTMLElement>('.task-detail-backdrop'), edit = [...surface.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Edit');
+      const bounds = edit?.getBoundingClientRect();
+      const hit = bounds === undefined ? null : document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      return { index, title: surface.querySelector('.task-detail-title')?.textContent, backdropStack: backdrop === null ? null : { inline: backdrop.style.zIndex, computed: getComputedStyle(backdrop).zIndex },
+        unavailable: surface.closest('[hidden], [inert]')?.outerHTML.slice(0, 240), editBounds: bounds?.toJSON(), hit: hit?.outerHTML.slice(0, 300),
+        hitTitle: hit?.closest('.task-detail-backdrop')?.querySelector('.task-detail-title')?.textContent };
+    }));
+    await test.info().attach('edit-overlay-layers', { body: JSON.stringify(layers, null, 2), contentType: 'application/json' });
+    throw error;
+  }
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal', exact: true });
+  const title = editor.getByRole('textbox', { name: 'Name', exact: true });
+  await title.fill('Unsaved acceptance title');
+  await page.goBack();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?', exact: true });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(title).toHaveValue('Unsaved acceptance title');
+  await title.focus();
+  await page.goBack();
+  await confirmation.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(graphDialog(page)).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(1);
+  await expect(source.getByRole('tab', { name: 'Discussion', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const width of [320, 390]) test(`Goal description focused graph restores its source button at ${width}px`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page), detail = await openProjectGoal(page), button = detailGraphButton(detail);
+  await button.click();
+  const dialog = graphDialog(page);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath(`focused-goal-acceptance-${width}.png`) });
+  const requests = [...state.syncRequests];
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('a focused source Project access retirement closes its graph and reader without admitting late context', async ({ page }) => {
+  const state = await install(page), detail = await openProjectGoal(page);
+  await detailGraphButton(detail).click();
+  await expect(graphDialog(page)).toBeVisible();
+  state.revokeProject();
+  await page.clock.fastForward(61_000);
+  await expect(graphDialog(page)).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface .goal-information')).toHaveCount(0);
+});
+
+test('focused Goal resource retirement restores focus to its visible failed reader heading', async ({ page }) => {
+  const state = await install(page), detail = await openProjectGoal(page);
+  await detailGraphButton(detail).click();
+  await expect(graphDialog(page)).toBeVisible();
+  state.denyGoal(activeId);
+  await page.clock.fastForward(61_000);
+  await expect(graphDialog(page)).toHaveCount(0);
+  const failedHeading = page.getByRole('heading', { name: 'Task details could not be loaded', exact: true });
+  await expect(failedHeading).toBeVisible();
+  await expect(failedHeading).toBeFocused();
+});
+
+test('source history retirement focuses its fresh direct reader and requires a new graph entry after recovery', async ({ page }) => {
+  const state = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${activeId}`);
+  const detail = page.locator('.goal-detail-surface');
+  await expect(detailGraphButton(detail)).toBeEnabled();
+  await detailGraphButton(detail).click();
+  const dialog = graphDialog(page), oldDialog = await dialog.elementHandle();
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  state.holdSource(doneId);
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect.poll(() => state.sourceHeld(doneId)).toBe(true);
+  state.changeGoal(activeId, { title: 'Recovered release client' });
+  state.rotateEpoch();
+  await page.clock.fastForward(16_000);
+  await expect.poll(state.replacementHeld).toBe(true);
+  await expect(dialog).toHaveCount(0);
+  expect(await oldDialog!.evaluate(node => node.isConnected)).toBe(false);
+  const freshHeading = detail.locator('.task-detail-title');
+  await expect(freshHeading).toHaveText('Recovered release client');
+  await expect(freshHeading).toBeFocused();
+  await expect(detailGraphButton(detail)).toBeDisabled();
+  await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${doneId}/goal-dependencies`))).toBe(true);
+  state.releaseSource(doneId);
+  state.releaseReplacement();
+  await expect(detail.locator('.task-detail-title')).toHaveText('Recovered release client');
+  const button = detailGraphButton(detail);
+  await expect(button).toBeEnabled();
+  await expect(dialog).toHaveCount(0);
+  const requests = [...state.syncRequests];
+  await button.click();
+  await expect(card(dialog, activeId)).toContainText('0 / 1 child Tasks done');
+  expect(await dialog.evaluate((node, original) => node === original, oldDialog)).toBe(false);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+});
+test('same-Project nested Goal graph preserves its own detail and discussion draft while reusing synchronization', async ({ page }) => {
+  const state = await install(page), source = await openProjectGoal(page);
+  await detailGraphButton(source).click();
+  const outer = graphDialog(page);
+  await outer.getByRole('button', { name: 'Details: Accepted identity', exact: true }).click();
+  const nested = await goalSurface(page, 'Accepted identity');
+  await nested.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await nested.getByRole('textbox', { name: 'Discussion message', exact: true }).fill('Retained same-Project reader draft');
+  await nested.getByRole('tab', { name: 'Description', exact: true }).click();
+  const requests = [...state.syncRequests], nestedNode = await nested.elementHandle();
+  await detailGraphButton(nested).click();
+  await expect(graphDialog(page)).toHaveCount(2);
+  const inner = graphDialog(page).last();
+  await expect(card(inner, doneId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(await nested.evaluate((node, original) => node === original, nestedNode)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(graphDialog(page)).toHaveCount(1);
+  await expect(detailGraphButton(nested)).toBeFocused();
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await nested.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(nested.getByRole('textbox', { name: 'Discussion message', exact: true })).toHaveValue('Retained same-Project reader draft');
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('foreign nested graphs reuse ancestor Project owners and preserve each source reader and draft through layered Escape', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.sourceReply(externalId, () => ({ goalId: externalId, canEdit: false, completionBlocked: true, prerequisites: [{ target: state.relatedGoal(activeId, externalProjectId) }], successors: [], nextCursor: null }));
+  const source = await openProjectGoal(page);
+  await detailGraphButton(source).click();
+  const outer = graphDialog(page);
+  await expect(card(outer, externalId)).toBeVisible();
+  await frameBranch(page, outer);
+  const originalProjectReads = state.syncRequests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/`));
+  await outer.getByRole('button', { name: 'Details: External authentication', exact: true }).click();
+  const foreign = await goalSurface(page, 'External authentication');
+  await expect(foreign.locator('.task-detail-title')).toHaveText('External authentication');
+  await expect(detailGraphButton(foreign)).toBeEnabled();
+  await foreign.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await foreign.getByRole('textbox', { name: 'Discussion message', exact: true }).fill('Keep foreign source draft');
+  await foreign.getByRole('tab', { name: 'Description', exact: true }).click();
+  const requests = [...state.syncRequests];
+  await detailGraphButton(foreign).click();
+  await expect(graphDialog(page)).toHaveCount(2);
+  const foreignGraph = graphDialog(page).last();
+  await expect(card(foreignGraph, externalId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(card(foreignGraph, activeId)).toBeVisible();
+  await frameBranch(page, foreignGraph);
+  await foreignGraph.getByRole('button', { name: 'Details: Release client', exact: true }).click();
+  const returned = await goalSurface(page, 'Release client');
+  await expect(returned.locator('.task-detail-title')).toHaveText('Release client');
+  await expect(detailGraphButton(returned)).toBeEnabled();
+  const tagReads = state.tagRequests.length;
+  await returned.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const tagSearch = returned.getByRole('searchbox', { name: 'Search tags', exact: true });
+  await expect.poll(async () => state.pageErrors.length > 0 || await tagSearch.isVisible()).toBe(true);
+  expect(state.pageErrors).toEqual([]);
+  await tagSearch.fill('ancestor tag');
+  await page.clock.runFor(400);
+  await expect(returned.locator('.task-tags-editor')).toContainText('No matching tags.');
+  await expect.poll(() => state.tagRequests.slice(tagReads).some(path => path.includes('ancestor'))).toBe(true);
+  expect(state.tagRequests.slice(tagReads).every(path => path.startsWith(`/api/v1/projects/${projectId}/tags`))).toBe(true);
+  expect(state.syncRequests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/`))).toEqual(originalProjectReads);
+  expect(state.syncRequests).toEqual(requests);
+  await returned.locator('.task-tags-editor').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(returned.getByRole('button', { name: 'Edit tags', exact: true })).toBeFocused();
+  await returned.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await returned.getByRole('textbox', { name: 'Discussion message', exact: true }).fill('Keep returned ancestor draft');
+  await returned.getByRole('tab', { name: 'Description', exact: true }).click();
+  await detailGraphButton(returned).click();
+  await expect(graphDialog(page)).toHaveCount(3);
+  await expect(card(graphDialog(page).last(), activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  expect(state.syncRequests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/`))).toEqual(originalProjectReads);
+  expect(state.syncRequests).toEqual(requests);
+  await page.keyboard.press('Escape');
+  await expect(graphDialog(page)).toHaveCount(2);
+  await expect(detailGraphButton(returned)).toBeFocused();
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await returned.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const returnedDraft = returned.getByRole('textbox', { name: 'Discussion message', exact: true });
+  await expect(returnedDraft).toHaveValue('Keep returned ancestor draft');
+  await returnedDraft.focus();
+  await page.keyboard.press('Escape');
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?', exact: true });
+  await confirmation.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await expect(graphDialog(page)).toHaveCount(1);
+  await expect(detailGraphButton(foreign)).toBeFocused();
+  await foreign.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(foreign.getByRole('textbox', { name: 'Discussion message', exact: true })).toHaveValue('Keep foreign source draft');
   expect(state.syncRequests).toEqual(requests);
 });

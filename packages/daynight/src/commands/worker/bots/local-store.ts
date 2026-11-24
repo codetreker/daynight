@@ -218,7 +218,6 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     markShutdown: (record, eligible) => required(record).executions.markShutdown(record, eligible),
     resumeObserved: record => required(record).executions.resumeObserved(record),
     blockRecovery: (record, reason) => required(record).executions.blockRecovery(record, reason),
-    replaceUnsubmittedLaunch: (record, launchId, home) => required(record).executions.replaceUnsubmittedLaunch(record, launchId, home),
     beginRecovery: (record, stopped, home, launch) => required(record).executions.beginRecovery(record, stopped, home, launch),
   };
   const assertLocked = (record: BotRecord): void => {

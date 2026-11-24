@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { navigate, parseRoute, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
-import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRequestTaskDraftAction, useRetireTaskDraft } from './TaskDraftNavigation';
+import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRequestTaskDraftAction, useRequestTaskDraftDeparture, useRetireTaskDraft } from './TaskDraftNavigation';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
 import type { AttachmentApi } from './attachments/useAttachments';
 import type { AttachmentUrls } from './attachments/TaskAttachments';
@@ -108,7 +108,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const requestTaskAction = useRequestTaskDraftAction();
-  const requestClose = () => { if (onClose !== undefined) { if (parentGoalId === undefined) browserNavigation().requestAction(onClose); else requestTaskAction(onClose); } };
+  const requestDeparture = useRequestTaskDraftDeparture();
+  const requestClose = () => { if (onClose !== undefined) { if (parentGoalId === undefined) requestDeparture(onClose); else requestTaskAction(onClose); } };
   const followGoalLink: import('react').MouseEventHandler<HTMLAnchorElement> = (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const current = parseRoute(window.location.pathname, window.location.search);

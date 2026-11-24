@@ -44,7 +44,6 @@ const refuse = (code: string): never => { throw Object.assign(new Error(code), {
 
 /** Durable source intents precede IO; frozen submissions retain their sealed content. */
 export const createMarkdownCaptureCoordinator = (options: {
-  beforeSpawn?(): void;
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore;
   bridge: Pick<ProviderOptions, keyof Hooks>; writable(): boolean; fence(): string | null;
   nativeReadPolicy?(): NativeReadPolicy | null;
@@ -259,7 +258,7 @@ export const createMarkdownCaptureCoordinator = (options: {
         const joined = AbortSignal.any([signal, writerSignal]);
         await waitForCapture(joined, request.locator.kind === "local");
         if (request.locator.kind === "local") {
-          const context = await createLocalImageContext({ ...(options.beforeSpawn === undefined ? {} : { beforeSpawn: options.beforeSpawn }), cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
+          const context = await createLocalImageContext({ cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
           try {
             await waitForCapture(joined, true);
             const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, waitCapture: () => waitForCapture(joined, true), assertCapture: () => { joined.throwIfAborted(); checkContext(record.context, true, fence, sourcePolicy!); hooks.verifyImageCapture?.(request.captureId, request.attemptId); }, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {

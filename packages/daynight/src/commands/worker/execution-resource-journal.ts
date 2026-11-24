@@ -155,14 +155,15 @@ export const openExecutionResourceJournal = async (options: { directory: string;
     }
     if (original.event.proof === null) throw new Error("Execution resource birth evidence is unavailable; responsibility is retained.");
     if (!await confirmControllerProcessesStopped(original.event.proof, [], settings.deadline, settings.lease)) throw new Error("Execution resource original boundary remains occupied.");
+    if (Date.now() >= settings.deadline) throw new Error("Original execution resource reconciliation exceeded its deadline.");
     await sink(original.generation)({ ...original.event, sequence: original.event.sequence + 1, stage: "stopped" });
   };
   return {
     sink, read, drain, assertClosed, reconcile,
     snapshot: () => ({ records: structuredClone([...records.values()]), pending: pending.size, failures: [...failures.keys()] }),
     /** Join each original resource owner without waiting for broader producer lifetimes. */
-    reconcileRetained: async (settings: { generation: string; deadline: number }): Promise<void> => {
-      if (!generationValue(settings.generation)) throw new TypeError("Execution resource generation must be a positive int64 string.");
+    reconcileRetained: async (settings: { generation?: string; deadline: number }): Promise<void> => {
+      if (settings.generation !== undefined && !generationValue(settings.generation)) throw new TypeError("Execution resource generation must be a positive int64 string.");
       // Read joins pending original writes but does not let a historical save
       // rejection prevent observing the retained process and output owners.
       const observed = await withinExecutionDeadline(read(), settings.deadline);
@@ -170,7 +171,7 @@ export const openExecutionResourceJournal = async (options: { directory: string;
       const probes = new Map(retainedBotCliProbes().map(entry => [entry.launchId, entry]));
       const resources = new Map(observed.map(record => [record.event.resourceId, record.generation]));
       for (const [resourceId, generation] of admitted) if (!resources.has(resourceId)) resources.set(resourceId, generation);
-      const results = await Promise.allSettled([...resources].filter(([, generation]) => generation === settings.generation).map(async ([resourceId, generation]) => {
+      const results = await Promise.allSettled([...resources].filter(([, generation]) => settings.generation === undefined || generation === settings.generation).map(async ([resourceId, generation]) => {
         const original = observed.find(record => record.event.resourceId === resourceId);
         const retained = live.get(resourceId);
         const probe = probes.get(resourceId);

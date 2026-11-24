@@ -323,9 +323,12 @@ func testSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T, db *postg
 			_, e := dao.(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, id, other)
 			return e
 		},
-		"operation read":     func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
-		"operation insert":   func() error { return dao.InsertSessionOperation(ctx, op) },
-		"operation receipt":  func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
+		"operation read":    func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
+		"operation insert":  func() error { return dao.InsertSessionOperation(ctx, op) },
+		"operation receipt": func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
+		"reject unsent operations": func() error {
+			return dao.RejectUnsentSessionOperations(ctx, id, sp.OperationError{Code: "permission_or_state_changed", Message: "Bot hosting Worker changed before dispatch."})
+		},
 		"operation epoch":    func() error { return dao.SetSessionOperationEpoch(ctx, id, other, 1) },
 		"first input":        func() error { _, e := dao.HasOtherFirstInput(ctx, id, other); return e },
 		"interaction":        func() error { _, e := dao.HasInteractionResponse(ctx, id, other, id); return e },

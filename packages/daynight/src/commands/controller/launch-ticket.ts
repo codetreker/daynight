@@ -1,4 +1,3 @@
-import type { LifecycleBinding } from "../worker/lifecycle-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, lstat, link, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -17,9 +16,11 @@ export class LaunchTicketLimitError extends Error {
   constructor(readonly actualBytes: number, readonly maxBytes: number, message: string) { super(message); }
 }
 
+type HistoricalBinding = { readonly instanceId: string; readonly instanceEpoch?: string; readonly intentVersion: string; readonly localEpoch: string; readonly scopeGeneration: string; readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
+
 type LaunchCommon = {
   readonly schemaVersion: 1 | 2;
-  readonly lifecycleBinding?: LifecycleBinding;
+  readonly lifecycleBinding?: HistoricalBinding;
   readonly launchId: string; readonly executionId: string; readonly controllerId: string; readonly controllerInstanceId: string;
   readonly sessionId: string; readonly executionGeneration: string; readonly serverOrigin: string;
   readonly provider: "codex" | "claude" | "copilot"; readonly cwd: string; readonly nativeHome: string;
@@ -46,21 +47,20 @@ const canonicalPayload = (value: unknown): unknown => {
   return value;
 };
 export const controllerPayloadHash = (value: unknown): string => createHash("sha256").update(JSON.stringify(canonicalPayload(value))).digest("hex");
-export const projectControllerLifecycleBinding = (value: unknown): LifecycleBinding => {
+// Shipped v2 tickets retain their full identity for the original launch.
+const parseHistoricalBinding = (value: unknown): HistoricalBinding => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Controller lifecycle binding is missing.");
   const data = value as Record<string, unknown>;
-  const version = (number: unknown): string => {
+  const hasEpoch = Object.hasOwn(data, "instanceEpoch");
+  const fields = ["instanceId", "intentVersion", "localEpoch", "scopeGeneration", "serverOrigin", "userId", "workerId"];
+  if (Object.keys(data).sort().join() !== [...(hasEpoch ? ["instanceEpoch"] : []), ...fields].join()) throw new Error("Controller lifecycle binding has invalid fields.");
+  for (const key of ["instanceId", "userId", "workerId"]) uuid(data[key]);
+  for (const key of [...(hasEpoch ? ["instanceEpoch"] : []), "intentVersion", "localEpoch", "scopeGeneration"]) {
+    const number = data[key];
     if (typeof number !== "string" || !/^[1-9][0-9]{0,18}$/.test(number) || BigInt(number) > 9_223_372_036_854_775_807n) throw new Error("Controller lifecycle binding has an invalid version.");
-    return number;
-  };
+  }
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller lifecycle service is invalid.");
-  return { serverOrigin: data.serverOrigin, userId: uuid(data.userId), workerId: uuid(data.workerId), instanceId: uuid(data.instanceId),
-    intentVersion: version(data.intentVersion), localEpoch: version(data.localEpoch), scopeGeneration: version(data.scopeGeneration) };
-};
-/** Validate the immutable binding while retaining the payload used by the journal hash. */
-export const parseControllerLifecycleBinding = (value: unknown): LifecycleBinding => {
-  projectControllerLifecycleBinding(value);
-  return value as LifecycleBinding;
+  return value as HistoricalBinding;
 };
 export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Controller ticket must be an object.");
@@ -74,7 +74,7 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (Object.hasOwn(data, "usageScope") && (!test || data.usageScope !== "standalone_test" || ["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].some(key => Object.hasOwn(data, key)))) throw new Error("Controller usage scope is invalid.");
   if ((data.schemaVersion !== 1 && data.schemaVersion !== 2) || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (data.schemaVersion === 2) {
-    const lifecycle = projectControllerLifecycleBinding(data.lifecycleBinding);
+    const lifecycle = parseHistoricalBinding(data.lifecycleBinding);
     if (lifecycle.serverOrigin !== data.serverOrigin || lifecycle.userId !== (test ? data.ownerUserId : data.userId)
       || !test && lifecycle.workerId !== data.workerId || data.usageScope === "standalone_test") throw new Error("Controller lifecycle binding conflicts with its execution owner.");
   } else if (Object.hasOwn(data, "lifecycleBinding")) throw new Error("Legacy Controller tickets cannot claim lifecycle fencing.");
@@ -120,7 +120,6 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
     parseResolvedToolLaunch(fields.toolLaunch, { tool: data.provider, context: "web" });
   }
   if (observation) parseFrozenToolObservation(fields.toolObservation);
-  // The journal and resource owner hash the original immutable ticket.
   return value as ControllerLaunchTicket;
 };
 export const readLaunchTicket = async (home: string, launchId: string, storageStateDirectory?: string): Promise<ControllerLaunchTicket> => {

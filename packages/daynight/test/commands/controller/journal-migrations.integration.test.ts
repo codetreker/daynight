@@ -12,12 +12,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore, readCompatibleControllerSnapshot, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
-import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, serializeLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
-const journalVersion = 19;
+const journalVersion = 20;
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
@@ -135,7 +135,7 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
-test.each([17, 18] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v19", async version => {
+test.each([17, 18, 19] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v20", async version => {
   const f = await windowsStopFixture();
   const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
   const old = new Database(f.file); restoreControllerJournalVersion(old, version);
@@ -149,11 +149,48 @@ test.each([17, 18] as const)("reads a shipped v%s stop receipt without mutation 
   } finally { permit.release(); }
   const upgraded = new Database(f.file, { readonly: true });
   try {
-    expect(upgraded.pragma("user_version", { simple: true })).toBe(19);
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(journalVersion);
     expect(upgraded.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: version === 17 ? "legacy" : null });
     expect(upgraded.prepare("SELECT ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual({ ticket_hash: controllerPayloadHash(f.ticket) });
   } finally { upgraded.close(); }
   expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+});
+
+test("stops a shipped v2 execution and removes only the retired binding records", async () => {
+  const f = await currentStopFixture();
+  const original: ControllerLaunchTicket = { ...f.ticket, schemaVersion: 2, lifecycleBinding: {
+    instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1",
+    serverOrigin: f.ticket.serverOrigin, userId: f.ticket.userId!, workerId: f.ticket.workerId!,
+  } };
+  const ticketFile = controllerTicketPath(f.home, original.launchId);
+  await mkdir(path.dirname(ticketFile), { recursive: true, mode: 0o700 });
+  const ticketBytes = JSON.stringify(original);
+  await writeFile(ticketFile, ticketBytes, { mode: 0o600 });
+  const ticketHash = controllerPayloadHash(original);
+  const old = new Database(f.file);
+  try {
+    restoreControllerJournalVersion(old, 19);
+    old.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run(ticketHash);
+    old.prepare("INSERT INTO worker_lifecycle_bindings VALUES(?,?,?)").run(original.executionGeneration, ticketHash, JSON.stringify(original.lifecycleBinding));
+  } finally { old.close(); }
+  const observed = await readLaunchTicket(f.home, original.launchId);
+  expect(observed).toEqual(original);
+  expect(readCompatibleControllerSnapshot(f.file, observed)).toMatchObject({ nativeStopped: false, controllerProcess: { pid: 123 } });
+  expect(() => readCompatibleControllerSnapshot(f.file, { ...observed, ipcSecret: "b".repeat(64) })).toThrow(/conflicts/);
+  expect(serializeLaunchTicket(observed)).toBe(ticketBytes + "\n");
+  await expect(writeLaunchTicket(f.home, observed)).resolves.toBe(ticketFile);
+  await expect(writeLaunchTicket(f.home, { ...observed, ipcSecret: "b".repeat(64) })).rejects.toThrow(/different ticket/);
+
+  const stopped = await recordFixtureStop(f.file, observed);
+  expect(stopped).toMatchObject({ nativeStopped: true, lifecycle: "stopped", controllerProcess: { pid: 123 } });
+  expect(proof.stopped).toHaveBeenCalledOnce();
+  expect(await readFile(ticketFile, "utf8")).toBe(ticketBytes);
+  const upgraded = new Database(f.file, { readonly: true });
+  try {
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(journalVersion);
+    expect(upgraded.prepare("SELECT name FROM sqlite_schema WHERE name='worker_lifecycle_bindings'").get()).toBeUndefined();
+    expect(upgraded.prepare("SELECT ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(ticketHash)).toEqual({ ticket_hash: ticketHash });
+  } finally { upgraded.close(); }
 });
 
 test.each([false, true])("preserves exact historical Windows stop evidence across recovery (upgrade v16: %s)", async upgrade => {
@@ -328,7 +365,7 @@ test("current controller snapshot verifies the full ticket without writing the c
   expect(after.pragma("user_version", { simple: true })).toBe(journalVersion); after.close();
 });
 
-test("reads a live shipped v18 journal without mutation, blocks its upgrade and upgrades after its owner exits", async () => {
+test("reads a live shipped v19 journal without mutation, blocks its upgrade and upgrades after its owner exits", async () => {
   const f = await fixture(), journal = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
   const snapshot = journal.patchSnapshot({ lifecycle: "ready", activity: "idle" }); journal.close();
   const owner = spawn(process.execPath, ["-e", "process.stdout.write('ready'); process.stdin.resume()"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
@@ -339,9 +376,9 @@ test("reads a live shipped v18 journal without mutation, blocks its upgrade and 
     const db = new Database(f.file);
     const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
     try {
-      restoreControllerJournalVersion(db, 18);
+      restoreControllerJournalVersion(db, 19);
       db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(owner.pid);
-      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(ddl);
+      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name != 'worker_lifecycle_bindings' ORDER BY name").all()).toEqual(ddl);
     } finally { db.close(); }
     const original = await readFile(f.file);
     expect(readCompatibleControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);
@@ -352,11 +389,11 @@ test("reads a live shipped v18 journal without mutation, blocks its upgrade and 
       expect(() => upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toThrow(/upgrade-blocked/);
       expect(await readFile(f.file)).toEqual(original);
       owner.stdin.end(); await exited;
-      expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toMatchObject({ version: 19 });
+      expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toMatchObject({ version: journalVersion });
     } finally { permit.release(); }
     const upgraded = new Database(f.file, { readonly: true });
     try {
-      expect(upgraded.pragma("user_version", { simple: true })).toBe(19);
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(journalVersion);
       expect(upgraded.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(ddl);
     } finally { upgraded.close(); }
     expect(readCurrentControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);

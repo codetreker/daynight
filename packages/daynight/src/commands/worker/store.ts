@@ -200,15 +200,11 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claimKey(identity), configuration: JSON.stringify(configuration) });
     return configuration;
   });
-  const reservationForTask = (identity: { projectId: string; taskId: string }): ClaimToolReservation | null => read(() => {
-    const row = db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE project_id = @projectId AND task_id = @taskId AND agent_control_mode = 'web'`)
-      .get({ ...projectKey(identity), taskId: id(identity.taskId, "Task ID") }) as ReservationRow | undefined;
-    return row === undefined ? null : asReservationRow(row);
-  });
   const getClaimToolReservation = (identity: ClaimIdentity): ClaimToolReservation | null => read(() => {
-    const key = claimKey(identity), reservation = reservationForTask(key);
-    if (reservation !== null && reservation.claimId !== key.claimId) throw new Error("The task has an unresolved reservation for another claim.");
-    return reservation;
+    const row = db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations
+      WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId AND agent_control_mode = 'web'`)
+      .get(claimKey(identity)) as ReservationRow | undefined;
+    return row === undefined ? null : asReservationRow(row);
   });
   const registerPending = (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
     const key = claimKey(input), tool = agent(input.agent);
@@ -230,18 +226,11 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
   };
 
   return {
-    lifecycleAdopted: (): boolean => read(() => db.prepare("SELECT 1 FROM lifecycle_adoption WHERE singleton=1").get() !== undefined),
-    adoptLifecycle: (identity: { serverOrigin: string; userId: string; workerId: string }): void => atomic(() => {
-      const expected = { server_origin: text(identity.serverOrigin, "Lifecycle origin"), user_id: id(identity.userId, "Lifecycle user"), worker_id: id(identity.workerId, "Lifecycle Worker") };
-      const previous = db.prepare("SELECT server_origin,user_id,worker_id FROM lifecycle_adoption WHERE singleton=1").get();
-      if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(expected)) throw new Error("Worker lifecycle adoption belongs to another identity.");
-      if (previous === undefined) db.prepare("INSERT INTO lifecycle_adoption VALUES (1,@server_origin,@user_id,@worker_id)").run(expected);
-    }),
     close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
     getClaimToolReservation,
-    listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE agent_control_mode = 'web' ORDER BY project_id, task_id`).all() as ReservationRow[]).map(asReservationRow)),
+    listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE agent_control_mode = 'web' ORDER BY project_id, task_id, claim_id`).all() as ReservationRow[]).map(asReservationRow)),
     reserveClaimTools: (input: ClaimToolReservation): ClaimToolReservation => atomic(() => {
-      const reservation = asClaimToolReservation(input), previous = reservationForTask(reservation);
+      const reservation = asClaimToolReservation(input), previous = getClaimToolReservation(reservation);
       if (previous !== null) {
         if (!sameClaimToolReservation(previous, reservation)) throw new Error("The claim tool reservation is already frozen for its original request.");
         return previous;
@@ -254,21 +243,26 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       return getClaimToolReservation(reservation)!;
     }),
     acceptClaimToolReservation: (task: Task, workerId: string): LocalTask | null => atomic(() => {
-      const reservation = reservationForTask({ projectId: task.projectId, taskId: task.id });
-      if (reservation === null) return null;
       const claim = readWorkerClaim(task.properties);
-      if (task.status !== "in_progress" || taskVersion(task.version) <= reservation.version || claim === undefined || claim.state !== "active"
-        || claim.claimId !== reservation.claimId || claim.worktreeId !== reservation.worktreeId || claim.workerId !== reservation.workerId || id(workerId, "Worker ID") !== reservation.workerId
+      if (claim === undefined) return null;
+      const reservation = getClaimToolReservation({ projectId: task.projectId, taskId: task.id, claimId: claim.claimId });
+      if (reservation === null) return null;
+      if (task.status !== "in_progress" || taskVersion(task.version) <= reservation.version || claim.state !== "active"
+        || claim.worktreeId !== reservation.worktreeId || claim.workerId !== reservation.workerId || id(workerId, "Worker ID") !== reservation.workerId
         || claim.agent !== reservation.nativeConfiguration.agent || claim.agentControlMode !== reservation.agentControlMode) throw new Error("The granted claim differs from its original tool reservation.");
       if (getTask(reservation) !== null) throw new Error("A pre-grant reservation cannot replace an already registered claim.");
       const local = registerPending({ ...claimKey(reservation), agent: reservation.nativeConfiguration.agent, agentControlMode: reservation.agentControlMode, nativeConfiguration: reservation.nativeConfiguration });
-      deleteClaimToolReservation(reservation);
+      // The confirmed Task version rules out every older attempt, including
+      // any for which this process lost the response before the grant.
+      db.prepare(`DELETE FROM claim_tool_reservations
+        WHERE project_id = ? AND task_id = ? AND agent_control_mode = 'web' AND CAST(task_version AS INTEGER) < ?`)
+        .run(reservation.projectId, reservation.taskId, task.version);
       return local;
     }),
     // The caller must prove a definite rejection, a later authoritative task
     // version, or a confirmed deletion of the original task.
     releaseClaimToolReservation: (input: ClaimToolReservation): boolean => atomic(() => {
-      const expected = asClaimToolReservation(input), previous = reservationForTask(expected);
+      const expected = asClaimToolReservation(input), previous = getClaimToolReservation(expected);
       if (previous === null) return false;
       if (!sameClaimToolReservation(previous, expected)) throw new Error("The claim tool reservation changed before release.");
       deleteClaimToolReservation(previous);

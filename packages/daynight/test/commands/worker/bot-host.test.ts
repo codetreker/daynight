@@ -39,40 +39,6 @@ const fixture = async () => {
 };
 const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
 
-it("stops original local Bots without credentials while management rejects execution and network requests", async () => {
-  const f = await fixture(); f.set(native);
-  const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
-  let store!: ReturnType<typeof openStore>;
-  vi.spyOn(botStores, "openBotStore").mockImplementation((_file: Parameters<typeof openStore>[0], options: Parameters<typeof openStore>[1]) => store = openStore(createMemoryDatabase(), options));
-  const createProcess = botProcess.createBotProcess;
-  const shutdown = vi.fn<(record: Parameters<ReturnType<typeof createProcess>["shutdown"]>[0], signal: AbortSignal) => Promise<void>>();
-  const process = vi.spyOn(botProcess, "createBotProcess").mockImplementation((options: Parameters<typeof createProcess>[0]) => {
-    const original = createProcess(options); shutdown.mockImplementation(original.shutdown);
-    return { ...original, shutdown };
-  });
-  const host = createWorkerBotHost({ ...f.options, serverToken: undefined, managementOnly: true }); cleanups.push(host.close);
-  const record = store.observe(f.options.owner, bot(), 1);
-  const operation = createOperation(); cleanups.push(operation.dispose);
-  await expect(host.run(operation.signal)).rejects.toThrow("cannot start Bot execution");
-  expect(await host.collect(operation)).toBeUndefined(); expect(f.collect).not.toHaveBeenCalled();
-  const dependency = process.mock.calls[0]![0];
-  expect(dependency.canAdmitNewExecution()).toBe(false);
-  await expect(dependency.sessionApi.readSession(record, operation.signal)).rejects.toMatchObject({ code: "credentials_unavailable" });
-  await host.shutdown();
-  expect(shutdown).toHaveBeenCalledOnce();
-  expect(shutdown.mock.calls[0]![0]).toMatchObject({ owner: f.options.owner, botId: record.botId });
-  expect(store.get(f.options.owner, record.botId)).toEqual(record);
-  await host.close();
-  expect(fetch).not.toHaveBeenCalled();
-});
-
-it("requires credentials before opening storage for ordinary Bot execution", async () => {
-  const f = await fixture();
-  const before = vi.mocked(botStores.openBotStore).mock.calls.length;
-  expect(() => createWorkerBotHost({ ...f.options, serverToken: undefined })).toThrow("Original Worker credentials are unavailable");
-  expect(vi.mocked(botStores.openBotStore).mock.calls).toHaveLength(before);
-});
-
 it("retains resources after failed shutdown and permits an explicit successful re-observation before close", async () => {
   const f = await fixture(), failure = new Error("Original writer stop is unconfirmed");
   const shutdown = vi.fn<() => Promise<void>>(async () => { throw failure; });

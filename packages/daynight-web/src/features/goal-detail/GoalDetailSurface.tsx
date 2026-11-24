@@ -18,7 +18,7 @@ import { useDirtyTaskDraft } from '../task-detail/TaskDraftNavigation';
 import type { useTaskDetail } from '../task-detail/useTaskDetail';
 import { DetailFrame, KeptMountedSlot, useDetailFullscreen, useDetailOverlay, type DetailFullscreen } from '../task-detail/DetailFrame';
 import { TaskDetailPageBar } from '../task-detail/TaskDetailSurface';
-import { DraftNavigationConfirmation, TaskDraftBoundary, useRetireTaskDraft } from '../task-detail/TaskDraftNavigation';
+import { DraftNavigationConfirmation, TaskDraftBoundary, useRequestTaskDraftDeparture, useRetireTaskDraft } from '../task-detail/TaskDraftNavigation';
 import { MarkdownContent } from '../task-detail/MarkdownContent';
 import { TaskAttachmentsPanel, type AttachmentNavigation, type AttachmentTreeReveal, type AttachmentUrls } from '../task-detail/attachments/TaskAttachments';
 import { resolveAttachmentReference, resolveMarkdownAttachmentUrl } from '../task-detail/attachments/model';
@@ -38,6 +38,8 @@ import { useGoalDependencies } from './useGoalDependencies';
 import { UsageAggregatePanel } from '../usage-aggregate/UsageAggregatePanel';
 import { TaskDetailNotifications } from '../task-detail/TaskDetailNotice';
 import { TaskDetailActions } from '../task-detail/TaskDetailActions';
+import { useGoalAcceptanceOwner } from '../goal-acceptance-graph/GoalAcceptanceContext';
+import { goalAcceptanceMessages } from '../goal-acceptance-graph/messages';
 import '../../styles/task-detail.css';
 import './goal-detail.css';
 
@@ -86,6 +88,14 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   else if (detailError == null && task.mutation.reconciliationError == null && task.status === 'ready' && !task.refreshing && !task.requiresFreshRead) copyAccess.current.retired = false;
   useRetireTaskDraft(scopeLost);
   const root = useRef<HTMLElement>(null), close = useRef<HTMLButtonElement>(null), heading = useRef<HTMLHeadingElement>(null), toggle = useRef<HTMLButtonElement>(null);
+  const acceptance = useGoalAcceptanceOwner(), acceptanceMessages = goalAcceptanceMessages(locale);
+  useLayoutEffect(() => {
+    if (acceptance?.projectId !== projectId) return;
+    acceptance.attach(taskId, root, heading);
+    if (scopeLost) acceptance.retire(taskId);
+  }, [acceptance, projectId, taskId, scopeLost]);
+  const graphAction = acceptance?.projectId !== projectId ? undefined : <button type="button" className="button goal-open-acceptance" data-goal-id={taskId} disabled={scopeLost || !acceptance.canOpen(taskId)} aria-haspopup="dialog"
+    onClick={event => acceptance.open({ projectId, goalId: taskId, trigger: event.currentTarget, owner: root, fallback: heading })}>{acceptanceMessages.open}</button>;
   const [edit, setEdit] = useState<{ title: string; description: string; version: bigint; originalTitle: string; originalDescription: string } | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editSubmitted, setEditSubmitted] = useState(false);
@@ -123,7 +133,8 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   const nestedOwner = useMemo<RefObject<HTMLElement | null>>(() => chainRoot === null ? root : { current: chainRoot }, [chainRoot]);
   const threadDetails = useRef(false);
   const changeFullscreen = useDetailFullscreen(root, toggle, fullscreen);
-  const requestClose = () => { if (onClose !== undefined) browserNavigation().requestAction(onClose); };
+  const requestDeparture = useRequestTaskDraftDeparture();
+  const requestClose = () => { if (onClose !== undefined) requestDeparture(onClose); };
   const escape = () => { if (fullscreen.active) changeFullscreen(false); else requestClose(); };
   const actions = useRef({ escape }); actions.current = { escape };
   useDetailOverlay({ root, initialFocus: close, modal, fullscreen: fullscreen.active, scope: `${projectId}/${taskId}`, blocked: () => threadDetails.current, onEscape: () => actions.current.escape(), ...(onRestoreFocus === undefined ? {} : { onRestoreFocus }) });
@@ -183,7 +194,7 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
           <KeptMountedSlot className="task-detail-panel goal-detail-description" id={`${tabPrefix}-panel-description`} role="tabpanel" aria-labelledby={`${tabPrefix}-description`} active={selection.tab === 'description'}>
             <div className="goal-detail-description-layout"><div className="goal-detail-description-body">
             {detail.description !== '' ? <div className="description-card"><MarkdownContent className="task-description" attachmentBase={base} remotePaused={attachments.paused} text={detail.description} resolveUrl={(url) => resolveMarkdownAttachmentUrl(url, base, previewRoot)} onLinkClick={(url, event) => { if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.currentTarget.hasAttribute('download') || event.currentTarget.target !== '' || /[?#]/.test(url)) return; const result = resolveAttachmentReference(url, base); if (result.kind === 'native') return; event.preventDefault(); const path = result.kind === 'relative' ? result.path : null; attachments.select(path); setSelection({ tab: 'attachments', path }); setReveal({ path }); setReference({ invalid: result.kind !== 'relative', path }); }} /></div> : <div className="state-box">{messages.inspection.detail.noDescription}</div>}
-            </div>{!scopeLost && <GoalInformation detail={detail} dependencies={<GoalDependencies dependencies={dependencies} canComplete={task.canDisplayStatus && (detail.status === 'todo' || detail.status === 'in_progress')} refusal={task.mutation.error} fallbackFocus={heading} />} tagsEditor={<TaskTagsEditor key={`${projectId}/${taskId}/${task.historyGeneration}`} projectId={projectId} detail={detail} tags={currentTaskTags(detail, snapshot?.summaries.get(taskId))} canMutate={task.canSetTags} mutation={task.mutation} setTags={task.setTags} reconcile={task.reconcile} />} scope={scope} graphError={graphError} onRefreshGraph={onRefreshGraph} />}</div>
+            </div>{!scopeLost && <GoalInformation detail={detail} dependencies={<GoalDependencies graphAction={graphAction} dependencies={dependencies} canComplete={task.canDisplayStatus && (detail.status === 'todo' || detail.status === 'in_progress')} refusal={task.mutation.error} fallbackFocus={heading} />} tagsEditor={<TaskTagsEditor key={`${projectId}/${taskId}/${task.historyGeneration}`} projectId={projectId} detail={detail} tags={currentTaskTags(detail, snapshot?.summaries.get(taskId))} canMutate={task.canSetTags} mutation={task.mutation} setTags={task.setTags} reconcile={task.reconcile} />} scope={scope} graphError={graphError} onRefreshGraph={onRefreshGraph} />}</div>
           </KeptMountedSlot>
           <KeptMountedSlot className="task-detail-panel task-detail-panel-attachments" id={`${tabPrefix}-panel-attachments`} role="tabpanel" aria-labelledby={`${tabPrefix}-attachments`} active={selection.tab === 'attachments'}>{!scopeLost && <TaskAttachmentsPanel projectId={projectId} taskId={taskId} active={selection.tab === 'attachments'} attachments={attachments} reveal={reveal} navigation={reference !== null && reference.path === selection.path ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => setSelection({ tab: 'attachments', path })} onRemove={(path) => { if (selection.path === path) setSelection({ ...selection, path: null }); }} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} />}</KeptMountedSlot>
           <KeptMountedSlot className="task-detail-panel task-detail-panel-discussion" id={`${tabPrefix}-panel-discussion`} role="tabpanel" aria-labelledby={`${tabPrefix}-discussion`} active={selection.tab === 'discussion'}><TaskDiscussion key={scopeLost ? 'retired' : 'active'} projectId={projectId} taskId={taskId} active={selection.tab === 'discussion'} parentUnavailable={scopeLost} trackDraft owner={root} onDetailsOpenChange={(open) => { threadDetails.current = open; }} /></KeptMountedSlot>

@@ -9,6 +9,7 @@ export type GoalAcceptanceProjection = GraphProjection & {
   readonly goals: ReadonlyMap<string, GoalAcceptanceGoal>;
   readonly availableGoals: ReadonlyMap<string, GoalAcceptanceGoal>;
   readonly availableEdges: GraphProjection['edges'];
+  readonly rootIds: ReadonlySet<string>;
   readonly prerequisites: ReadonlyMap<string, readonly string[]>;
   readonly successors: ReadonlyMap<string, readonly string[]>;
   readonly progress: ReadonlyMap<string, { readonly done: number; readonly total: number }>;
@@ -30,6 +31,7 @@ export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary
   const known = projectGoalRelations(summaries);
   const visible = new Set([...known.goals.values()].filter(goal => goal.status === 'todo' || goal.status === 'in_progress').map(goal => goal.id));
   if (focusId !== null && known.goals.has(focusId)) visible.add(focusId);
+  const rootIds = new Set(visible);
   for (const id of [...visible]) for (const prerequisite of known.prerequisites.get(id)!) visible.add(prerequisite);
   const goals = new Map([...known.goals].filter(([id]) => visible.has(id)));
   const prerequisites = new Map([...goals.keys()].map(id => [id, [] as string[]]));
@@ -42,7 +44,7 @@ export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary
   }
   const edges = known.edges.filter(edge => goals.has(edge.source) && goals.has(edge.target));
   for (const edge of edges) { prerequisites.get(edge.target)!.push(edge.source); successors.get(edge.source)!.push(edge.target); }
-  return { goals, availableGoals: known.goals, availableEdges: known.edges, prerequisites, successors, progress, mainIds: visible, externalIds: new Set(), edges };
+  return { goals, availableGoals: known.goals, availableEdges: known.edges, rootIds, prerequisites, successors, progress, mainIds: visible, externalIds: new Set(), edges };
 };
 
 export const traceGoalRelations = (relations: ReadonlyMap<string, readonly string[]>, selected: string | null): ReadonlySet<string> => {
