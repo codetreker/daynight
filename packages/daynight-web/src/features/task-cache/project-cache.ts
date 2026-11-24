@@ -111,6 +111,8 @@ export class TaskCacheScope {
   private readonly projectionTaskRevisions = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, number>>();
   private readonly projectionDeletionRevisions = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, number>>();
   private readonly directReadBaselines = new WeakMap<TaskReadFence, DirectReadBaseline>();
+  private readonly directReadObservedEpochs = new WeakMap<TaskReadFence, string | null>();
+  private readonly directReadManifestTokens = new WeakMap<TaskReadFence, { generation: string; revision: string; state: ProjectRecord["state"]; invalidatedBy: ProjectRecord["invalidatedBy"] } | null>();
   private readonly directAuthorizedRevisions = new Map<string, number>();
   private readonly directProjects = new Set<string>();
   private readonly directHintCounts = new Map<string, number>();
@@ -1061,6 +1063,7 @@ export class TaskCacheScope {
         for (const taskId of ids) {
           const summary = manifest?.state === "active" ? await transaction.objectStore("summaries").get([this.userId, projectId, taskId]) : undefined;
           result.set(taskResourceKey(projectId, taskId), {
+          baselineState: manifest === undefined ? "absent" : manifest.state === "active" ? "active" : manifest.invalidatedBy ?? "corrupt",
           epoch: manifest?.epoch ?? null, cacheGeneration: manifest?.state === "invalidated" && manifest.invalidatedBy === "user" ? null : manifest?.cacheGeneration ?? null, syncRevision: manifest?.syncRevision ?? null,
           rebuildRevision: manifest?.manualRebuildRevision ?? null,
           removed: removals.has(taskId) || this.readAdmission.hinted(projectId, taskId, manifest?.epoch ?? null, this.getHistoryGeneration(projectId)),
@@ -1306,11 +1309,33 @@ export class TaskCacheScope {
     const fence = { userId: this.userId, userFence: observed.userFence, projectId, taskId, scopeRevision,
       historyGeneration: this.histories.get(projectId)!.generation, openingSequence, requestGeneration, taskRevision: this.readAdmission.revision(projectId, taskId) };
     const conflict = this.conflictingManifests.get(projectId);
+    this.directReadManifestTokens.set(fence, observed.manifest === undefined ? null : { generation: observed.manifest.cacheGeneration, revision: observed.manifest.syncRevision, state: observed.manifest.state, invalidatedBy: observed.manifest.invalidatedBy });
+    this.directReadObservedEpochs.set(fence, conflict?.liveEpoch ?? observed.manifest?.epoch ?? this.histories.get(projectId)?.epoch ?? null);
     this.directReadBaselines.set(fence, { known: observed.known, epoch: observed.manifest?.epoch ?? null, cacheGeneration: observed.manifest?.state === "invalidated" && observed.manifest.invalidatedBy === "user" ? null : observed.manifest?.cacheGeneration ?? null, rebuildRevision: observed.manifest?.manualRebuildRevision ?? null, summaryVersion: observed.summaryVersion, ...(conflict === undefined ? {} : { conflict }) });
     this.readAdmission.observeTask(projectId, taskId);
     this.directProjects.add(projectId);
     this.ticketHistoryVersions.set(fence, this.historyVersions.get(projectId) ?? 0);
     return fence;
+  }
+  taskReadObservedEpoch(fence: TaskReadFence): string | null {
+    if (!this.isTaskHistoryFenceCurrent(fence, true)) return null;
+    return this.directReadObservedEpochs.get(fence) ?? null;
+  }
+  async verifyTaskHistoryObservation(fence: TaskReadFence, epoch: string, signal: AbortSignal): Promise<boolean> {
+    if (!this.isTaskReadCurrent(fence) || this.histories.get(fence.projectId)?.epoch !== epoch || this.uncertainHistories.has(fence.projectId)) return false;
+    const token = this.directReadManifestTokens.get(fence);
+    if (token === undefined) return false;
+    const valid = await this.userTransaction(async (transaction, userFence) => {
+      if (userFence !== fence.userFence) return false;
+      const current = await this.manifest(transaction, fence.projectId, userFence);
+      if (token === null) return current === undefined;
+      if (current === undefined || current.cacheGeneration !== token.generation || current.syncRevision !== token.revision ||
+        current.state !== token.state || current.invalidatedBy !== token.invalidatedBy ||
+        current.state === "invalidated" && current.invalidatedBy !== "user") return false;
+      if (current.state === "active" && current.epoch === epoch && (await this.storedRemovals(transaction, current)).has(fence.taskId)) return false;
+      return !this.readAdmission.hinted(fence.projectId, fence.taskId, epoch, this.getHistoryGeneration(fence.projectId));
+    }, signal);
+    return valid && this.isTaskReadCurrent(fence) && this.histories.get(fence.projectId)?.epoch === epoch && !this.uncertainHistories.has(fence.projectId);
   }
   isTaskReadCurrent(fence: TaskReadFence, allowAuthPaused = false): boolean {
     return this.isTaskHistoryFenceCurrent(fence, allowAuthPaused) && (fence.taskRevision ?? 0) === this.readAdmission.revision(fence.projectId, fence.taskId);

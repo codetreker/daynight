@@ -210,6 +210,10 @@ export type InspectionMessages = {
     readonly invalidPath: string;
     readonly invalidReference: string;
     readonly writeError: string;
+    readonly confirmedUnpublished: string;
+    readonly confirmationPending: string;
+    readonly checkConfirmation: string;
+    readonly checkingConfirmation: string;
     readonly loading: string;
     readonly listError: string;
     readonly incompleteList: string;

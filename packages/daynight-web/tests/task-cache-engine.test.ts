@@ -269,6 +269,7 @@ it("does not retire a live direct epoch when a cold peer commits its older graph
   await vi.waitFor(() => expect(events.some(event => event.historyChanged)).toBe(true));
   expect(direct.isTaskReadCurrent(current, true)).toBe(false);
   const retry = await direct.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(direct.taskReadObservedEpoch(retry)).toBe(nextEpoch);
   expect(await direct.observeHistory(retry, nextEpoch, signal())).toBe("current");
   const graph = await direct.beginSync(projectId, signal());
   expect(graph.epoch).toBe(epoch);

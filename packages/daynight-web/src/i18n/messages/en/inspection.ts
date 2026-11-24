@@ -143,7 +143,7 @@ export const inspection: InspectionMessages = {
     uploading: "Uploading…", upload: "Upload file", backToFiles: "Back to files", uploadHint: "Upload one file at a time. An existing path is overwritten directly.",
     invalidPath: "Enter a valid relative file path, using / between directories, without empty segments or the . and .. segments.",
     invalidReference: "This attachment reference is invalid or leaves the task attachment root.",
-    writeError: "The attachment operation failed. Check and try again.", loading: "Loading attachments…",
+    writeError: "The attachment operation failed. Check and try again.", confirmedUnpublished: "The attachment operation succeeded. Refresh the attachment list to see the current result.", confirmationPending: "The attachment operation succeeded. Check the current Task before continuing.", checkConfirmation: "Check Task", checkingConfirmation: "Checking…", loading: "Loading attachments…",
     listError: "The attachment list could not be loaded.", incompleteList: "The attachment list is incomplete. Only files already read are shown below.",
     retry: "Retry attachments", empty: "No attachments. Upload a file to browse it here.", files: "Attachment files",
     choosePreview: "Select a file to preview or download it.", preview: "Attachment preview", detailScroll: "Attachment details",

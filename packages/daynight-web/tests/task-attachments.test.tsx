@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { browserNavigation } from '../src/app/navigation';
+import { createTaskSessionWorld, admitTaskGraph } from './helpers/taskSessions';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskAttachments, TaskAttachmentsPanel } from '../src/features/task-detail/attachments/TaskAttachments';
 import { useAttachments, type AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
@@ -825,4 +827,110 @@ describe('task attachments', () => {
     expect(screen.getByText('暂无附件，上传文件后即可在这里浏览。')).toBeVisible();
     expect(within(screen.getByRole('region', { name: '附件 · 0' })).queryByRole('region', { name: '附件预览' })).toBeNull();
   });
+});
+
+it.each(['put', 'remove'] as const)('reports a confirmed unpublished %s without resending or navigating', async operation => {
+  const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+  const world = createTaskSessionWorld(); await world.sync([detailFixture(projectId, taskId)]);
+  const api = fixture([file('existing.txt')]), onSelect = vi.fn(), onRemove = vi.fn();
+  const Panel = () => <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={useAttachments(projectId, taskId, api)} onSelect={onSelect} onRemove={onRemove} />;
+  const view = render(<Panel />, { taskCache: { scope: world.scope } });
+  try {
+    await findFileButton(/^existing\.txt/);
+    const user = userEvent.setup();
+    if (operation === 'put') {
+      await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+      await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'new.txt'));
+    } else showDeleteConfirmation('existing.txt');
+    const verify = vi.spyOn(world.scope, 'verifyTaskRead'); verify.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    if (operation === 'put') await user.click(screen.getByRole('button', { name: '上传文件' }));
+    else await user.click(within(screen.getByRole('dialog', { name: '删除附件？' })).getByRole('button', { name: '删除附件' }));
+    expect(await screen.findByText('附件操作已成功。请刷新附件列表以查看当前结果。')).toBeVisible();
+    expect(screen.queryByText('附件操作失败，请检查后重试。')).toBeNull();
+    expect(operation === 'put' ? api.put : api.remove).toHaveBeenCalledOnce();
+    expect(onSelect).not.toHaveBeenCalled(); expect(onRemove).not.toHaveBeenCalled();
+    if (operation === 'put') expect(screen.getByLabelText('目标相对路径')).toHaveValue('');
+    else expect(screen.queryByRole('dialog', { name: '删除附件？' })).toBeNull();
+    verify.mockRestore();
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it('does not settle an old confirmed upload into a new history for the same Task ID', async () => {
+  const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+  const target = detailFixture(projectId, taskId), world = createTaskSessionWorld(); await world.sync([target]);
+  const api = fixture([file('existing.txt')]), pending = deferred<Attachment>(), onSelect = vi.fn();
+  vi.mocked(api.put).mockReturnValueOnce(pending.promise);
+  const Panel = () => <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={useAttachments(projectId, taskId, api)} onSelect={onSelect} />;
+  const view = render(<Panel />, { taskCache: { scope: world.scope } });
+  try {
+    await findFileButton(/^existing\.txt/);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await user.upload(screen.getByLabelText('选择一个文件'), new File(['old'], 'old.txt'));
+    await user.click(screen.getByRole('button', { name: '上传文件' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledOnce());
+    const replacement = { ...target, title: 'New history', version: 2n };
+    await act(async () => { await admitTaskGraph(world.scope, graphFixture([replacement]), { epoch: crypto.randomUUID(), versionForTask: () => replacement.version, propertiesForTask: () => replacement.properties }); });
+    await waitFor(() => expect(screen.getByLabelText('目标相对路径')).not.toBeDisabled());
+    await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'new.txt'));
+    await act(async () => pending.resolve(file('old.txt')));
+    expect(screen.getByLabelText('目标相对路径')).toHaveValue('new.txt');
+    expect(screen.queryByText('附件操作已成功。请刷新附件列表以查看当前结果。')).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled(); expect(api.put).toHaveBeenCalledOnce();
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it('keeps a confirmed upload locked while history is unavailable and settles it after a read-only check', async () => {
+  const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+  const world = createTaskSessionWorld(); await world.sync([detailFixture(projectId, taskId)]);
+  const api = fixture([file('existing.txt')]), pending = deferred<Attachment>(), onSelect = vi.fn();
+  vi.mocked(api.put).mockReturnValueOnce(pending.promise);
+  const Panel = () => <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={useAttachments(projectId, taskId, api)} onSelect={onSelect} />;
+  const view = render(<Panel />, { taskCache: { scope: world.scope } });
+  try {
+    await findFileButton(/^existing\.txt/);
+    const user = userEvent.setup(); await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'new.txt'));
+    await user.click(screen.getByRole('button', { name: '上传文件' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledOnce());
+    const qualification = vi.spyOn(world.scope, 'taskReadQualification').mockRejectedValue(new Error('storage unavailable'));
+    await act(async () => pending.resolve(file('new.txt')));
+    expect(await screen.findByText('附件操作已成功。请核对当前任务后继续。')).toBeVisible();
+    expect(screen.getByRole('button', { name: '上传文件' })).toBeDisabled();
+    expect(screen.getByLabelText('目标相对路径')).toHaveValue('new.txt');
+    let resume = () => {};
+    act(() => { resume = pauseAuthRequests(); });
+    expect(screen.getByRole('button', { name: '上传文件' })).toBeDisabled();
+    act(() => resume());
+    expect(screen.getByRole('button', { name: '上传文件' })).toBeDisabled();
+    qualification.mockRestore();
+    await user.click(screen.getByRole('button', { name: '核对任务' }));
+    expect(await screen.findByText('附件操作已成功。请刷新附件列表以查看当前结果。')).toBeVisible();
+    expect(screen.getByLabelText('目标相对路径')).toHaveValue('');
+    expect(api.put).toHaveBeenCalledOnce(); expect(onSelect).not.toHaveBeenCalled();
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it('keeps a confirmed deletion locked while its history is unavailable and checks without resending', async () => {
+  const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+  const world = createTaskSessionWorld(); await world.sync([detailFixture(projectId, taskId)]);
+  const api = fixture([file('existing.txt')]), pending = deferred<void>(), onRemove = vi.fn();
+  vi.mocked(api.remove).mockReturnValueOnce(pending.promise);
+  const Panel = () => <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={useAttachments(projectId, taskId, api)} onRemove={onRemove} />;
+  const view = render(<Panel />, { taskCache: { scope: world.scope } });
+  try {
+    await findFileButton(/^existing\.txt/);
+    const user = userEvent.setup(), dialog = showDeleteConfirmation('existing.txt');
+    await user.click(within(dialog).getByRole('button', { name: '删除附件' }));
+    await waitFor(() => expect(api.remove).toHaveBeenCalledOnce());
+    const qualification = vi.spyOn(world.scope, 'taskReadQualification').mockRejectedValue(new Error('storage unavailable'));
+    await act(async () => pending.resolve());
+    expect(await within(dialog).findByText('附件操作已成功。请核对当前任务后继续。')).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: '正在删除…' })).toBeDisabled();
+    qualification.mockRestore();
+    await user.click(within(dialog).getByRole('button', { name: '核对任务' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '删除附件？' })).toBeNull());
+    expect(screen.getByText('附件操作已成功。请刷新附件列表以查看当前结果。')).toBeVisible();
+    expect(api.remove).toHaveBeenCalledOnce(); expect(onRemove).not.toHaveBeenCalled();
+  } finally { view.unmount(); world.dispose(); }
 });

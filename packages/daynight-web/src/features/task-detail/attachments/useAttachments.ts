@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, getTaskObservation, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
 import { useOptionalTaskCacheScope } from "../../task-cache/TaskCacheProvider";
 import { TaskCacheLifecycleChanged, type TaskReadFence } from "../../task-cache/project-cache";
 import type { Attachment } from "../../../api/types";
@@ -30,7 +30,8 @@ type PreviewState = {
   readonly error: unknown;
   readonly nativeSource?: NativePreviewSource;
 };
-type WriteState = { readonly scope: string; readonly status: "idle" | "saving" | "deleting"; readonly error: unknown };
+type WriteState = { readonly scope: string; readonly status: "idle" | "saving" | "deleting" | "confirmed"; readonly error: unknown };
+export type AttachmentWriteResult = "published" | "confirmed" | "retired" | "failed";
 const initialList = (scope: string): ListState => ({ scope, items: [], loading: true, complete: false, error: null });
 const initialPreview = (scope: string, path: string | null): PreviewState => ({ scope, path, status: path === null ? "idle" : "loading", text: null, error: null });
 
@@ -60,6 +61,8 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const [preview, setPreview] = useState(() => initialPreview(scope, null));
   const [previewRevision, setPreviewRevision] = useState(0);
   const [write, setWrite] = useState<WriteState>({ scope, status: "idle", error: null });
+  const [confirmation, setConfirmation] = useState<{ readonly scope: string } | null>(null);
+  const confirmationRef = useRef<{ readonly scope: string } | null>(null);
   const [paused, setPaused] = useState(authRequestsPaused);
   const [resumeRevision, setResumeRevision] = useState(0);
   const listRequest = useRef<AbortController | null>(null);
@@ -70,6 +73,11 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
+  const pausedWrite = useRef<{ controller: AbortController; generation: number; barrier: number; confirmed: boolean } | null>(null);
+  const settledPausedWrite = useRef<{ generation: number; barrier: number } | null>(null);
+  const heldWrite = useRef<{ scope: string; checking: boolean; check: () => Promise<boolean>; finish: (result: AttachmentWriteResult) => void; settle: (current: boolean) => AttachmentWriteResult } | null>(null);
+  const [heldState, setHeldState] = useState<{ scope: string; checking: boolean } | null>(null);
+  const retireHeld = () => { const held = heldWrite.current; if (held !== null) { heldWrite.current = null; setHeldState(null); held.finish("retired"); } };
 
   useEffect(() => {
     if (cache === null) return;
@@ -80,7 +88,8 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       ++listGeneration.current;
       setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
       if (removed || historyChanged) {
-        writeRequest.current?.abort(); ++writeGeneration.current;
+        confirmationRef.current = null; setConfirmation(null); retireHeld();
+        writeRequest.current?.abort(); ++writeGeneration.current; pausedWrite.current = null; settledPausedWrite.current = null;
         writeRequest.current = null;
         setWrite({ scope, status: "idle", error: null });
       }
@@ -94,12 +103,12 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       if (event.projectId !== projectId) return;
       const removed = event.deletedTaskIds?.includes(taskId) === true || event.taskDeletionHint?.taskId === taskId;
       if (removed || event.historyChanged || event.taskDeletionHint?.pendingTaskIds.includes(taskId)) {
-        withdraw(removed, event.historyChanged);
+        withdraw(removed, event.historyChanged && !event.historyHint);
       } else if (event.baselineRebuilt) {
         void cache.taskReadQualification(projectId, taskId, cache.signal).then(eligibility => {
           if (!live || currentScope.current !== scope) return;
           if (!eligibility.inBaseline || eligibility.removed) withdraw(eligibility.removed);
-          else {
+          else if (eligibility.rebuildRevision !== null) {
             // In-flight reads may have crossed a changed Task version and lost
             // admission. Restart them without clearing already published content.
             forceListRecovery.current ||= listRequest.current !== null || currentList.current.loading;
@@ -120,7 +129,14 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     const pause = () => {
       setPaused(true);
       ++listGeneration.current;
+      const pendingWrite = writeRequest.current;
+      const pendingGeneration = writeGeneration.current;
+      const previousPaused = pausedWrite.current;
       ++writeGeneration.current;
+      settledPausedWrite.current = null;
+      pausedWrite.current = heldWrite.current !== null && previousPaused !== null
+        ? { ...previousPaused, barrier: writeGeneration.current, confirmed: true }
+        : pendingWrite === null ? null : { controller: pendingWrite, generation: pendingGeneration, barrier: writeGeneration.current, confirmed: false };
       listRequest.current?.abort();
       previewRequest.current?.abort();
       preservePreviewOnResume.current = true;
@@ -129,7 +145,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       listRequest.current = null;
       writeRequest.current = null;
       setList((prior) => ({ ...prior, loading: false }));
-      setWrite((prior) => ({ ...prior, status: "idle" }));
+      setWrite((prior) => ({ ...prior, status: heldWrite.current === null ? "idle" : "confirmed" }));
       setPreview((prior) => prior.status === "loading" ? { ...prior, status: "idle" } : prior);
       void waitForAuthRequests(lifetime.signal).then(() => {
         if (!lifetime.signal.aborted) { setPaused(authRequestsPaused()); setResumeRevision((value) => value + 1); }
@@ -147,6 +163,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     listRequest.current = controller;
     const generation = ++listGeneration.current;
     const pauseRevision = authRequestsPauseRevision();
+    const confirmationAtStart = confirmationRef.current;
     const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === listGeneration.current && currentScope.current === scope;
     setList((prior) => ({ ...(prior.scope === scope ? prior : initialList(scope)), loading: true, complete: false, error: null }));
     void (async () => {
@@ -158,16 +175,25 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
         fence = cache === null ? null : await beginRead(controller.signal);
         do {
           const page = await api.list(projectId, taskId, cursor === undefined ? { limit: 100 } : { limit: 100, cursor }, controller.signal);
-          if (!owns() || cache !== null && !await verifyRead(fence, controller.signal) || !owns()) return;
+          if (!owns()) return;
+          const admitted = cache === null || await verifyRead(fence, controller.signal);
+          if (!owns()) return;
+          if (!admitted) {
+            setList(prior => ({ ...prior, loading: false, complete: false, error: new TaskCacheLifecycleChanged() }));
+            return;
+          }
           items.push(...page.items);
           attachmentTree(items);
           if (page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
           if (page.nextCursor !== null) cursors.add(page.nextCursor);
           cursor = page.nextCursor === null ? undefined : page.nextCursor;
           if (!retainPublished || cursor === undefined) setList({ scope, items: [...items], loading: cursor !== undefined, complete: cursor === undefined, error: null });
+          if (cursor === undefined && confirmationAtStart !== null && confirmationRef.current === confirmationAtStart) {
+            confirmationRef.current = null; setConfirmation(null);
+          }
         } while (cursor !== undefined);
       } catch (error) {
-        if (!owns() || isAbortError(error)) return;
+        if (!owns() || isAbortError(error) && !(error instanceof TaskCacheLifecycleChanged)) return;
         reportDeleted(fence, error);
         setList((prior) => ({ ...prior, loading: false, complete: false, error }));
       } finally {
@@ -182,6 +208,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     if (!enabled) {
       setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
       setWrite({ scope, status: "idle", error: null });
+      confirmationRef.current = null; setConfirmation(null);
     }
   }, [enabled, scope]);
 
@@ -201,7 +228,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     };
   }, [load, reload, enabled, paused, resumeRevision, scope]);
   useEffect(() => () => {
-    ++writeGeneration.current; writeRequest.current?.abort(); writeRequest.current = null;
+    ++writeGeneration.current; pausedWrite.current = null; settledPausedWrite.current = null; retireHeld(); writeRequest.current?.abort(); writeRequest.current = null;
   }, [scope]);
 
   const selectedPath = selection.scope === scope ? selection.path : null;
@@ -238,19 +265,26 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     }
     void (async () => {
       let fence: TaskReadFence | null = null;
+      const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope;
+      const admit = async () => {
+        const valid = cache === null || await verifyRead(fence, controller.signal);
+        if (!owns()) return false;
+        if (!valid) setPreview({ scope, path, status: "error", text: null, error: new TaskCacheLifecycleChanged() });
+        return valid;
+      };
       try {
         fence = cache === null ? null : await beginRead(controller.signal);
         if (!usesText) {
-          if (!await verifyRead(fence, controller.signal) || controller.signal.aborted) return;
+          if (!await admit()) return;
           const nativeSource = selectedKind === "html" || selectedKind === "pdf" ? { updatedAt: selectedUpdatedAt!, reloadRevision: previewRevision } : undefined;
           setPreview({ scope, path, status: "ready", text: null, error: null, ...(nativeSource === undefined ? {} : { nativeSource }) });
           return;
         }
         const text = await api.readText(projectId, taskId, path, controller.signal);
-        if ((cache === null || await verifyRead(fence, controller.signal)) && !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
+        if (await admit()) setPreview({ scope, path, status: "ready", text, error: null });
       } catch (error) {
         reportDeleted(fence, error);
-        if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope && !isAbortError(error)) setPreview({ scope, path, status: "error", text: null, error });
+        if (owns() && (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged)) setPreview({ scope, path, status: "error", text: null, error });
       }
     })();
     return cleanup;
@@ -258,25 +292,120 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
 
   const select = useCallback((path: string | null) => setSelection({ scope, path }), [scope]);
   const retryPreview = useCallback(() => { if (!authRequestsPaused()) setPreviewRevision((value) => value + 1); }, []);
-  const mutate = useCallback(async (path: string, file: File | null): Promise<boolean> => {
-    if (!enabled || authRequestsPaused() || writeRequest.current !== null) return false;
+  const mutate = useCallback(async (path: string, file: File | null): Promise<AttachmentWriteResult> => {
+    if (!enabled || authRequestsPaused() || writeRequest.current !== null || pausedWrite.current?.confirmed || heldWrite.current !== null) return "failed";
+    pausedWrite.current = null; settledPausedWrite.current = null;
     const controller = new AbortController();
     writeRequest.current = controller;
     const generation = ++writeGeneration.current;
     const pauseRevision = authRequestsPauseRevision();
     const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === writeGeneration.current && currentScope.current === scope;
+    confirmationRef.current = null; setConfirmation(null);
     setWrite({ scope, status: file === null ? "deleting" : "saving", error: null });
     let fence: TaskReadFence | null = null;
     try {
       fence = cache === null ? null : await beginRead(controller.signal);
-      if (cache !== null && !await verifyRead(fence, controller.signal) || !owns()) return false;
-      const attachment = file === null ? (await api.remove(projectId, taskId, path, controller.signal), null) : await api.put(projectId, taskId, path, file, controller.signal);
-      if (!owns()) return false;
-      if (cache !== null && !await verifyRead(fence, controller.signal)) {
-        if (owns()) setWrite({ scope, status: "idle", error: new TaskCacheLifecycleChanged() });
-        return false;
+      const originalEpoch = cache === null || fence === null ? null : cache.taskReadObservedEpoch(fence);
+      const admitted = cache === null || await verifyRead(fence, controller.signal);
+      if (!owns()) return "failed";
+      if (!admitted) {
+        setWrite({ scope, status: "idle", error: new TaskCacheLifecycleChanged() });
+        return "failed";
       }
-      if (!owns()) return false;
+      const attachment = file === null ? (await api.remove(projectId, taskId, path, controller.signal), null) : await api.put(projectId, taskId, path, file, controller.signal);
+      // A receipt confirms the remote operation even when its data can no longer
+      // be admitted to the current Task history.
+      const pausedOwner = () => pausedWrite.current?.controller === controller && pausedWrite.current.generation === generation &&
+        pausedWrite.current.barrier === writeGeneration.current && currentScope.current === scope;
+      const sameHistory = async (signal: AbortSignal) => {
+        if (cache === null) return currentScope.current === scope;
+        if (fence === null || originalEpoch === null) throw new TaskCacheLifecycleChanged();
+        if (!cache.isTaskOperationHistoryPossiblyCurrent(fence)) return false;
+        const current = await cache.taskReadQualification(projectId, taskId, signal);
+        if (current.baselineState === "corrupt") throw new TaskCacheLifecycleChanged();
+        if (current.baselineState === "access") throw new TaskCacheLifecycleChanged();
+        if (!cache.isTaskOperationHistoryConfirmedCurrent(fence)) throw new TaskCacheLifecycleChanged();
+        if (current.epoch !== null && current.epoch !== originalEpoch) throw new TaskCacheLifecycleChanged();
+        if (current.removed) return false;
+        if (current.baselineState === "active" && !current.inBaseline) throw new TaskCacheLifecycleChanged();
+        return current.baselineState === "active" && current.epoch === originalEpoch ||
+          (current.baselineState === "absent" || current.baselineState === "user") && current.epoch === null;
+      };
+      const withdrawUnconfirmedHistory = () => {
+        listRequest.current?.abort(); listRequest.current = null; ++listGeneration.current;
+        previewRequest.current?.abort();
+        setList({ ...initialList(scope), loading: false, error: new TaskCacheLifecycleChanged() });
+        setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
+      };
+      const ownerCurrent = () => owns() || pausedOwner();
+      const settleReceipt = (current: boolean): AttachmentWriteResult => {
+        if (!ownerCurrent()) return "retired";
+        if (!current) {
+          pausedWrite.current = null; setWrite({ scope, status: "idle", error: null });
+          withdrawUnconfirmedHistory(); return "retired";
+        }
+        if (pausedOwner()) {
+          settledPausedWrite.current = { generation, barrier: writeGeneration.current }; pausedWrite.current = null;
+        }
+        setWrite({ scope, status: "idle", error: null });
+        const confirmed = { scope }; confirmationRef.current = confirmed; setConfirmation(confirmed);
+        listRequest.current?.abort(); listRequest.current = null; ++listGeneration.current;
+        setList(prior => ({ ...prior, loading: false, complete: false, error: new TaskCacheLifecycleChanged() }));
+        if (selectedMetadata.current.scope === scope && selectedMetadata.current.path === path) {
+          previewRequest.current?.abort();
+          setPreview({ scope, path, status: "error", text: null, error: new TaskCacheLifecycleChanged() });
+        }
+        return "confirmed";
+      };
+      const checkHistory = async () => {
+        const signal = cache?.signal ?? new AbortController().signal;
+        try { return await sameHistory(signal); }
+        catch (failure) {
+          if (cache === null || fence === null || originalEpoch === null || signal.aborted) throw failure;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const fresh = await cache.beginTaskRead(projectId, taskId, 0, resourceRevision, signal);
+            let observation;
+            try { observation = await getTaskObservation(projectId, taskId, signal, { userId: cache.userId, onPrincipalMismatch: cache.principalMismatch }); }
+            catch (error) {
+              if (error instanceof ApiError && error.status === 410 && error.code === "task_deleted") { cache.reportTaskDeleted(fresh, null); return false; }
+              if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return false;
+              throw error;
+            }
+            const history = await cache.observeHistory(fresh, observation.epoch, signal);
+            if (history !== "current") continue;
+            if (observation.epoch !== originalEpoch || !cache.isTaskOperationHistoryConfirmedCurrent(fence)) return false;
+            if (!await cache.verifyTaskRead(fresh, signal) && !await cache.verifyTaskHistoryObservation(fresh, observation.epoch, signal)) throw new TaskCacheLifecycleChanged();
+            return true;
+          }
+          throw new TaskCacheLifecycleChanged();
+        }
+      };
+      const holdReceipt = () => new Promise<AttachmentWriteResult>(resolve => {
+        heldWrite.current = { scope, checking: false, check: checkHistory, finish: resolve, settle: settleReceipt };
+        setHeldState({ scope, checking: false }); setWrite({ scope, status: "confirmed", error: null });
+      });
+      const recoverPaused = async (): Promise<AttachmentWriteResult> => {
+        if (!pausedOwner()) return "retired";
+        pausedWrite.current!.confirmed = true;
+        setWrite({ scope, status: "confirmed", error: null });
+        try {
+          await waitForAuthRequests(cache?.signal ?? new AbortController().signal);
+          if (!pausedOwner()) return "retired";
+          return settleReceipt(await sameHistory(cache?.signal ?? new AbortController().signal));
+        } catch { return pausedOwner() ? await holdReceipt() : "retired"; }
+      };
+      if (!owns()) return recoverPaused();
+      let publicationAdmitted = false;
+      try { publicationAdmitted = cache === null || await verifyRead(fence, controller.signal); }
+      catch { /* The confirmed operation does not become a failed write. */ }
+      if (!owns()) return recoverPaused();
+      if (!publicationAdmitted) {
+        let confirmedHistory: boolean;
+        try { confirmedHistory = await sameHistory(controller.signal); }
+        catch { return owns() ? await holdReceipt() : recoverPaused(); }
+        if (!owns()) return recoverPaused();
+        return settleReceipt(confirmedHistory);
+      }
       if (attachment !== null) {
         if (selectedMetadata.current.scope === scope && selectedMetadata.current.path === path && selectedMetadata.current.attachment !== undefined) {
           selectedMetadata.current = { scope, path, attachment };
@@ -291,21 +420,40 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       else setList((prior) => ({ ...prior, items: prior.items.filter((item) => item.path !== path) }));
       setWrite({ scope, status: "idle", error: null });
       reload();
-      return true;
+      return "published";
     } catch (error) {
       reportDeleted(fence, error);
-      if (!owns()) return false;
-      setWrite({ scope, status: "idle", error: isAbortError(error) ? null : error });
-      return false;
+      if (!owns()) return "failed";
+      setWrite({ scope, status: "idle", error: isAbortError(error) && !(error instanceof TaskCacheLifecycleChanged) ? null : error });
+      return "failed";
     } finally {
       if (writeRequest.current === controller) writeRequest.current = null;
     }
   }, [api, projectId, taskId, scope, reload, enabled, cache, beginRead, verifyRead, reportDeleted]);
+  const checkConfirmation = useCallback(async () => {
+    const held = heldWrite.current;
+    if (held === null || held.checking || authRequestsPaused()) return;
+    held.checking = true; setHeldState({ scope: held.scope, checking: true });
+    try {
+      const current = await held.check();
+      if (heldWrite.current !== held) return;
+      heldWrite.current = null; setHeldState(null); held.finish(held.settle(current));
+    } catch {
+      if (heldWrite.current === held) { held.checking = false; setHeldState({ scope: held.scope, checking: false }); }
+    }
+  }, []);
+  const captureWriteOwner = () => writeGeneration.current;
+  const isWriteOwner = (generation: number) => currentScope.current === scope &&
+    (generation === writeGeneration.current || settledPausedWrite.current?.generation === generation && settledPausedWrite.current.barrier === writeGeneration.current) &&
+    (cache === null || !cache.isInvalidated && !cache.hasIdentityMismatch);
   const put = useCallback((path: string, file: File) => mutate(path, file), [mutate]);
   const remove = useCallback((path: string) => mutate(path, null), [mutate]);
   const visiblePreview = preview.scope === scope && preview.path === selectedPath ? preview : paused ? { ...initialPreview(scope, selectedPath), status: "idle" as const } : initialPreview(scope, selectedPath);
   const visibleWrite = write.scope === scope ? write : { scope, status: "idle" as const, error: null };
-  return { ...visibleList, paused, selected, selectedPath, select, preview: visiblePreview, retryPreview, write: visibleWrite, put, remove, reload };
+  return { ...visibleList, paused, selected, selectedPath, select, preview: visiblePreview, retryPreview, write: visibleWrite,
+    confirmedUnpublished: confirmation?.scope === scope && enabled,
+    confirmationPending: heldState?.scope === scope && enabled, confirmationChecking: heldState?.scope === scope && heldState.checking,
+    checkConfirmation, captureWriteOwner, isWriteOwner, put, remove, reload };
 };
 
 export type AttachmentController = ReturnType<typeof useAttachments>;

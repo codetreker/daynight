@@ -1,6 +1,7 @@
 import type { TaskSummary } from '../../api/types';
 
 export type TaskQualification = {
+  readonly baselineState: "absent" | "active" | "user" | "access" | "corrupt";
   readonly epoch: string | null;
   readonly cacheGeneration: string | null;
   readonly syncRevision: string | null;

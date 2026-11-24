@@ -26,6 +26,13 @@ revision and confirms it with one new snapshot in the commit transaction. An
 access denial racing a committed replacement cleans only its exact successor,
 leaving a subsequently advanced baseline intact.
 
+Attachment reads retain valid requests through an ordinary initial snapshot.
+An invalidated read either restarts on a manual rebuild hint or presents a
+retryable error when the hint is absent. A confirmed attachment write whose
+original history cannot yet be established retains its owner and blocks another
+dispatch until a read-only observation resolves it; a different history or lost
+access retires the old view.
+
 The [atomic cache decision](../architecture/2026-11-24-task-sync-atomic-deletions.md)
 owns durable ordering and the [read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)
 owns independent readers. The [sync design](../../../../docs/design/daynight-task-sync.md)
