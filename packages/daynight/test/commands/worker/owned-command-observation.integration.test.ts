@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { createOperation, OperationError, type Operation } from "../../../src/api/operation.js";
 import type { WorkerTelemetry } from "../../../src/api/types.js";
-import { confirmControllerProcessesStopped, ControllerProcessWaitDeadlineError } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, ControllerProcessWaitDeadlineError, isControllerProcessObservationDeadline } from "../../../src/commands/controller/process-proof.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
 import { isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError, OwnedCommandDeadlineError } from "../../../src/commands/worker/owned-command.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand } from "../../../src/commands/worker/owned-command-lifecycle.js";
@@ -26,9 +26,10 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, "run-")), bin = path.join(directory, "bin");
     await mkdir(bin);
-    const marker = path.join(directory, "slow-ps"), lateOutput = path.join(directory, "late-output"), lateRelease = path.join(directory, "late-release"), ps = path.join(bin, "ps"), oldPath = process.env.PATH, oldMarker = process.env.DAYNIGHT_TEST_SLOW_PS;
+    const marker = path.join(directory, "slow-ps"), psStarted = `${marker}.started`, childReady = path.join(directory, "child-ready"), childRelease = path.join(directory, "child-release"), lateOutput = path.join(directory, "late-output"), lateRelease = path.join(directory, "late-release"), overflowRelease = path.join(directory, "overflow-release"), ps = path.join(bin, "ps"), oldPath = process.env.PATH, oldMarker = process.env.DAYNIGHT_TEST_SLOW_PS;
     const lateCancellation = scenario === "late reporter cancellation" || scenario === "late unrelated cancellation" || scenario === "late tampered cancellation";
-    await writeFile(ps, `#!${process.execPath}\nconst fs=require('node:fs'), cp=require('node:child_process');\nif(process.argv.includes('-p') && fs.existsSync(process.env.DAYNIGHT_TEST_SLOW_PS)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${lateCancellation ? 6500 : 1800});\nconst result=cp.spawnSync('/usr/bin/ps',process.argv.slice(2),{stdio:'inherit'});process.exit(result.status??1);\n`);
+    const controlledLate = scenario === "late output failure" || lateCancellation;
+    await writeFile(ps, '#!/bin/sh\nif [ "$1" = "-p" ] && [ -f "$DAYNIGHT_TEST_SLOW_PS" ]; then\n  printf started > "$DAYNIGHT_TEST_SLOW_PS.started"\n  exec /bin/sleep 30\nfi\nexec /usr/bin/ps "$@"\n');
     await chmod(ps, 0o700);
     const journal = await openExecutionResourceJournal({ directory: path.join(directory, "journal"), identity: { serverOrigin: "https://example.test", userId: randomUUID(), workerId: randomUUID() } });
     process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ""}`;
@@ -44,19 +45,29 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
     const outputGate = Promise.withResolvers<void>();
     let lateConsumed = false;
     let activeOperation: Operation | undefined;
+    let reporterSignal: AbortSignal | undefined;
     const releaseCollector = Promise.withResolvers<void>();
     const unrelated = new AbortController();
     const collected = Promise.withResolvers<void>();
     const controller = new AbortController();
+    const realNow = Date.now, frozenNow = realNow();
+    let advanceClock = false;
+    const clock = controlledLate ? vi.spyOn(Date, "now").mockImplementation(() => frozenNow + (advanceClock ? 1100 : 0)) : undefined;
     const reporter = createWorkerReporter({ signal: controller.signal, collect: async reporterOperation => {
-      const operation = createOperation({ ...(lateCancellation ? { signal: scenario === "late unrelated cancellation" ? unrelated.signal : reporterOperation.signal } : {}), limits: lateCancellation ? { totalMs: 15_000, requestMs: 10_000 } : { totalMs: 5000, requestMs: 5000 } });
+      reporterSignal = reporterOperation.signal;
+      const operation = createOperation({ ...(lateCancellation ? { signal: scenario === "late unrelated cancellation" ? unrelated.signal : reporterOperation.signal } : {}), limits: controlledLate ? { totalMs: 15_000, requestMs: 10_000 } : { totalMs: 5000, requestMs: 5000 } });
       activeOperation = operation;
       const consume = operation.consume;
-      operation.consume = bytes => { if (operation.signal.aborted) lateConsumed = true; consume(bytes); };
-      const source = `const fs=require('node:fs');process.stdout.write('original output');setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'armed'),${lateCancellation ? 500 : 3000});${scenario === "late output failure" || lateCancellation ? `setTimeout(()=>{process.stdout.write('x');fs.writeFileSync(${JSON.stringify(lateOutput)},'written');${scenario === "late output failure" ? `const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(lateRelease)})){clearInterval(timer);process.stdout.write('independent overflow');}},10);` : ""}},${lateCancellation ? 6500 : 5200});` : ""}process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`;
+      operation.consume = bytes => { if (operation.signal.aborted && bytes === 1) lateConsumed = true; consume(bytes); };
+      const source = `const fs=require('node:fs');${controlledLate ? `fs.writeFileSync(${JSON.stringify(childReady)},'ready');let started=false,sent=false,overflow=false;setInterval(()=>{if(!started&&fs.existsSync(${JSON.stringify(childRelease)})){started=true;process.stdout.write('original output');}if(!sent&&fs.existsSync(${JSON.stringify(lateRelease)})){sent=true;process.stdout.write('x');fs.writeFileSync(${JSON.stringify(lateOutput)},'written');}if(!overflow&&fs.existsSync(${JSON.stringify(overflowRelease)})){overflow=true;process.stdout.write('independent overflow');}},10);` : `process.stdout.write('original output');setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'armed'),3000);`}process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`;
       try {
         await runLifecycleOwnedCommand({ file: process.execPath, args: ["-e", source], environment: process.env }, operation, sink,
-          { cleanupWithinDeadline: true, ...(lateCancellation ? { timeoutMs: 1000 } : {}), ...(scenario === "late output failure" ? { maximumOutputBytes: 16 } : {}), onStdout: async chunk => { output += chunk.toString(); await outputGate.promise; } });
+          { cleanupWithinDeadline: true, ...(controlledLate ? { timeoutMs: 1000 } : {}), ...(scenario === "late output failure" ? { maximumOutputBytes: 16 } : {}), onStdout: async chunk => {
+            output += chunk.toString();
+            if (controlledLate && output !== "original output") return;
+            if (controlledLate) { await writeFile(marker, "armed"); advanceClock = true; }
+            await outputGate.promise;
+          } });
         throw new Error("The controlled process unexpectedly completed.");
       } catch (error) { issue = error; }
       finally { if (!lateCancellation) operation.dispose(); }
@@ -65,11 +76,31 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
       return { telemetry, issues: [{ component: "assistantHost_claude", code: "timeout", error: issue }] };
     }, send: async () => ({ observedAt: timestamp, lastReportedAt: timestamp }), emit: () => {} });
     try {
+      if (controlledLate) {
+        await Promise.race([vi.waitFor(async () => { expect(await readFile(childReady, "utf8")).toBe("ready"); }, { timeout: 10_000, interval: 25 }), collected.promise.then(() => { throw new Error("The command finished before the child was ready.", { cause: issue }); })]);
+        await writeFile(childRelease, "release");
+        await Promise.race([vi.waitFor(async () => { expect(await readFile(psStarted, "utf8")).toBe("started"); }, { timeout: 10_000, interval: 25 }), collected.promise.then(() => { throw new Error("The command finished before the controlled observation started.", { cause: issue }); })]);
+        clock?.mockRestore();
+      }
       await collected.promise;
       expect(issue).toBeInstanceOf(OwnedCommandCleanupError);
       const cleanup = issue as OwnedCommandCleanupError;
+      if (controlledLate) {
+        expect(cleanup.errors.some(error => error instanceof OwnedCommandDeadlineError)).toBe(true);
+        expect(isControllerProcessObservationDeadline(cleanup.cause)).toBe(true);
+        expect(cleanup.errors).toHaveLength(2);
+      }
+      if (lateCancellation) expect(activeOperation?.signal.aborted).toBe(false);
+      if (scenario === "late tampered cancellation") cleanup.errors.push(new Error("tampered evidence"));
+      const failures = cleanup.errors.length;
       if (scenario === "late unrelated cancellation") unrelated.abort(new Error("unrelated cancellation"));
       const initialStop = reporter.stop();
+      if (lateCancellation) {
+        const cancellation = activeOperation!.signal.reason;
+        expect(cancellation).toBeInstanceOf(OperationError);
+        expect(cancellation.kind).toBe("cancelled");
+        expect(cancellation.cause).toBe(scenario === "late unrelated cancellation" ? unrelated.signal.reason : reporterSignal?.reason);
+      }
       releaseCollector.resolve();
       await expect(initialStop).rejects.toBe(cleanup);
       const original = retainedOwnedCommandBoundaries();
@@ -81,10 +112,9 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
       expect(savedBefore?.event).toMatchObject({ resourceId, stage: scenario === "independent journal failure" ? "bound" : "unknown", proof: boundary.proof });
       expect(isConfirmedOwnedCommandCleanupWait(cleanup)).toBe(false);
       if (scenario === "late output failure" || lateCancellation) {
-        await vi.waitFor(async () => { expect(await readFile(lateOutput, "utf8")).toBe("written"); }, { timeout: 5000, interval: 25 });
-        if (scenario === "late tampered cancellation") cleanup.errors.push(new Error("tampered evidence"));
-        const failures = cleanup.errors.length;
         outputGate.resolve();
+        await writeFile(lateRelease, "release");
+        await vi.waitFor(async () => { expect(await readFile(lateOutput, "utf8")).toBe("written"); }, { timeout: 5000, interval: 25 });
         await vi.waitFor(() => { expect(lateConsumed).toBe(true); }, { timeout: 5000, interval: 25 });
         if (lateCancellation) {
           expect(cleanup.errors).toHaveLength(failures + 1);
@@ -92,7 +122,7 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
           expect(cleanup.errors.at(-1)).toBeInstanceOf(OperationError);
         } else {
           expect(cleanup.errors).toHaveLength(failures);
-          await writeFile(lateRelease, "release");
+          await writeFile(overflowRelease, "release");
           await vi.waitFor(() => { expect(cleanup.errors.some(error => error instanceof RangeError)).toBe(true); }, { timeout: 5000, interval: 25 });
         }
       }
@@ -166,6 +196,7 @@ it.skipIf(process.platform !== "linux").each(["confirmed", "independent journal 
         await expect(reporter.stop()).rejects.toBe(cleanup);
       }
     } finally {
+      clock?.mockRestore();
       controller.abort();
       unrelated.abort(); releaseCollector.resolve(); activeOperation?.dispose();
       outputGate.resolve();
