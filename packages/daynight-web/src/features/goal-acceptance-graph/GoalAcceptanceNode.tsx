@@ -10,6 +10,8 @@ export type GoalAcceptanceFlowNode = Node<{
   progress: { readonly done: number; readonly total: number } | undefined;
   onInspect: (id: string) => void;
   onOpen: (id: string, trigger: HTMLElement) => void;
+  onExpand?: (id: string) => void;
+  expanded?: boolean;
 }, 'goalAcceptance'>;
 
 export const GoalAcceptanceNode = memo(({ data, positionAbsoluteX, positionAbsoluteY, width, height }: NodeProps<GoalAcceptanceFlowNode>) => {
@@ -33,6 +35,9 @@ export const GoalAcceptanceNode = memo(({ data, positionAbsoluteX, positionAbsol
       {data.progress !== undefined && <span className="goal-acceptance-progress">{m.progress(data.progress.done, data.progress.total)}</span>}
       <span className="task-node-bottom"><span className={`graph-status graph-status-${data.goal.status}`}><i aria-hidden="true" />{common.status[data.goal.status]}</span></span>
     </button>
-    <button type="button" className="task-node-details nodrag nopan" aria-label={`${m.details}: ${title}`} aria-haspopup="dialog" onClick={event => data.onOpen(data.goal.id, event.currentTarget)} onFocus={focus}>{m.details}</button>
+    <div className="goal-acceptance-actions">
+      <button type="button" className="task-node-details nodrag nopan" aria-label={`${m.details}: ${title}`} aria-haspopup="dialog" onClick={event => data.onOpen(data.goal.id, event.currentTarget)} onFocus={focus}>{m.details}</button>
+      {data.goal.project !== undefined && data.onExpand !== undefined && <button type="button" className="task-node-details goal-acceptance-expand nodrag nopan" data-goal-id={data.goal.id} aria-label={m.expandLabel(title)} aria-pressed={data.expanded === true} onClick={() => data.onExpand!(data.goal.id)} onFocus={focus}>{data.expanded ? m.expanded : m.expand}</button>}
+    </div>
   </div>;
 });

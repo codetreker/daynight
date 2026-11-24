@@ -13,6 +13,7 @@ const isolatedId = '00000000-0000-4000-8000-000000000404';
 const unrelatedId = '00000000-0000-4000-8000-000000000405';
 const childId = '00000000-0000-4000-8000-000000000406';
 const secondChildId = '00000000-0000-4000-8000-000000000407';
+const fourthTerminalId = '00000000-0000-4000-8000-000000000408';
 const teamId = '00000000-0000-4000-8000-000000000701';
 const externalProjectId = '00000000-0000-4000-8000-000000000101';
 const externalId = '00000000-0000-4000-8000-000000000501';
@@ -27,7 +28,7 @@ const edge = (dialog: Locator, source: string, target: string) => dialog.locator
 const pendingFixtures = new Set<() => void>();
 test.afterEach(() => { for (const release of pendingFixtures) release(); pendingFixtures.clear(); });
 
-const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean } = {}) => {
+const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean; inspectionSaturation?: boolean } = {}) => {
   let details: TaskDetail[] = [
     detailFixture(projectId, activeId, { type: 'goal', title: 'Release client', status: 'in_progress', startedAt: time, ready: false, dependsOn: [doneId, cancelledId] }),
     detailFixture(projectId, doneId, { type: 'goal', title: 'Accepted identity', status: 'done', completedAt: time, ready: false }),
@@ -37,6 +38,11 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
     detailFixture(projectId, childId, { parentId: activeId, title: 'First child' }),
     detailFixture(projectId, secondChildId, { parentId: activeId, title: 'Second child', dependsOn: [childId], blockedBy: [childId], ready: false }),
   ];
+  if (options.inspectionSaturation) {
+    details = details.map(detail => detail.id === activeId ? { ...detail, dependsOn: [doneId, cancelledId, unrelatedId, fourthTerminalId] }
+      : detail.id === isolatedId ? { ...detail, status: 'done', completedAt: time } : detail);
+    details.push(detailFixture(projectId, fourthTerminalId, { type: 'goal', title: 'Accepted storage', status: 'done', completedAt: time, ready: false }));
+  }
   if (options.cycle) details = details.map(detail => detail.id === isolatedId ? { ...detail, dependsOn: [activeId] } : detail);
   if (options.bulk) details.push(...Array.from({ length: 6 }, (_, index) => detailFixture(projectId,
     `00000000-0000-4000-8000-${String(600 + index).padStart(12, '0')}`, { type: 'goal', title: `Acceptance branch ${index + 1}`, ready: false })));
@@ -111,6 +117,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
       const pageKey = `${goalId}:${url.searchParams.get('cursor')}`;
       if (heldPages.has(pageKey)) await new Promise<void>(resolve => { heldPageReplies.set(pageKey, resolve); });
       heldPageReplies.delete(pageKey);
+      if (path !== `/api/v1/projects/${source.projectId}/tasks/${goalId}/goal-dependencies`) throw new Error(`Relationship request uses the wrong source Project: ${path}`);
       if (failedSources.has(goalId) || failedPages.has(`${goalId}:${url.searchParams.get('cursor')}`)) return send({ error: { code: 'unavailable', message: 'Temporarily unavailable', requestId: goalId } }, 503);
       const body = (sourceReplies.get(goalId) ?? (cursor => defaultRelations(source, cursor)))(url.searchParams.get('cursor'));
       relationInFlight++; maxRelationInFlight = Math.max(maxRelationInFlight, relationInFlight);
@@ -149,7 +156,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   return {
     syncRequests, relationRequests, unexpected, cancelledRequests,
     externalGoal: related(externalDetails[0]!),
-    relatedGoal: (id: string) => related([...syncDetails, ...externalDetails].find(detail => detail.id === id)!),
+    relatedGoal: (id: string, sourceProject = projectId) => related([...syncDetails, ...externalDetails].find(detail => detail.id === id)!, sourceProject),
     versionOf: (id: string) => syncDetails.find(detail => detail.id === id)!.version,
     changeGoal: (id: string, patch: Partial<Pick<TaskDetail, 'title' | 'status' | 'dependsOn' | 'startedAt' | 'completedAt'>>) => {
       syncDetails = syncDetails.map(detail => detail.id === id ? { ...detail, ...patch, version: detail.version + 1n, updatedAt: '2026-10-22T10:01:00Z' } : detail);
@@ -351,6 +358,11 @@ test('existing Goal child Task graph address retains ordinary Task edges', async
 for (const fullscreen of [false, true]) test(`keyboard inspector navigation retains focus and Escape ${fullscreen ? 'exits fullscreen before closing' : 'closes the graph'}`, async ({ page }) => {
   const state = await install(page), { dialog, trigger } = await open(page, state.syncRequests);
   await expect(dialog.locator('.goal-relation-source[data-phase="ready"]')).toHaveCount(2);
+  const syncRequests = [...state.syncRequests];
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect(sourceStatus(dialog, doneId)).toHaveAttribute('data-phase', 'ready');
+  expect(sourceReads(state.relationRequests, doneId)).toHaveLength(1);
+  expect(state.syncRequests).toEqual(syncRequests);
   if (fullscreen) {
     await dialog.getByRole('button', { name: 'View fullscreen', exact: true }).click();
     await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
@@ -367,6 +379,7 @@ for (const fullscreen of [false, true]) test(`keyboard inspector navigation reta
   await expect(viewport).toHaveAttribute('style', position!);
   expect(state.syncRequests).toEqual(requests);
   expect(state.relationRequests).toEqual(relationRequests);
+  expect(sourceReads(state.relationRequests, doneId)).toHaveLength(1);
   await page.keyboard.press('Escape');
   if (fullscreen) {
     await expect(dialog).toBeVisible();
@@ -659,5 +672,202 @@ test('a stable prerequisite edge becoming hidden retires its Goal and Details be
   await expect(edge(dialog, externalId, isolatedId)).toHaveCount(0);
   await expect(dialog).not.toContainText('External authentication');
   await expect(sourceStatus(dialog, activeId)).toContainText('You cannot access 1 prerequisite Goals');
+  expect(state.syncRequests).toEqual(requests);
+});
+
+const expandRelations = (dialog: Locator, title: string) => dialog.getByRole('button', { name: `Expand relationships: ${title}`, exact: true });
+const sourceReads = (requests: readonly string[], id: string) => requests.filter(value => value.includes(`/tasks/${id}/goal-dependencies`));
+const frameBranch = async (page: Page, dialog: Locator) => {
+  await dialog.getByRole('button', { name: 'Show all Goals', exact: true }).click();
+  await page.clock.runFor(300);
+};
+const prepareBranch = async (page: Page) => {
+  const state = await install(page, { external: true });
+  state.sourceReply(activeId, () => ({ goalId: activeId, canEdit: false, completionBlocked: true, prerequisites: [{ target: state.externalGoal }], successors: [], nextCursor: null }));
+  state.sourceReply(externalId, () => ({ goalId: externalId, canEdit: false, completionBlocked: true,
+    prerequisites: [{ target: state.relatedGoal(externalSuccessorId, externalProjectId) }], successors: [state.relatedGoal(activeId, externalProjectId)], nextCursor: null }));
+  return state;
+};
+
+test('expanding a foreign Goal reads its real Project and retains a second-hop edge internal to that Project', async ({ page }) => {
+  const state = await prepareBranch(page), { dialog, trigger } = await open(page, state.syncRequests);
+  await expect(card(dialog, externalId)).toBeVisible();
+  await expect(card(dialog, externalSuccessorId)).toHaveCount(0);
+  await frameBranch(page, dialog);
+  const reads = [...state.syncRequests];
+  await card(dialog, activeId).locator('.task-node-body').click();
+  await dialog.locator('.react-flow__controls-zoomout').click();
+  await page.clock.runFor(300);
+  const viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-mode', 'expanded');
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  await expect(card(dialog, externalSuccessorId)).toBeVisible();
+  await expect(edge(dialog, externalSuccessorId, externalId)).toHaveAttribute('data-external', 'true');
+  await expect(edge(dialog, externalId, activeId)).toHaveCount(1);
+  expect(sourceReads(state.relationRequests, externalId)).toEqual([`/api/v1/projects/${externalProjectId}/tasks/${externalId}/goal-dependencies?limit=20`]);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewport).toHaveAttribute('style', position!);
+  await expandRelations(dialog, 'External authentication').click();
+  expect(sourceReads(state.relationRequests, externalId)).toHaveLength(1);
+  expect(state.syncRequests).toEqual(reads);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(state.syncRequests).toEqual(reads);
+});
+
+test('an uncovered inspection source upgrades its in-flight read to expansion without extending the canvas early', async ({ page }) => {
+  const state = await prepareBranch(page);
+  state.holdSource(externalId);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(card(dialog, externalId)).toBeVisible();
+  await frameBranch(page, dialog);
+  const reads = [...state.syncRequests];
+  await card(dialog, externalId).locator('.task-node-body').click();
+  await expect.poll(() => state.sourceHeld(externalId)).toBe(true);
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-mode', 'inspection');
+  await expect(card(dialog, externalSuccessorId)).toHaveCount(0);
+  const viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-mode', 'expanded');
+  expect(sourceReads(state.relationRequests, externalId)).toHaveLength(1);
+  state.releaseSource(externalId);
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  await expect(edge(dialog, externalSuccessorId, externalId)).toHaveCount(1);
+  await expect(card(dialog, externalId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewport).toHaveAttribute('style', position!);
+  expect(sourceReads(state.relationRequests, externalId)).toHaveLength(1);
+  expect(state.syncRequests).toEqual(reads);
+});
+
+test('completed inspection pages are reused on expansion and repeated expansion', async ({ page }) => {
+  const state = await prepareBranch(page), { dialog } = await open(page, state.syncRequests);
+  await expect(card(dialog, externalId)).toBeVisible();
+  await frameBranch(page, dialog);
+  const reads = [...state.syncRequests];
+  await card(dialog, externalId).locator('.task-node-body').click();
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-mode', 'inspection');
+  await expect(card(dialog, externalSuccessorId)).toHaveCount(0);
+  await expect(dialog.locator('.goal-acceptance-inspection')).toContainText('External rollout');
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(card(dialog, externalSuccessorId)).toBeVisible();
+  await expandRelations(dialog, 'External authentication').click();
+  expect(sourceReads(state.relationRequests, externalId)).toHaveLength(1);
+  expect(state.syncRequests).toEqual(reads);
+});
+
+test('expanded branches survive one root withdrawal and prune only after losing every root path', async ({ page }) => {
+  const state = await prepareBranch(page);
+  state.sourceReply(isolatedId, () => ({ goalId: isolatedId, canEdit: false, completionBlocked: true, prerequisites: [{ target: state.externalGoal }], successors: [], nextCursor: null }));
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, isolatedId)).toHaveAttribute('data-phase', 'ready');
+  await frameBranch(page, dialog);
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(card(dialog, externalSuccessorId)).toBeVisible();
+  await card(dialog, activeId).locator('.task-node-body').click();
+  const viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  const reads = [...state.syncRequests];
+  const empty = (id: string): GoalDependencies => ({ goalId: id, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null });
+  state.sourceReply(activeId, () => empty(activeId));
+  await retryRelations(dialog, 'Release client').click();
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await expect(dialog.locator('.goal-acceptance-inspection')).not.toContainText('External authentication');
+  await expect(edge(dialog, externalId, isolatedId)).toHaveCount(1);
+  await expect(edge(dialog, externalSuccessorId, externalId)).toHaveCount(1);
+  state.sourceReply(isolatedId, () => empty(isolatedId));
+  await retryRelations(dialog, 'Independent acceptance').click();
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(card(dialog, externalSuccessorId)).toHaveCount(0);
+  await expect(sourceStatus(dialog, externalId)).toHaveCount(0);
+  await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewport).toHaveAttribute('style', position!);
+  expect(state.syncRequests).toEqual(reads);
+});
+
+test('external Details remains clickable beside Expand and returns to the same Goal graph', async ({ page }) => {
+  const state = await prepareBranch(page), { dialog } = await open(page, state.syncRequests);
+  await expect(card(dialog, externalId)).toBeVisible();
+  await frameBranch(page, dialog);
+  const details = dialog.getByRole('button', { name: 'Details: External authentication', exact: true });
+  await details.click();
+  const reader = page.locator('.goal-detail-surface');
+  await expect(reader.locator('.task-detail-title')).toHaveText('External authentication');
+  await page.keyboard.press('Escape');
+  await expect(reader).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(details).toBeFocused();
+  const requests = [...state.syncRequests];
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(edge(dialog, externalSuccessorId, externalId)).toHaveCount(1);
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('removing synchronized local prerequisites cancels abandoned inspections and admits new roots before held responses finish', async ({ page }) => {
+  const state = await install(page, { inspectionSaturation: true });
+  const terminals = [doneId, cancelledId, unrelatedId, fourthTerminalId];
+  for (const id of terminals) state.holdSource(id);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await frameBranch(page, dialog);
+  for (const id of terminals) {
+    await card(dialog, id).locator('.task-node-body').click();
+    await expect.poll(() => state.sourceHeld(id)).toBe(true);
+    await expect(sourceStatus(dialog, id)).toHaveAttribute('data-mode', 'inspection');
+  }
+  state.changeEdges([]);
+  state.changeGoal(isolatedId, { status: 'todo', completedAt: null });
+  await page.clock.runFor(30_000);
+  await expect(card(dialog, isolatedId)).toBeVisible();
+  for (const id of terminals) {
+    await expect.poll(() => state.cancelledRequests.some(url => new URL(url).pathname.endsWith(`/${id}/goal-dependencies`))).toBe(true);
+    await expect(card(dialog, id)).toHaveCount(0);
+    await expect(sourceStatus(dialog, id)).toHaveCount(0);
+    expect(state.sourceHeld(id)).toBe(true);
+  }
+  await expect(sourceStatus(dialog, isolatedId)).toHaveAttribute('data-phase', 'ready');
+  await expect.poll(() => sourceReads(state.relationRequests, activeId).length).toBe(2);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  const requests = [...state.syncRequests];
+  for (const id of terminals) state.releaseSource(id);
+  await expect(card(dialog, isolatedId)).toBeVisible();
+  await expect(dialog.locator('.goal-acceptance-node')).toHaveCount(2);
+  expect(state.syncRequests).toEqual(requests);
+});
+
+test('an expanded foreign successor cannot retain a withdrawn local terminal Goal while its root refresh fails', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.changeEdges([doneId]);
+  const completedForeign = { ...state.externalGoal, status: 'done' as const };
+  state.sourceReply(activeId, () => ({ goalId: activeId, canEdit: false, completionBlocked: false,
+    prerequisites: [{ target: state.relatedGoal(doneId) }, { target: completedForeign }], successors: [], nextCursor: null }));
+  state.sourceReply(externalId, () => ({ goalId: externalId, canEdit: false, completionBlocked: false, prerequisites: [],
+    successors: [state.relatedGoal(activeId, externalProjectId), state.relatedGoal(doneId, externalProjectId)], nextCursor: null }));
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await frameBranch(page, dialog);
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  await expect(card(dialog, externalId)).toHaveAttribute('data-goal-status', 'done');
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect(sourceStatus(dialog, doneId)).toHaveAttribute('data-mode', 'inspection');
+  await expect(sourceStatus(dialog, doneId)).toHaveAttribute('data-phase', 'ready');
+  state.failSource(activeId, true);
+  state.changeEdges([]);
+  await page.clock.runFor(30_000);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  await expect(sourceStatus(dialog, doneId)).toHaveCount(0);
+  await expect(card(dialog, doneId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, doneId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, activeId)).toHaveCount(1);
+  const requests = [...state.syncRequests];
+  await card(dialog, externalId).locator('.task-node-body').click();
+  await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('External authentication');
+  await card(dialog, activeId).locator('.task-node-body').click();
+  await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('Release client');
+  await expect(dialog.locator('.goal-acceptance-inspection')).toContainText('External authentication');
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
   expect(state.syncRequests).toEqual(requests);
 });

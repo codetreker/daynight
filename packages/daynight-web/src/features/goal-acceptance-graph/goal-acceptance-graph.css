@@ -13,6 +13,9 @@
 .goal-relation-source .button { font-size: var(--text-xs); padding: 2px 6px; }
 .goal-acceptance-relation { border: 0; background: transparent; color: var(--task-focus); font: inherit; text-align: left; text-decoration: underline; padding: 4px 0; overflow-wrap: anywhere; }
 .goal-acceptance-node { width: 100%; height: 100%; box-sizing: border-box; }
+.goal-acceptance-actions { position: absolute; right: 9px; bottom: 4px; display: flex; gap: 8px; }
+.goal-acceptance-actions .task-node-details { position: static; min-width: 0; }
+.goal-acceptance-node:has(.goal-acceptance-expand) .task-node-bottom { padding-right: calc(9 * var(--text-sm)); }
 .goal-acceptance-empty { position: absolute; inset: 0; padding: 20px; pointer-events: none; font-size: var(--text-sm); }
 .goal-acceptance-graph .task-graph-canvas { min-width: 0; }
 .task-chain-dialog-fullscreen .goal-acceptance-reading { flex: 1; }

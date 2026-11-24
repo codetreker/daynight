@@ -41,7 +41,19 @@ target from retained cards and inspection, even before replacement completes or
 if it later fails. It preserves the source and other targets; unmatched hidden
 edges do not identify a target. Inspection takes local relations, titles and states
 from full synchronized Goal indexes, combining raw external context without
-overwriting newer local facts or growing the canvas. The session exposes retries,
+overwriting newer local facts. Source reads are shared by uncovered inspection
+and explicit external expansion.
+Inspection does not grow the canvas; expansion adds readable branches, including
+real edges within one foreign Project, and repeated expansion deduplicates sources,
+nodes and edges. Canvas eligibility and source reachability share synchronized
+roots, current direct prerequisites and one cross-project admission policy. Raw
+local-to-local relations cannot retain a removed source or qualify a removed
+terminal Goal through a foreign successor. Genuine cross-project prerequisites
+can qualify terminal Goals; terminal successors remain inspection-only unless
+independently eligible. Real external-to-local context uses synchronized local
+identity and status, and relations within a foreign Project remain readable. Disconnected inspection and
+expansion sources are filtered out and their queued or in-flight reads cancelled,
+releasing the four-source capacity for reachable work. The session exposes retries,
 unsupported reads and inaccessible prerequisites. External cards use their
 actual Project and lifecycle data without invented summary versions or progress.
 Graph sessions have no polling loop and do not change TaskSync requests or
