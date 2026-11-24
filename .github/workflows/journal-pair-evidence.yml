@@ -1,0 +1,63 @@
+name: Temporary v16 read refusal evidence
+on:
+  push:
+    branches:
+      - 'daynight/26f8deb1-0b2e-4599-a810-fd748fa0ecd0'
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - name: Paired native timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp/journal-dedup
+          file=packages/daynight/test/commands/worker/web-live-journal.integration.test.ts
+          cp "$file" .tmp/journal-dedup/candidate.ts
+          git show 8f6c8076757afedfc98567b7730d45a08e194cdc:"$file" > .tmp/journal-dedup/baseline.ts
+          trap 'cp .tmp/journal-dedup/candidate.ts "$file"' EXIT
+          node -e "if(process.platform!=='darwin'||process.arch!=='arm64') process.exit(1)"
+          node --version
+          pnpm --version
+          uname -a
+          git rev-parse HEAD HEAD^{tree}
+          shasum -a 256 .tmp/journal-dedup/{baseline,candidate}.ts
+          for selection in target full; do
+            for mode in baseline candidate candidate baseline baseline candidate; do
+              cp ".tmp/journal-dedup/$mode.ts" "$file"
+              n=$(find .tmp/journal-dedup -name "$selection-$mode-*.log" | wc -l | tr -d ' ')
+              start=$(python3 -c 'import time; print(time.monotonic())')
+              args=()
+              if [[ "$selection" == target ]]; then args=(-t 'live v16|healthy exhausted v16'); fi
+              pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/web-live-journal.integration.test.ts "${args[@]}" --maxWorkers=1 > ".tmp/journal-dedup/$selection-$mode-$n.log" 2>&1
+              end=$(python3 -c 'import time; print(time.monotonic())')
+              python3 -c 'import sys; print(sys.argv[1:4], "elapsed_seconds", float(sys.argv[5])-float(sys.argv[4]))' "$selection" "$mode" "$n" "$start" "$end"
+              tail -6 ".tmp/journal-dedup/$selection-$mode-$n.log"
+            done
+          done
+          cp .tmp/journal-dedup/baseline.ts "$file"
+          python3 -c 'from pathlib import Path; p=Path("packages/daynight/test/commands/worker/web-live-journal.integration.test.ts"); s=p.read_text().replace("import { readFileSync, unlinkSync }", "import { appendFileSync, readFileSync, unlinkSync }"); old="  const bytes = readFileSync(file);\n  expect(() => lifecycle.readControllerSnapshot(file)).toThrow();\n  expect(() => lifecycle.readCurrentControllerSnapshot(file, f.source.ticket)).toThrow(/current journal format/);\n  expect(readFileSync(file)).toEqual(bytes);"; new="  const stage = performance.now();\n  const bytes = readFileSync(file);\n  const a = performance.now();\n  expect(() => lifecycle.readControllerSnapshot(file)).toThrow();\n  const b = performance.now();\n  expect(() => lifecycle.readCurrentControllerSnapshot(file, f.source.ticket)).toThrow(/current journal format/);\n  const c = performance.now();\n  expect(readFileSync(file)).toEqual(bytes);\n  appendFileSync(\"../../.tmp/journal-dedup/stages.jsonl\", JSON.stringify({bytes: a-stage, automatic: b-a, current: c-b, finalBytes: performance.now()-c}) + \"\\n\");"; assert s.count(old)==1; p.write_text(s.replace(old,new))'
+          pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/web-live-journal.integration.test.ts -t 'live v16|healthy exhausted v16' --maxWorkers=1 > .tmp/journal-dedup/stages.log 2>&1
+          cat .tmp/journal-dedup/stages.jsonl
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: v16-read-pair-evidence
+          path: |
+            .tmp/journal-dedup/*.log
+            .tmp/journal-dedup/*.jsonl
+          if-no-files-found: error
