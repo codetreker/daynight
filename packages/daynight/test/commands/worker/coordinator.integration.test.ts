@@ -275,11 +275,9 @@ it("retries removal of a released prelaunch claim's task-named worktree after re
   const clearance = Promise.withResolvers<void>();
   const stop = retiredNativeCleanup.stop.bind(retiredNativeCleanup);
   const locate = vi.spyOn(retiredNativeCleanup, "locate");
-  let nativeStopOutcome = "waiting";
   const stopNative = vi.spyOn(retiredNativeCleanup, "stop").mockImplementation(async (...args) => {
     await clearance.promise;
-    try { const result = await stop(...args); nativeStopOutcome = "returned"; return result; }
-    catch (error) { nativeStopOutcome = `failed: ${String(error)}`; throw error; }
+    return stop(...args);
   });
   const verifyWorktree = vi.spyOn(manager, "verifyWorktree");
   let bindingBeforeRemoval: WorktreeBinding | null | undefined;
@@ -311,11 +309,7 @@ it("retries removal of a released prelaunch claim's task-named worktree after re
     expect(worktreePaths(f.project.localPath)).toContain(checkout);
 
     clearance.resolve();
-    await vi.waitFor(() => expect(f.store.getCleanupSchedule(owner), [
-      `native stop: ${nativeStopOutcome}; verify calls: ${verifyWorktree.mock.calls.length}; removal calls: ${removeWorktree.mock.calls.length}`,
-      ...f.events.map(event => `${event.message} ${String(event.error)} ${event.error instanceof Error ? String(event.error.cause) : ""}`),
-    ].join("\n"))
-      .toMatchObject({ failures: 1, stage: "worktree-removal" }), { timeout: 20_000, interval: 25 });
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, stage: "worktree-removal" }));
     expect(verifyWorktree).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything(), checkout, true);
     expect(removeWorktree).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.objectContaining({ originalCwd: checkout }));
     expect(bindingBeforeRemoval).toMatchObject({ worktreePath: checkout, branch: `daynight/${owner.taskId}` });
@@ -342,7 +336,7 @@ it("retries removal of a released prelaunch claim's task-named worktree after re
     expect(worktreePaths(f.project.localPath)).not.toContain(checkout);
     await expect(access(checkout)).rejects.toMatchObject({ code: "ENOENT" });
   } finally { clearance.resolve(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
-}, 45_000);
+}, 30_000);
 
 it("reconciles a persisted missing-Web cleanup schedule on first shutdown after the local index became done", async () => {
   const f = await fixture();
