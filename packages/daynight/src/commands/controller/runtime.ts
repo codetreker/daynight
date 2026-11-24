@@ -26,7 +26,7 @@ import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
 import { readLaunchToolSelection } from "./launch-tool-selection.js";
-import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerExecutionDirectory, isBotHistoryTicket, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { openControllerLifecycleStore, readRecoverableInitialInput, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
@@ -242,7 +242,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (accountingFailure !== undefined) throw accountingFailure;
     if (stopping) throw new NativeDispatchRejectedError("Controller stopped before native dispatch.");
   };
-  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(), currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId, provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: async (action, body) => {
+    if (relay.botHistoryWindowSupported?.() && (action === "submit" || action === "register")) await relay.waitForBotCheckpoint(historyConnectionAbort.signal);
+    return relay.capture(action, body);
+  }, beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(), currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId, provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
@@ -266,7 +269,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     readState,
     onAcknowledged: () => {
       provider?.acknowledgeImageOccurrences?.();
-      if (relay.currentOnlineMode() === "relay") return;
+      if (relay.botHistoryWindowSupported?.() || relay.currentOnlineMode() === "relay") return;
       if (historyTimer) clearTimeout(historyTimer);
       historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(error)); }, 250);
     },
@@ -341,6 +344,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   async function runImageHistorySynchronization(forCapture: boolean): Promise<void> {
     let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (relay?.botHistoryWindowSupported?.()) {
+      if (forCapture) await relay.waitForBotCheckpoint(AbortSignal.any([historyAbort.signal, historyConnectionAbort.signal]));
+      return;
+    }
     if (relay?.currentOnlineMode() === "relay") return;
     if (stopping || !relay?.connected()) {
       if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
@@ -670,7 +677,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     let current = result;
     nativeEvent(() => {
       journal.assertUsable();
-      if (result.state !== "committed") return;
+      if (result.state !== "committed" || result.view.retired) return;
       const { entrySeq: _entrySeq, ...entry } = result.view.entry, identity = result.receipt.identity;
       const intent = journal.getInputIntent(identity.operationId);
       const command = intent?.sha256 === identity.intentSha256 ? restoreCanonicalInputIntent(intent, identity.operationId) : null;
@@ -679,6 +686,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       const complete = text !== null && bodies.length === 1 && bodies[0] === text;
       markdownTimeline.adoptCommitted(entry, { complete, format: "markdown", truncated: !complete });
       const displayed = journal.getTimelineEntry(entry.entryId);
+      if (!displayed && journal.getBotHistoryWindowRevision?.() != null) {
+        const recovered = journal.queryNativeInputAssociation(identity);
+        if (recovered.state === "committed" && recovered.view.retired) { current = recovered as T; return; }
+      }
       if (!displayed || displayed.kind !== "user_message") throw new Error("Native publication lost its current committed message.");
       current = { ...result, view: { ...result.view, entry: displayed } };
     });
@@ -705,6 +716,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket, options.storageStateDirectory);
     if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(isBotHistoryTicket(ticket) ? { botHistoryWindow: true } : {}),
       ...(ticket.claudeBotRecovery === undefined ? {} : { claudeBotRecovery: { directory: ticket.claudeBotRecovery.directory,
         identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.claudeBotRecovery.botId, sessionId: ticket.sessionId } } }),
       ...(ticket.copilotBotRecovery === undefined ? {} : { copilotBotRecovery: { directory: ticket.copilotBotRecovery.directory,
@@ -742,7 +754,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
           return adoptNativePublication(result);
         },
         patchNativeImagePart: (occurrence, part) => {
-          const current = accountingBoundary(() => journal.patchNativeImagePart(occurrence, part)), { entrySeq: _entrySeq, ...entry } = current;
+          const current = accountingBoundary(() => journal.patchNativeImagePart(occurrence, part));
+          if (current === null) return null;
+          const { entrySeq: _entrySeq, ...entry } = current;
           nativeEvent(() => { markdownTimeline.adoptCommitted(entry); });
           return current;
         },

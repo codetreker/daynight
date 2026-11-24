@@ -27,6 +27,7 @@ type LaunchCommon = {
   readonly configuration: FrozenExecutionConfiguration;
   readonly initialOperationId: string; readonly initialPrompt: string;
   readonly instructions?: string;
+  readonly botId?: string;
   readonly codexBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly claudeBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly copilotBotRecovery?: { readonly botId: string; readonly directory: string };
@@ -38,6 +39,8 @@ export type ControllerLaunchTicket = LaunchCommon & SessionBinding & (
   | { readonly claimId: string; readonly projectId: string; readonly taskId: string; readonly workerId: string; readonly worktreeId: string; readonly userId: string; readonly ownerUserId?: never; readonly initialInput?: never; readonly usageScope?: never }
   | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly usageScope?: "standalone_test"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
 );
+export const isBotHistoryTicket = (ticket: ControllerLaunchTicket): boolean => ticket.testExecutionId !== undefined
+  && (ticket.botId !== undefined || ticket.codexBotRecovery !== undefined || ticket.claudeBotRecovery !== undefined || ticket.copilotBotRecovery !== undefined);
 const uuid = (value: unknown): string => { if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Controller identity must be a canonical UUID."); return value; };
 export const controllerExecutionDirectory = (home: string, executionId: string, storageStateDirectory?: string): string => path.join(resolveControllerStateDirectory(home, storageStateDirectory), "controller", "executions", uuid(executionId));
 export const controllerTicketPath = (home: string, launchId: string, storageStateDirectory?: string): string => path.join(resolveControllerStateDirectory(home, storageStateDirectory), "controller", "launches", `${uuid(launchId)}.json`);
@@ -68,10 +71,15 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(Object.hasOwn(data, "lifecycleBinding") ? ["lifecycleBinding"] : []), ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "usageScope") ? ["usageScope"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const botFields = ["botId", "codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key));
+  const keys = ["schemaVersion", ...ids, ...(Object.hasOwn(data, "lifecycleBinding") ? ["lifecycleBinding"] : []), ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "usageScope") ? ["usageScope"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...botFields, "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
-  if (Object.hasOwn(data, "usageScope") && (!test || data.usageScope !== "standalone_test" || ["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].some(key => Object.hasOwn(data, key)))) throw new Error("Controller usage scope is invalid.");
+  if (Object.hasOwn(data, "usageScope") && (!test || data.usageScope !== "standalone_test" || botFields.length !== 0)) throw new Error("Controller usage scope is invalid.");
+  if (Object.hasOwn(data, "botId")) {
+    if (!test || data.testExecutionId !== data.executionId || data.initialInput !== "none") throw new Error("Controller Bot identity requires an assistant execution.");
+    uuid(data.botId);
+  }
   if ((data.schemaVersion !== 1 && data.schemaVersion !== 2) || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (data.schemaVersion === 2) {
     const lifecycle = parseHistoricalBinding(data.lifecycleBinding);
@@ -85,18 +93,21 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
     if (!test || data.provider !== "copilot" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
       || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Copilot Bot recovery binding is invalid.");
     uuid(recovery.botId);
+    if (data.botId !== undefined && recovery.botId !== data.botId) throw new Error("Copilot recovery belongs to another Bot.");
   }
   if (Object.hasOwn(data, "codexBotRecovery")) {
     const recovery = data.codexBotRecovery as Record<string, unknown> | null;
     if (!test || data.provider !== "codex" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
       || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Codex Bot recovery binding is invalid.");
     uuid(recovery.botId);
+    if (data.botId !== undefined && recovery.botId !== data.botId) throw new Error("Codex recovery belongs to another Bot.");
   }
   if (Object.hasOwn(data, "claudeBotRecovery")) {
     const recovery = data.claudeBotRecovery as Record<string, unknown> | null;
     if (!test || data.provider !== "claude" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
       || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Claude Bot recovery binding is invalid.");
     uuid(recovery.botId);
+    if (data.botId !== undefined && recovery.botId !== data.botId) throw new Error("Claude recovery belongs to another Bot.");
   }
   for (const key of ["cwd", "nativeHome", "credentialFile"]) if (typeof data[key] !== "string" || !path.isAbsolute(data[key]) || /[\0\r\n]/.test(data[key])) throw new Error(`Controller ticket ${key} must be absolute.`);
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");

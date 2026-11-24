@@ -10,7 +10,7 @@ import { writeDurableJson } from "../../../platform/durable-json.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, policy?: { contentPolicy(): string; onlineImageOccurrences(): readonly ImageOccurrence[] }) => {
+export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, policy?: { contentPolicy(): string; onlineImageOccurrences(): readonly ImageOccurrence[]; bounded?: boolean }) => {
   const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint", failureKey = "active_history_failure";
   const syncDirectory = () => { if (process.platform !== "win32") { const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } } };
   const intent = (): ImageHistorySyncIntent | null => {
@@ -21,6 +21,7 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     return value;
   };
   const prepareImageHistorySync = (): ImageHistorySyncIntent | null => transactions.write(() => {
+    if (policy?.bounded) throw new Error("Bounded Bot history uses a window checkpoint.");
     const previous = intent(); if (previous) return previous;
     const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS ack,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { through: string; ack: string; projection_gap: string | null; archive_incomplete: number };
     if (source.through !== source.ack) return null;
