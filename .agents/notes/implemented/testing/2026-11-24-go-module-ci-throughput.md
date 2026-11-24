@@ -27,6 +27,10 @@ remain intact. Local and main package concurrency stay at two, with the
 existing race policy for each entry. The ordinary command vet also uses four
 package slots in PR CI; lifecycle coverage retains two.
 
+The module job declares PostgreSQL before Redis and Azurite. The hosted runner
+can start PostgreSQL health checks while it starts the other services, while
+Actions continues to own service readiness, failure propagation and cleanup.
+
 ## Alternatives
 
 **Vet the full module in a second build graph.** This repeats dependency
@@ -38,6 +42,9 @@ and new binaries must interoperate when coordinating schema initialization.
 Keeping the lock also preserves the real database contention exercised by
 the tests.
 
+**Start PostgreSQL last.** Its readiness wait follows the other service starts
+and can extend the setup critical path.
+
 ## Consequences
 
 The module job records phase timings and the usual raw Go test evidence.
@@ -46,3 +53,5 @@ without putting its separate compile graph on the module job's critical path.
 Memory-backed PostgreSQL consumes runner memory up to its configured limit.
 The hosted check establishes elapsed time and exercises the complete suite
 under the selected package concurrency.
+The service startup overlap depends on hosted runner behavior and does not
+guarantee a fixed reduction in total job time.
