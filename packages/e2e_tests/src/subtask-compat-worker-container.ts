@@ -78,7 +78,7 @@ export async function startCompatWorkerContainer(input: { runDirectory: string; 
   await prepareImage(run);
   const receipt: Receipt = { schemaVersion: 1, runId, workerId: input.workerId, name: `daynight-compat-worker-${runId}`, image: workerImage, phase: 'creating', id: null };
   await save(run, receipt);
-  const environment = [`DN_CONFIG_DIR=${input.config}`, `CODEX_HOME=${path.join(input.root, 'native')}`, `HOME=${input.root}`, `DAYNIGHT_WORKER_PEER_LOG=${input.log}`, `NODE_EXTRA_CA_CERTS=${input.ca}`, `NODE_OPTIONS=--require=${input.resolver}`];
+  const environment = [`DN_CONFIG_DIR=${input.config}`, `CODEX_HOME=${path.join(input.root, 'native')}`, `HOME=${input.root}`, `DAYNIGHT_WORKER_PEER_LOG=${input.log}`, `NODE_EXTRA_CA_CERTS=${input.ca}`, `NODE_OPTIONS=--require=${JSON.stringify(input.resolver)}`];
   const create = await dockerResult(run, ['create', '--pull', 'never', '--name', receipt.name, '--label', `daynight.e2e.run=${runId}`, '--label', `daynight.e2e.worker=${input.workerId}`, '--network', 'host', '--user', `${process.getuid!()}:${process.getgid!()}`, '--mount', `type=bind,src=${input.checkout},dst=${input.checkout},readonly`, '--mount', `type=bind,src=${input.root},dst=${input.root}`, '--mount', `type=bind,src=${run},dst=${run},readonly`, '--workdir', input.root, ...environment.flatMap(value => ['--env', value]), '--entrypoint', '/usr/local/bin/node', workerImage, input.entry, 'worker', 'run'], 120_000);
   if (create.exitCode !== 0) {
     // This daemon refusal is issued before container creation. Other errors,

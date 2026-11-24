@@ -12,15 +12,17 @@ test('container stop covers a detached child and records failure without exposin
   const run = path.join(checkout, '.tmp', 'product-e2e', id);
   const root = path.join(checkout, '.tmp', 'product-e2e-retained', id);
   const workerId = randomUUID();
-  const config = path.join(root, 'worker-config'), entry = path.join(root, 'worker.mjs');
+  const config = path.join(root, 'worker-config'), entry = path.join(root, 'worker.mjs'), resolver = path.join(root, 'resolver path', 'resolve.cjs');
   await mkdir(path.join(run, 'results'), { recursive: true });
   await mkdir(path.join(run, 'logs'), { recursive: true });
   await mkdir(config, { recursive: true });
+  await mkdir(path.dirname(resolver), { recursive: true });
+  await writeFile(resolver, "process.env.COMPAT_RESOLVER_LOADED='yes';\n");
   await writeFile(path.join(config, 'config.yml'), JSON.stringify({ serverToken: 'test-secret-token' }));
-  await writeFile(entry, `import {spawn} from 'node:child_process'; import {writeFileSync} from 'node:fs'; const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(${JSON.stringify(path.join(root, 'child'))},String(child.pid)); process.stderr.write('Bearer test-secret-token\\n'); process.on('SIGINT',()=>process.exit(7)); setInterval(()=>{},1000);`);
+  await writeFile(entry, `import {spawn} from 'node:child_process'; import {writeFileSync} from 'node:fs'; if(process.env.COMPAT_RESOLVER_LOADED!=='yes')process.exit(21); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(${JSON.stringify(path.join(root, 'child'))},String(child.pid)); process.stderr.write('Bearer test-secret-token\\n'); process.on('SIGINT',()=>process.exit(7)); setInterval(()=>{},1000);`);
   let clean = false;
   try {
-    const worker = await startCompatWorkerContainer({ checkout, runDirectory: run, root, entry, config, workerId, log: path.join(root, 'peer'), ca: '/etc/ssl/certs/ca-certificates.crt', resolver: path.join(checkout, 'packages/e2e_tests/src/resolve-local.cjs') });
+    const worker = await startCompatWorkerContainer({ checkout, runDirectory: run, root, entry, config, workerId, log: path.join(root, 'peer'), ca: '/etc/ssl/certs/ca-certificates.crt', resolver });
     const deadline = Date.now() + 15_000;
     for (;;) { try { await readFile(path.join(root, 'child')); break; } catch (error) { if (Date.now() >= deadline) throw error; await delay(100); } }
     const before = JSON.parse(await readFile(path.join(run, 'results', 'compat-worker-container.json'), 'utf8')) as { id: string };
