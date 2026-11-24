@@ -664,6 +664,19 @@ test("Go coverage partitions provide isolated Azure migration storage", () => {
   }
 });
 
+test("the Go module runner bounds PostgreSQL storage in memory and checks the actual data mount", () => {
+  const options = server.match(/^      postgres:\n([\s\S]*?)^    defaults:/m)?.[1];
+  assert.ok(options);
+  assert.match(options, /^          --tmpfs \/var\/lib\/postgresql:rw,size=3g$/m);
+  assert.doesNotMatch(startupShutdown + apiIntegration, /--tmpfs \/var\/lib\/postgresql/);
+  const steps = stepsOf(server);
+  const prepare = steps.find(step => step.includes("name: Create the Store root test database\n"))!;
+  const validation = steps.find(step => step.includes("id: server-validation\n"))!;
+  assert.match(prepare, /stat -f -c %T "\$PGDATA"\)" = tmpfs/);
+  assert.match(prepare, /createdb -U daynight daynight_store_root/);
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(validation));
+});
+
 test("Go module coverage and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);

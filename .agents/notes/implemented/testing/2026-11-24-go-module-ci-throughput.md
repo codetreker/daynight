@@ -1,0 +1,45 @@
+# Agent Note: Go Module CI Throughput
+
+Status: implemented
+
+## Problem
+
+The ordinary Go module check spent time compiling separate vet and coverage
+graphs. On slower runners its two-package schedule also left a long tail after
+the PostgreSQL Store root finished. Database fixtures perform real schema
+creation, catalog work and transactions, which compete with test compilation
+for the resources of a single hosted runner.
+
+## Decision
+
+The Go module job executes its complete ordinary test package list in one
+coverage invocation. The invocation applies all standard vet analyzers to its
+compiled package and test variants. The command package has a separate vet pass
+for its ordinary build, plus its existing lifecycle validation. The complete
+cross-package coverage universe, failure propagation and coverage gates still
+apply to the module.
+
+Pull requests use a four-package Go schedule in the same module job. Its
+isolated PostgreSQL service uses a bounded memory-backed data directory. The
+workflow checks the actual mounted filesystem before preparing the dedicated
+Store root database. PostgreSQL sync, transaction and migration lock behavior
+remain intact. Local and main package concurrency stay at two, with the
+existing race policy for each entry.
+
+## Alternatives
+
+**Vet the full module in a second build graph.** This repeats dependency
+preparation and compilation. Go can apply the full analyzer set to the same
+source in the coverage graph, including packages without tests.
+
+**Change the production migration lock to increase fixture throughput.** Old
+and new binaries must interoperate when coordinating schema initialization.
+Keeping the lock also preserves the real database contention exercised by
+the tests.
+
+## Consequences
+
+The module job records phase timings and the usual raw Go test evidence.
+Memory-backed PostgreSQL consumes runner memory up to its configured limit.
+The hosted check establishes elapsed time and exercises the complete suite
+under the selected package concurrency.

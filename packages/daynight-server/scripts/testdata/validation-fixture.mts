@@ -37,6 +37,7 @@ case "$1" in
   test)
     if [[ "$*" == *TestWebhookRunnerAbruptProcessRecovery* ]]; then exit "\${PROCESS_EXIT:-0}"; fi
     if [[ "$*" == *./testdata/testauth* ]]; then exit "\${TESTAUTH_EXIT:-0}"; fi
+    if [[ -n "\${MODULE_TEST_EXIT-}" ]]; then exit "$MODULE_TEST_EXIT"; fi
     printf '%s\\n' '{"Action":"pass","Package":"example"}' ;;
   install)
     cat > "$GOBIN/go-cov" <<'COV'
