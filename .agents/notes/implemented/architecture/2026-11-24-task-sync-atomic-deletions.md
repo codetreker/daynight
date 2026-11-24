@@ -30,7 +30,9 @@ before emitting targeted project/task events. Stored qualification and commit
 checks are available to independent readers. Unbounded parent metadata deltas
 remain merges; they do not replace the complete baseline.
 
-A cold sync placeholder is a user baseline reset, not observed access denial. An independent successful detail read keeps its opening qualification while that placeholder is established; explicit denial still retires it.
+A cold sync placeholder is a user baseline reset, not observed access denial.
+An independent successful detail read keeps its opening qualification while
+that placeholder is established; explicit denial still retires it.
 
 Schema upgrade rebuilds refetchable task baselines while preserving account,
 profile and compatible Session lifecycles. Same-epoch explicit replacement keeps
