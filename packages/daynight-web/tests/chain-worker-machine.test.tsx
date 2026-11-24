@@ -16,7 +16,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { id: id(100), name: 'Project', repoUrl: 'https://example.com/project', ownership: { teamId: id(101), version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ tags: [], type: 'task', parentId: null, id: id(n), title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ tags: [], type: 'task', parentId: null, parentTaskId: null, id: id(n), title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const claim = (name: string, state: WorkerClaim['state'], agentControlMode: WorkerClaim['agentControlMode'] = 'web'): WorkerClaim => ({
   claimId: id(201), state, userId: id(202), workerId: id(203), machine: { id: id(204), name }, platform: 'linux', agent: 'codex', agentControlMode, worktreeId: id(205), phase: 'executing', herdr: agentControlMode === 'web' ? null : { session: 'session', workspaceId: 'workspace', paneId: 'pane' }, nativeSessionId: null, claimedAt: time,
 });
@@ -129,7 +129,8 @@ describe('chain worker machine presentation', () => {
   });
 
   it('aggregates the full ordinary component when the displayed chain has a narrower scope', () => {
-    const hiddenRoot = { ...root, status: 'in_progress' as const, parentId: id(50), properties: { worker: claim('other scope', 'active') } };
+    const { parentTaskId: _parentTaskId, ...oldRoot } = root;
+    const hiddenRoot = { ...oldRoot, status: 'in_progress' as const, parentId: id(50), properties: { worker: claim('other scope', 'active') } };
     const inScope = child(2);
     const scope = new Map([[root.id, [inScope.id]]]);
     const view = renderWithLocale(workspace(snapshot([hiddenRoot, inScope]), noop, scope), { locale: 'zh-CN', taskCache: true });
@@ -143,6 +144,19 @@ describe('chain worker machine presentation', () => {
     view.rerender(workspace(snapshot([{ ...hiddenRoot, properties: {} }, inScope]), noop, scope));
     expect(header).not.toHaveAccessibleName(/自动执行中/);
     expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('does not count an ordinary child claim in the scoped chain activity', () => {
+    const hiddenRoot = { ...root, status: 'in_progress' as const, parentTaskId: id(50), properties: { worker: claim('child host', 'active') } };
+    const inScope = child(2);
+    const scope = new Map([[root.id, [inScope.id]]]);
+    renderWithLocale(workspace(snapshot([hiddenRoot, inScope]), noop, scope), { locale: 'zh-CN', taskCache: true });
+    const header = document.getElementById(`task-root-${root.id}`)!;
+    expect(header).toHaveTextContent('Task 2');
+    expect(header).not.toHaveTextContent('Task 1');
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+    fireEvent.click(header);
+    expect(row(2)).toBeVisible();
   });
 
 });

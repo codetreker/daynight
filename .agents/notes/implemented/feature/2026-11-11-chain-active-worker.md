@@ -12,8 +12,10 @@ that a claim is active.
 
 The project chain header displays a noninteractive localized indicator when any
 member of its complete ordinary dependency component has an active Worker claim.
-It uses the existing project snapshot projection, includes the representative
-and out-of-scope ordinary members, and excludes external prerequisites. Complete
+It uses the existing project snapshot projection and excludes external prerequisites.
+The original rule included the representative and out-of-scope ordinary members;
+the [ordinary subtask list decision](../bug-fix/2026-11-24-project-list-ordinary-subtasks.md)
+excludes ordinary subtasks while retaining the cross-Goal behavior. Complete
 scope rows place it after the assignee; cross-scope rows place it beside the task
 count without exposing the out-of-scope representative's assignee. The [Web
 specification](../../../../docs/spec/daynight-web.md) owns the visible behavior.

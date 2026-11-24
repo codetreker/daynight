@@ -12,9 +12,15 @@ export type TaskScope = {
   readonly progress: { readonly total: number; readonly done: number; readonly cancelled: number; readonly unfinished: number };
 };
 
+export const isProjectListTask = (index: GraphIndex, id: string): boolean => {
+  const task = index.nodes.get(id);
+  return task !== undefined && task.parentId === null &&
+    (task.parentTaskId === null || (task.parentTaskId === undefined && index.legacyTaskParentIds?.has(id) === true));
+};
+
 // Classify against the complete ordinary graph before selecting a Parent scope.
 export const projectTaskScope = (index: GraphIndex, parentId: string | null): TaskScope => {
-  const taskIds = [...index.nodes.values()].filter((task) => task.parentId === parentId).map((task) => task.id);
+  const taskIds = [...index.nodes.values()].filter((task) => parentId === null ? isProjectListTask(index, task.id) : task.parentId === parentId).map((task) => task.id);
   const membersByChain = new Map<string, string[]>();
   const standaloneIds: string[] = [];
   let done = 0;
