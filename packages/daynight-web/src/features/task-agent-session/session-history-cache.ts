@@ -85,12 +85,12 @@ export type SessionHistoryOwnership =
   | { kind: 'present'; token: string; paginationToken: string | null; leaseExpiresAt: number | null; refreshing: boolean; cleared: boolean; uncertain: boolean }
   | { kind: 'absent' | 'task_absent'; uncertain: boolean };
 
-// Metadata remains usable for fencing an authenticated denial while an uncertain
-// directory is withheld. It never grants access to the cached page.
+// Ownership metadata fences authenticated denials even when cached content is
+// withheld by uncertainty or resource hints. It never grants page access.
 export const readSessionHistoryOwnership = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<SessionHistoryOwnership> => {
   taskId = requestId(taskId);
   const result = await scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
-    if ((!summaries.has(taskId) || !scope.isCachedTaskReadable(ticket, taskId))) return { kind: 'task_absent' as const };
+    if (!summaries.has(taskId)) return { kind: 'task_absent' as const };
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return { kind: 'absent' as const };
     try {

@@ -152,6 +152,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
         return false;
       }
       if (invalidationSequence.current !== requestInvalidation || signal.aborted || scope.isInvalidated || scope.isProjectSuspended(projectId) || !scope.canPreviewProject(projectId) || scope.getProjectRevision(projectId) !== projectRevision) return false;
+      if (ticket !== null && !scope.isCachedTaskReadable(ticket, taskId)) return false;
       if (admitted && ticket !== null && !scope.isSessionHistoryTicketCurrent(ticket)) return false;
       const currentProject = scope.getAuthorizedProject(projectId);
       if (ticket !== null && admitted && currentProject !== null && (currentProject.manifest.cacheGeneration !== ticket.cacheGeneration || !currentProject.summaries.has(taskId))) return false;

@@ -301,11 +301,13 @@ class TestChannel {
   postMessage(data: unknown) { if (TestChannel.suspended) return; if (TestChannel.holdHint && typeof data === 'object' && data !== null && Object.keys(data).length === 2 && 'projectId' in data && 'userId' in data) { TestChannel.heldHints.push(data); return; } if (TestChannel.holdClear && typeof data === 'object' && data !== null && 'sessionHistoryCleared' in data) { TestChannel.held.push(data); return; } for (const other of TestChannel.channels) if (other !== this) queueMicrotask(() => other.onmessage?.({ data } as MessageEvent<unknown>)); }
   close() { TestChannel.channels = TestChannel.channels.filter(channel => channel !== this); }
 }
-async function seedPeer() {
+async function seedPeer(additionalTaskId?: string) {
   TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
   const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
   const signal = new AbortController().signal;
-  await peer.applySync(await peer.beginSync(projectId, signal), taskSyncFromGraph(graphFixture([detailFixture(projectId, taskId)]), { epoch, versionForTask: () => 1n }), signal);
+  const graph = graphFixture([detailFixture(projectId, taskId), ...(additionalTaskId === undefined ? [] : [detailFixture(projectId, additionalTaskId)])]);
+  const tasks = additionalTaskId === undefined ? graph.tasks : graph.tasks.map(task => ({ ...task, parentTaskId: null }));
+  await peer.applySync(await peer.beginSync(projectId, signal), taskSyncFromGraph({ ...graph, tasks }, { epoch, versionForTask: () => 1n }), signal);
   const ticket = await peer.beginSync(projectId, signal);
   const lease = await beginSessionHistoryRefresh(peer, ticket, taskId, signal);
   if (lease === null || lease.kind !== 'lease') throw new Error('Expected a session refresh lease.');
@@ -354,6 +356,71 @@ it.each([false, true])('captures the cached Session owner after candidate recove
   await act(async () => rejectDenied(new ApiError('server', 403)));
   expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission');
   if (newerOwner) {
+    expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toMatchObject({ items: [second] });
+    expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.anything() }));
+  } else {
+    await waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.objectContaining({ taskId }) })));
+    expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toBeNull();
+  }
+});
+
+it.each(['current', 'newer-owner', 'target-hint'] as const)('fences denial ownership when an unrelated hint arrives after the direct ticket with outcome=%s', async outcome => {
+  const unrelatedTask = '20000000-0000-4000-8000-000000000003';
+  const { peer, ticket, signal } = await seedPeer(unrelatedTask);
+  const events = vi.fn(); peer.subscribe(events);
+  const { api, scope } = setup();
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  await scope.readProject(projectId, signal);
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (String(url).includes('/task-sync')) return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }));
+    return wireResponse(detailFixture(projectId, taskId, { parentTaskId: null }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  });
+  const missingFence = await scope.beginTaskRead(projectId, '20000000-0000-4000-8000-000000000002', 0, 0, signal);
+  await act(async () => { expect(scope.reportTaskDeleted(missingFence, epoch)).toBe(true); });
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  const recoveredFence = await scope.beginTaskRead(projectId, taskId, 0, 0, signal);
+  expect(recoveredFence.taskRevision).toBeGreaterThan(0);
+
+  let releaseOwnership!: () => void;
+  const ownershipBarrier = new Promise<void>(resolve => { releaseOwnership = resolve; });
+  let capturedTicket: Parameters<typeof scope.sessionHistoryTransaction>[0] | null = null;
+  const transaction = scope.sessionHistoryTransaction.bind(scope);
+  vi.spyOn(scope, 'sessionHistoryTransaction').mockImplementationOnce(async (...args) => {
+    capturedTicket = args[0];
+    await ownershipBarrier;
+    return transaction(...args);
+  });
+  let rejectDenied!: (error: Error) => void;
+  api.history.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectDenied = reject; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(capturedTicket).not.toBeNull());
+  expect(capturedTicket!.deletionRevision).toBe(1);
+  const unrelatedFence = await scope.beginTaskRead(projectId, unrelatedTask, 0, 0, signal);
+  await act(async () => { expect(scope.reportTaskDeleted(unrelatedFence, epoch)).toBe(true); });
+  expect(scope.isTaskReadCurrent(recoveredFence)).toBe(true);
+  expect(scope.isCachedTaskReadable(capturedTicket!, taskId)).toBe(false);
+  expect(await readCachedSessionHistory(scope, capturedTicket!, taskId, signal)).toBeNull();
+  expect(await readSessionHistoryOwnership(scope, capturedTicket!, taskId, signal)).toMatchObject({ kind: 'present' });
+  await act(async () => releaseOwnership());
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
+  if (outcome === 'newer-owner') {
+    const lease = await beginSessionHistoryRefresh(peer, ticket, taskId, signal);
+    if (lease === null || lease.kind !== 'lease') throw new Error('Expected a session refresh lease.');
+    expect(await saveSessionHistory(peer, ticket, taskId, { items: [second], nextCursor: null }, lease.token, signal)).toBe(true);
+  }
+  if (outcome === 'target-hint') {
+    await act(async () => { expect(scope.reportTaskDeleted(recoveredFence, epoch)).toBe(true); });
+    expect(scope.isTaskReadCurrent(recoveredFence)).toBe(false);
+    await act(async () => rejectDenied(new ApiError('server', 403)));
+    expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toMatchObject({ items: [item] });
+    expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.anything() }));
+    expect(api.history.mock.calls[2]![1].aborted).toBe(true);
+    return;
+  }
+  await act(async () => rejectDenied(new ApiError('server', 403)));
+  expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission');
+  if (outcome === 'newer-owner') {
     expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toMatchObject({ items: [second] });
     expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.anything() }));
   } else {
