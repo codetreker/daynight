@@ -5,7 +5,7 @@ Status: implemented
 ## Problem
 
 Scan, lookup, metadata inspection, and cleanup tests often start with an
-existing Git registration and manifest. Preparing that state through Worker
+existing Git registration. Preparing that state through Worker
 creation clones a private bare origin, configures its transport, fetches the
 starting commit, and creates a task branch. These setup operations are outside
 the behavior exercised by the existing-state cases. The full file took 102
@@ -18,7 +18,7 @@ The partial scans and selected existing-state cases copy an independent
 files-backend repository from the [immutable seed](../../archived/testing/2026-11-04-worker-git-fixture-seeds.md).
 Cases that need a registration prepare the repository through the Worker
 manager, create the checkout with native `git worktree add` on the seed
-commit, and publish its manifest through the real store. Expected bindings are
+commit. Expected bindings are
 assembled independently of the production scan. Cases that only need the
 primary checkout use the repository copy directly.
 
@@ -36,7 +36,7 @@ its specific fault.
 
 ## Consequences
 
-Each case owns its checkout, manifests, manager, operations, and removal of
+Each case owns its checkout, registrations, manager, operations, and removal of
 the private repository. Metadata faults and interruptions still exercise the
 real lookup, inspection, and removal paths. Separate cases prove creation
 from a fetched remote default and retain the full preparation, cancellation,
