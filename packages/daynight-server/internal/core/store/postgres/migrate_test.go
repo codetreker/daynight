@@ -106,14 +106,14 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 	assertMigrationPoolReusable(t, database.Pool)
 }
 
-func TestMigration125DropsWorkerLifecycleAndPreservesSessionOperations(t *testing.T) {
+func TestMigration126DropsWorkerLifecycleAndPreservesSessionOperations(t *testing.T) {
 	pool := emptyPool(t)
 	ctx := t.Context()
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 125 })
-	if index < 1 || schemaMigrations[index-1].version != 124 {
-		t.Fatal("expected worker lifecycle removal after migration 124")
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 126 })
+	if index < 2 || schemaMigrations[index-2].version != 124 || schemaMigrations[index-1].version != 125 {
+		t.Fatal("expected worker lifecycle removal after migrations 124 and 125")
 	}
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index-1]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,8 +134,12 @@ func TestMigration125DropsWorkerLifecycleAndPreservesSessionOperations(t *testin
 		t.Fatal(err)
 	}
 
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+
 	const preserved = `SELECT
-		(SELECT to_jsonb(m)::text FROM schema_migrations m WHERE version = 110),
+		(SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version IN (110, 125)),
 		(SELECT to_jsonb(w)::text FROM workers w WHERE user_id = $1 AND worker_id = $2),
 		(SELECT (to_jsonb(o) - 'worker_id' - 'worker_intent_version')::text
 		 FROM session_operations o WHERE session_id = $3 AND operation_id = $4)`
@@ -165,15 +169,15 @@ func TestMigration125DropsWorkerLifecycleAndPreservesSessionOperations(t *testin
 		t.Fatal(err)
 	}
 	if newMigration != oldMigration || newWorker != oldWorker || newOperation != oldOperation {
-		t.Fatalf("upgrade changed retained rows: migration 110=%t, worker=%t, session operation=%t",
+		t.Fatalf("upgrade changed retained rows: migrations 110 and 125=%t, worker=%t, session operation=%t",
 			newMigration != oldMigration, newWorker != oldWorker, newOperation != oldOperation)
 	}
 	var checksum string
-	if err := pool.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version = 125").Scan(&checksum); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version = 126").Scan(&checksum); err != nil {
 		t.Fatal(err)
 	}
 	if checksum != schemaMigrations[index].checksum() {
-		t.Fatalf("migration 125 checksum: got %s, want %s", checksum, schemaMigrations[index].checksum())
+		t.Fatalf("migration 126 checksum: got %s, want %s", checksum, schemaMigrations[index].checksum())
 	}
 }
 

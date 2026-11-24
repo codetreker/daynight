@@ -7,12 +7,12 @@ import (
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 )
 
-func TestMigration125RejectsOnlyInvalidatedUnsentSessionOperations(t *testing.T) {
+func TestMigration126RejectsOnlyInvalidatedUnsentSessionOperations(t *testing.T) {
 	pool := emptyPool(t)
 	ctx := t.Context()
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 125 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 126 })
 	if index < 1 {
-		t.Fatal("migration 125 missing")
+		t.Fatal("migration 126 missing")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
@@ -30,8 +30,8 @@ func TestMigration125RejectsOnlyInvalidatedUnsentSessionOperations(t *testing.T)
 	exec(`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,'bot-owner',now(),now())`, owner)
 	exec(`INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
 		VALUES($1,$2,now(),now(),'{}','{}'),($1,$3,now(),now(),'{}','{}'),($1,$4,now(),now(),'{}','{}')`, owner, open, closed, legacy)
-	exec(`INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at)
-		VALUES($1,$2,1,3,'enabled','open',1,now()),($1,$3,1,3,'disabled','closed',1,now())`, owner, open, closed)
+	exec(`INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,updated_at)
+		VALUES($1,$2,1,3,'enabled','open',now()),($1,$3,1,3,'disabled','closed',now())`, owner, open, closed)
 	for i, binding := range []struct{ session, worker string }{{taskSession, open}, {closedSession, closed}, {legacySession, legacy}} {
 		exec(`INSERT INTO task_sessions(id,scope,owner_user_id,project_id,task_id,claim_id,registration_id,registration,snapshot)
 			VALUES($1,'task',$2,$3,$4,$5,gen_random_uuid(),'{}',jsonb_build_object('identity', jsonb_build_object('workerId',$6::text)))`,

@@ -15,7 +15,7 @@ or eligibility to recover the original execution.
 A private Worker SQLite database owns local admission, the durable veto, epochs,
 resource reservations, original lifecycle operations and observation outbox.
 Reservations and local closure serialize in that database. The
-[management root and execution scopes](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)
+[management root and execution scopes](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)
 retain their original ownership: management survives closure, while every new
 scope receives fresh objects and cancellation. Controller tickets and journals
 freeze the same lifecycle binding; final Provider boundaries read the original
@@ -117,7 +117,7 @@ failed preparation retains that Task's cleanup responsibility while independent
 stopping continues and cannot establish activation readiness. Matching
 Controller lifecycle checks follow the Task stop attempt and skip unresolved Task
 records.
-The [retired Web claim decision](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/bug-fix/2026-11-23-worker-retired-web-cleanup.md)
+The [retired Web claim decision](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/bug-fix/2026-11-23-worker-retired-web-cleanup.md)
 owns terminal removal after confirmed ownership loss; normal lifecycle stopping
 continues to preserve current or unknown execution.
 
@@ -151,7 +151,9 @@ which establishes the server-side Worker prerequisite without native probes. A
 registration refused because the Worker record was absent remains in the ledger;
 a new registration decision requires confirming that prerequisite again. Other
 refusals do not permit this retry. Unknown registrations retain their original
-request identity and must be resolved before another decision.
+request identity and must be resolved before another decision. The
+[registration decision](../simplification/2026-11-24-remove-worker-instance-epoch.md)
+allows a fresh local store to register and use existing server reconnect eligibility.
 Normal reconnect and initial bootstrap cannot clear a local veto. Their activation
 eligibility checks current persisted veto, desired state and intent version after
 registration and reconciliation awaits; an earlier initialization snapshot cannot
@@ -162,11 +164,11 @@ Per-execution recovery observations come from the original Task and Bot owners
 and are saved in the observation outbox. They retain independent blockers and
 unknown results; opening the Worker gate alone cannot establish eligibility.
 
-The [Worker design](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/docs/design/daynight-worker.md#持久停用与恢复)
+The [Worker design](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/docs/design/daynight-worker.md#持久停用与恢复)
 owns the local state and command contracts. The
-[service authority decision](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-20-worker-lifecycle-authority.md) owns cloud
+[service authority decision](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/architecture/2026-11-20-worker-lifecycle-authority.md) owns cloud
 ordering and resolution. The retirement of
-[released-Task resume](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/simplification/2026-11-12-retire-worker-resume.md)
+[released-Task resume](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/simplification/2026-11-12-retire-worker-resume.md)
 continues to prohibit a separate claim-eligibility exception.
 
 ## Alternatives

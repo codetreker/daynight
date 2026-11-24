@@ -14,8 +14,9 @@ never committed.
 ## Decision
 
 Worker lifecycle has an independent persistent resource and operation ledger,
-with separate intent versions, management-instance epochs and received observation
-sequences. Lifecycle and business admission serialize on the existing Worker row.
+with separate intent versions, management-instance UUIDs and received observation
+sequences. The [registration decision](../simplification/2026-11-24-remove-worker-instance-epoch.md)
+replaces the original requirement to supply the previous instance epoch. Lifecycle and business admission serialize on the existing Worker row.
 The lifecycle transaction never locks Tasks, Bots or Sessions in reverse order.
 Credentials retain their original transaction-bound authorization before Worker
 admission, including the existing scoped-service policy when enabled. Same-host,
@@ -31,8 +32,8 @@ resolution, so resolving activation cannot erase the accepted intent. Fresh,
 complete stopped and saved observations are required for explicit resume and
 activation; initial bootstrap and normal reconnect have separate eligibility.
 
-The [design](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/docs/design/worker-lifecycle.md) owns storage, lock order,
-protocol integration and validation. The [Worker scope admission decision](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-20-worker-scope-admission.md)
+The [design](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/docs/design/worker-lifecycle.md) owns storage, lock order,
+protocol integration and validation. The [Worker scope admission decision](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/architecture/2026-11-20-worker-scope-admission.md)
 retains credential-policy rationale.
 
 ## Alternatives
@@ -63,6 +64,6 @@ write contract. The schema enforces the selected lifecycle enums, positive
 versions, hash lengths and disabled/closed relationship as persisted invariants.
 
 Server admission is not native process proof. Full Worker capability still
-requires the [local lifecycle integration](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md),
+requires the [local lifecycle integration](https://github.com/codetreker/daynight/blob/0ccd9a15ef1d8d602d30d8923b134cb78073e0b7/.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md),
 complete resource ownership and safe final Provider dispatch. Server activation does not establish that the local gate was
 opened, and platform acceptance remains separate from server protocol tests.

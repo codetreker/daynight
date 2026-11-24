@@ -3180,6 +3180,14 @@ Each command acquires the same instance lock; an occupied lock returns an
 instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue.
 
+The Worker can read existing `lifecycle.sqlite` v1 and v2 inventories for
+unresolved claims and original Controller stop evidence. The file is accessed
+read-only. Existing v2 Controller tickets retain their complete contents and
+journal hash, with or without an instance epoch. New Worker launches write v1
+tickets. A Controller that still advertises the retired Worker protocol must
+stop with its original native process boundary confirmed before same-Session
+recovery.
+
 ### Legacy Bot storage migration
 
 After the original Worker and assistant execution have stopped, migrate one

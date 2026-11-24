@@ -36,7 +36,7 @@ export const GoalAcceptanceHost = ({ projectId, snapshot, detailSnapshot, trigge
     const sourceProjectId = detailSnapshot?.summaries.get(id)?.type === 'goal' ? projectId : external.get(id)?.projectId;
     if (detailSnapshot !== null && sourceProjectId !== undefined && !relations.snapshot.deniedIds.has(id)) navigation.requestAction(() => setDetail({ id, projectId: sourceProjectId, trigger: control, historyGeneration: scope.getHistoryGeneration(sourceProjectId) }));
   };
-  return <GoalAcceptanceDialog projectId={projectId} summaries={snapshot.summaries} relationSnapshot={relations.snapshot} onRetryRelations={relations.retry} onOpenGoal={openDetail} onClose={requestClose} graphError={graphError} onRefreshGraph={onRefreshGraph}
+  return <GoalAcceptanceDialog projectId={projectId} summaries={snapshot.summaries} relationSnapshot={relations.snapshot} onRetryRelations={relations.retry} onInspectRelations={relations.inspect} onExpandRelations={relations.expand} onOpenGoal={openDetail} onClose={requestClose} graphError={graphError} onRefreshGraph={onRefreshGraph}
     onRestoreFocus={() => { (trigger.isConnected ? trigger : document.getElementById('project-task-tab-goals'))?.focus({ preventScroll: true }); }}
     renderNested={owner => selected === null ? null : <OverlayOwnerContext value={owner}>
       <ProjectDraftHost projectId={selected.projectId} taskId={selected.id} source={selected.projectId === projectId ? 'summary' : 'direct'} summaryType="goal" insideProjectGraph={false} graphWitness={null}>

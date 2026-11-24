@@ -16,6 +16,35 @@ const external = (n: number, status: RelatedGoal['status'] = 'todo'): RelatedGoa
 const source = (n: number, prerequisites: RelatedGoal[] = [], successors: RelatedGoal[] = []): GoalRelationContribution => ({ sourceId: id(n), sourceProjectId: project, prerequisites: prerequisites.map(target => ({ target })), successors });
 
 describe('Goal graph external projection', () => {
+  it('preserves two-hop relationships within a foreign Project even when the source API calls them internal', () => {
+    const baseline = projectGoalAcceptance(new Map([[id(1), goal(1)]]));
+    const branch = { ...source(10, [{ ...external(11), kind: 'internal' }]), sourceProjectId: other };
+    const result = combineGoalRelations(project, baseline, [source(1, [external(10)]), branch], new Set());
+    expect(result.goals.get(id(11))?.project).toEqual({ id: other, name: 'Other Project' });
+    expect(result.edges).toContainEqual({ source: id(11), target: id(10), external: true });
+  });
+
+  it('uses committed local metadata and local edges when expansion returns to the graph Project', () => {
+    const second = { ...goal(2), status: 'done' as const, titlePreview: 'Committed title', dependsOn: [id(3)] };
+    const third = { ...goal(3), status: 'done' as const };
+    const baseline = projectGoalAcceptance(new Map([[id(1), goal(1)], [id(2), second], [id(3), third]]));
+    const local = (n: number): RelatedGoal => ({ ...external(n), projectId: project, projectName: 'Graph Project', title: 'Stale API title' });
+    const branch = { ...source(10, [local(2), local(3)]), sourceProjectId: other };
+    const result = combineGoalRelations(project, baseline, [source(1, [external(10)]), branch], new Set());
+    expect(result.goals.get(id(2))).toEqual(baseline.availableGoals.get(id(2)));
+    expect(result.externalIds.has(id(2))).toBe(false);
+    expect(result.edges).toContainEqual({ source: id(3), target: id(2), external: false });
+    expect(result.edges).toContainEqual({ source: id(2), target: id(10), external: true });
+  });
+
+  it('rejects a cycle including synchronized edges between newly exposed local context Goals', () => {
+    const second = { ...goal(2), status: 'done' as const, dependsOn: [id(3)] };
+    const third = { ...goal(3), status: 'done' as const };
+    const baseline = projectGoalAcceptance(new Map<string, TaskSummary>([[id(1), { ...goal(1), dependsOn: [id(3)] }], [id(2), second], [id(3), third]]));
+    const local = (n: number): RelatedGoal => ({ ...external(n), projectId: project, projectName: 'Graph Project' });
+    const branch = { ...source(10, [local(2)], [local(3)]), sourceProjectId: other };
+    expect(contributionConflicts(project, baseline, [source(1, [external(10)]), branch], new Set())).toBe(true);
+  });
   it('uses real Project labels and never adds progress or fabricated summary fields to external cards', () => {
     const baseline = projectGoalAcceptance(new Map([[id(1), goal(1)]]));
     const result = combineGoalRelations(project, baseline, [source(1, [external(10, 'done')], [external(20)])], new Set());

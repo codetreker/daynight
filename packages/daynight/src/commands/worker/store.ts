@@ -252,7 +252,11 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
         || claim.agent !== reservation.nativeConfiguration.agent || claim.agentControlMode !== reservation.agentControlMode) throw new Error("The granted claim differs from its original tool reservation.");
       if (getTask(reservation) !== null) throw new Error("A pre-grant reservation cannot replace an already registered claim.");
       const local = registerPending({ ...claimKey(reservation), agent: reservation.nativeConfiguration.agent, agentControlMode: reservation.agentControlMode, nativeConfiguration: reservation.nativeConfiguration });
-      deleteClaimToolReservation(reservation);
+      // The confirmed Task version rules out every older attempt, including
+      // any for which this process lost the response before the grant.
+      db.prepare(`DELETE FROM claim_tool_reservations
+        WHERE project_id = ? AND task_id = ? AND agent_control_mode = 'web' AND CAST(task_version AS INTEGER) < ?`)
+        .run(reservation.projectId, reservation.taskId, task.version);
       return local;
     }),
     // The caller must prove a definite rejection, a later authoritative task

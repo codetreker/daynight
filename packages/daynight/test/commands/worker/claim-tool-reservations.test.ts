@@ -79,6 +79,16 @@ describe("claim tool reservations", () => {
     expect(open(db).getNativeConfiguration(reservation)).toEqual(reservation.nativeConfiguration);
   });
 
+  it("retires every older attempt when the new grant is saved", () => {
+    const { store, reservation, granted } = fixture();
+    const olderAttempt = { ...reservation, claimId: uuid(95), worktreeId: uuid(96) };
+    store.reserveClaimTools(olderAttempt);
+    store.reserveClaimTools(reservation);
+    expect(store.acceptClaimToolReservation(granted(), reservation.workerId)?.claimId).toBe(reservation.claimId);
+    expect(store.getNativeConfiguration(reservation)).toEqual(reservation.nativeConfiguration);
+    expect(store.listClaimToolReservations()).toEqual([]);
+  });
+
   it.each(["worktreeId", "workerId", "agent", "agentControlMode", "state"] as const)("retains the original reservation when a grant changes %s", field => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
     const value = field === "agent" ? "copilot" : field === "agentControlMode" ? "herdr" : field === "state" ? "released" : uuid(99);

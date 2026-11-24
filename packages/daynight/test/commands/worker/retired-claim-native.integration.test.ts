@@ -47,13 +47,13 @@ const fixture = async () => {
       resumeNativeSessionId: null, credentialFile: path.join(controllerExecutionDirectory(home, executionId, root), "credential.json"),
       ipcEndpoint: resolveControllerIpcEndpoint(home, launchId, process.platform, root), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString(), ...overrides } as ControllerLaunchTicket;
   };
-  const lifecycle = () => {
+  const lifecycle = (version: 1 | 2 = 1) => {
     const db = new Database(lifecycleFile); stores.push(db);
     db.pragma("journal_mode = WAL"); db.pragma("wal_autocheckpoint = 0");
     db.exec(`
-      PRAGMA user_version=1;
+      PRAGMA user_version=${version};
       CREATE TABLE lifecycle_state(singleton INTEGER, server_origin TEXT, user_id TEXT, worker_id TEXT, format_version INTEGER);
-      CREATE TABLE resource_owners(resource_id TEXT PRIMARY KEY, owner_kind TEXT, identity_json TEXT, instance_id TEXT, instance_epoch INTEGER,
+      CREATE TABLE resource_owners(resource_id TEXT PRIMARY KEY, owner_kind TEXT, identity_json TEXT, instance_id TEXT, ${version === 1 ? "instance_epoch INTEGER," : ""}
         scope_generation INTEGER, admission_operation_id TEXT, stage TEXT, process_proof_json TEXT, stop_proof_json TEXT, save_state TEXT, last_error TEXT);
       CREATE TABLE resource_history(resource_id TEXT PRIMARY KEY, content_hash TEXT, payload BLOB);
     `);
@@ -61,14 +61,14 @@ const fixture = async () => {
     const binding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
     const register = (input: Pick<LegacyWorkerResource, "resourceId" | "ownerKind" | "identity" | "operationId" | "stage">
       & { processProof?: unknown; stopProof?: unknown }, history = false) => {
-      const row = { ...input, instanceId: binding.instanceId, instanceEpoch: binding.instanceEpoch, scopeGeneration: binding.scopeGeneration,
+      const row = { ...input, instanceId: binding.instanceId, ...(version === 1 ? { instanceEpoch: binding.instanceEpoch } : {}), scopeGeneration: binding.scopeGeneration,
         processProof: input.processProof ?? null, stopProof: input.stopProof ?? null, saveState: input.stage === "reserved" ? "pending" : "durable", error: null };
       if (history) {
         const source = encode(row);
         db.prepare("INSERT INTO resource_history VALUES(?, ?, ?)").run(row.resourceId, createHash("sha256").update(source).digest("hex"), deflateRawSync(source));
       } else {
-        db.prepare("INSERT INTO resource_owners VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.resourceId, row.ownerKind, encode(row.identity),
-          row.instanceId, row.instanceEpoch, row.scopeGeneration, row.operationId, row.stage, row.processProof === null ? null : encode(row.processProof),
+        db.prepare(`INSERT INTO resource_owners VALUES(?, ?, ?, ?, ${version === 1 ? "?," : ""} ?, ?, ?, ?, ?, ?, ?)`).run(row.resourceId, row.ownerKind, encode(row.identity),
+          row.instanceId, ...(version === 1 ? [row.instanceEpoch!] : []), row.scopeGeneration, row.operationId, row.stage, row.processProof === null ? null : encode(row.processProof),
           row.stopProof === null ? null : encode(row.stopProof), row.saveState, row.error);
       }
     };
@@ -245,8 +245,8 @@ it("does not search a private Controller root without its original lifecycle bin
   expect((await located(f.adapter(), f.target)).controllers).toEqual([]);
 });
 
-it("uses the legacy WAL to locate a private Controller and leaves compressed and current evidence intact", async () => {
-  const f = await fixture(), { store, binding } = f.lifecycle(), privateRoot = path.join(f.home, "original-controller");
+it.each([1, 2] as const)("uses legacy v%s WAL to locate a private Controller and leaves compressed and current evidence intact", async version => {
+  const f = await fixture(), { store, binding } = f.lifecycle(version), privateRoot = path.join(f.home, "original-controller");
   const ticket = f.ticket({ schemaVersion: 2, lifecycleBinding: binding }, privateRoot);
   await writeLaunchTicket(f.home, ticket, privateRoot);
   const journalFile = path.join(controllerExecutionDirectory(f.home, ticket.executionId, privateRoot), "journal.sqlite");
@@ -318,18 +318,24 @@ it("keeps independent live Provider responsibility despite a durable original bo
   expect(inspect).not.toHaveBeenCalled();
 });
 
-it("reuses the original unreleased-gate receipt without a journal or retained Windows Job", async () => {
-  const f = await fixture(), { store, binding } = f.lifecycle(), ticket = f.ticket({ schemaVersion: 2, lifecycleBinding: binding });
+it.each([[1, true], [2, true], [2, false]] as const)(
+  "reuses the original unreleased-gate receipt (database v%s, ticket epoch=%s)", async (version, ticketHasEpoch) => {
+  const f = await fixture(), { store, binding } = f.lifecycle(version);
+  const { instanceEpoch: _instanceEpoch, ...uuidBinding } = binding;
+  const ticket = f.ticket({ schemaVersion: 2, lifecycleBinding: ticketHasEpoch ? binding : uuidBinding });
+  const receiptBinding = version === 1 ? binding : uuidBinding;
   await writeLaunchTicket(f.home, ticket);
   const proof = { pid: 987653, parentPid: 1, processGroupId: null, startedAt: "original-gated-controller", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` };
   store.register({ resourceId: ticket.launchId, ownerKind: "controller", operationId: ticket.launchId, stage: "stopped", processProof: proof,
-    stopProof: { kind: "controller_unreleased_gate", binding, launchId: ticket.launchId, controllerInstanceId: ticket.controllerInstanceId, pid: proof.pid, originalProcessProof: proof, gateReleased: false, boundaryEmpty: true },
+    stopProof: { kind: "controller_unreleased_gate", binding: receiptBinding, launchId: ticket.launchId, controllerInstanceId: ticket.controllerInstanceId, pid: proof.pid, originalProcessProof: proof, gateReleased: false, boundaryEmpty: true },
     identity: { ...f.target, kind: "launch", executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
       controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, launchId: ticket.launchId,
       storageStateDirectory: resolveControllerStateDirectory(f.home), ticketHash: controllerPayloadHash(ticket), journalFile: path.join(controllerExecutionDirectory(f.home, ticket.executionId), "journal.sqlite") } });
   const original = store.getResource(ticket.launchId)!;
+  const incorrectFence = version === 1 ? { ...original, instanceEpoch: "2" } : { ...original, instanceId: randomUUID() };
+  expect(hasLegacyUnreleasedControllerGateProof(ticket, incorrectFence, proof)).toBe(false);
   expect(hasLegacyUnreleasedControllerGateProof(ticket, original, proof)).toBe(true);
-  for (const changed of [{ gateReleased: true }, { launchId: randomUUID() }, { binding: { ...binding, scopeGeneration: "2" } }, { originalProcessProof: { ...proof, pid: proof.pid + 1 } }])
+  for (const changed of [{ gateReleased: true }, { launchId: randomUUID() }, { binding: { ...receiptBinding, scopeGeneration: "2" } }, { binding: { ...receiptBinding, instanceId: randomUUID() } }, { originalProcessProof: { ...proof, pid: proof.pid + 1 } }])
     expect(hasLegacyUnreleasedControllerGateProof(ticket, { ...original, stopProof: { ...(original.stopProof as object), ...changed } }, proof)).toBe(false);
   const inspect = vi.spyOn(processProofs, "inspectBootstrapProcessProof").mockResolvedValue("stopped");
   const leases = createControllerJobLeases("win32"), retain = vi.spyOn(leases, "retain");
@@ -354,5 +360,5 @@ it("reuses the original unreleased-gate receipt without a journal or retained Wi
   vi.spyOn(processProofs, "confirmControllerProcessesStopped").mockResolvedValue(true);
   const resumed = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, jobLeases: mockedJournalLeases() });
   expect(await resumed.stop(await located(resumed, f.target), request())).toMatchObject({ resourcesCleared: true });
-  expect(stop).toHaveBeenCalledExactlyOnceWith(newProcess, [], expect.any(Number), undefined);
+  expect(stop).toHaveBeenCalledExactlyOnceWith(newProcess, [], expect.any(Number), process.platform === "win32" ? expect.anything() : undefined);
 });

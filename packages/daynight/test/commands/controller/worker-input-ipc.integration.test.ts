@@ -39,7 +39,7 @@ import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPa
 import { openControllerLifecycleStore, recordStoppedControllerGeneration, readRecoverableInitialInput } from "../../../src/commands/controller/lifecycle-store.js";
 const roots: string[] = [];
 afterEach(async () => { native.openGate = null; native.captureGate = null; vi.unstubAllEnvs(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<void>; recovery?: "absent" | "accepted" | "dispatching"; interruptedRecovery?: boolean; preparedV2?: boolean } = {}) => {
+const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<void>; recovery?: "absent" | "accepted" | "dispatching"; interruptedRecovery?: boolean; preparedV2?: "epoch" | "uuid" } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "worker-ipc-")); roots.push(home);
   const state = path.join(home, ".daynight"); vi.stubEnv("DN_CONFIG_DIR", state); await mkdir(state, { recursive: true });
@@ -61,7 +61,7 @@ const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<
   let ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: `http://127.0.0.1:${address.port}`, projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "claude", cwd: process.cwd(), nativeHome: path.join(home, "native"), configuration: { agent: "claude", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "initial assignment", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: process.platform === "win32" ? String.raw`\\.\pipe\daynight-worker-ipc-${randomUUID()}` : path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   if (options.preparedV2) {
     ticket = { ...ticket, schemaVersion: 2, lifecycleBinding: {
-      instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1",
+      instanceId: randomUUID(), ...(options.preparedV2 === "epoch" ? { instanceEpoch: "1" } : {}), intentVersion: "1", localEpoch: "1", scopeGeneration: "1",
       serverOrigin: ticket.serverOrigin, userId: ticket.userId!, workerId: ticket.workerId!,
     } };
     const file = controllerTicketPath(home, ticket.launchId);
@@ -108,8 +108,8 @@ const setup = async (options: { openGate?: Promise<void>; captureGate?: Promise<
 };
 const action = (operationId = randomUUID(), prompt = "continue"): WorkerInputAction => ({ kind: "submit_worker_input", operationId, prompt, deadline: Date.now() + 10_000 });
 
-test("launches the original prepared v2 ticket without a Worker lifecycle database", async () => {
-  const v = await setup({ preparedV2: true });
+test.each(["epoch", "uuid"] as const)("launches the original prepared v2 %s ticket without a Worker lifecycle database", async preparedV2 => {
+  const v = await setup({ preparedV2 });
   try {
     const original = await readLaunchTicket(v.home, v.ticket.launchId);
     expect(original).toEqual(v.ticket);

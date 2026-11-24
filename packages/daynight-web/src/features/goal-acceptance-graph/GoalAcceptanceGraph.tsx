@@ -16,6 +16,7 @@ import './goal-acceptance-graph.css';
 import { combineGoalRelations, relationTargets, selectLegalContributions } from './relation-projection';
 import type { GoalRelationSnapshot } from './relation-session';
 import { GoalRelationStatus } from './GoalRelationStatus';
+import { canvasGoalContributions, reachableGoalSources } from './relation-ownership';
 
 const nodeTypes = { goalAcceptance: GoalAcceptanceNode };
 const InitialFraming = ({ geometry, fullFit }: { geometry: CanvasLayout; fullFit: boolean }) => {
@@ -35,7 +36,7 @@ const InitialFraming = ({ geometry, fullFit }: { geometry: CanvasLayout; fullFit
   return null;
 };
 
-export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialSelectedId = null, fullscreen, relationSnapshot, onRetryRelations }: {
+export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialSelectedId = null, fullscreen, relationSnapshot, onRetryRelations, onInspectRelations, onExpandRelations }: {
   readonly projectId: string;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly onOpenGoal: (id: string, trigger: HTMLElement) => void;
@@ -43,27 +44,32 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
   readonly fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
   readonly relationSnapshot?: GoalRelationSnapshot;
   readonly onRetryRelations?: (id: string) => void;
+  readonly onInspectRelations?: (id: string) => void;
+  readonly onExpandRelations?: (id: string) => void;
 }) => {
   const { locale, messages: { graph: graphMessages, common } } = useI18n();
   const m = goalAcceptanceMessages(locale);
   const [direction, setDirection] = useState<GraphDirection>('horizontal');
   const [selected, setSelected] = useState(initialSelectedId);
   const known = useMemo(() => projectGoalRelations(summaries), [summaries]);
+  const baseline = useMemo(() => projectGoalAcceptance(summaries, initialSelectedId), [summaries, initialSelectedId]);
+  const reachableSnapshot = useMemo(() => relationSnapshot === undefined ? undefined : { ...relationSnapshot,
+    sources: reachableGoalSources(projectId, baseline, relationSnapshot) }, [projectId, baseline, relationSnapshot]);
   const projection = useMemo(() => {
-    const baseline = projectGoalAcceptance(summaries, initialSelectedId);
-    return relationSnapshot === undefined ? baseline : combineGoalRelations(projectId, baseline,
-      [...relationSnapshot.sources.values()].flatMap(source => source.contribution === null ? [] : [source.contribution]), relationSnapshot.deniedIds);
-  }, [projectId, summaries, initialSelectedId, relationSnapshot]);
+    return reachableSnapshot === undefined ? baseline : combineGoalRelations(projectId, baseline,
+      canvasGoalContributions(baseline, reachableSnapshot.sources.values()), reachableSnapshot.deniedIds);
+  }, [projectId, baseline, reachableSnapshot]);
   const readingSnapshot = useMemo(() => {
-    if (relationSnapshot === undefined) return undefined;
-    const legal = selectLegalContributions(projectId, projectGoalAcceptance(summaries, initialSelectedId),
-      [...relationSnapshot.sources.values()].flatMap(source => source.contribution === null ? [] : [source.contribution]), relationSnapshot.deniedIds);
-    return legal.conflictingIds.size === 0 ? relationSnapshot : { ...relationSnapshot, sources: new Map([...relationSnapshot.sources].map(([id, source]) =>
+    if (reachableSnapshot === undefined) return undefined;
+    const legal = selectLegalContributions(projectId, baseline,
+      [...reachableSnapshot.sources.values()].flatMap(source => source.contribution === null ? [] : [source.contribution]), reachableSnapshot.deniedIds);
+    return legal.conflictingIds.size === 0 ? reachableSnapshot : { ...reachableSnapshot, sources: new Map([...reachableSnapshot.sources].map(([id, source]) =>
       [id, legal.conflictingIds.has(id) ? { ...source, phase: 'conflict' as const, contribution: null } : source])) };
-  }, [projectId, summaries, initialSelectedId, relationSnapshot]);
+  }, [projectId, baseline, reachableSnapshot]);
   const selectedId = selected !== null && projection.goals.has(selected) ? selected : null;
   if (selected !== selectedId) setSelected(selectedId);
   const inspect = useCallback((id: string) => setSelected(current => current === id ? null : id), []);
+  useLayoutEffect(() => { if (selectedId !== null) onInspectRelations?.(selectedId); }, [selectedId, onInspectRelations]);
   const clear = useCallback(() => setSelected(null), []);
   const inspection = useMemo<TaskInspection>(() => ({ selectedTaskId: selectedId,
     highlightedIds: traceGoalRelations(projection.prerequisites, selectedId), successorIds: traceGoalRelations(projection.successors, selectedId),
@@ -89,11 +95,13 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
   const { containerRef, onFocusCapture } = useGraphFocusRecovery(geometry, fallback);
   const nodes = useMemo<GoalAcceptanceFlowNode[]>(() => geometry.nodes.map(node => ({ id: node.id, type: 'goalAcceptance',
     position: node.position, width: node.width, height: node.height, style: { width: node.width, height: node.height },
-    data: { goal: projection.goals.get(node.id)!, progress: projection.progress.get(node.id), onInspect: inspect, onOpen: onOpenGoal },
-  })), [geometry, projection.goals, projection.progress, inspect, onOpenGoal]);
+    data: { goal: projection.goals.get(node.id)!, progress: projection.progress.get(node.id), onInspect: inspect, onOpen: onOpenGoal,
+      ...(onExpandRelations === undefined ? {} : { onExpand: onExpandRelations }), expanded: relationSnapshot?.sources.get(node.id)?.mode === 'expanded' },
+  })), [geometry, projection.goals, projection.progress, inspect, onOpenGoal, onExpandRelations, relationSnapshot]);
   const [fitRevision, setFitRevision] = useState(0);
   const inspectionHeading = useRef<HTMLHeadingElement>(null);
   const followRelation = (id: string) => {
+    onInspectRelations?.(id);
     setSelected(id);
     inspectionHeading.current?.focus({ preventScroll: true });
   };

@@ -16,7 +16,7 @@ export class LaunchTicketLimitError extends Error {
   constructor(readonly actualBytes: number, readonly maxBytes: number, message: string) { super(message); }
 }
 
-type HistoricalBinding = { readonly instanceId: string; readonly instanceEpoch: string; readonly intentVersion: string; readonly localEpoch: string; readonly scopeGeneration: string; readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
+type HistoricalBinding = { readonly instanceId: string; readonly instanceEpoch?: string; readonly intentVersion: string; readonly localEpoch: string; readonly scopeGeneration: string; readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
 
 type LaunchCommon = {
   readonly schemaVersion: 1 | 2;
@@ -51,9 +51,11 @@ export const controllerPayloadHash = (value: unknown): string => createHash("sha
 const parseHistoricalBinding = (value: unknown): HistoricalBinding => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Controller lifecycle binding is missing.");
   const data = value as Record<string, unknown>;
-  if (Object.keys(data).sort().join() !== "instanceEpoch,instanceId,intentVersion,localEpoch,scopeGeneration,serverOrigin,userId,workerId") throw new Error("Controller lifecycle binding has invalid fields.");
+  const hasEpoch = Object.hasOwn(data, "instanceEpoch");
+  const fields = ["instanceId", "intentVersion", "localEpoch", "scopeGeneration", "serverOrigin", "userId", "workerId"];
+  if (Object.keys(data).sort().join() !== [...(hasEpoch ? ["instanceEpoch"] : []), ...fields].join()) throw new Error("Controller lifecycle binding has invalid fields.");
   for (const key of ["instanceId", "userId", "workerId"]) uuid(data[key]);
-  for (const key of ["instanceEpoch", "intentVersion", "localEpoch", "scopeGeneration"]) {
+  for (const key of [...(hasEpoch ? ["instanceEpoch"] : []), "intentVersion", "localEpoch", "scopeGeneration"]) {
     const number = data[key];
     if (typeof number !== "string" || !/^[1-9][0-9]{0,18}$/.test(number) || BigInt(number) > 9_223_372_036_854_775_807n) throw new Error("Controller lifecycle binding has an invalid version.");
   }

@@ -32,12 +32,13 @@ or run your own service. The interface supports English and Simplified Chinese.
   prerequisites, card navigation to their tasks or Goals, task details and
   fullscreen reading.
 - **Inspect Goal acceptance dependencies.** Open the project Goals toolbar's
-  graph to inspect synchronized local prerequisites, direct readable
-  cross-project relationships, terminal prerequisite context and isolated active
-  Goals. Local inspection follows the synchronized Goal relations and states.
-  External cards show their actual Project; first reads show partial context,
-  while complete refreshed traversals replace retained authorized results.
-  Unavailable prerequisites and retries remain explicit; confirmed target withdrawal
+  graph to inspect synchronized local prerequisites, readable cross-project
+  relationships, terminal prerequisite context and isolated active Goals. Expand
+  external Goals to follow further branches; inspection reads alone keep the
+  canvas scope. Local inspection follows synchronized Goal relations and states.
+  First reads show partial context; complete refreshed traversals replace retained
+  authorized results. External cards show their actual Project, while partial reads,
+  unavailable prerequisites and retries remain explicit; confirmed target withdrawal
   removes its earlier visible context immediately. The server retains the
   complete acceptance check; ordinary Task graphs keep their execution scope.
 - **Keep the working material with the task.** Upload designs, screenshots and

@@ -35,9 +35,10 @@ decisions.
 
 ## Alternatives
 
-**Replace management epochs with instance UUIDs.** This removes the need to
-supply a predecessor epoch after local state loss. The server would still
-require an instance registration and activation before normal scheduling.
+**Replace management epochs with instance UUIDs.** The
+[instance identity change](../../archived/simplification/2026-11-24-remove-worker-instance-epoch.md)
+removed the predecessor epoch requirement before this rollback. The server
+still required instance registration and activation before ordinary scheduling.
 
 **Keep the service and host stop handshake.** This lets Web request shutdown and
 report stop/save progress under a single operation. It makes normal scheduling

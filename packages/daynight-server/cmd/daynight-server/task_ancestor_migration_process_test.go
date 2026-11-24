@@ -78,7 +78,7 @@ func TestTaskAncestorMigrationCommittedStartupFailureAndRecovery(t *testing.T) {
 	var committed bool
 	if err := fresh.QueryRow(ctx, `SELECT
  (SELECT checksum=$1 FROM schema_migrations WHERE version=123)
- AND EXISTS (SELECT FROM schema_migrations WHERE version=125)
+ AND (SELECT max(version)=126 FROM schema_migrations)
  AND (SELECT ancestor_deleted_at='2026-01-03'::timestamptz AND deleted_at IS NULL AND parent_id=$3 AND version=9007199254740993 AND updated_at='2026-01-02'::timestamptz FROM tasks WHERE id=$2)
  AND (SELECT effective_deleted_at='2026-01-03'::timestamptz FROM task_resource_rows WHERE id=$2)
  AND (SELECT task_cache_epoch::text=$5 FROM projects WHERE id=$4)`, expectedChecksum, child, goal, project, epoch).Scan(&committed); err != nil || !committed {

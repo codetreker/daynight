@@ -445,7 +445,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 47 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 48 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

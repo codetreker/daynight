@@ -1,3 +1,4 @@
+import { readLegacyLifecycleVersion } from "./backends/legacy-retired-evidence.js";
 import Database from "better-sqlite3";
 import { lstat, opendir } from "node:fs/promises";
 import path from "node:path";
@@ -27,7 +28,7 @@ const hasOriginalRow = async (file: string, table: string, query: string, deadli
         const observed = inspectSqlite(db, format);
         if (observed.kind === "empty") return false;
         if (observed.kind === "unversioned") throw new Error("The original Worker database has an unidentified execution inventory.");
-      } else if (db.pragma("user_version", { simple: true }) !== 1) throw new Error("The original legacy Worker inventory has an unknown format.");
+      } else readLegacyLifecycleVersion(db);
       if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(table) === undefined) {
         throw new Error("The original Worker database cannot establish its execution inventory.");
       }

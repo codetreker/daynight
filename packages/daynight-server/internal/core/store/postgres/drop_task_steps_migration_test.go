@@ -53,14 +53,11 @@ INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,
 	if err != nil || !rolledBack || snapshot() != before {
 		t.Fatalf("migration did not roll back: %t %v", rolledBack, err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
-	latest := schemaMigrations[len(schemaMigrations)-1].version
 	var upgraded bool
-	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NULL
-		AND (SELECT checksum=$1 FROM schema_migrations WHERE version=124)
-		AND (SELECT max(version)=$2 FROM schema_migrations)`, schemaMigrations[index].checksum(), latest).Scan(&upgraded)
+	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NULL AND (SELECT checksum=$1 FROM schema_migrations WHERE version=124) AND (SELECT max(version)=124 FROM schema_migrations)`, schemaMigrations[index].checksum()).Scan(&upgraded)
 	if err != nil || !upgraded || snapshot() != before {
 		t.Fatalf("upgrade changed retained state or ledger: %t %v", upgraded, err)
 	}
@@ -68,7 +65,7 @@ INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledgerBefore); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledgerAfter); err != nil || ledgerBefore != ledgerAfter || snapshot() != before {

@@ -1,7 +1,8 @@
 export const goalAcceptanceMessages = (locale: string) => locale === 'zh-CN' ? {
   title: 'Goal 验收依赖图', open: '验收依赖图', canvas: 'Goal 验收依赖画布', close: '关闭验收依赖图',
   empty: '当前项目没有待办或进行中的 Goal。', inspect: '选择 Goal 查看已知关系', prerequisites: '前置 Goal', successors: '下游 Goal',
-  knownOnly: '本项目已知关系 · 全局验收待核验', none: '无本项目已知关系', satisfied: '已满足', blocking: '阻塞验收',
+  knownOnly: '已读取关系 · 全局验收待核验', none: '无已知关系', satisfied: '已满足', blocking: '阻塞验收',
+  expand: '展开', expanded: '已展开', expandLabel: (title: string) => `展开关系：${title}`,
   progress: (done: number, total: number) => `${done} / ${total} 子 Task 已完成`,
   details: '详情', fit: '查看全图', count: (goals: number, edges: number) => `${goals} 个 Goal · ${edges} 条验收依赖`,
   reading: '外部关系读取', retry: '重试', retryLabel: (title: string) => `重试关系：${title}`, hidden: (count: number) => `无法访问 ${count} 个前置 Goal`,
@@ -10,7 +11,8 @@ export const goalAcceptanceMessages = (locale: string) => locale === 'zh-CN' ? {
 } : {
   title: 'Goal acceptance dependencies', open: 'Acceptance graph', canvas: 'Goal acceptance dependency canvas', close: 'Close acceptance graph',
   empty: 'This project has no todo or in-progress Goals.', inspect: 'Select a Goal to inspect known relationships', prerequisites: 'Prerequisite Goals', successors: 'Dependent Goals',
-  knownOnly: 'Known project relationships · Global acceptance is unverified', none: 'No known relationships in this project', satisfied: 'Satisfied', blocking: 'Blocks acceptance',
+  knownOnly: 'Loaded relationships · Global acceptance is unverified', none: 'No known relationships', satisfied: 'Satisfied', blocking: 'Blocks acceptance',
+  expand: 'Expand', expanded: 'Expanded', expandLabel: (title: string) => `Expand relationships: ${title}`,
   progress: (done: number, total: number) => `${done} / ${total} child Tasks done`,
   details: 'Details', fit: 'Show all Goals', count: (goals: number, edges: number) => `${goals} Goals · ${edges} acceptance dependencies`,
   reading: 'External relationship reads', retry: 'Retry', retryLabel: (title: string) => `Retry relationships: ${title}`, hidden: (count: number) => `You cannot access ${count} prerequisite Goals`,
