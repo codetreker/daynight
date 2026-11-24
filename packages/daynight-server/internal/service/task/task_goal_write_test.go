@@ -121,7 +121,7 @@ func TestDeletedParentRefusesChildWritesBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestGoalDeleteInvalidatesEpochWithoutChildOrExecutionEffects(t *testing.T) {
+func TestGoalDeletePreservesEpochWithoutChildOrExecutionEffects(t *testing.T) {
 	f := newTaskRuleFixture(t)
 	ctx := t.Context()
 	current := f.target
@@ -129,7 +129,7 @@ func TestGoalDeleteInvalidatesEpochWithoutChildOrExecutionEffects(t *testing.T) 
 	current.Ready = false
 	f.current(ctx, current)
 	f.write(ctx, store.Completion{Outcome: store.TransactionCommitted})
-	deleted, invalidated := false, false
+	deleted := false
 	f.writer.DeleteTaskFn = func(_ context.Context, id string, remove bool) (model.TaskTombstone, error) {
 		if id != current.ID || remove {
 			t.Fatal("wrong Goal deletion")
@@ -138,14 +138,11 @@ func TestGoalDeleteInvalidatesEpochWithoutChildOrExecutionEffects(t *testing.T) 
 		return model.TaskTombstone{ID: id, ProjectID: current.ProjectID, Version: current.Version + 1, DeletedAt: current.UpdatedAt}, nil
 	}
 	f.projectWriter.InvalidateTaskCacheFn = func(context.Context) error {
-		if !deleted {
-			t.Fatal("epoch invalidated before deletion")
-		}
-		invalidated = true
+		t.Fatal("ordinary Goal deletion rotated the project epoch")
 		return nil
 	}
 	err := f.tasks.Delete(ctx, f.principal, f.project.ID, current.ID, taskcore.DeleteTask{Version: current.Version})
-	if err != nil || !deleted || !invalidated {
+	if err != nil || !deleted {
 		t.Fatalf("delete: %v", err)
 	}
 }

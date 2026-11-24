@@ -57,9 +57,9 @@ while retaining its cancellation intent and real-history retirement rules.
 The [atomic sync decision](2026-11-24-task-sync-atomic-deletions.md) owns durable
 commit ordering. The [sync design](../../../../docs/design/daynight-task-sync.md)
 and [deletion design](../../../../docs/design/daynight-task-deletion.md) own the
-mechanisms and reading contracts. Server deletion still rotates the project
-epoch; the Web admission mechanism handles either same-history removal facts
-or a genuinely observed replacement history.
+mechanisms and reading contracts. The [activation decision](2026-11-24-activate-task-deletion-deltas.md)
+keeps ordinary deletion in the same project history; the Web admission mechanism
+also handles genuinely observed replacement history.
 
 ## Alternatives
 

@@ -348,9 +348,9 @@ Each response includes nullable `coverageUpdatedAt`, the maximum physical task-r
 update time in the same snapshot, and a required `deletedTaskIds` array. A delta
 returns effective deletion IDs in the same inclusive window, including hidden
 descendants; an unbounded delta returns all retained deletion IDs. A snapshot
-returns an empty array. Current Web continues to use its summary watermark and
-ordinary deletion still rotates the project epoch. Query or validation failure
-fails the complete response.
+returns an empty array. The Web commits coverage and deletion IDs atomically with
+summaries and dependency state; ordinary Task and Goal deletion retain the project
+epoch. Query or validation failure fails the complete response.
 
 Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
@@ -390,8 +390,9 @@ replacement; ordinary property changes preserve the epoch. Write ingress owns
 property normalization, fields and existing capacity rules. Reads trust the
 stored canonical representation; natural decoding, encoding, database and
 transaction-completion errors retain their causes. A stored project epoch invalidates caches after supported
-history replacement and transactional task soft deletion. The Web persists
-summaries and details and replaces them atomically after an epoch change. Its schema-9 upgrade explicitly rebuilds incompatible task caches for required
+history replacement. The Web atomically applies same-history deletion IDs and
+coverage, and replaces summaries and details after a real epoch change. Schema 15
+rebuilds older task baselines and stores removal identities. The schema-9 upgrade explicitly rebuilt incompatible task caches for required
 cancelledAt while preserving separate profiles and compatible Session history.
 The historical schema-6 upgrade added profiles while retaining schema-5 task
 data, Project ownership and user fences. Upgrades from versions 1,
@@ -412,8 +413,9 @@ retained task/attachment data and active target-worker protection. Omitted or
 false `removeDepends` preserves strict reference refusal; explicit true removes
 all incoming ordinary/external references, including deleted-source history,
 updates each affected source version once and marks the target in one transaction.
-The target's own prerequisites remain. Target removal and one epoch rotation are
-atomic, with the task-local `410 task_deleted` response for later access.
+The target's own prerequisites remain. Target removal and dependency changes are
+atomic and preserve the project epoch, with the task-local `410 task_deleted`
+response for later access.
 
 Task Session reads require current project access; execution interactions require
 the authenticated actor to match the persisted Session owner. Project and Team

@@ -53,7 +53,7 @@ M 原样保存，不预先减窗口。服务端每次应用当前 W。边界使�
 
 `core/task.ReadSync` 先通过 `TaskSyncTasks` 读取 snapshot 或更新时间窗口内的摘要，再从实际返回的摘要收集 Goal ID，以同一个 `SyncReader` 调用 `TaskSyncGoalDependsOn`，将返回的完整项目内直接验收前置写入对应 Goal 的 `dependsOn`。没有选中 Goal 时不执行该查询。摘要与边共享已有读取快照；前置目标无需进入更新时间窗口，有效孤点明确返回 `[]`，Goal 的 `externalDependsOn` 保持 `[]`。查询或快照完成失败使整个同步失败。普通 Task 依赖、`dependencyStates` 和执行图继续只处理普通执行边。查询范围和职责由[Goal 关系设计](goal-dependencies.md#项目内前置批量读取)拥有。
 
-服务端另在相同只读快照取得 `coverageUpdatedAt`：对项目物理 `tasks` 行沿 `tasks_project_updated_id` 逆序取最大 `updated_at`，包括软删行和继承隐藏后代，没有行时为 null。delta 按 `COALESCE(deleted_at, ancestor_deleted_at)` 查询有效删除时间，使用与摘要一致的含边界下限；无下限时读取全部有效删除 ID。查询显式包含有效删除时间非空谓词，利用 `(project_id, COALESCE(deleted_at, ancestor_deleted_at), id)` 部分表达式索引限定项目和时间，并按 ID 排序。snapshot 返回空 ID 数组。删除根的更新与后代隐藏时间原子提交，因此覆盖水位包含该删除批次；读取和完整性校验失败使整个同步失败。Web 严格消费两字段，以原子提交的 coverageUpdatedAt 作为 M，并保存同历史删除身份。服务端删除仍沿现行 epoch 换代合同；Web 删除调用者使用原历史绑定的目标提示，权威删除集合按同历史增量或真实历史替换提交。服务端日志关联请求 ID 与模式、摘要数和删除 ID 数；覆盖读取、删除读取和投影校验失败使用固定阶段标识并隐藏原始错误内容。
+服务端另在相同只读快照取得 `coverageUpdatedAt`：对项目物理 `tasks` 行沿 `tasks_project_updated_id` 逆序取最大 `updated_at`，包括软删行和继承隐藏后代，没有行时为 null。delta 按 `COALESCE(deleted_at, ancestor_deleted_at)` 查询有效删除时间，使用与摘要一致的含边界下限；无下限时读取全部有效删除 ID。查询显式包含有效删除时间非空谓词，利用 `(project_id, COALESCE(deleted_at, ancestor_deleted_at), id)` 部分表达式索引限定项目和时间，并按 ID 排序。snapshot 返回空 ID 数组。删除根的更新与后代隐藏时间原子提交，因此覆盖水位包含该删除批次；读取和完整性校验失败使整个同步失败。Web 严格消费两字段，以原子提交的 coverageUpdatedAt 作为 M，并保存同历史删除身份。普通 Task/Goal 删除保持 epoch；Web 删除调用者使用原历史绑定的目标提示，权威删除集合按同历史增量或真实历史替换提交。服务端日志关联请求 ID 与模式、摘要数和删除 ID 数；覆盖读取、删除读取和投影校验失败使用固定阶段标识并隐藏原始错误内容。
 
 只从项目同步接口成功完整响应的原子提交保存 M。单任务 GET 或写响应即使包含更大的 updatedAt，也不能推进 M：例如未读的任务 A 更新于 10:01，单独打开 B 得到 10:05；若把 B 的时间作为项目水位，就会跳过 A。
 
@@ -81,7 +81,7 @@ CREATE INDEX tasks_project_effective_deleted_id
   WHERE COALESCE(deleted_at, ancestor_deleted_at) IS NOT NULL;
 ```
 
-epoch 标识需要完整替换的项目任务集合；受支持的数据历史替换和 Task 软删除轮换它，其他普通任务修改和服务重启不更新它；已有任务 updated_at、version 不增加另一组同步列。新建与旧项目由迁移/default 获得各自 epoch，不添加 foreign key。
+epoch 标识需要完整替换的项目任务集合；受支持的数据历史替换轮换它，普通 Task/Goal 删除、其他任务修改和服务重启不更新它；已有任务 updated_at、version 不增加另一组同步列。新建与旧项目由迁移/default 获得各自 epoch，不添加 foreign key。
 
 已有 task.version 继续用于任务写入与详情内容。epoch 不参与增量定位；本地 userFence/cacheGeneration 只用于身份和失效生命周期。协议没有项目同步 revision、任务同步 revision、不透明 cursor、fromRevision 或 requestAt。
 
@@ -356,7 +356,7 @@ Goal 同步边的部署先退出不推进 Goal Task version/updatedAt 的旧关�
 
 从 `12ebdd08f63c9e09f64937b096d4f9390987be7a` 回退到配对备份时，使用由该源码和固定补丁构建的兼容 Server，而不是原版 Server。兼容 Web 使用独立的 IndexedDB 和广播名称，不打开或改写升级后的库。每个认证 scope 必须先取得并应用真实授权下的完整 snapshot，才可展示缓存；同步、项目访问、详情或讨论读取失败时撤回该项目的展示资格，重新取得 snapshot 后恢复。旧版原始 Server 对新账本的拒绝仍独立于这个配对恢复路径。构建入口及来源校验见 [兼容性测试说明](../../packages/e2e_tests/README.md#ordinary-subtask-compatibility)。
 
-窗口不会自动识别时钟倒退或绕过正式写路径的修改。运行环境保持数据库时间正常；异常回拨或离线历史维护应恢复时间并轮换 epoch 触发完整重建。维护验收须确认任务时间假设已恢复；导入的未来任务时间不能仅靠 epoch 修正。普通重启保持 epoch。[Task 软删除](daynight-task-deletion.md)在标记删除的同一事务内轮换项目 epoch，旧客户端基线因而获得不含该任务的完整 snapshot。delta 同时提供有效删除 ID；当前服务端删除仍轮换 epoch。显式 removeDepends=true 的删除同时更新每个实际引用源的 version/updatedAt；同一 epoch 替换原子发布源任务关系、ready 和目标消失，不引入逐源同步提交。
+窗口不会自动识别时钟倒退或绕过正式写路径的修改。运行环境保持数据库时间正常；异常回拨或离线历史维护应恢复时间并轮换 epoch 触发完整重建。维护验收须确认任务时间假设已恢复；导入的未来任务时间不能仅靠 epoch 修正。普通重启保持 epoch。[Task 软删除](daynight-task-deletion.md)保持项目 epoch，delta 提供有效删除 ID。显式 removeDepends=true 的删除同时更新每个实际引用源的 version/updatedAt；同一 epoch 增量原子发布源任务关系、ready 和目标消失，不引入逐源同步提交。
 
 摘要同步最初以服务端先行、浏览器随后切换的顺序交付，原完整图为当时的读取路径。
 当前浏览器只通过 task-sync 建立和更新项目摘要，不保留完整图 API fallback。CLI 的

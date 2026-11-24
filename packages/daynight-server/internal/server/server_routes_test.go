@@ -2360,7 +2360,7 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		base := newTaskHTTPMockBase(t, "Task deletion")
 		want := map[string]int{"write": 1, "access": 1, "header": 1, "task": 1}
 		if success {
-			for _, name := range []string{"children", "dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
+			for _, name := range []string{"children", "dependents", "delete", "drain", "receipts", "capture"} {
 				want[name] = 1
 			}
 		}
@@ -2373,7 +2373,6 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 			}
 			return taskHTTPMockAccess(f.project, p), nil
 		}
-		projects.InvalidateTaskCacheFn = func(ctx context.Context) error { plan.Called("invalidate"); return ctx.Err() }
 		writer := &taskHTTPWriterMock{taskHTTPMockBase: base}
 		writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
 			plan.Called("header")

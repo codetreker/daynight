@@ -47,9 +47,6 @@ func TestTaskSyncDeletionAcrossEpochAndRollback(t *testing.T) {
 		if _, err := scope.TaskDAO().DeleteTask(ctx, root.ID, false); err != nil {
 			return err
 		}
-		if err := scope.ProjectDAO().InvalidateTaskCache(ctx); err != nil {
-			return err
-		}
 		return cause
 	})
 	if !errors.Is(err, cause) {
@@ -66,19 +63,26 @@ func TestTaskSyncDeletionAcrossEpochAndRollback(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return scope.ProjectDAO().InvalidateTaskCache(ctx)
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := read(original, &since)
-	if snapshot.Epoch == original || snapshot.Mode != "snapshot" || len(snapshot.DeletedTaskIDs) != 0 || snapshot.CoverageUpdatedAt == nil || snapshot.CoverageUpdatedAt.Before(deleted.DeletedAt) {
-		t.Fatalf("old epoch: %+v", snapshot)
-	}
-	delta := read(snapshot.Epoch, &since)
+	delta := read(original, &since)
 	want := []string{root.ID, child.ID}
 	slices.Sort(want)
-	if delta.Mode != "delta" || !slices.Equal(delta.DeletedTaskIDs, want) || delta.CoverageUpdatedAt == nil || delta.CoverageUpdatedAt.Before(deleted.DeletedAt) || len(delta.Tasks) != 0 {
-		t.Fatalf("new epoch delta: %+v want=%v", delta, want)
+	if delta.Epoch != original || delta.Mode != "delta" || !slices.Equal(delta.DeletedTaskIDs, want) || delta.CoverageUpdatedAt == nil || delta.CoverageUpdatedAt.Before(deleted.DeletedAt) || len(delta.Tasks) != 0 {
+		t.Fatalf("same epoch delta: %+v want=%v", delta, want)
+	}
+	// A replacement history still invalidates the previous epoch independently
+	// of ordinary deletion.
+	if err := writeProjectForTest(db, ctx, project.ID, func(scope store.ProjectWriteScope) error {
+		return scope.ProjectDAO().InvalidateTaskCache(ctx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := read(original, &since)
+	if snapshot.Epoch == original || snapshot.Mode != "snapshot" || len(snapshot.DeletedTaskIDs) != 0 || snapshot.CoverageUpdatedAt == nil || snapshot.CoverageUpdatedAt.Before(deleted.DeletedAt) || len(snapshot.Tasks) != 0 {
+		t.Fatalf("replacement history snapshot: %+v", snapshot)
 	}
 }

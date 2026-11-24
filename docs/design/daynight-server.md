@@ -198,7 +198,7 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
 `061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type`、可空 Goal `parentId` 和可选普通 `parentTaskId`；两个非空父项互斥，省略类型为普通 Task，类型创建后不可修改。普通父边只能由创建产生，状态确认和公开 REST/MCP 写入由[父子写入设计](daynight-task-parent-writes.md)拥有。内部读取携带真实直属 Parent ID 及类型；完整与摘要资源的默认映射保持 Goal-only `parentId`，显式扩展表示提供 `parentTaskId`。直属筛选、搜索上下文及读取兼容由[父项读取设计](daynight-task-parent-reads.md)拥有。窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
 
-`062_task_resource_rows.sql` 建立统一资源视图；迁移 `123_task_ancestor_visibility.sql` 增加内部 `ancestor_deleted_at` 并将有效删除改为 `COALESCE(deleted_at, ancestor_deleted_at)`，保留原视图列及直属 Parent 事实。历史 Goal-only 形状校验、回填和视图替换同事务完成。无需锁定的存在性和对外查询在排序、分页和聚合前过滤。资料和 Session 带锁入口锁定目标物理行并读取有效删除；Session 注册使用 UPDATE，其他资源使用 SHARE。祖先删除在项目锁内枚举仍可见后代，连同目标及显式解除引用源按 UUID 取得最终行锁，再同事务写入目标墓碑、继承标记、关联清理和一次 epoch 轮换。后代仅隐藏时保留业务版本及时间。机制与恢复由[删除设计](daynight-task-deletion.md)拥有，取舍见[子树可见性决策](../../.agents/notes/implemented/architecture/2026-11-23-task-subtree-visibility.md)。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+`062_task_resource_rows.sql` 建立统一资源视图；迁移 `123_task_ancestor_visibility.sql` 增加内部 `ancestor_deleted_at` 并将有效删除改为 `COALESCE(deleted_at, ancestor_deleted_at)`，保留原视图列及直属 Parent 事实。历史 Goal-only 形状校验、回填和视图替换同事务完成。无需锁定的存在性和对外查询在排序、分页和聚合前过滤。资料和 Session 带锁入口锁定目标物理行并读取有效删除；Session 注册使用 UPDATE，其他资源使用 SHARE。祖先删除在项目锁内枚举仍可见后代，连同目标及显式解除引用源按 UUID 取得最终行锁，再同事务写入目标墓碑、继承标记和关联清理，保持项目 epoch。后代仅隐藏时保留业务版本及时间。机制与恢复由[删除设计](daynight-task-deletion.md)拥有，取舍见[子树可见性决策](../../.agents/notes/implemented/architecture/2026-11-23-task-subtree-visibility.md)。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
 `063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
@@ -360,7 +360,7 @@ Task 与 Goal 写入共享下述项目事务步骤；显式 Goal 状态与直接
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
 
-Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 共用同项目递归祖先查询，排除任一祖先 Goal 已结束的 Task；自有库存不使用该筛选，普通 ready 与 blockedBy 不加入该条件。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前直属 Parent；普通父项直接保留状态，更高层 Goal 不自动启动。DAO 在首次 Task 锁前计划目标和本次实际要启动的直属 todo Goal，按 UUID 升序锁定，再进入 Worker configuration/execution 检查，保持 Project → Task → Worker 顺序。若直属 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并同事务轮换 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 共用同项目递归祖先查询，排除任一祖先 Goal 已结束的 Task；自有库存不使用该筛选，普通 ready 与 blockedBy 不加入该条件。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前直属 Parent；普通父项直接保留状态，更高层 Goal 不自动启动。DAO 在首次 Task 锁前计划目标和本次实际要启动的直属 todo Goal，按 UUID 升序锁定，再进入 Worker configuration/execution 检查，保持 Project → Task → Worker 顺序。若直属 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并保持项目 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
 
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
@@ -373,7 +373,7 @@ PATCH 的语义空操作仍检查版本及输入，返回当前资源，保持 `
 
 业务校验先生成候选变更计划，完成全部检查后才执行写入。预期拒绝保留为业务结果，
 callback 不执行写入并正常结束；只有外层事务成功后才返回业务 Fault，提交或清理失败
-优先暴露为内部失败。Project 写入锁定时排除删除标记，并在等待后重新检查权限。Task 软删除在同一项目锁内先检查成员、目标精确版本和目标 active worker；严格模式再保护未删除引用者，显式 removeDepends=true 则在执行阶段解除全部传入引用并更新源版本。准备阶段不能有副作用，避免等待外层事务结束才返回的 Fault 提交修改；解除引用、目标标记和一次项目缓存 epoch 轮换原子执行。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
+优先暴露为内部失败。Project 写入锁定时排除删除标记，并在等待后重新检查权限。Task 软删除在同一项目锁内先检查成员、目标精确版本和目标 active worker；严格模式再保护未删除引用者，显式 removeDepends=true 则在执行阶段解除全部传入引用并更新源版本。准备阶段不能有副作用，避免等待外层事务结束才返回的 Fault 提交修改；解除引用与目标标记原子执行，项目缓存 epoch 保持不变。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
 分次重读混合不同状态。事务内不执行网络访问、Git、子进程或其他外部操作。
 
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供

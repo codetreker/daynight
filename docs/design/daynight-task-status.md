@@ -75,7 +75,7 @@ status 输入接受五态，不增加审批动作或阶段顺序。可选严格�
 
 各查询保留原默认范围：普通 HTTP 列表返回全部业务状态，CLI 默认未完成和 MCP 默认优先列表排除终态，搜索默认全状态。精确 proposed/cancelled 过滤及 all 包含相应节点。优先列表显式按 in_progress、ready todo、blocked todo、proposed、终态分组；proposed 属于默认未完成范围。取消与 done 共用原终态优先级，不新增分页排序档位。Project 删除预览的 unfinished 数排除两种终态。
 
-取消只更新任务版本及 updatedAt，不轮换项目 epoch。节点仍存续，因此普通 delta 可传递取消摘要，客户端从完整图派生后继 ready/blocked。既有版本汇总 fence 使旧搜索/优先列表续页失效。软删除仍独立轮换 epoch，并遵守自身引用移除与访问规则。
+取消只更新任务版本及 updatedAt，不轮换项目 epoch。节点仍存续，因此普通 delta 可传递取消摘要，客户端从完整图派生后继 ready/blocked。既有版本汇总 fence 使旧搜索/优先列表续页失效。软删除保持 epoch，并遵守自身引用移除与访问规则。
 
 统计显式包含 cancelled，保持 done 的交付含义：
 

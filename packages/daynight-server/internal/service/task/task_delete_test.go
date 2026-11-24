@@ -44,10 +44,8 @@ func taskDeletionService(t *testing.T, f *taskFailureFixture, target model.Task,
 		}
 		return nil
 	}
-	f.projects.InvalidateTaskCacheFn = func(actual context.Context) error {
-		if actual != f.ctx {
-			t.Fatal("epoch invalidation changed context")
-		}
+	f.projects.InvalidateTaskCacheFn = func(context.Context) error {
+		t.Fatal("ordinary Task deletion rotated the project epoch")
 		return nil
 	}
 	captureDAO := &captureDAOMock{taskMockBase: f.database.taskMockBase.withLabel("capture")}
@@ -187,25 +185,6 @@ func TestTaskDeletionValidationAndAccessDoNotExposeHistory(t *testing.T) {
 	})
 }
 
-func TestTaskDeletionEpochFailurePreservesCause(t *testing.T) {
-	f := newTaskFailureFixture(t, t.Context(), store.TransactionNotCommitted)
-	target := f.target
-	f.expectTask(t, target)
-	f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
-	expectTaskDeletion(t, f, target, false)
-	tasks := taskDeletionService(t, f, target, 0)
-	cause := errors.New("epoch rotation failed")
-	f.projects.InvalidateTaskCacheFn = func(context.Context) error { return cause }
-	err := tasks.Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version})
-	assertOperational(t, err)
-	if !errors.Is(err, cause) || f.callbackError != cause {
-		t.Fatalf("lost epoch failure: %v", err)
-	}
-	if calls := f.database.trace.snapshot(); slices.Contains(calls, "scope.CaptureDAO") {
-		t.Fatalf("capture followed failed epoch invalidation: %v", calls)
-	}
-}
-
 func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 	f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
 	target := f.target
@@ -223,8 +202,8 @@ func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 	}
 }
 
-func TestTaskDeletionCoordinatesSessionFreezeAndEpoch(t *testing.T) {
-	for _, failure := range []string{"session", "epoch", "none"} {
+func TestTaskDeletionCoordinatesSessionFreeze(t *testing.T) {
+	for _, failure := range []string{"session", "receipts", "none"} {
 		t.Run(failure, func(t *testing.T) {
 			completion := store.TransactionCommitted
 			if failure != "none" {
@@ -255,10 +234,10 @@ func TestTaskDeletionCoordinatesSessionFreezeAndEpoch(t *testing.T) {
 					return cause
 				}
 			}
-			if failure == "epoch" {
-				invalidate := f.projects.InvalidateTaskCacheFn
-				f.projects.InvalidateTaskCacheFn = func(ctx context.Context) error {
-					if err := invalidate(ctx); err != nil {
+			if failure == "receipts" {
+				transition := f.sessions.TransitionTaskSessionReceiptsFn
+				f.sessions.TransitionTaskSessionReceiptsFn = func(ctx context.Context, id string, value store.TaskSessionReceiptTransition) error {
+					if err := transition(ctx, id, value); err != nil {
 						return err
 					}
 					return cause
@@ -273,14 +252,17 @@ func TestTaskDeletionCoordinatesSessionFreezeAndEpoch(t *testing.T) {
 				t.Fatalf("deletion lost coordination failure: %v", err)
 			}
 			calls := f.database.trace.snapshot()
-			for _, method := range []string{"tasks.DeleteTask", "sessions.DrainTaskSessions", "sessions.TransitionTaskSessionReceipts", "projects.InvalidateTaskCache"} {
+			for _, method := range []string{"tasks.DeleteTask", "sessions.DrainTaskSessions", "sessions.TransitionTaskSessionReceipts"} {
 				want := 1
-				if failure == "session" && (method == "sessions.TransitionTaskSessionReceipts" || method == "projects.InvalidateTaskCache") {
+				if failure == "session" && method == "sessions.TransitionTaskSessionReceipts" {
 					want = 0
 				}
 				if actual := countTaskCoordinationCall(calls, method); actual != want {
 					t.Fatalf("%s calls=%d want=%d in %v", method, actual, want, calls)
 				}
+			}
+			if countTaskCoordinationCall(calls, "projects.InvalidateTaskCache") != 0 {
+				t.Fatalf("deletion invalidated project history: %v", calls)
 			}
 		})
 	}

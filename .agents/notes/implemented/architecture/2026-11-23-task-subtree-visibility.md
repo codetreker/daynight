@@ -22,7 +22,8 @@ explicitly detached dependency sources, and acquires final Task row locks in UUI
 order. It writes one target tombstone and the same inherited timestamp to visible
 descendants, pruning already hidden branches. Visibility changes preserve child
 business fields; actual dependency detachments retain their one-version update.
-All changes share the original Session, event and cache-epoch transaction.
+All changes share the Session and event transaction. The [activation decision](2026-11-24-activate-task-deletion-deltas.md)
+keeps the project cache epoch on ordinary deletion.
 
 Independent resource transactions lock the actual target physical row in their
 final mode and read its effective deletion after locking. Ancestor deletion must

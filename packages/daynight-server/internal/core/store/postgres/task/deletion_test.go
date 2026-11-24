@@ -184,12 +184,9 @@ func testSubtreeDeletionRollback(t *testing.T, db *postgres.Store) {
 	readerExec(t, db, `UPDATE tasks SET parent_id=$2 WHERE id=$1`, child.ID, root.ID)
 	var epoch string
 	mustOK(t, db.Pool.QueryRow(t.Context(), `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch))
-	cause := errors.New("failure after subtree and epoch writes")
+	cause := errors.New("failure after subtree deletion")
 	err := readerWriteProject(db, t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
 		if _, err := scope.TaskDAO().DeleteTask(t.Context(), root.ID, true); err != nil {
-			return err
-		}
-		if err := scope.ProjectDAO().InvalidateTaskCache(t.Context()); err != nil {
 			return err
 		}
 		return cause

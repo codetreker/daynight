@@ -46,7 +46,8 @@ The [atomic cache decision](../architecture/2026-11-24-task-sync-atomic-deletion
 owns durable ordering and the [read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)
 owns independent readers. The [sync design](../../../../docs/design/daynight-task-sync.md)
 owns the current mechanisms and the [requirements](../../../../docs/spec/daynight-task-sync.md)
-own the user-visible contract. Server Task deletion continues to rotate its epoch.
+own the user-visible contract. The [deletion activation decision](../architecture/2026-11-24-activate-task-deletion-deltas.md)
+keeps ordinary deletions in the same project history.
 
 ## Alternatives
 

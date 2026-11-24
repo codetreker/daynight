@@ -4,8 +4,8 @@ Status: implemented
 
 ## Problem
 
-Deleting a Task from Details above a Goal graph rotates the project's task cache
-epoch. At the time, project history retirement cleared both the deleted Task reader
+At the time, deleting a Task from Details above a Goal graph rotated the project's
+task cache epoch. Project history retirement cleared both the deleted Task reader
 and the Goal graph witness, even though the Goal remained readable. Readers lost the
 whole Goal context after removing one member, including when removing its final
 member should leave an empty Goal graph.
