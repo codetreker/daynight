@@ -8,6 +8,7 @@ export const isProcessBirth = (value: unknown): value is string => typeof value 
   && (!value.startsWith("linux:") || isLinuxProcessBirth(value));
 
 type ProcessState = { proof: ProcessProof; zombie: boolean; exiting: boolean; status: string };
+export type LinuxPartialObservation = { boot?: string; stat?: ReturnType<typeof parseLinuxStat>; first?: { parent: number; group: number; command: string; zombie: boolean } };
 
 export function parseLinuxBoot(text: string): string {
   const value = text.trim();
@@ -38,15 +39,16 @@ export function createLinuxProcessCapture(
   now: () => number = () => performance.now(),
   boot: typeof parseLinuxBoot = parseLinuxBoot,
   parseStat: typeof parseLinuxStat = parseLinuxStat,
-): (pid: number, timeoutMs: number) => Promise<ProcessState> {
-  return async (pid, timeoutMs) => {
+): (pid: number, timeoutMs: number, completedDeadline?: (state: ProcessState) => Error, failure?: (error: unknown, partial: LinuxPartialObservation) => unknown) => Promise<ProcessState> {
+  return async (pid, timeoutMs, completedDeadline, failure) => {
     const deadline = now() + timeoutMs;
+    const partial: LinuxPartialObservation = {};
     const remaining = () => {
       const left = deadline - now();
       if (left <= 0) throw new Error("Linux process identity observation exceeded its deadline.");
       return Math.max(1, Math.ceil(left));
     };
-    const read = async (path: string) => { const text = await readText(path, remaining()); remaining(); return text; };
+    const read = async (path: string, last = false) => { const text = await readText(path, remaining()); if (!last) remaining(); return text; };
     const stat = (text: string) => parseStat(pid, text);
     const ps = async () => {
       const output = await readPs(pid, remaining()); remaining();
@@ -54,11 +56,13 @@ export function createLinuxProcessCapture(
       if (match === null || Number(match[1]) !== pid) throw new Error("Linux process command identity cannot be established.");
       return { parent: Number(match[2]), group: Number(match[3]), status: match[4]!, command: match[6]!.trim(), zombie: match[4]!.startsWith("Z") };
     };
-    const beforeBoot = boot(await read("/proc/sys/kernel/random/boot_id"));
-    const before = stat(await read(`/proc/${pid}/stat`));
-    const first = await ps(), second = await ps();
+    try {
+    const beforeBoot = boot(await read("/proc/sys/kernel/random/boot_id")); partial.boot = beforeBoot;
+    const before = stat(await read(`/proc/${pid}/stat`)); partial.stat = before;
+    const first = await ps(); partial.first = first;
+    const second = await ps();
     const after = stat(await read(`/proc/${pid}/stat`));
-    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id"));
+    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", true));
     // Exit can discard the command before Z appears. PF_EXITING permits waiting
     // only; a final zombie proves this instance exited. Neither supplies a
     // running proof, and birth/group fences and descendant checks still apply.
@@ -68,7 +72,10 @@ export function createLinuxProcessCapture(
         || first.command !== second.command || before.zombie || before.exiting || first.zombie || second.zombie))) {
       throw new Error("Linux process identity changed during observation; no process proof was captured.");
     }
+    const state = { proof: { pid, parentPid: after.parent, processGroupId: after.group, startedAt: `linux:v1:${afterBoot}:${after.ticks}`, commandHash: hash(second.command) }, zombie: after.zombie, exiting: after.exiting && !after.zombie, status: after.zombie ? "Z" : second.status };
+    if (deadline - now() <= 0 && completedDeadline !== undefined) throw completedDeadline(state);
     remaining();
-    return { proof: { pid, parentPid: after.parent, processGroupId: after.group, startedAt: `linux:v1:${afterBoot}:${after.ticks}`, commandHash: hash(second.command) }, zombie: after.zombie, exiting: after.exiting && !after.zombie, status: after.zombie ? "Z" : second.status };
+    return state;
+    } catch (error) { throw failure === undefined ? error : failure(error, partial); }
   };
 }

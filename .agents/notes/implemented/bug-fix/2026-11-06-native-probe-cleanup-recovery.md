@@ -50,6 +50,12 @@ termination, output and persistence failures even inside an acknowledged cleanup
 error; the original command's sampling timeout remains historical context and does
 not turn the failed sample into a success.
 
+Linux process observation deadlines also carry private, verifiable evidence of
+the actual bounded operation. The original owner binds that evidence to its
+cleanup error and checks the retained error tree again at settlement. A deadline
+coincident with an independent failure is not itself evidence that the failure
+is a wait; changing the error or its members invalidates the classification.
+
 Worker shutdown joins the original reporter, reconciles the original owner, and
 stops that same reporter again. It excludes the first error from fatal shutdown
 only when the second stop has no remaining propagating error and structured

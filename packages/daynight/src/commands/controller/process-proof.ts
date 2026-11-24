@@ -2,21 +2,98 @@ import { adoptOwnedControllerJob, createOwnedControllerJob, inspectControllerJob
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { createLinuxProcessCapture, isLinuxProcessBirth, isProcessBirth } from "./linux-process-proof.js";
+import { constants as osConstants } from "node:os";
+import { createLinuxProcessCapture, isLinuxProcessBirth, isProcessBirth, type LinuxPartialObservation } from "./linux-process-proof.js";
 import { captureWindowsProcessProof, inspectWindowsProcessProof, withWindowsProcessStopHandles } from "./windows-process-proof.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
-const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
+// The evidence is private to this process and tied to the exact error graph.
+// A caller may retain errors, but cannot turn a changed or mixed failure into
+// an observation deadline by editing its fields or aggregate members.
+const observationDeadlines = new WeakMap<object, () => boolean>();
+const missingLinuxStats = new WeakMap<object, { path: string; intact: () => boolean }>();
+const snapshotErrors = (root: Error): (() => boolean) => {
+  const snapshots = new Map<object, { prototype: object | null; descriptors: PropertyDescriptorMap }>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Error) && !Array.isArray(value)) return;
+    if (snapshots.has(value)) return;
+    const descriptors = Object.getOwnPropertyDescriptors(value) as PropertyDescriptorMap;
+    snapshots.set(value, { prototype: Object.getPrototypeOf(value), descriptors });
+    for (const descriptor of Object.values(descriptors)) if ("value" in descriptor) visit(descriptor.value);
+  };
+  visit(root);
+  return () => [...snapshots].every(([object, snapshot]) => {
+    if (Object.getPrototypeOf(object) !== snapshot.prototype) return false;
+    const current = Object.getOwnPropertyDescriptors(object);
+    const keys = Reflect.ownKeys(snapshot.descriptors);
+    return keys.length === Reflect.ownKeys(current).length && keys.every(key => {
+      const before = Reflect.get(snapshot.descriptors, key) as PropertyDescriptor;
+      const after = Reflect.get(current, key) as PropertyDescriptor | undefined;
+      return after !== undefined && before.configurable === after.configurable && before.enumerable === after.enumerable
+        && before.writable === after.writable && before.value === after.value && before.get === after.get && before.set === after.set;
+    });
+  });
+};
+export class ControllerProcessObservationDeadlineError extends Error {
+  constructor(cause: unknown) {
+    super("Linux process observation exceeded its deadline; stop remains unconfirmed.", { cause });
+    this.name = "ControllerProcessObservationDeadlineError";
+  }
+}
+/** True only for unchanged evidence produced by this process's timed observation. */
+export const isControllerProcessObservationDeadline = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && observationDeadlines.get(error)?.() === true;
+const recordObservationDeadline = <T extends Error>(error: T, prior?: unknown): T => {
+  const intact = snapshotErrors(error);
+  observationDeadlines.set(error, () => intact() && (prior === undefined || isControllerProcessObservationDeadline(prior)));
+  return error;
+};
+const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => {
+  const timedLinuxIdentity = process.platform === "linux" && file === "ps" && args[0] === "-p";
+  let launched = false, terminated = false, finished = false;
+  const child = execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => {
+    finished = true;
+    if (error === null) { resolve(stdout); return; }
+    if (timedLinuxIdentity && launched && terminated && error.killed === true && error.signal === "SIGTERM" && error.code === null) {
+      reject(recordObservationDeadline(new ControllerProcessObservationDeadlineError(error)));
+    } else reject(error);
+  });
+  if (timedLinuxIdentity && !finished) {
+    // execFile owns this child and destroys its pipes before its timeout kill.
+    // Its only other internal kill is for maxBuffer, which retains its distinct
+    // error code and cannot satisfy the callback's deadline evidence above.
+    const kill = child.kill.bind(child);
+    child.kill = (signal) => {
+      const sent = kill(signal);
+      if (launched && (signal === "SIGTERM" || signal === osConstants.signals.SIGTERM) && sent) terminated = true;
+      return sent;
+    };
+    child.once("spawn", () => { launched = true; });
+  }
+});
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const captureLinuxProcessState = createLinuxProcessCapture(
-  (file, timeout) => readFile(file, { encoding: "utf8", signal: AbortSignal.timeout(timeout) }),
+  async (file, timeout) => {
+    const signal = AbortSignal.timeout(timeout);
+    try { return await readFile(file, { encoding: "utf8", signal }); }
+    catch (error) {
+      if (error instanceof Error && /^\/proc\/[1-9][0-9]*\/stat$/.test(file) && "code" in error && error.code === "ENOENT"
+        && "syscall" in error && error.syscall === "open" && "path" in error && error.path === file) {
+        missingLinuxStats.set(error, { path: file, intact: snapshotErrors(error) });
+      }
+      if (error instanceof Error && error.name === "AbortError" && signal.aborted && error.cause === signal.reason) {
+        throw recordObservationDeadline(new ControllerProcessObservationDeadlineError(error));
+      }
+      throw error;
+    }
+  },
   (pid, timeout) => run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeout),
   hash,
 );
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
-const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
-  if (process.platform === "linux") return captureLinuxProcessState(pid, timeoutMs);
+const capturePosixProcessState = async (pid: number, timeoutMs: number, expected?: ProcessProof): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
+  if (process.platform === "linux") return captureLinuxProcessState(pid, timeoutMs, expected === undefined ? undefined : observed => completedLinuxObservationDeadline(expected, observed), expected === undefined ? undefined : (error, partial) => retainPartialIdentityFailure(expected, error, partial));
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
@@ -40,6 +117,31 @@ export class ControllerProcessIdentityConflictError extends Error {
     super("An original process has conflicting identity evidence; complete stop is unconfirmed.");
   }
 }
+const completedLinuxObservationDeadline = (expected: ProcessProof, observed: { proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }): Error => {
+  const current = observed.proof;
+  const evidence = { status: observed.status, sameBirth: current.startedAt === expected.startedAt, sameParent: current.parentPid === expected.parentPid, sameGroup: current.processGroupId === expected.processGroupId, sameCommand: current.commandHash === expected.commandHash };
+  if (!observed.zombie && evidence.sameBirth && evidence.sameParent && evidence.sameGroup && evidence.sameCommand) {
+    return recordObservationDeadline(new ControllerProcessObservationDeadlineError(undefined));
+  }
+  if (!observed.zombie && !observed.exiting && evidence.sameBirth && (!evidence.sameGroup || !evidence.sameCommand)) return new ControllerProcessIdentityConflictError(expected.pid, evidence);
+  return new Error("Linux process observation exceeded its deadline with incomplete or conflicting identity evidence; stop remains unconfirmed.");
+};
+const retainPartialIdentityFailure = (expected: ProcessProof, error: unknown, partial: LinuxPartialObservation): unknown => {
+  const stat = partial.stat, first = partial.first;
+  const birth = stat === undefined || partial.boot === undefined ? undefined : `linux:v1:${partial.boot}:${stat.ticks}`;
+  const conflict = partial.boot !== undefined && !expected.startedAt.startsWith(`linux:v1:${partial.boot}:`)
+    || birth !== undefined && birth !== expected.startedAt
+    || stat !== undefined && stat.group !== expected.processGroupId
+    || stat !== undefined && !stat.zombie && !stat.exiting && stat.parent !== expected.parentPid
+    || stat !== undefined && first !== undefined && (first.group !== stat.group || !stat.zombie && !stat.exiting && (first.parent !== stat.parent || first.zombie || hash(first.command) !== expected.commandHash));
+  if (!conflict) return error;
+  return new AggregateError([error, new Error("Linux process identity conflicts with the original or with the partial observation.")], `Linux process observation failed with conflicting identity evidence: ${error instanceof Error ? error.message : "unknown failure"}`, { cause: error });
+};
+const isMissingLinuxStat = (error: unknown, pid: number): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  const evidence = missingLinuxStats.get(error);
+  return evidence !== undefined && evidence.path === `/proc/${pid}/stat` && evidence.intact();
+};
 /** An authenticated signal was sent, but the original group did not finish within the observation budget. */
 export class ControllerProcessWaitDeadlineError extends Error {
   constructor(readonly phase: "term" | "kill") {
@@ -59,13 +161,15 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
     let observed: Awaited<ReturnType<typeof capturePosixProcessState>>;
     if (process.platform === "linux") {
       const deadline = performance.now() + timeoutMs;
+      let completed: Awaited<ReturnType<typeof capturePosixProcessState>> | undefined;
       const budget = () => {
         const left = deadline - performance.now();
-        if (left <= 0) throw new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.");
+        if (left <= 0) throw completed === undefined ? new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.") : completedLinuxObservationDeadline(proof, completed);
         return left;
       };
       for (;;) {
-        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())));
+        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())), proof);
+        completed = observed;
         const left = budget();
         // Linux can clear argv before becoming a zombie. Its kernel exit flag
         // permits only a bounded wait, never signaling or declaring it stopped.
@@ -76,7 +180,14 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
     } else observed = await capturePosixProcessState(proof.pid, timeoutMs);
     current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
   }
-  catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
+  catch (error) {
+    if (process.platform === "linux" && isMissingLinuxStat(error, proof.pid)) {
+      try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; }
+    } else if (process.platform !== "linux") {
+      try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; }
+    }
+    throw error;
+  }
   // A zombie's parent and command can change after the original parent exits.
   // Birth and group still fence this single exited process, not its descendants.
   if (current.startedAt === proof.startedAt && current.processGroupId === proof.processGroupId) {
@@ -105,7 +216,10 @@ const remaining = (deadline: number | undefined, maximum = 5000): number => {
 const bounded = async <T>(deadline: number | undefined, action: () => Promise<T>): Promise<T> => {
   try { return await action(); }
   catch (cause) {
-    if (deadline !== undefined && Date.now() >= deadline) throw new AggregateError([cause, new Error("Controller process operation exceeded its deadline.")], "Controller process observation failed at its deadline.", { cause });
+    if (deadline !== undefined && Date.now() >= deadline) {
+      const aggregate = new AggregateError([cause, new Error("Controller process operation exceeded its deadline.")], "Controller process observation failed at its deadline.", { cause });
+      throw isControllerProcessObservationDeadline(cause) ? recordObservationDeadline(aggregate, cause) : aggregate;
+    }
     throw cause;
   }
 };
