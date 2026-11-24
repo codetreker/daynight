@@ -40,30 +40,31 @@ export function createLinuxProcessCapture(
   now: () => number = () => performance.now(),
   boot: typeof parseLinuxBoot = parseLinuxBoot,
   parseStat: typeof parseLinuxStat = parseLinuxStat,
-): (pid: number, timeoutMs: number, completedDeadline?: (state: ProcessState) => Error, failure?: (error: unknown, partial: LinuxPartialObservation) => unknown) => Promise<ProcessState> {
-  return async (pid, timeoutMs, completedDeadline, failure) => {
+): (pid: number, timeoutMs: number, completedDeadline?: (state: ProcessState) => Error, failure?: (error: unknown, partial: LinuxPartialObservation) => unknown, lateDeadline?: () => Error) => Promise<ProcessState> {
+  return async (pid, timeoutMs, completedDeadline, failure, lateDeadline) => {
     const deadline = now() + timeoutMs;
     const partial: LinuxPartialObservation = {};
+    let sampled = false;
     const remaining = () => {
       const left = deadline - now();
-      if (left <= 0) throw new Error("Linux process identity observation exceeded its deadline.");
+      if (left <= 0) throw sampled && lateDeadline !== undefined ? lateDeadline() : new Error("Linux process identity observation exceeded its deadline.");
       return Math.max(1, Math.ceil(left));
     };
-    const read = async (path: string, last = false) => { const text = await readText(path, remaining()); if (!last) remaining(); return text; };
+    const read = (path: string) => readText(path, remaining());
     const stat = (text: string) => parseStat(pid, text);
     const ps = async () => {
-      const output = await readPs(pid, remaining()); remaining();
+      const output = await readPs(pid, remaining());
       const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
       if (match === null || Number(match[1]) !== pid) throw new Error("Linux process command identity cannot be established.");
       return { parent: Number(match[2]), group: Number(match[3]), status: match[4]!, command: match[6]!.trim(), zombie: match[4]!.startsWith("Z") };
     };
     try {
-    const beforeBoot = boot(await read("/proc/sys/kernel/random/boot_id")); partial.boot = beforeBoot;
-    const before = stat(await read(`/proc/${pid}/stat`)); partial.stat = before;
-    const first = await ps(); partial.first = first;
-    const second = await ps(); partial.second = second;
-    const after = stat(await read(`/proc/${pid}/stat`)); partial.after = after;
-    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id", completedDeadline !== undefined)); partial.afterBoot = afterBoot;
+    const beforeBoot = boot(await read("/proc/sys/kernel/random/boot_id")); partial.boot = beforeBoot; sampled = true; remaining();
+    const before = stat(await read(`/proc/${pid}/stat`)); partial.stat = before; remaining();
+    const first = await ps(); partial.first = first; remaining();
+    const second = await ps(); partial.second = second; remaining();
+    const after = stat(await read(`/proc/${pid}/stat`)); partial.after = after; remaining();
+    const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id")); partial.afterBoot = afterBoot;
     // Exit can discard the command before Z appears. PF_EXITING permits waiting
     // only; a final zombie proves this instance exited. Neither supplies a
     // running proof, and birth/group fences and descendant checks still apply.

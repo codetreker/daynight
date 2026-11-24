@@ -94,7 +94,7 @@ const linuxCapture = (strictObservation: boolean) => createLinuxProcessCapture(
 const captureLinuxProcessState = linuxCapture(false), captureStrictLinuxProcessState = linuxCapture(true);
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
 const capturePosixProcessState = async (pid: number, timeoutMs: number, expected?: ProcessProof): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
-  if (process.platform === "linux") return expected === undefined ? captureLinuxProcessState(pid, timeoutMs) : captureStrictLinuxProcessState(pid, timeoutMs, observed => completedLinuxObservationDeadline(expected, observed), (error, partial) => retainPartialIdentityFailure(expected, error, partial));
+  if (process.platform === "linux") return expected === undefined ? captureLinuxProcessState(pid, timeoutMs) : captureStrictLinuxProcessState(pid, timeoutMs, observed => completedLinuxObservationDeadline(expected, observed), (error, partial) => retainPartialIdentityFailure(expected, error, partial), () => recordObservationDeadline(new ControllerProcessObservationDeadlineError(undefined)));
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");

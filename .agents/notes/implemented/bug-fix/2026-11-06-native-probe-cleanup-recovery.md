@@ -51,7 +51,10 @@ error; the original command's sampling timeout remains historical context and do
 not turn the failed sample into a success.
 
 Linux process observation deadlines also carry private, verifiable evidence of
-the actual bounded operation. The original owner binds that evidence to its
+the actual bounded operation, including a successful sample delivered after its
+budget. The sampler parses and retains each returned boot, stat or ps sample
+before classifying the deadline, and starts no further I/O after expiry. Partial
+identity conflicts and malformed data remain independent failures. The original owner binds that evidence to its
 cleanup error and checks the retained error tree again at settlement. A deadline
 coincident with an independent failure is not itself evidence that the failure
 is a wait; changing the error or its members invalidates the classification.
@@ -100,6 +103,10 @@ owners and independent failures. Shutdown evaluates the remaining responsibility
 instead of dropping an entire error tree by its outer category. A successful second
 stop alone cannot classify the first failure or prove its independent members safe
 to discard.
+
+**Check the budget before interpreting a successful sample.** This loses already
+observed malformed or conflicting identity evidence and cannot distinguish the
+sampler's own elapsed budget from an unrelated error with the same message.
 
 ## Consequences
 
