@@ -2,14 +2,18 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func taskSnapshotPeople(t *testing.T, facts []model.TaskAssigneeFact) map[string]model.TaskAssigneeFact {
@@ -288,4 +292,253 @@ func storeAssigneeUser(t *testing.T, database *Store, projectID string, number i
 		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, projectID, id)
 	}
 	return id
+}
+
+func testGraphSelection() TaskGraphSelection {
+	return TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
+}
+
+func TestTaskGraphProjectionKeepsSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
+	ctx := context.Background()
+	project := queryProject(t, s, 1)
+	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
+	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.ProjectDAO().Project(ctx, project.ID); err != nil {
+			return err
+		}
+		before, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, a.ID, testGraphSelection(), 160)
+		if err != nil {
+			return err
+		}
+		if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+			if _, err := tx.TaskDAO().UpdateTask(ctx, a.ID, TaskWrite{Title: "Changed", Status: model.TaskDone}); err != nil {
+				return err
+			}
+			_, err := tx.TaskDAO().CreateTask(ctx, queryID(13), TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{b.ID}})
+			return err
+		}); err != nil {
+			return err
+		}
+		after, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, a.ID, testGraphSelection(), 160)
+		if err != nil || len(before) != 2 || !reflect.DeepEqual(after, before) {
+			t.Fatalf("graph mixed snapshots: before %#v after %#v, %v", before, after, err)
+		}
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, queryID(11), testGraphSelection(), 160)
+		if err != nil || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Status != model.TaskTodo ||
+			!reflect.DeepEqual(tasks[1].BlockedBy, []string{a.ID}) || tasks[1].Ready {
+			t.Fatalf("projection mixed snapshots: %#v, %v", tasks, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := snapshotTask(t, s, project.ID, b.ID)
+	if !fresh.Ready || len(fresh.BlockedBy) != 0 || fresh.Version != b.Version || fresh.UpdatedAt != b.UpdatedAt || !slices.Equal(fresh.DependsOn, b.DependsOn) {
+		t.Fatalf("fresh derived state changed Task metadata: %#v, before %#v", fresh, b)
+	}
+}
+
+func graphCancellationWaiter(t *testing.T, ctx context.Context, observer *Store, reader, blocker uint32) {
+	t.Helper()
+	for {
+		var blocked bool
+		if err := observer.Pool.QueryRow(ctx, `SELECT coalesce((SELECT wait_event_type='Lock'
+ AND $2::integer=ANY(pg_blocking_pids(pid)) FROM pg_stat_activity WHERE pid=$1),false)`, reader, blocker).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return
+		}
+		if err := waitThreadClock(ctx); err != nil {
+			t.Fatalf("graph reader %d did not wait for blocker %d: %v", reader, blocker, err)
+		}
+	}
+}
+
+func graphCancellationReleased(t *testing.T, ctx context.Context, observer *Store, reader uint32) {
+	t.Helper()
+	for {
+		var active bool
+		if err := observer.Pool.QueryRow(ctx, `SELECT coalesce((SELECT state='active'
+ OR xact_start IS NOT NULL OR cardinality(pg_blocking_pids(pid))>0 FROM pg_stat_activity WHERE pid=$1),false)`, reader).Scan(&active); err != nil {
+			t.Fatal(err)
+		}
+		if !active {
+			return
+		}
+		if err := waitThreadClock(ctx); err != nil {
+			t.Fatalf("canceled graph reader %d retained a transaction or blocker: %v", reader, err)
+		}
+	}
+}
+
+func graphCancellationPoolDrained(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for pool.Stat().AcquiredConns() != 0 {
+		if err := waitThreadClock(ctx); err != nil {
+			t.Fatalf("canceled graph snapshot retained %d acquired connections: %v", pool.Stat().AcquiredConns(), err)
+		}
+	}
+}
+
+func TestTaskGraphSnapshotCancellationReleasesBlockedQuery(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database, principal, _, project := membershipFixture(t)
+	root := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
+	for _, test := range []struct {
+		name, table string
+		read        func(context.Context, SnapshotScope) error
+	}{
+		{"project access", "projects", func(ctx context.Context, snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID)
+			return err
+		}},
+		{"graph projection", "tasks", func(ctx context.Context, snapshot SnapshotScope) error {
+			_, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, root.ID, testGraphSelection(), 160)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bounded, stop := context.WithTimeout(t.Context(), 10*time.Second)
+			defer stop()
+			config := database.Pool.Config().Copy()
+			config.MaxConns = 1
+			config.MinConns = 0
+			config.ConnConfig.RuntimeParams["application_name"] = fmt.Sprintf("graph-cancellation-%s", test.table)
+			pool, err := pgxpool.NewWithConfig(bounded, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(pool.Close)
+			reader := &Store{Pool: pool}
+			var readerPID uint32
+			if err := pool.QueryRow(bounded, "SELECT pg_backend_pid()").Scan(&readerPID); err != nil {
+				t.Fatal(err)
+			}
+			holder, err := database.Pool.Begin(bounded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := holder.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					t.Errorf("graph lock cleanup: %v", err)
+				}
+			}()
+			if _, err := holder.Exec(bounded, "LOCK TABLE "+test.table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(bounded)
+			finished := make(chan error, 1)
+			go func() {
+				finished <- reader.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { return test.read(ctx, snapshot) })
+			}()
+			drained := false
+			t.Cleanup(func() {
+				cancel()
+				if drained {
+					return
+				}
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("graph snapshot did not stop during cleanup")
+				}
+			})
+			graphCancellationWaiter(t, bounded, database, readerPID, holder.Conn().PgConn().PID())
+			cancel()
+			select {
+			case err := <-finished:
+				drained = true
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("graph cancellation lost its caller cause: %v", err)
+				}
+			case <-bounded.Done():
+				t.Fatal("canceled graph snapshot did not return")
+			}
+			graphCancellationReleased(t, bounded, database, readerPID)
+			graphCancellationPoolDrained(t, bounded, pool)
+			if err := pool.Ping(bounded); err != nil {
+				t.Fatalf("graph pool could not be reused while the original lock remained: %v", err)
+			}
+			if err := holder.Rollback(bounded); err != nil {
+				t.Fatal(err)
+			}
+			if err := reader.ReadSnapshot(bounded, func(snapshot SnapshotScope) error {
+				tasks, err := snapshot.TaskDAO().TaskGraphTasks(bounded, project.ID, root.ID, testGraphSelection(), 160)
+				if err != nil {
+					return err
+				}
+				if len(tasks) != 2 || tasks[0].ID != root.ID || len(tasks[1].DependsOn) != 1 || tasks[1].DependsOn[0] != root.ID {
+					return fmt.Errorf("graph read after cancellation: tasks=%#v", tasks)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTaskPrioritySnapshotRetainsPredecessorOrderingAndFence(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	ctx := context.Background()
+	project := queryProject(t, db, 1)
+	predecessor := queryTask(t, db, project.ID, 10, model.TaskTodo)
+	dependent := queryTask(t, db, project.ID, 11, model.TaskTodo, predecessor.ID)
+	queryTask(t, db, project.ID, 12, model.TaskTodo, predecessor.ID)
+	ready := false
+	query := TaskPriorityQuery{Limit: 1, Ready: &ready, ExcludeTerminal: true}
+	var fence TaskListFence
+	if err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		var err error
+		fence, err = snapshot.TaskDAO().TaskListFence(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		before, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, query)
+		if err != nil {
+			return err
+		}
+		if len(before.Items) != 1 || before.Items[0].Task.ID != dependent.ID || !before.HasMore {
+			t.Fatalf("filtered predecessor page: %#v", before)
+		}
+		mustQueryExec(t, db, `UPDATE tasks SET status='done',version=version+1 WHERE id=$1`, predecessor.ID)
+		after, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, query)
+		if err != nil {
+			return err
+		}
+		repeated, err := snapshot.TaskDAO().TaskListFence(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(after, before) || repeated != fence {
+			t.Fatalf("snapshot changed page/fence: %#v %#v %#v %#v", before, after, fence, repeated)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		fresh, err := snapshot.TaskDAO().TaskListFence(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		page, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, query)
+		if err != nil {
+			return err
+		}
+		if fresh == fence || len(page.Items) != 0 || page.HasMore {
+			t.Fatalf("fresh snapshot retained old predecessor fence/page: %#v %#v", fresh, page)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

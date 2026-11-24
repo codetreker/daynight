@@ -481,13 +481,13 @@ func TestThreadReadCancellationAndParentDeadlineAreBounded(t *testing.T) {
 
 func TestThreadReadDatabaseFailuresRemainVisible(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	database, principal, _, project := membershipFixture(t)
-	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	database.Close()
+	database := closedStore(t)
+	principal := model.Principal{Kind: model.SessionCredential, UserID: queryID(1), CredentialID: queryID(2)}
+	projectID, taskID := queryID(3), queryID(4)
 	for _, operation := range []func() error{
-		func() error { return threadWitnessRead(t.Context(), database, principal, project.ID, task.ID, nil) },
+		func() error { return threadWitnessRead(t.Context(), database, principal, projectID, taskID, nil) },
 		func() error {
-			_, _, err := threadWitnessAppend(t.Context(), database, principal, project.ID, task.ID, "closed pool", nil)
+			_, _, err := threadWitnessAppend(t.Context(), database, principal, projectID, taskID, "closed pool", nil)
 			return err
 		},
 	} {

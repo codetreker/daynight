@@ -58,11 +58,13 @@ while scheduler slots are occupied by other parents awaiting permits. The shared
 management pool remains protected by `sync.Once` and closes only after every
 test cleanup completes.
 
-The Goal write-deadline tests use the same two PostgreSQL permits as other
-isolated root tests. The Team lock case observes only its own schema's
-PostgreSQL workers. Each pool wait case owns its one-connection pool. These
-boundaries allow the production deadlines to overlap with independent
-fixtures while preserving the original timeout and cleanup assertions.
+Goal status and deletion tests measure the service context deadline from the
+type snapshot, then pass a shorter child deadline to the real saturated
+one-connection pool. The Team lock case uses a short caller deadline and
+observes only its own schema's PostgreSQL workers. Both paths check cancellation
+before a callback can write, persisted state, and pool reuse. Project lifecycle
+and Thread cases share one schema within their parent, use separate Project,
+Team and Goal rows, and drain competing operations before the next case.
 
 Historical prefix migrations and schema-control tests retain their serial
 scheduling. Explicit migration-lock holders remain serial because every ordinary
@@ -72,14 +74,10 @@ parent/child scheduling. These tests are separate from the selected parallel
 parents; private schemas alone do not establish that their control and resource
 lifetimes can overlap.
 
-The executor tests in
-[`github_app_executor_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/github_app_executor_test.go)
-and callers of `controlledAppExecutor` in
-[`github_executor_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/github_executor_test.go)
+The [GitHub executor cases](../../../../packages/daynight-server/internal/core/store/postgres/github_app_work_test.go)
 retain serial scheduling while they replace process-global `http.DefaultTransport`.
-The App Work tests that use the fixture-scoped `waitAppWorkLock` observation in
-[`github_app_work_scope_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/github_app_work_scope_test.go)
-and the two database-wide waiter observations in
+The App Work tests that use the fixture-scoped `waitAppWorkLock` observation and
+the two database-wide waiter observations in
 [`webhook_scope_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/webhook_scope_test.go)
 retain their serial scheduling. The webhook observations match the current
 database and can see another fixture's blocked backend.
@@ -123,7 +121,7 @@ original and fresh snapshots distinguish the old and current access,
 profile, and assignment facts. The parent checks that the pool is reusable
 between cases.
 
-[Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_app_scope_test.go)
+[Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_scope_test.go)
 share one Store for missing ownership or Team rows and the three catalog
 faults. The write scope sees each committed fault. After restoring the
 original rows or reversing the rename, the test resets cached plans and
@@ -137,7 +135,7 @@ rename is reversed and the original relation OID is verified. A new
 transaction reads the original PAT and Personal Team facts before the next
 case. The fixture shares the reversible catalog helper with Backup Inventory.
 
-The [Identity rollback matrices](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
+The [Identity rollback matrices](../../../../packages/daynight-server/internal/core/store/postgres/identity_scope_test.go)
 share one Store per parent. The initialization cases commit their own login
 consumption, then exercise different real insert faults. The global
 empty-state check detects partial identity or replayable login rows. Each
@@ -165,7 +163,7 @@ and archive paths. The actual stage-specific triggers preserve the native
 rollback witnesses. Each case checks retained ownership, then removes the
 trigger and function and verifies their absence before reuse.
 
-[Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
+[Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
 deletes the exact invalid descriptor or restores the original relation OID
@@ -255,7 +253,7 @@ also hold authorization stable while a conflicting change waits. Readers
 and writers finish before schema cleanup, and the parent checks pool reuse
 between cases.
 
-The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_concurrency_witnesses_test.go)
+The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_scope_test.go)
 shares a Store with distinct Project, Task and Tag identities. The actual
 Project row holder blocks the second write until the first commits. The test
 checks both completion receipts and the committed deletion, attachment and
@@ -337,13 +335,20 @@ completion assertions remain. Tests of successful `Open` or `Ready` retain actua
 initialization and database access.
 
 Snapshot parity and its five comparator faults share one full historical replay
-and one independent snapshot. Mutations run in transactions with rollback;
-`nextval` state is restored explicitly, including `is_called`, and read back.
-Snapshot regeneration and full catalog, data and sequence comparison remain.
+and one independent snapshot. The parity case also verifies repeated migration
+application and exercises the migrated constraints and defaults. Comparator
+mutations run in transactions with rollback. The fixture restores `nextval`
+state explicitly, including `is_called`, and reads it back.
 
-[Personal ownership migration failures](../../../../packages/daynight-server/internal/core/store/postgres/personal_ownership_migration_test.go)
+Assistant Task and Worker migration cases advance a populated schema through
+successive checkpoints with assertions at each version. The invalid Task
+hierarchy, Task status, Worker claim and tag migration matrices retain a common
+legacy prefix. Each failure checks the surviving rows and ledger as required by
+its migration, restores the mutated inputs and stops if restoration fails.
+
+[Personal ownership migration failures](../../../../packages/daynight-server/internal/core/store/postgres/identity_migrations_test.go)
 share one real replay through migration 31, and
-[invalid property migration inputs](../../../../packages/daynight-server/internal/core/store/postgres/property_rows_test.go)
+[invalid property migration inputs](../../../../packages/daynight-server/internal/core/store/postgres/task_metadata_migrations_test.go)
 share one real replay through migration 25. All seven ownership and five property
 failure cases still execute the real migration in its own transaction. Source
 facts and the original migration ledger are compared before restoration; old
@@ -378,7 +383,7 @@ Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer
 retains the locked, cached token expiry. The
-[GitHub Signal deadline test](../../../../packages/daynight-server/internal/core/store/postgres/github_webhook_integration_test.go)
+[GitHub Signal deadline test](../../../../packages/daynight-server/internal/core/store/postgres/github_signal_test.go)
 warms the receiver and observer before starting the request deadline. It
 observes the exact PostgreSQL blocker before timeout, checks the deadline
 error and drains the connection while the holder is still locked. The large
@@ -386,7 +391,7 @@ search fixture keeps its complete description and constructs its expected
 snippet independently.
 
 [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
-[Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
+[Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/member_scope_test.go),
 and [Profile Patch](../../../../packages/daynight-server/internal/core/store/postgres/user_profile_mechanism_test.go)
 use a short window based on the PostgreSQL clock after the holder takes the
 target row lock and the waiter and observer connections are warm. The observer

@@ -2980,18 +2980,20 @@ snapshot; fault mutations roll back, with explicit restoration of nontransaction
 sequence state. The snapshot version must match the latest migration, so every
 migration change requires refreshing and verifying the snapshot.
 
-The PostgreSQL root test package shares only its management connection pool,
-closing it after all schema cleanups. Operational pools and schema namespaces
-remain fixture-owned. `internal/core/store/postgres/testdata/testutil` shares
-fixture creation and database observation through existing store contracts and
-explicit pools. Backend-opening factories remain in consuming test packages;
-external DAO tests pass `postgres.Open` to the shared factory helper. The shared
-helpers do not import the root implementation. Same-owner tests share
-these helpers and retain their independent transaction and cleanup conditions.
+The PostgreSQL root groups its tests by domain and the mechanism each file
+verifies. Independent parents share a management pool, which closes after all
+schema cleanups. Each fixture owns its operational pool and schema. Sequential
+cases may share that fixture with independently owned rows or verified
+restoration. Historical upgrade cases may advance one populated schema through
+successive checkpoints with assertions at each version.
+`internal/core/store/postgres/testdata/testutil` provides fixture creation and
+database observations through existing store contracts and explicit pools.
+Consuming packages supply their backend-opening factories. External DAO tests
+pass `postgres.Open` to the shared fixture helper.
 The [ownership decision](../../.agents/notes/implemented/testing/2026-11-09-postgres-test-ownership.md)
-records directory and consolidation choices. Selected error matrices reuse
-restored or read-only fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
-records their isolation and expiry guarantees.
+records where each mechanism is verified. The
+[preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
+records fixture isolation, restoration and expiry guarantees.
 
 The Webhook DAO package groups schema-stable capture, delivery, history and
 retention cases under explicit parent-owned schemas and native connections.

@@ -399,14 +399,26 @@ func TestReadOnlySnapshotCleansConnectionAfterQueryDeadline(t *testing.T) {
 	ready.Release()
 	ctx, cancel := context.WithTimeout(bounded, 250*time.Millisecond)
 	defer cancel()
-	err = ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, nil, observer, tx) })
-	observer.Release()
+	var readerPID uint32
+	err = ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error {
+		readerPID = tx.Conn().PgConn().PID()
+		return interruptObservedQuery(t, ctx, nil, observer, tx)
+	})
 	var failure *TransactionError
 	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
 		t.Fatalf("deadline cleanup lost its outcome or cause: %#v %v", failure, err)
 	}
 	if failed, state := DatabaseErrorFacts(err); failed {
 		t.Fatalf("confirmed deadline cleanup became a database failure: %q %v", state, err)
+	}
+	var active bool
+	if err := observer.QueryRow(bounded, `SELECT coalesce((SELECT state='active'
+ OR xact_start IS NOT NULL FROM pg_stat_activity WHERE pid=$1),false)`, readerPID).Scan(&active); err != nil || active {
+		t.Fatalf("deadline returned with a live query or transaction: active=%t err=%v", active, err)
+	}
+	observer.Release()
+	if acquired := pool.Stat().AcquiredConns(); acquired != 0 {
+		t.Fatalf("deadline retained %d acquired pool connections", acquired)
 	}
 	assertMigrationPoolReusable(t, pool)
 }

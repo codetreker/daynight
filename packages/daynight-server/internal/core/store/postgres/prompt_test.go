@@ -14,7 +14,7 @@ import (
 )
 
 func TestPromptMigrationSchema(t *testing.T) {
-	db := searchTestStore(t)
+	db := isolatedStore(t)
 	ctx := context.Background()
 	rows, err := db.Pool.Query(ctx, `SELECT attname,format_type(atttypid,atttypmod),attnotnull FROM pg_attribute WHERE attrelid='worker_prompts'::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum`)
 	if err != nil {
