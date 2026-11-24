@@ -132,9 +132,35 @@ test('a missing snapshot refuses resume without starting a replacement thread', 
   expect((await requests()).filter(message => ['thread/start', 'thread/resume'].includes(message.method))).toHaveLength(1);
 });
 
-test('an unsupported native version is rejected before thread creation', async () => {
-  await expect(open(null, { CODEX_BOT_VERSION: '0.170.0' })).rejects.toThrow('recovery_version_unsupported');
-  expect((await requests()).filter(message => ['thread/start', 'thread/resume'].includes(message.method))).toEqual([]);
+test.each([['0.170.0', '0.170.0'], ['0.169.0', '0.170.0'], ['0.170.0', '0.169.0'], ['unknown', '99.0.0']])('compatible history starts with %s and resumes with %s', async (created, resumedVersion) => {
+  const first = await open(null, { CODEX_BOT_VERSION: created }), nativeId = first.nativeSessionId;
+  const sent = await first.send(textNativeInput('Preserve this turn'), randomUUID(), null);
+  await first.waitForTurn(sent.turnId!, Date.now() + 5000);
+  await close(first);
+  await rm(join(home, 'sessions'), { recursive: true });
+  const resumed = await open(nativeId, { CODEX_BOT_VERSION: resumedVersion });
+  expect(resumed.nativeSessionId).toBe(nativeId);
+  const point = await manifest();
+  expect(point).toMatchObject({ dirty: false, point: { providerVersion: resumedVersion, protectedThroughTurn: sent.turnId } });
+  expect(await readFile(join(recoveryDirectory, point.point.file), 'utf8')).toContain(`"cli_version":"${created}"`);
+  const messages = await requests();
+  expect(messages.filter(message => message.method === 'turn/start')).toHaveLength(1);
+  expect(messages.filter(message => message.method === 'thread/start')).toHaveLength(1);
+  expect(messages.filter(message => message.method === 'thread/resume')).toHaveLength(1);
+});
+
+test.each(['empty', 'wrong-watermark', 'active', 'duplicate'])('incompatible restored history (%s) cannot report ready or replay input', async result => {
+  const first = await open(), nativeId = first.nativeSessionId;
+  const sent = await first.send(textNativeInput('Preserved turn'), randomUUID(), null);
+  await first.waitForTurn(sent.turnId!, Date.now() + 5000);
+  await close(first);
+  const previous = await manifest(); states = []; timeline = [];
+  await expect(open(nativeId, { CODEX_BOT_VERSION: '0.170.0', CODEX_BOT_HISTORY_RESULT: result })).rejects.toThrow('recovery_material_invalid');
+  expect((await manifest()).dirty).toBe(true);
+  expect((await manifest()).point).toEqual(previous.point);
+  expect(timeline).toEqual([]);
+  expect(states.some(state => state.activity === 'idle')).toBe(false);
+  expect((await requests()).filter(message => message.method === 'turn/start')).toHaveLength(1);
 });
 
 test('a resume receipt cannot replace the original native ID', async () => {

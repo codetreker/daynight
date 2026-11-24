@@ -51,6 +51,26 @@ artifacts for comparison, and records the selected identities for each run. The
 repair artifact must be reproducible from its declared commit and accept the
 candidate's complete migration ledger.
 
+For paired restoration to the fixed baseline
+`12ebdd08f63c9e09f64937b096d4f9390987be7a`, build the patched fallback Server
+and its manifest on Linux after installing the workspace dependencies:
+
+```bash
+node packages/e2e_tests/src/subtask-compat-fallback-build.ts --output "$PWD/.tmp/fallback-artifact"
+```
+
+The output directory must not already exist. The command builds twice from full
+historical source, verifies the fixed Web patch, migration registry and matching
+Web and Server digests, and writes `daynight-server-fallback` and `manifest.json`.
+This is a patched recovery artifact, not the original historical Server. Stop
+writes and restore the database and attachment storage together, then rotate
+each affected Project's task cache epoch before starting it. The original Server
+still refuses the newer ledger. The compatibility recovery checks the Web bytes
+served by the fallback and verifies the same upgraded browser profile, its
+authorization, restored epoch, restart and failure behavior.
+Run `pnpm --filter @codetreker/daynight-e2e test:fallback-cache` to validate the
+patched historical cache and controlled synchronization interleavings separately.
+
 ```bash
 pnpm --filter @codetreker/daynight-e2e test:subtask-compat \
   --candidate "$PWD" --candidate-sha "$(git rev-parse HEAD)" \

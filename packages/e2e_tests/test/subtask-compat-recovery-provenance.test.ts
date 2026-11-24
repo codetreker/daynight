@@ -58,3 +58,17 @@ test('authenticated recovery refuses missing candidate or repair inputs before b
   await assert.rejects(runAuthenticatedRecovery({ ...base, sharedCandidate }), /Explicit repair artifact, revision and SHA-256 are required/);
   await assert.rejects(runAuthenticatedRecovery({ ...base, sharedCandidate, repair: { revision: candidate, artifact: '/unused/repair', sha256: 'invalid' } }), /Repair artifact identity is invalid/);
 });
+
+test('fallback requires the pinned patch, baseline ledger and two identical embedded builds', async () => {
+  const { fallbackBaseline, fallbackPatchSHA256, verifyFallbackArtifact } = await import('../src/subtask-compat-recovery-provenance.ts');
+  const buildInfo = `server: go1.27.2\n\tpath\tgithub.com/codetreker/daynight/packages/daynight-server/cmd/daynight-server\n\tbuild\tvcs.revision=${fallbackBaseline}\n\tbuild\tvcs.modified=true\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=0\n`;
+  const valid = { baseline: fallbackBaseline, patchSHA256: fallbackPatchSHA256, baselineLedgerSHA256: sha256, fallbackLedgerSHA256: sha256,
+    webSHA256: sha256, reproducedWebSHA256: sha256, serverSHA256: sha256, reproducedServerSHA256: sha256, buildInfo };
+  assert.doesNotThrow(() => verifyFallbackArtifact(valid));
+  for (const change of [{ baseline: candidate }, { patchSHA256: 'a'.repeat(64) }, { fallbackLedgerSHA256: 'a'.repeat(64) },
+    { reproducedWebSHA256: 'a'.repeat(64) }, { reproducedServerSHA256: 'a'.repeat(64) },
+    { buildInfo: buildInfo.replace('vcs.modified=true', 'vcs.modified=false') }, { buildInfo: buildInfo.replace('go1.27.2', 'go1.26.6') },
+    { serverSHA256: 'bad', reproducedServerSHA256: 'bad' }, { buildInfo: buildInfo + '\t=>\tlocal-module\n' }]) {
+    assert.throws(() => verifyFallbackArtifact({ ...valid, ...change }), /Fallback artifact provenance/);
+  }
+});

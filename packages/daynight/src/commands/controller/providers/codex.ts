@@ -315,8 +315,10 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   try {
     const initialized = record(await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } })); rpc.notify("initialized");
     initializedResponse = initialized;
-    recoveryVersion = codexUsageProviderVersion(initialized) ?? "unknown";
-    const resumePath = await recovery?.prepare(options.resumeNativeSessionId, recoveryVersion);
+    // Recovery records the observed runtime without inheriting usage-profile
+    // qualification. Compatibility is checked against the actual saved history.
+    recoveryVersion = /^daynight\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?) \(/.exec(string(initialized.userAgent))?.[1] ?? "unknown";
+    const resumePath = await recovery?.prepare(options.resumeNativeSessionId);
     let remoteControl: unknown = null;
     if (authority && CodexReadAuthority.supports(initialized)) {
       try { remoteControl = await rpc.request("remoteControl/status/read", {}); }
@@ -385,10 +387,22 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       // thread/read; its paginated item endpoints are unavailable.
       const history = record(record(await rpc.request("thread/read", { threadId: nativeId, includeTurns: true })).thread);
       if (history.id !== nativeId || !Array.isArray(history.turns)) throw new Error("recovery_material_invalid: Codex legacy history is unavailable.");
-      for (const raw of history.turns) {
-        const turn = record(raw), id = string(turn.id);
-        if (!id || !Array.isArray(turn.items)) throw new Error("recovery_material_invalid: Codex legacy turn history is incomplete.");
-        for (const item of turn.items) projectItem(item, ["completed", "interrupted", "failed"].includes(string(turn.status)), id);
+      // Validate the native reader before publishing any recovered history. A
+      // readable rollout alone does not prove this runtime restored its turns.
+      const turns = history.turns.map(record), ids = new Set<string>();
+      for (const turn of turns) {
+        const id = string(turn.id);
+        if (!id || ids.has(id) || !Array.isArray(turn.items) || !["completed", "interrupted", "failed"].includes(string(turn.status))) {
+          throw new Error("recovery_material_invalid: Codex legacy turn history is incomplete or not terminal.");
+        }
+        ids.add(id);
+      }
+      if ((turns.length ? string(turns.at(-1)!.id) : null) !== recovery.protectedThroughTurn) {
+        throw new Error("recovery_material_invalid: Codex restored history does not cover the protected turn.");
+      }
+      for (const turn of turns) {
+        const id = string(turn.id);
+        for (const item of turn.items as unknown[]) projectItem(item, true, id);
         interruptions.completed(turn, true);
       }
     } else if (options.resumeNativeSessionId) {
