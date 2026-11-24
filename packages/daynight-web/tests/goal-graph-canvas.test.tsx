@@ -24,8 +24,8 @@ describe('Goal graph canvas', () => {
     expect(view.container.querySelectorAll('.task-node-details')).toHaveLength(51);
     expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe('96px');
+      expect(node.style.width).toBe('240px');
+      expect(node.style.height).toBe('102px');
     }
     const card = screen.getByRole('button', { name: 'task-0, To do' });
     expect(card).not.toHaveAttribute('aria-haspopup');
@@ -105,7 +105,7 @@ describe('Goal graph canvas', () => {
     const props = { projectId: 'project', goalId: 'goal', direction: 'horizontal' as const, onDirectionChange: noop, onOpenTask: noop };
     const view = render(<GoalTaskGraph {...props} index={index(30)} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(30));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.anything(), { width: 800, height: 445 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.anything(), { width: 800, height: 445 }, 'horizontal', expect.any(Map)));
     const viewport = view.container.querySelector<HTMLElement>('.react-flow__viewport')!;
     await waitFor(() => expect(Number(/scale\(([^)]+)\)/.exec(viewport.style.transform)![1])).toBeGreaterThanOrEqual(0.8));
     const calls = spy.mock.calls.length;
@@ -171,7 +171,7 @@ describe('Goal graph canvas', () => {
     expect([...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => node.style.transform)).toEqual(positions);
     expect(spy.mock.calls.length).toBe(calls);
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
-    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 390, height: 600 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 390, height: 600 }, 'horizontal', expect.any(Map)));
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     spy.mockImplementationOnce(() => { throw new Error('test'); });
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
@@ -179,7 +179,7 @@ describe('Goal graph canvas', () => {
     width = 700; height = 500;
     act(() => { for (const observer of observers) observer.notify(); });
     fireEvent.click(screen.getByRole('alert').querySelector('button')!);
-    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 700, height: 500 }, 'horizontal'));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.anything(), { width: 700, height: 500 }, 'horizontal', expect.any(Map)));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(30));
     warning.mockRestore();
     spy.mockRestore();

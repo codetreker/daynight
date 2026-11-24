@@ -46,10 +46,7 @@ func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readO
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := h.Identity.CreatePAT(context.Background(), owner, identitycore.CreatePAT{Name: "Worker read-only fixture"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	pat := h.MintPAT(t, owner, identitycore.CreatePAT{Name: "Worker read-only fixture"})
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, workerservice.NewWorkers(h.Database), h.Auth, slog.Default())
 	broker := workerservice.NewReadOnly(h.Database, func(context.Context, model.Principal) error {

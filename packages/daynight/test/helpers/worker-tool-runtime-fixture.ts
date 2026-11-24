@@ -14,6 +14,7 @@ export const createWorkerToolSelectionFixture = (options: { workerDirectory: str
   selectToolLaunch: async () => { throw new Error("This orchestration fixture has no native tool launch."); },
   hostInspector: { check: async () => { throw new Error("This orchestration fixture has no native tool observation."); } },
   prepareWebCandidates: async () => false,
+  checkConfiguredTools: async () => false,
   prepareNative: async (native: WorkerCloudNative, signal: AbortSignal) => {
     if (native.agent === "claude") return;
     const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });

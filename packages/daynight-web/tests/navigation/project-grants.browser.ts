@@ -318,3 +318,33 @@ test('a conflicting grant requires a fresh confirmation and exact reread version
   expect(state.writes).toHaveLength(2);
   expect(state.writes[1]!.body).toBe(`{"version":${initialVersion + 1n},"role":"member","expectedUserId":"${actorId}"}`);
 });
+
+test('shared heading and navigation accommodate a larger browser font on a narrow screen', async ({ page }) => {
+  await install(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Page.setFontSizes', { fontSizes: { standard: 32, fixed: 13 } });
+  await start(page);
+  const heading = page.locator('.members-page-heading');
+  const title = heading.getByRole('heading', { name: 'Project members' });
+  const invite = heading.getByRole('button', { name: 'Invite member' });
+  await expect(title).toHaveCSS('font-size', '36px');
+  await expect(invite).toHaveCSS('font-size', '28px');
+  const geometry = await heading.evaluate(element => {
+    const title = element.querySelector('h2')!, button = element.querySelector('button')!;
+    const a = title.getBoundingClientRect(), b = button.getBoundingClientRect();
+    return { documentWidth: document.documentElement.scrollWidth, titleWidth: title.scrollWidth, titleClientWidth: title.clientWidth, separated: a.bottom <= b.top || b.bottom <= a.top || a.right <= b.left || b.right <= a.left };
+  });
+  expect(geometry.documentWidth).toBeLessThanOrEqual(320);
+  expect(geometry.titleWidth).toBeLessThanOrEqual(geometry.titleClientWidth);
+  expect(geometry.separated).toBe(true);
+  await invite.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(invite).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const brand = page.locator('.sidebar .brand-name');
+  await expect(brand).toBeVisible();
+  expect(await brand.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await cdp.detach();
+});

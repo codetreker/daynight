@@ -1,8 +1,8 @@
 import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
-import type { TaskStep } from '../../src/api/task-steps';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
+import { imageBrowserData } from '../helpers/sessionImageBrowser';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import type { TaskDetail } from '../../src/api/types';
@@ -12,12 +12,11 @@ const taskId = '00000000-0000-4000-8000-000000000041';
 const previousId = '00000000-0000-4000-8000-000000000042';
 const personalId = '00000000-0000-4000-8000-000000000011';
 const time = '2026-10-20T09:00:00Z';
-const step = { id: '00000001', title: 'Review', description: 'Read this', status: 'todo', createdAt: time, updatedAt: time };
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
 type FixtureOptions = {
+  readonly locale?: 'en' | 'zh-CN';
   readonly workerAlias?: string;
-  readonly steps?: readonly TaskStep[];
   readonly outcome?: 'conflict' | 'lost' | 'malformed';
   readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
   readonly observe?: (before: TaskDetail, after: TaskDetail) => void;
@@ -25,8 +24,12 @@ type FixtureOptions = {
   readonly previousChanges?: Partial<TaskDetail>;
   readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
   readonly additionalTasks?: readonly TaskDetail[];
+  readonly snapshotTasks?: (details: readonly TaskDetail[]) => readonly TaskDetail[];
   readonly exposeDeleteTask?: (remove: () => void) => void;
   readonly dualPauseReceipt?: boolean;
+  readonly formerAssignee?: boolean;
+  readonly assigneeName?: string;
+  readonly platformReceipt?: boolean;
 };
 
 async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
@@ -35,17 +38,16 @@ async function install(page: Page, running = false, linked = false, large = fals
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   let previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n, ...options.previousChanges });
   const details = () => [...(taskRemoved ? [] : [task]), previous, ...(options.additionalTasks ?? [])];
-  const graph = () => ({ ...graphFixture(details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
+  const graph = () => ({ ...graphFixture(options.snapshotTasks?.(details()) ?? details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
   let statusRequests = 0;
   options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
   options.exposePreviousUpdate?.((changes) => { previous = { ...previous, ...changes }; });
   options.exposeDeleteTask?.(() => { taskRemoved = true; epoch = '00000000-0000-4000-8000-000000000901'; });
-  let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), options.locale ?? 'en');
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve') && !path.endsWith('/tags/resolve')) writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
     if (options.workerAlias && path.endsWith('/alias')) return send({ workerId: path.split('/')[5], alias: { value: options.workerAlias, version: '1' } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -54,7 +56,17 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') return send({ items: [{ id: '00000000-0000-4000-8000-000000000099', projectId, name: 'Draft label', version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      return send({ catalogEpoch: taskSyncEpoch(projectId), items: ids.map(id => ({ id, state: 'found', version: 1, color: '#9AA3B2' })) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tags/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      const known = [...details().flatMap(detail => detail.tags), { id: '00000000-0000-4000-8000-000000000099', name: 'Draft label' }];
+      return send({ items: known.filter(tag => ids.includes(tag.id)) });
+    }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), ...(options.formerAssignee ? { assigneeVersions: [{ userId: TEST_VIEWER_ID, version: 'a'.repeat(64), hasProjectAccess: false }] } : {}), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
     if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
       expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, type: 'task', tagIds: [], tagMatch: 'all', untagged: false, limit: 15 });
@@ -67,8 +79,13 @@ async function install(page: Page, running = false, linked = false, large = fals
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
-      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: true };
+      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: options.assigneeName ?? longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: !options.formerAssignee };
       return send({ items: requested.length === 0 || requested.includes(TEST_VIEWER_ID) ? [person] : [], unresolvedUserIds: requested.filter(id => id !== TEST_VIEWER_ID) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.platformReceipt) {
+      expect(request.postDataJSON()).toEqual({ version: Number(task.version), requiredPlatform: 'windows' });
+      task = { ...task, requiredPlatform: 'windows', version: task.version + 1n, updatedAt: '2026-10-23T10:00:00Z' };
+      return send(task);
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/status` && request.method() === 'PUT') {
       const input = request.postDataJSON();
@@ -86,31 +103,10 @@ async function install(page: Page, running = false, linked = false, large = fals
       if (options.outcome === 'malformed') return send({ ...task, cancelledAt: null });
       return send(task);
     }
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${step.id}/position` && request.method() === 'PUT') {
-      expect(request.postDataJSON()).toEqual({ version: 5, position: 'last' });
-      task = { ...task, version: 6n }; steps = [...steps.slice(1), steps[0]!];
-      if (moveGate) { moveGate.started(); await moveGate.wait; }
-      return send({ projectId, taskId, version: task.version, steps });
-    }
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps` && request.method() === 'POST') {
-      const input = request.postDataJSON() as { id: string; version: number; title: string; description: string; status: string; after: string };
-      expect(input).toMatchObject({ version: 5, title: 'Inserted after anchor', description: '', status: 'todo', after: '00000064' });
-      expect(input.id).toMatch(/^[0-9a-f]{8}$/);
-      const anchor = steps.findIndex(value => value.id === input.after);
-      expect(anchor).toBe(99);
-      const added = { ...step, id: input.id, title: input.title, description: input.description, status: input.status };
-      steps = [...steps.slice(0, anchor + 1), added, ...steps.slice(anchor + 1)]; task = { ...task, version: 6n };
-      return route.fulfill({ status: 201, body: stringifyWireJson({ projectId, taskId, version: task.version, steps }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, Location: `${path}/${input.id}` } });
-    }
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps/00000065` && request.method() === 'DELETE') {
-      expect(request.postDataJSON()).toEqual({ version: 5 });
-      task = { ...task, version: 6n }; steps = steps.filter(value => value.id !== '00000065');
-      return send({ projectId, taskId, version: task.version, steps });
-    }
     for (const detail of details()) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
-      if (path === `${base}/steps`) return send({ projectId, taskId: detail.id, version: detail.version, steps: detail.id === taskId ? steps : [] });
+      if (path === `${base}/thread/messages`) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
       if (path === `${base}/sessions` || path === `${base}/attachments`) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
@@ -118,15 +114,193 @@ async function install(page: Page, running = false, linked = false, large = fals
   return writes;
 }
 
-async function openDialog(page: Page) {
+async function openDialog(page: Page, prerequisite = false) {
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
-  await page.locator(`#standalone-task-${taskId}`).click();
+  if (prerequisite) {
+    await page.locator('#project-task-tab-chains').click();
+    await page.locator(`#task-root-${previousId}`).click();
+    await page.locator(`[id="chain-task-${previousId}-${taskId}"]`).click();
+  } else {
+    await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+  }
   const dialog = page.locator('.task-detail-dialog');
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 640, 1280]) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) for (const ready of [true, false]) {
+  test(`detail state typography scales ${ready ? 'Ready' : 'Not ready'} in ${presentation} at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const formerAssignee = width !== 1280;
+    const assigneeName = formerAssignee ? longName : 'Alex';
+    const writes = await install(page, false, false, false, true, false, undefined,
+      ready ? {} : { ready: false, dependsOn: [previousId], blockedBy: [previousId] },
+      { locale, formerAssignee, assigneeName });
+    await page.setViewportSize({ width, height: 900 });
+    if (presentation === 'direct') await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    else {
+      await openDialog(page, !ready);
+      if (presentation === 'fullscreen') await page.locator('.task-detail-dialog').getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
+    }
+    const detail = page.locator(presentation === 'direct' ? '.task-detail-page' : '.task-detail-dialog');
+    const row = detail.locator('.task-detail-status-row');
+    const controls = row.locator('.task-detail-state-controls');
+    const status = controls.locator('.task-status-trigger');
+    const assignee = controls.locator('.assignee-trigger');
+    const identity = assignee.locator('.task-assignee-identity');
+    const platform = controls.locator('.native-select__control');
+    const badge = row.locator(ready ? '.task-detail-ready' : '.task-detail-blocked');
+    const measurements: object[] = [];
+    await expect(badge).toHaveText(locale === 'en' ? ready ? 'Ready' : 'Not ready' : ready ? '可开始' : '未就绪');
+    await expect(identity.locator('.assignee-name')).toHaveText(assigneeName);
+    await expect(identity.locator('.assignee-former')).toHaveCount(formerAssignee ? 1 : 0);
+    for (const root of [16, 24]) for (const height of presentation === 'fullscreen' ? [900, 400] : [900]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      for (const element of [status, controls.locator('.assignee-field-label'), assignee, identity, identity.locator('.assignee-name'), ...(formerAssignee ? [identity.locator('.assignee-former')] : []), platform, controls.locator('.native-select'), badge, row.locator('.task-automation-control > span').first()]) {
+        await expect(element).toHaveCSS('font-size', `${root * 0.75}px`);
+      }
+      await expect.poll(() => row.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const boxes = [...element.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select, .task-detail-ready, .task-detail-blocked, .task-automation-control')].map(node => node.getBoundingClientRect());
+        return document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+      })).toBe(true);
+      await expect.poll(() => row.evaluate((element, standard) => {
+        const nodes = [...element.querySelectorAll('.task-status-trigger, .assignee-trigger, .native-select__control, .task-detail-ready, .task-detail-blocked, .task-automation-switch')];
+        const boxes = nodes.map(node => node.getBoundingClientRect());
+        const centers = boxes.map(box => box.top + box.height / 2);
+        if (standard) return Math.max(...centers) - Math.min(...centers) <= 1;
+        const badges = element.querySelector('.task-detail-badges')!.getBoundingClientRect();
+        const automation = element.querySelector('.task-automation-control')!.getBoundingClientRect();
+        return innerWidth <= 600 || Math.max(...centers.slice(0, -1)) - Math.min(...centers.slice(0, -1)) <= 1 || automation.top >= badges.bottom - 1;
+      }, width === 1280)).toBe(true);
+      await expect.poll(() => row.evaluate(element => [...element.querySelectorAll('.task-detail-ready, .task-detail-blocked, .task-automation-control > span:first-child')].every(node => {
+        const bounds = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node);
+        const text = range.getBoundingClientRect();
+        return text.left >= bounds.left - 1 && text.right <= bounds.right + 1 && text.top >= bounds.top - 1 && text.bottom <= bounds.bottom + 1 && text.top >= 0 && text.bottom <= innerHeight;
+      }))).toBe(true);
+      await expect.poll(() => assignee.evaluate(button => {
+        const bounds = button.getBoundingClientRect();
+        const boxes = [...button.querySelectorAll('.assignee-avatar, .assignee-name, .assignee-former, .assignee-chevron')].map(node => node.getBoundingClientRect());
+        return boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+      })).toBe(true);
+      measurements.push(await row.evaluate((element, rootSize) => {
+        const nodes = [...element.querySelectorAll('.task-status-trigger, .assignee-trigger, .native-select__control, .task-detail-ready, .task-detail-blocked, .task-automation-switch')];
+        const controls = nodes.map(node => {
+          const box = node.getBoundingClientRect();
+          return { className: node.className, fontSize: getComputedStyle(node).fontSize, x: box.x, y: box.y, width: box.width, height: box.height, centerY: box.y + box.height / 2 };
+        });
+        return { rootSize, viewport: { width: innerWidth, height: innerHeight }, controls, centerSpread: Math.max(...controls.map(control => control.centerY)) - Math.min(...controls.map(control => control.centerY)) };
+      }, root));
+    }
+    await testInfo.attach('state-row-measurements', { body: JSON.stringify({ locale, presentation, ready, measurements }, null, 2), contentType: 'application/json' });
+    await page.setViewportSize({ width, height: 900 });
+    await status.focus(); await page.keyboard.press('Enter');
+    await expect(detail.locator('.task-status-option').first()).toHaveCSS('font-size', '21px');
+    await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+    await assignee.click();
+    await expect(detail.locator('.assignee-option-name').first()).toHaveCSS('font-size', '21px');
+    await page.keyboard.press('Escape'); await expect(assignee).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`unassigned and disabled detail controls keep xs at ${width}px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, true, false, false, false, false, undefined, {}, { locale });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    const controls = page.locator('.task-detail-state-controls');
+    const assignee = controls.locator('.assignee-trigger');
+    const platform = controls.locator('.native-select__control');
+    await expect(assignee).toBeDisabled(); await expect(platform).toBeDisabled();
+    await expect(assignee.locator('.assignee-name')).toHaveText(locale === 'en' ? 'Unassigned' : '未分配');
+    for (const root of [16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      for (const element of [assignee, assignee.locator('.assignee-name'), platform]) await expect(element).toHaveCSS('font-size', `${root * 0.75}px`);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    expect(writes).toEqual([]);
+  });
+}
+
+test('platform confirmation retains cancellation, focus and confirmed update', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, false, undefined, {}, { platformReceipt: true });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const platform = page.locator('.task-detail-state-controls .native-select__control');
+  await platform.focus();
+  await platform.selectOption('windows');
+  const confirmation = page.getByRole('alertdialog', { name: 'Change execution platform?' });
+  await expect(confirmation).toBeVisible(); await expect(platform).toHaveValue('');
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  await expect(platform).toBeFocused(); expect(writes).toEqual([]);
+  await platform.selectOption('windows');
+  await confirmation.getByRole('button', { name: 'Change platform' }).click();
+  await expect(platform).toHaveValue('windows');
+  expect(writes).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${taskId}`]);
+});
+
+for (const [width, touch] of [[768, false], [1360, false], [1360, true]] as const) {
+  test(`assignee search typography follows pointer at ${width}px (touch=${touch})`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 900 }, hasTouch: touch, isMobile: touch });
+    const page = await context.newPage();
+    try {
+      await install(page); await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(touch);
+      await page.locator('.task-detail-page .assignee-trigger').click();
+      const search = page.locator('.assignee-menu .assignee-search');
+      await expect(search).toBeFocused();
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await expect(search).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+      }
+      await search.press('Escape');
+    } finally { await context.close(); }
+  });
+}
+
+test('shared platform filter retains its default typography', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const filter = page.locator('.project-task-filters .native-select__control');
+  for (const root of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(filter).toHaveCSS('font-size', `${root * 0.875}px`);
+  }
+});
+
+test('task menu opens one native tab per Space press and preserves Enter and mouse activation', async ({ page, context }) => {
+  await install(page);
+  const dialog = await openDialog(page);
+  const trigger = dialog.getByRole('button', { name: 'More task actions' });
+  const link = dialog.getByRole('menuitem', { name: 'Open in new tab' });
+  const opened: Page[] = [];
+  context.on('page', tab => opened.push(tab));
+  for (const action of ['Space', 'Space', 'Enter', 'click', 'middle', 'control'] as const) {
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(link).toBeFocused();
+    const target = await link.getAttribute('href');
+    const nextTab = context.waitForEvent('page');
+    if (action === 'Space') {
+      await page.keyboard.down('Space');
+      await page.keyboard.down('Space');
+      await page.keyboard.up('Space');
+    } else if (action === 'Enter') await page.keyboard.press('Enter');
+    else await link.click(action === 'middle' ? { button: 'middle' } : action === 'control' ? { modifiers: ['ControlOrMeta'] } : {});
+    const tab = await nextTab;
+    await expect(tab).toHaveURL(new URL(target!, page.url()).href);
+    await expect(dialog.getByRole('menu')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(opened).toHaveLength(1);
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+    await tab.close();
+    opened.length = 0;
+  }
+});
 
 test('confirms the unblock action with a dual-key service receipt', async ({ page }) => {
   const writes = await install(page, true, false, false, false, true, undefined, {}, { dualPauseReceipt: true });
@@ -162,8 +336,8 @@ for (const width of [320, 1280]) for (const kind of ['detail', 'graph'] as const
     }, { ...bounds!, kind });
     expect(covered).toBe(true);
     if (kind === 'detail') {
-      const steps = modal.getByRole('tab', { name: 'Steps', exact: true });
-      await steps.focus(); await page.keyboard.press('Enter'); await expect(steps).toHaveAttribute('aria-selected', 'true');
+      const attachments = modal.getByRole('tab', { name: 'Attachments', exact: true });
+      await attachments.focus(); await page.keyboard.press('Enter'); await expect(attachments).toHaveAttribute('aria-selected', 'true');
     } else {
       await expect(modal.locator('.task-chain-close')).toBeFocused();
     }
@@ -186,6 +360,9 @@ test('ID search keeps long results readable and opens the correct task on narrow
   const result = page.getByRole('button', { name: `Open task: ${title}` });
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 700 });
+    await expect(result.locator('.task-search-title')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.root-status')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.task-search-meta')).toHaveCSS('font-size', '12px');
     await expect(result).toContainText(taskId);
     await expect(result).toContainText('ID match · Description match');
     await expect(result).toContainText('A long matching description');
@@ -199,7 +376,7 @@ test('ID search keeps long results readable and opens the correct task on narrow
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
-test('history protects a summary task draft before restoring its earlier direct search detail', async ({ page }) => {
+test('history protects a summary tag draft before restoring direct search detail', async ({ page }) => {
   const writes = await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
@@ -215,15 +392,15 @@ test('history protects a summary task draft before restoring its earlier direct 
   await expect(dialog).toHaveCount(0);
   await input.fill('');
   await page.locator(`#standalone-task-${taskId}`).click();
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
-  await draft.fill('Keep this summary draft');
+  await dialog.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const draft = dialog.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await draft.check();
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await page.evaluate(() => history.go(-3));
   const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(draft).toHaveValue('Keep this summary draft');
+  await expect(dialog.locator('.task-tags-editor input[type=checkbox]')).toBeChecked();
   await page.evaluate(() => history.go(-3));
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
@@ -233,7 +410,7 @@ test('history protects a summary task draft before restoring its earlier direct 
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
-test('returning from direct search detail to the earlier summary loads Steps', async ({ page }) => {
+test('returning from direct search detail restores the earlier summary', async ({ page }) => {
   const writes = await install(page);
   const dialog = await openDialog(page);
   const summaryEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
@@ -249,8 +426,7 @@ test('returning from direct search detail to the earlier summary loads Steps', a
   await page.evaluate(() => history.go(-2));
   await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(summaryEntry);
   await expect(dialog).toHaveAccessibleName('Target task');
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
@@ -269,9 +445,8 @@ test('summary detail waits for a snapshot and retains its real editor through sn
   expect(await directReads()).toBe(0);
   await setRevision(1);
   await expect(dialog).toHaveAccessibleName('Target task');
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await dialog.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = dialog.locator('.thread-composer textarea');
   await draft.fill('Retained after snapshot loss');
   const original = await draft.elementHandle();
   await setRevision(null);
@@ -308,100 +483,6 @@ test('a direct Goal retains its editor when the summary snapshot is not yet avai
   expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
 });
 
-test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
-  const writes = await install(page);
-  const dialog = await openDialog(page);
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await page.setViewportSize({ width: 320, height: 240 });
-  const row = dialog.locator('.step-row[data-step-id="00000001"]');
-  const status = row.locator('.step-status');
-  await expect(status).toBeEnabled(); await status.scrollIntoViewIfNeeded(); await status.focus(); await page.keyboard.press('Enter');
-  const options = page.getByRole('menuitemradio'); await expect(options).toHaveCount(4);
-  for (const option of await options.all()) {
-    await expect(option).toBeVisible(); const box = await option.boundingBox(); expect(box).not.toBeNull();
-    expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(320);
-    expect(box!.y).toBeGreaterThanOrEqual(0); expect(box!.y + box!.height).toBeLessThanOrEqual(240);
-  }
-  await page.keyboard.press('Escape'); await expect(status).toBeFocused();
-  await page.setViewportSize({ width: 320, height: 390 });
-  await status.scrollIntoViewIfNeeded(); await status.click();
-  const statusMenu = page.getByRole('menu'); await expect(statusMenu).toBeVisible();
-  await dialog.locator('.task-detail-panel-steps').evaluate(element => { element.scrollTop += 30; });
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve(undefined))));
-  const statusBox = await statusMenu.boundingBox(); expect(statusBox).not.toBeNull();
-  expect(statusBox!.x).toBeGreaterThanOrEqual(0); expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(320);
-  expect(statusBox!.y).toBeGreaterThanOrEqual(0); expect(statusBox!.y + statusBox!.height).toBeLessThanOrEqual(390);
-  await page.keyboard.press('Escape'); await expect(status).toBeFocused();
-  const more = row.locator('.step-more'); await more.scrollIntoViewIfNeeded(); await more.focus(); await page.keyboard.press('Enter');
-  const menu = page.getByRole('menu'); await expect(menu).toBeVisible();
-  const box = await menu.boundingBox(); expect(box).not.toBeNull();
-  expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(320);
-  expect(box!.y).toBeGreaterThanOrEqual(0); expect(box!.y + box!.height).toBeLessThanOrEqual(390);
-  await page.keyboard.press('Escape'); await expect(more).toBeFocused();
-  expect(writes).toEqual([]);
-});
-
-test('a confirmed move follows the Step to its new page and restores focus and expansion', async ({ page }) => {
-  const writes = await install(page, false, false, true);
-  const dialog = await openDialog(page);
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  const row = dialog.locator('.step-row[data-step-id="00000001"]');
-  const disclosure = row.locator('.step-disclosure');
-  await disclosure.click(); await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-  const more = row.locator('.step-more'); await expect(more).toHaveAttribute('aria-disabled', 'false');
-  await more.click(); await page.getByRole('menuitem', { name: 'Move to end', exact: true }).click();
-  await expect(dialog.getByRole('spinbutton', { name: 'Page' })).toHaveValue('2');
-  await expect(row.locator('.step-disclosure')).toHaveAttribute('aria-expanded', 'true');
-  await expect(row.locator('.step-more')).toBeFocused();
-  expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/steps/${step.id}/position`]);
-});
-
-test('a confirmed relative insertion follows the new Step to the next page and focuses it', async ({ page }) => {
-  const writes = await install(page, false, false, true);
-  const dialog = await openDialog(page);
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  const anchor = dialog.locator('.step-row[data-step-id="00000064"]');
-  const more = anchor.locator('.step-more'); await expect(more).toHaveAttribute('aria-disabled', 'false');
-  await more.click(); await page.getByRole('menuitem', { name: 'Add after', exact: true }).click();
-  const form = dialog.locator('.step-add-form');
-  await form.getByRole('textbox', { name: 'Title' }).fill('Inserted after anchor');
-  await form.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(form).toHaveCount(0);
-  await expect(dialog.getByRole('spinbutton', { name: 'Page' })).toHaveValue('2');
-  const added = dialog.locator('.step-row').filter({ hasText: 'Inserted after anchor' });
-  await expect(added).toBeVisible(); await expect(added.locator('.step-disclosure')).toBeFocused();
-  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/${taskId}/steps`]);
-});
-
-for (const presentation of ['dialog', 'fullscreen'] as const) test(`native Step menu Escape preserves its draft in ${presentation}`, async ({ page }) => {
-  const writes = await install(page);
-  const dialog = await openDialog(page);
-  if (presentation === 'fullscreen') await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
-  const form = dialog.locator('.step-add-form');
-  const title = form.getByRole('textbox', { name: 'Title' });
-  await title.fill('Retained draft');
-  const status = form.getByRole('combobox', { name: 'Initial status' });
-  const placement = form.getByRole('combobox', { name: 'Placement' });
-  for (const select of [status, placement]) {
-    expect(await select.evaluate(node => node.getBoundingClientRect().height)).toBe(38);
-    await select.click();
-    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
-    await page.keyboard.press('Escape');
-    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
-    await expect(dialog).toBeVisible(); await expect(form).toBeVisible();
-    await expect(title).toHaveValue('Retained draft'); await expect(select).toBeFocused();
-    await expect(page.getByRole('alertdialog')).toHaveCount(0);
-    if (presentation === 'fullscreen') await expect(dialog).toHaveClass(/task-detail-fullscreen/);
-  }
-  await page.keyboard.press('Escape');
-  const discard = page.getByRole('alertdialog'); await expect(discard).toBeVisible();
-  await discard.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(title).toHaveValue('Retained draft');
-  expect(writes).toEqual([]);
-});
-
 test('native platform menu Escape precedes closing Task details', async ({ page }) => {
   const writes = await install(page);
   const dialog = await openDialog(page);
@@ -416,111 +497,74 @@ test('native platform menu Escape precedes closing Task details', async ({ page 
   expect(writes).toEqual([]);
 });
 
-test('a late move receipt does not steal focus or change the page of a new draft', async ({ page }) => {
-  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-  const writes = await install(page, false, false, true, false, false, { started: entered.resolve, wait: gate.promise });
-  try {
-    const dialog = await openDialog(page); await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-    const row = dialog.locator('.step-row[data-step-id="00000001"]');
-    const more = row.locator('.step-more'); await expect(more).toHaveAttribute('aria-disabled', 'false');
-    await more.click(); await page.getByRole('menuitem', { name: 'Move to end', exact: true }).click();
-    await entered.promise;
-    await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
-    const pageNumber = dialog.getByRole('spinbutton', { name: 'Page' });
-    await expect(pageNumber).toHaveValue('2'); await expect(row).toHaveCount(0);
-    await pageNumber.fill('1'); await pageNumber.press('Enter');
-    await expect(pageNumber).toHaveValue('1'); await expect(row).toBeVisible();
-    const form = dialog.locator('.step-add-form'), title = form.getByRole('textbox', { name: 'Title' });
-    await title.fill('Draft during move'); await expect(title).toBeFocused();
-    await expect(dialog.getByRole('spinbutton', { name: 'Page' })).toHaveValue('1');
-    gate.resolve(); await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
-    await expect(title).toHaveValue('Draft during move'); await expect(title).toBeFocused();
-    await expect(dialog.getByRole('spinbutton', { name: 'Page' })).toHaveValue('1');
-    expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/steps/${step.id}/position`]);
-  } finally { gate.resolve(); }
-});
-
-test('Back protects a dirty Step draft and a second Back may discard it', async ({ page }) => {
-  const writes = await install(page, false, true, true);
-  await page.goto(`/projects/${projectId}/tasks/${previousId}`);
-  const root = page.locator('.task-detail-page');
-  await root.getByRole('region', { name: 'Prerequisites', exact: true }).getByRole('button', { name: /Target task/ }).click();
-  await root.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await root.getByRole('button', { name: 'Add step', exact: true }).click();
-  const title = root.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await title.fill('Unsaved draft');
-  const openMove = async () => {
-    const pageNumber = root.getByRole('spinbutton', { name: 'Page' }); await pageNumber.fill('1'); await pageNumber.press('Enter');
-    await root.locator('.step-row[data-step-id="00000001"] .step-more').click();
-    await page.getByRole('menuitem', { name: 'Move to…', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toBeVisible();
-  };
-  await openMove();
-  await page.evaluate(() => history.go(-2));
-  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toHaveCount(0);
-  await expect(root).toHaveAttribute('inert', '');
-  await expect(leave.getByRole('button', { name: 'Keep editing' })).toBeFocused();
-  await page.keyboard.press('Tab'); await expect(leave.getByRole('button', { name: 'Discard and leave' })).toBeFocused();
-  await page.keyboard.press('Shift+Tab'); await expect(leave.getByRole('button', { name: 'Keep editing' })).toBeFocused();
-  await leave.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(root).not.toHaveAttribute('inert');
-  await expect(title).toHaveValue('Unsaved draft'); await expect(title).toBeFocused();
-  await openMove();
-  await page.evaluate(() => history.go(-2)); await expect(leave).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toHaveCount(0);
-  await leave.getByRole('button', { name: 'Discard and leave' }).click();
-  await expect(page).toHaveURL(new RegExp(`/tasks/${previousId}$`));
-  await expect(root.locator('.task-detail-title')).toHaveText('History origin');
-  expect(writes).toEqual([]);
-});
-
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1440]) {
-  test(`Step deletion confirms safely and restores focus at ${width}px in ${locale}`, async ({ page }) => {
-    const writes = await install(page, false, false, true); await page.setViewportSize({ width, height: 800 });
-    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
-    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
-    const root = page.locator('.task-detail-page');
-    const pageNumber = root.getByRole('spinbutton', { name: locale === 'en' ? 'Page' : '页码' });
-    await pageNumber.fill('2'); await pageNumber.press('Enter');
-    const row = root.locator('.step-row[data-step-id="00000065"]'); await row.locator('.step-disclosure').click();
-    await row.getByRole('button', { name: locale === 'en' ? 'Edit step' : '编辑步骤' }).click();
-    const form = root.locator('.step-add-form'), title = form.getByRole('textbox', { name: locale === 'en' ? 'Title' : '标题', exact: true });
-    await title.fill('Unpublished draft');
-    await title.focus(); await page.keyboard.press('Tab'); await expect(form.locator(':focus')).toHaveCount(1);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    const openDelete = async () => {
-      const more = row.locator('.step-more'); await expect(more).toHaveAttribute('aria-disabled', 'false');
-      await more.focus(); await page.keyboard.press('Enter');
-      await page.getByRole('menuitem', { name: locale === 'en' ? 'Delete step' : '删除步骤', exact: true }).click();
-    };
-    await openDelete(); const confirmation = page.getByRole('alertdialog');
-    const cancel = confirmation.locator('.dialog-footer').getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
-    await expect(cancel).toBeFocused(); await expect(confirmation).toContainText('00000065');
-    await expect(confirmation).toContainText(locale === 'en' ? 'Attachments, pull requests and other references will remain' : '附件、拉取请求及其他引用会保留');
-    await expect(confirmation).toContainText(locale === 'en' ? 'Unsaved changes' : '未保存修改');
-    for (let i = 0; i < 5; i++) { await page.keyboard.press('Tab'); await expect(confirmation.locator(':focus')).toHaveCount(1); }
-    await page.keyboard.press('Escape'); await expect(confirmation).toHaveCount(0); await expect(title).toHaveValue('Unpublished draft');
-    await openDelete(); await page.getByRole('alertdialog').getByRole('button', { name: locale === 'en' ? 'Delete step' : '删除步骤', exact: true }).click();
-    await expect(form).toHaveCount(0); await expect(root.locator('.steps-pagination')).toHaveCount(0);
-    await expect(root.locator('.step-row[data-step-id="00000064"] .step-disclosure')).toBeFocused();
-    expect(writes).toEqual([`DELETE /api/v1/projects/${projectId}/tasks/${taskId}/steps/00000065`]);
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) {
+  test(`execution labels fit in ${presentation} at ${width}px in ${locale}`, async ({ page }) => {
+    const worker = { claimId: previousId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
+    const writes = await install(page, true, false, false, false, false, undefined, { properties: { worker }, allowAgents: true }, { locale });
+    await page.setViewportSize({ width, height: 900 });
+    let root;
+    if (presentation === 'direct') {
+      await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+      root = page.locator('.task-detail-page');
+    } else {
+      root = await openDialog(page);
+      if (presentation === 'fullscreen') await root.getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
+    }
+    const mode = root.locator('.task-detail-execution-mode');
+    const label = root.locator('.task-automation-control > span:first-child');
+    const control = root.getByRole('switch', { name: locale === 'en' ? 'Automatic execution' : '自动执行' });
+    await expect(mode).toHaveText(locale === 'en' ? 'Web execution' : 'Web 执行');
+    await expect(label).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
+    await expect(control).toBeDisabled();
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    await expect(control).toHaveAccessibleDescription(locale === 'en' ? 'This task is in progress. Automatic execution settings cannot change while it remains in progress.' : '任务正在进行中，保持此状态时无法修改自动执行设置。');
+    for (const size of [16, 24]) {
+      await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+      for (const text of [mode, label]) {
+        await expect(text).toBeVisible();
+        await expect(text).toHaveCSS('font-size', `${size * 0.75}px`);
+      }
+      await expect(control).toHaveCSS('width', '42px'); await expect(control).toHaveCSS('height', '24px');
+      expect(await root.locator('.task-detail-status-row').evaluate(row => {
+        const bounds = row.getBoundingClientRect();
+        const nodes = [...row.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select[data-density="compact"], .task-detail-ready, .task-detail-blocked, .task-detail-execution-mode, .task-automation-control')];
+        const boxes = nodes.map(node => node.getBoundingClientRect());
+        const labels = [...row.querySelectorAll('.task-detail-execution-mode, .task-automation-control > span:first-child')];
+        return row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 0.5 && box.right <= bounds.right + 0.5 && boxes.slice(index + 1).every(other => box.right <= other.left + 0.5 || other.right <= box.left + 0.5 || box.bottom <= other.top + 0.5 || other.bottom <= box.top + 0.5)) && labels.every(node => {
+          const box = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node);
+          const text = range.getBoundingClientRect();
+          if (text.left < box.left - 0.5 || text.right > box.right + 0.5 || text.top < box.top - 0.5 || text.bottom > box.bottom + 0.5 || text.left < 0 || text.right > innerWidth || text.top < 0 || text.bottom > innerHeight) return false;
+          for (let ancestor = node.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect();
+            if (style.overflowX !== 'visible' && (text.left < rect.left - 0.5 || text.right > rect.right + 0.5)) return false;
+            if (style.overflowY !== 'visible' && (text.top < rect.top - 0.5 || text.bottom > rect.bottom + 0.5)) return false;
+          }
+          return true;
+        });
+      })).toBe(true);
+    }
+    expect(writes).toEqual([]);
   });
 }
 
-test('touch can open and cancel the Step position target picker', async ({ browser, baseURL }) => {
-  if (baseURL === undefined) throw new Error('The task controls fixture requires a base URL.');
-  const context = await browser.newContext({ baseURL, locale: 'en-US', hasTouch: true, viewport: { width: 320, height: 640 } });
-  try {
-    const page = await context.newPage(); const writes = await install(page, false, false, true);
-    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
-    const row = page.locator('.step-row[data-step-id="00000001"]');
-    await expect(row.locator('.step-more')).toHaveAttribute('aria-disabled', 'false'); await row.locator('.step-more').tap();
-    await page.getByRole('menuitem', { name: 'Move to…', exact: true }).tap();
-    const picker = page.getByRole('dialog', { name: 'Move step', exact: true });
-    await picker.getByRole('radio').first().tap(); await picker.getByRole('button', { name: 'Cancel', exact: true }).tap();
-    await expect(picker).toHaveCount(0); expect(writes).toEqual([]);
-  } finally { await context.close(); }
-});
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`automation confirmation cancellation restores focus without a Worker in ${locale}`, async ({ page }) => {
+    const writes = await install(page, false, false, false, false, false, undefined, {}, { locale });
+    const root = await openDialog(page);
+    await expect(root.locator('.task-detail-execution-mode')).toHaveCount(0);
+    const control = root.getByRole('switch', { name: locale === 'en' ? 'Automatic execution' : '自动执行' });
+    await expect(control).toBeEnabled(); await expect(control).toHaveAttribute('aria-checked', 'false');
+    for (const dismissal of ['cancel', 'escape'] as const) {
+      await control.focus(); await page.keyboard.press('Space');
+      const confirmation = page.getByRole('alertdialog', { name: locale === 'en' ? 'Enable automatic execution' : '开启自动执行' });
+      await expect(confirmation).toBeVisible();
+      if (dismissal === 'cancel') await confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
+      else await page.keyboard.press('Escape');
+      await expect(confirmation).toHaveCount(0); await expect(control).toBeFocused();
+      await expect(control).toHaveAttribute('aria-checked', 'false'); expect(writes).toEqual([]);
+    }
+  });
+}
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
   test(`Task status and platform controls fit and keep focus at ${width}px in ${locale}`, async ({ page }) => {
@@ -677,7 +721,7 @@ test('locked automatic execution explains its state on focus and Escape dismisse
   expect(writes).toEqual([]);
 });
 
-test('cancelled tasks retain readable details and Steps without a status restoration control on narrow screens', async ({ page }) => {
+test('cancelled tasks retain readable details without a status restoration control on narrow screens', async ({ page }) => {
   const writes = await install(page, false, false, false, false, false, undefined, { status: 'cancelled', cancelledAt: time, ready: false, description: 'Readable cancelled materials' });
   await page.setViewportSize({ width: 320, height: 844 });
   const observedTask = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}`);
@@ -688,8 +732,7 @@ test('cancelled tasks retain readable details and Steps without a status restora
   await expect(dialog.locator('.task-status-trigger')).toBeDisabled();
   await expect(dialog.getByText('Readable cancelled materials')).toBeVisible();
   await expect(dialog.getByRole('complementary', { name: 'Task relationships and metadata' }).getByRole('alert')).toHaveCount(0);
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toEqual([]);
 });
@@ -717,7 +760,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     confirmation = page.getByRole('alertdialog'); await confirmation.getByRole('button', { name: locale === 'en' ? 'Confirm cancellation' : '确认取消', exact: true }).click();
     await expect(status).toHaveText(locale === 'en' ? 'Cancelled' : '已取消'); await expect(status).toBeDisabled();
     await expect(dialog.getByText('Cancellation leaves this description readable')).toBeVisible();
-    await dialog.getByRole('tab', { name: locale === 'en' ? 'Steps' : '步骤', exact: true }).click(); await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('tab', { name: locale === 'en' ? 'Steps' : '步骤', exact: true })).toHaveCount(0);
     expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]); expect(preserved).toBeDefined();
     expect(preserved!.after.allowAgents).toBe(preserved!.before.allowAgents); expect(preserved!.after.assignedTo).toBe(preserved!.before.assignedTo);
     expect(preserved!.after.startedAt).toBe(preserved!.before.startedAt); expect(preserved!.after.completedAt).toBe(preserved!.before.completedAt);
@@ -912,12 +955,136 @@ test('linked PR empty state survives relation errors and language changes in dir
   await expect(detail.getByRole('region', { name: '关联 PR' })).toContainText('暂无关联 PR');
 });
 
+test('overview paused selection preserves the task list assignee, category and page', async ({ page }) => {
+  const additionalTasks = Array.from({ length: 21 }, (_, index) => detailFixture(projectId,
+    `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`, { title: `Assigned task ${index}`, assignedTo: TEST_VIEWER_ID }));
+  const writes = await install(page, false, false, false, false, true, undefined, { assignedTo: TEST_VIEWER_ID }, {
+    previousChanges: { title: 'Unassigned blocked target', properties: { paused: true } }, additionalTasks,
+  });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const assignee = page.getByRole('button', { name: /^Assignee:/ });
+  await assignee.click();
+  await page.getByRole('option', { name: 'Assigned to me' }).click();
+  const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
+  await pagination.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(pagination).toContainText('Page 2 of 2');
+  const visibleIds = await page.locator('.task-row-item .task-row-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')));
+  expect(visibleIds.length).toBeGreaterThan(0);
+  await expect(page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count')).toContainText('1');
+  await page.locator('#project-section-tab-overview').click();
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await expect(badge).toContainText('2');
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').last().click();
+  await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Unassigned blocked target');
+  await page.locator('.task-detail-close').click();
+  await expect(badge).toBeFocused();
+  await page.locator('#project-section-tab-tasks').click();
+  await expect(assignee).toContainText('Assigned to me');
+  await expect(page.locator('#project-task-tab-standalone')).toHaveAttribute('aria-selected', 'true');
+  await expect(pagination).toContainText('Page 2 of 2');
+  expect(await page.locator('.task-row-item .task-row-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')))).toEqual(visibleIds);
+  expect(writes).toEqual([]);
+});
+
+for (const [width, locale] of [[320, 'zh-CN'], [390, 'en']] as const) {
+  test(`overview paused menu supports touch selection at ${width}px in ${locale}`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 480 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    try {
+      const writes = await install(page, false, false, false, false, true, undefined, {}, {
+        locale, previousChanges: { title: 'Second touch target', properties: { paused: true } },
+      });
+      await page.goto(`/projects/${projectId}`);
+      const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+      await badge.tap();
+      const menu = page.locator('.project-paused-menu');
+      await expect(menu.getByRole('menuitem')).toHaveCount(2);
+      await menu.getByRole('menuitem').last().tap();
+      await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Second touch target');
+      await page.locator('.task-detail-close').tap();
+      await expect(badge).toBeFocused();
+      await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+      expect(writes).toEqual([]);
+    } finally { await context.close(); }
+  });
+}
+
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused detail restores its source tab after the last badge item disappears`, async ({ page }) => {
+  let updateTask!: (changes: Partial<TaskDetail>) => void;
+  const writes = await install(page, false, false, false, false, true, undefined, {}, { exposeUpdate: update => { updateTask = update; } });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog).toHaveAccessibleName('Target task');
+  updateTask({ properties: { paused: false }, version: 6n, updatedAt: '2026-10-23T09:00:00Z' });
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
+  await refreshed;
+  await expect(badge).toHaveCount(0);
+  await dialog.locator('.task-detail-close').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(section === 'overview' ? '#project-section-tab-overview' : '#project-task-tab-chains')).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
+test('overview paused menu retains admitted tasks on refresh failure and withdraws them on denied access', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, true);
+  let failure: number | null = null;
+  await page.route(`**/api/v1/projects/${projectId}/access`, route => failure === 404 ? route.fulfill({ status: 404,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: 'not_found', message: 'Project access withdrawn', requestId: 'access-withdrawn' } }),
+  }) : route.fallback());
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => failure === null ? route.fallback() : route.fulfill({ status: failure,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: failure === 404 ? 'not_found' : 'unavailable', message: 'Project snapshot unavailable', requestId: `snapshot-${failure}` } }),
+  }));
+  await page.goto(`/projects/${projectId}`);
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await badge.click();
+  const menu = page.locator('.project-paused-menu');
+  await expect(menu.getByRole('menuitem')).toBeFocused();
+  const refresh = async (status: number) => {
+    failure = status;
+    const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && result.status() === status);
+    await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
+    await response;
+  };
+  await refresh(503);
+  await expect(menu.getByRole('menuitem')).toBeFocused();
+  await expect(menu.getByRole('menuitem')).toContainText('Target task');
+  await refresh(404);
+  await expect(menu).toHaveCount(0);
+  await expect(badge).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+for (const status of [403, 503]) test(`overview paused selection displays the actual detail read failure (${status})`, async ({ page }) => {
+  const writes = await install(page, false, false, false, false, true);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, route => route.fulfill({ status,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: status === 403 ? 'forbidden' : 'unavailable', message: 'Selected task cannot be read', requestId: `selected-detail-${status}` } }),
+  }));
+  await page.goto(`/projects/${projectId}`);
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('alert')).toContainText(`selected-detail-${status}`);
+  await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+  await dialog.locator('.task-detail-close').click();
+  await expect(badge).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
-  test(`semantic detail and Step roles stay readable at ${width}px in ${locale}`, async ({ page }) => {
-    const stepStates = ['todo', 'in_progress', 'done', 'skipped'] as const;
-    const writes = await install(page, false, false, false, true, false, undefined, { status: 'proposed', ready: false }, {
-      steps: stepStates.map((status, index) => ({ ...step, id: (index + 1).toString(16).padStart(8, '0'), title: `Review ${status}`, status })),
-    });
+  test(`semantic detail roles stay readable at ${width}px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, false, false, false, true, false, undefined, { status: 'proposed', ready: false });
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/projects/${projectId}`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
@@ -941,25 +1108,13 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await expectTextContrast(chip);
     }
     await page.keyboard.press('Escape');
-    await dialog.getByRole('tab', { name: locale === 'en' ? 'Steps' : '步骤', exact: true }).click();
-    for (const status of stepStates) {
-      const chip = dialog.locator(`.step-status-${status}`);
-      const role = status === 'skipped' ? 'cancelled' : status;
-      await page.mouse.move(0, 0);
-      await expect(chip).toHaveCSS('background-color', roleColors[role][0]);
-      await expect(chip).toHaveCSS('color', roleColors[role][3]);
-      await expectTextContrast(chip);
-      await chip.hover();
-      await expect(chip).toHaveCSS('background-color', roleColors[role][1]);
-      await expectTextContrast(chip);
-    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(writes).toEqual([]);
   });
 }
 
-for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
-  test(`paused task popover supports keyboard, exact detail and history at ${width}px in ${locale}`, async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) for (const [width, locale] of [[320, 'zh'], [390, 'en'], [1280, 'en']] as const) {
+  test(`${section} paused task popover supports keyboard, exact detail and history at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 480 });
     const title = 'Long paused task title '.repeat(10);
     const writes = await install(page, false, false, false, false, true, undefined, { title }, {
@@ -967,8 +1122,8 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     });
     if (locale === 'zh') await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
     await page.goto(`/projects/${projectId}`);
-    await page.locator('#project-section-tab-tasks').click();
-    const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+    await page.locator(`#project-section-tab-${section}`).click();
+    const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
     await expect(badge).toContainText('2');
     await badge.focus();
     await page.keyboard.press('Enter');
@@ -996,6 +1151,7 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     const dialog = page.locator('.task-detail-dialog');
     await expect(dialog).toHaveAccessibleName('Second paused task');
     await expect(menu).toHaveCount(0);
+    await expect(page.locator(`#project-section-tab-${section}`)).toHaveAttribute('aria-selected', 'true');
     await page.goBack();
     await expect(dialog).toHaveCount(0);
     await expect(badge).toBeFocused();
@@ -1003,11 +1159,15 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     await expect(dialog).toHaveAccessibleName('Second paused task');
     await page.goBack();
     await expect(badge).toBeFocused();
+    await badge.click();
+    await page.locator(`#project-section-tab-${section === 'overview' ? 'tasks' : 'overview'}`).focus();
+    await page.keyboard.press('Enter');
+    await expect(menu).toHaveCount(0);
     expect(writes).toEqual([]);
   });
 }
 
-test('paused popover preserves focus on refresh and moves it as tasks disappear', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused popover preserves focus on refresh and moves it as tasks disappear`, async ({ page }) => {
   let updateTask!: (changes: Partial<TaskDetail>) => void;
   let updatePrevious!: (changes: Partial<TaskDetail>) => void;
   let deleteTask!: () => void;
@@ -1016,17 +1176,19 @@ test('paused popover preserves focus on refresh and moves it as tasks disappear'
     exposePreviousUpdate: update => { updatePrevious = update; }, exposeDeleteTask: remove => { deleteTask = remove; },
   });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('button', { name: /^Assignee:/ }).click();
-  await page.getByRole('option', { name: 'Assigned to me' }).click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  if (section === 'tasks') {
+    await page.getByRole('button', { name: /^Assignee:/ }).click();
+    await page.getByRole('option', { name: 'Assigned to me' }).click();
+  }
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await badge.click();
   const menu = page.locator('.project-paused-menu');
   const rows = menu.getByRole('menuitem');
   await expect(rows.first()).toBeFocused();
   const refresh = async () => {
     const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+    await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
     await response;
   };
   await refresh();
@@ -1045,29 +1207,28 @@ test('paused popover preserves focus on refresh and moves it as tasks disappear'
   await expect(rows.first()).toBeFocused();
   deleteTask();
   await refresh();
-  await expect(menu).toHaveCount(0);
   await expect(badge).toContainText('1');
-  await badge.click();
+  await expect(menu).toBeVisible();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('History origin');
   await expect(rows.first()).toBeFocused();
-  updatePrevious({ assignedTo: null, version: 6n, updatedAt: '2026-10-25T09:00:00Z' });
+  updatePrevious({ ...(section === 'overview' ? { properties: { paused: false } } : { assignedTo: null }), version: 6n, updatedAt: '2026-10-25T09:00:00Z' });
   await refresh();
   await expect(menu).toHaveCount(0);
   await expect(badge).toHaveCount(0);
-  await expect(page.locator('#project-task-tab-chains')).toBeFocused();
+  await expect(page.locator(section === 'overview' ? '#project-section-tab-overview' : '#project-task-tab-chains')).toBeFocused();
   expect(writes).toEqual([]);
 });
 
-test('many paused tasks scroll within the native popover and close on outside click', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} many paused tasks scroll within the native popover and close on outside click`, async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 360 });
   const additionalTasks = Array.from({ length: 20 }, (_, index) => detailFixture(projectId,
     `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
     { title: `Additional paused task ${index}`, properties: { paused: true } }));
   const writes = await install(page, false, false, false, false, true, undefined, {}, { additionalTasks });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await expect(badge).toContainText('21');
   await badge.click();
   const menu = page.locator('.project-paused-menu');
@@ -1081,7 +1242,7 @@ test('many paused tasks scroll within the native popover and close on outside cl
   await page.bringToFront();
   await otherPage.close();
   const refreshed = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+  await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
   await refreshed;
   await expect(menu.getByRole('menuitem').last()).toBeFocused();
   expect(await menu.evaluate(element => element.scrollTop)).toBe(scrollTop);
@@ -1112,15 +1273,15 @@ test('closing a chain graph after a paused detail restores its own trigger', asy
   await expect(graphTrigger).toBeFocused();
 });
 
-test('paused Goal child opens its own detail from the project badge', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused Goal child opens its own detail from the project badge`, async ({ page }) => {
   const goalId = '30000000-0000-4000-8000-000000000001';
   const childId = '40000000-0000-4000-8000-000000000001';
   const goal = detailFixture(projectId, goalId, { type: 'goal', title: 'Parent Goal', properties: { paused: true } });
   const child = detailFixture(projectId, childId, { parentId: goalId, title: 'Goal child', properties: { paused: true } });
   const writes = await install(page, false, false, false, false, false, undefined, {}, { additionalTasks: [goal, child] });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await expect(badge).toContainText('1');
   await badge.click();
   const rows = page.locator('.project-paused-menu').getByRole('menuitem');
@@ -1187,7 +1348,7 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (cons
     if (kind === 'standalone') await page.locator('#project-task-tab-standalone').click();
     else await page.locator('.root-toggle').first().click();
     const row = page.locator('.task-row-item').filter({ has: page.getByRole('link', { name: kind === 'standalone' ? 'Target task' : 'History origin', exact: true }) });
-    await expect(row.locator('.task-row-machine')).toContainText(alias);
+    await expect(row.locator('.task-row-machine')).toHaveText(`${locale === 'zh-CN' ? '执行器别名：' : 'Worker: '}${alias}`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(await row.locator('.task-row-machine').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
     await row.locator('.task-row-machine').scrollIntoViewIfNeeded();
@@ -1195,3 +1356,606 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (cons
     await page.screenshot({ path: info.outputPath(`${kind}-worker-alias.png`), fullPage: true });
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`search loading, failure and empty states remain usable at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    let release!: () => void;
+    let calls = 0;
+    await page.route(`**/api/v1/projects/${projectId}/tasks/search`, async route => {
+      calls++;
+      if (calls === 1) { await new Promise<void>(resolve => { release = resolve; }); return route.fulfill({ status: 500, json: { error: { code: 'unavailable', message: 'Unavailable', requestId: 'fixture' } } }); }
+      return route.fulfill({ json: { projectId, total: 0, items: [], nextCursor: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const input = page.locator('.task-search-form input');
+    await input.fill('missing'); await input.press('Enter');
+    await expect(page.locator('.task-search-results [role=status]')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    release();
+    const error = page.locator('.task-search-error'); await expect(error).toBeVisible();
+    await error.getByRole('button').click();
+    await expect(page.locator('.task-search-results .state-box')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+const usageSecondRoot = '00000000-0000-4000-8000-000000000051';
+const usageSecondMember = '00000000-0000-4000-8000-000000000052';
+const usageMetrics = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens'];
+const usageSummary = (known: string) => ({
+  metrics: Object.fromEntries(usageMetrics.map(key => [key, { known: key === 'totalTokens' ? known : null, contributingRecords: key === 'totalTokens' ? '1' : '0', unknownRecords: key === 'totalTokens' ? '0' : '1' }])),
+  scope: 'registered_executions', completeness: 'partial', reasonCodes: ['native_recovery_gap'],
+  coverage: { executions: '2', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '1' },
+  measurementRecords: '1', lastMeasuredAt: time, observedAt: time, etag: 'summary-revision',
+});
+
+async function installChainUsage(page: Page) {
+  const requests: string[] = [];
+  let outcome: 'ok' | 'temporary' | 'forbidden' | 'missing' | 'cursor' = 'ok';
+  const respond = async (route: Route) => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    requests.push(`${request.method()} ${path}${url.search}`);
+    if (path === '/api/usage/v1/capabilities') return send({ protocol: 'daynight.usage.v1' });
+    if (path.endsWith('/usage/v1/task-summaries')) return send({ items: (request.postDataJSON() as { taskIds: string[] }).taskIds.map(taskId => ({ taskId, summary: usageSummary('42') })) });
+    const match = path.match(/\/usage\/v1\/aggregates\/chain\/([^/]+)$/);
+    if (match === null) return send({ error: { code: 'not_found', requestId: 'fixture' } }, 404);
+    if (outcome === 'temporary') return send({ error: { code: 'unavailable', requestId: 'fixture' } }, 503);
+    if (outcome === 'forbidden') return send({ error: { code: 'aggregate_scope_restricted', requestId: 'fixture' } }, 403);
+    if (outcome === 'missing') return send({ error: { code: 'not_found', requestId: 'fixture' } }, 404);
+    if (outcome === 'cursor' && url.searchParams.has('cursor')) return send({ error: { code: 'cursor_expired', requestId: 'fixture' } }, 409);
+    const id = match[1]!;
+    const second = id === usageSecondRoot || id === usageSecondMember;
+    return send({ scope: 'chain', scopeId: id, membershipPolicy: 'current_members_excludes_deleted', membershipRevision: 'membership-revision', summary: usageSummary(second ? '321' : '0'),
+      members: { total: '2', withKnownUsage: '1', complete: '0', collecting: '0', partial: '1', unsupported: '0', unavailable: '0', noData: '1', restricted: '0' },
+      missingMembers: [{ taskId: second ? usageSecondMember : previousId, title: second ? 'Second chain member' : 'History origin', completeness: 'partial', reasonCodes: ['native_recovery_gap'] }],
+      nextMembersCursor: 'next-page', observedAt: time });
+  };
+  await page.route('**/api/usage/v1/**', respond);
+  await page.route('**/api/projects/**/usage/v1/**', respond);
+  return { requests, setOutcome: (next: typeof outcome) => { outcome = next; } };
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 24]) {
+  test(`chain action typography and interactions at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+    const scopedRoot = '00000000-0000-4000-8000-000000000063';
+    const scopedMember = '00000000-0000-4000-8000-000000000064';
+    const goalId = '00000000-0000-4000-8000-000000000065';
+    const additionalTasks = [
+      detailFixture(projectId, usageSecondRoot, { title: 'Unfinished chain' }),
+      detailFixture(projectId, usageSecondMember, { title: 'Unfinished member', dependsOn: [usageSecondRoot] }),
+      detailFixture(projectId, scopedRoot, { title: 'Scoped chain' }),
+      detailFixture(projectId, scopedMember, { title: 'Scoped member', parentId: goalId, dependsOn: [scopedRoot] }),
+      detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', ready: false }),
+    ];
+    const writes = await install(page, false, true, false, false, false, undefined,
+      { status: 'done', completedAt: time, ready: false }, { additionalTasks, locale });
+    await installChainUsage(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.addStyleTag({ content: `html { font-size: ${rootSize}px !important; }` });
+    await page.locator('#project-section-tab-tasks').click();
+
+    for (const [id, kind, title] of [[taskId, 'completed', 'Target task'], [usageSecondRoot, 'unfinished', 'Unfinished chain'], [scopedRoot, 'scoped', 'Scoped chain']] as const) {
+      const row = page.locator(`[data-chain-id="${id}"]`);
+      await row.locator('.root-toggle').click();
+      const heading = row.locator('.goal-children-heading');
+      const actions = heading.locator('.goal-children-actions');
+      const usage = actions.getByRole('button', { name: `${title}${locale === 'en' ? ', Token usage' : '，Token 用量'}`, exact: true });
+      const detail = actions.locator('.goal-detail-link:not(.chain-usage-button)');
+      await expect(usage).toBeVisible();
+      await expect(usage).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      for (const word of await usage.locator('.goal-detail-word > span').all()) await expect(word).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      await expect(detail).toHaveCount(kind === 'scoped' ? 0 : 1);
+      if (kind !== 'scoped') {
+        await expect(detail).toHaveAccessibleName(`${title}${locale === 'en' ? ', View task details' : '，查看任务详情'}`);
+        await expect(detail).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        for (const word of await detail.locator('.goal-detail-word > span').all()) await expect(word).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        await expect(detail.locator('time')).toHaveCount(kind === 'completed' ? 1 : 0);
+        if (kind === 'completed') {
+          await expect(detail.locator('time')).toHaveAttribute('datetime', time);
+          await expect(detail.locator('time')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        }
+      }
+      const targetSizes = await actions.evaluate(element => {
+        const sizes = () => ({ height: element.parentElement!.getBoundingClientRect().height, buttons: [...element.querySelectorAll<HTMLButtonElement>(':scope > button')].map(button => {
+          const box = button.getBoundingClientRect(), heading = element.parentElement!.getBoundingClientRect();
+          const time = button.querySelector('time')?.getBoundingClientRect();
+          return { width: box.width, height: box.height, left: box.left - heading.left, top: box.top - heading.top, timeTop: time === undefined ? null : time.top - box.top };
+        }) });
+        const baseline = document.createElement('style');
+        baseline.textContent = `.project-tasks .root-list .goal-children-actions .goal-detail-link { font-size: var(--text-sm) !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word { display: contents !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word::before { content: none !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word > span { font-size: var(--text-sm) !important; }`;
+        return [null, 200, 266].map(width => {
+          if (width !== null) (element as HTMLElement).style.flex = `0 0 ${width}px`;
+          const current = sizes();
+          document.head.append(baseline);
+          const previous = sizes();
+          baseline.remove();
+          (element as HTMLElement).style.flex = '';
+          return { width, current, previous };
+        });
+      });
+      for (const { current, previous } of targetSizes) {
+        expect(Math.abs(current.height - previous.height)).toBeLessThanOrEqual(2.1);
+        for (let i = 0; i < current.buttons.length; i++) {
+          const actual = current.buttons[i]!, old = previous.buttons[i]!;
+          expect(actual.width).toBeGreaterThanOrEqual(old.width - 0.1);
+          expect(Math.abs(actual.width - old.width)).toBeLessThanOrEqual(1.1);
+          expect(actual.height).toBeGreaterThanOrEqual(old.height - 0.1);
+          expect(Math.abs(actual.height - old.height)).toBeLessThanOrEqual(2.1);
+          expect(Math.abs(actual.left - old.left)).toBeLessThanOrEqual(1.1);
+          expect(Math.abs(actual.top - old.top)).toBeLessThanOrEqual(2.1);
+          if (actual.timeTop !== null && old.timeTop !== null) expect(Math.abs(actual.timeTop - old.timeTop)).toBeLessThanOrEqual(2.1);
+        }
+      }
+      expect(await heading.evaluate(element => {
+        const count = element.querySelector(':scope > span')!.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll<HTMLButtonElement>('.goal-children-actions > button')];
+        const boxes = buttons.map(button => button.getBoundingClientRect());
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        const inside = (box: DOMRect) => box.left >= 0 && box.right <= innerWidth && box.top >= element.getBoundingClientRect().top && box.bottom <= element.getBoundingClientRect().bottom;
+        const detail = buttons.find(button => button.querySelector('time'));
+        const textSeparate = detail === undefined || (() => {
+          const text = document.createRange(); text.selectNodeContents(detail.firstChild!);
+          const label = detail.querySelector('time')!.getBoundingClientRect();
+          return [...text.getClientRects()].every(rect => separate(rect, label));
+        })();
+        return boxes.every(box => inside(box) && separate(box, count)) && (boxes.length < 2 || separate(boxes[0]!, boxes[1]!)) && textSeparate && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+
+      await usage.focus(); await page.keyboard.press('Enter');
+      const usageDialog = page.locator('.chain-usage-dialog');
+      await expect(usageDialog).toHaveAccessibleName(`${locale === 'en' ? 'Token usage' : 'Token 用量'} · ${title}`);
+      await page.keyboard.press('Escape'); await expect(usageDialog).toHaveCount(0); await expect(usage).toBeFocused();
+      if (kind !== 'scoped') {
+        await detail.focus();
+        if (kind === 'completed') {
+          const hint = page.getByRole('tooltip');
+          await expect(hint).toBeVisible(); await expect(hint).not.toBeEmpty();
+          const hintBox = await hint.boundingBox();
+          expect(hintBox).not.toBeNull();
+          expect(hintBox!.x).toBeGreaterThanOrEqual(0); expect(hintBox!.x + hintBox!.width).toBeLessThanOrEqual(width);
+        }
+        await detail.click();
+        const dialog = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+        await expect(dialog).toHaveAccessibleName(title);
+        await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
+        await expect(detail).toBeFocused();
+      }
+      await expect(row.locator('.root-toggle')).toHaveAttribute('aria-expanded', 'true');
+    }
+    expect(writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`chain usage follows the selected chain and preserves list and graph at ${width}px in ${locale}`, async ({ page }) => {
+    const second = [detailFixture(projectId, usageSecondRoot, { title: 'Second chain', version: 5n }),
+      detailFixture(projectId, usageSecondMember, { title: 'Second chain member', dependsOn: [usageSecondRoot], blockedBy: [usageSecondRoot], ready: false, version: 5n })];
+    const writes = await install(page, false, true, false, false, false, undefined, {}, { additionalTasks: second, locale });
+    const usage = await installChainUsage(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const firstToggle = page.locator(`#task-root-${taskId}`), secondToggle = page.locator(`#task-root-${usageSecondRoot}`);
+    await firstToggle.click(); await secondToggle.click();
+    const first = page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`);
+    const secondButton = page.locator(`[data-chain-id="${usageSecondRoot}"] .chain-usage-button`);
+    await expect(first).toBeVisible(); await expect(secondButton).toBeVisible();
+    const position = await first.evaluate(element => ({ left: element.getBoundingClientRect().left, detail: element.parentElement!.querySelector('.goal-detail-link:not(.chain-usage-button)')!.getBoundingClientRect().left }));
+    if (width === 1280) expect(position.left).toBeLessThan(position.detail);
+    expect(usage.requests.filter(request => request.includes('/aggregates/'))).toHaveLength(0);
+    await first.focus(); const scrollBefore = await page.evaluate(() => window.scrollY); await page.keyboard.press('Enter');
+    const dialog = page.locator('.chain-usage-dialog');
+    await expect(dialog).toHaveAccessibleName(locale === 'en' ? 'Token usage · Target task' : 'Token 用量 · Target task');
+    await expect(dialog.getByRole('button', { name: locale === 'en' ? 'Close' : '关闭', exact: true })).toBeFocused();
+    await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+    await expect(dialog).toContainText('0');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0); await expect(first).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true'); await expect(secondToggle).toHaveAttribute('aria-expanded', 'true');
+    await secondButton.click();
+    await expect(dialog).toHaveAccessibleName(locale === 'en' ? 'Token usage · Second chain' : 'Token 用量 · Second chain');
+    await expect(dialog.getByRole('button', { name: 'Second chain member' })).toBeVisible();
+    await expect(dialog).toContainText('321');
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Close' : '关闭', exact: true }).click();
+    await expect(secondButton).toBeFocused();
+    expect(usage.requests.filter(request => request.includes('/aggregates/')).map(request => request.split('/').at(-1))).toEqual([taskId, usageSecondRoot]);
+    const graphUsageRequests = usage.requests.filter(request => request.includes('/task-summaries')).length;
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const graphDialog = page.locator('.task-chain-dialog');
+    await expect(graphDialog).toBeVisible();
+    await expect(graphDialog.locator('.usage-aggregate-disclosure, .task-node-usage')).toHaveCount(0);
+    await graphDialog.locator('.graph-fullscreen-toggle').click();
+    await expect(graphDialog).toHaveClass(/task-chain-dialog-fullscreen/);
+    await expect(graphDialog.locator('.usage-aggregate-disclosure, .task-node-usage')).toHaveCount(0);
+    expect(usage.requests.filter(request => request.includes('/task-summaries')).length).toBe(graphUsageRequests);
+    await graphDialog.locator('.task-chain-close').click();
+    expect(writes).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('chain usage handles temporary failure, cursor expiry, permission and missing scope', async ({ page }) => {
+  await install(page, false, true);
+  const usage = await installChainUsage(page);
+  usage.setOutcome('temporary');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const dialog = page.locator('.chain-usage-dialog');
+  await expect(dialog.getByRole('alert')).toContainText('Unable to load aggregate usage');
+  usage.setOutcome('ok'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  usage.setOutcome('cursor'); await dialog.getByRole('button', { name: 'Load more incomplete tasks' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Refresh before continuing');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Load more incomplete tasks' })).toBeDisabled();
+  usage.setOutcome('ok'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect.poll(() => usage.requests.filter(request => request.includes('/aggregates/')).at(-1)).not.toContain('?cursor=');
+  usage.setOutcome('forbidden'); await dialog.getByRole('button', { name: 'Refresh usage' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('do not have permission');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toHaveCount(0);
+  usage.setOutcome('missing'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('no longer available');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toHaveCount(0);
+});
+
+test('chain usage member details retain draft protection and return focus', async ({ page }) => {
+  const writes = await install(page, false, true);
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  const member = usage.getByRole('button', { name: 'History origin' });
+  await member.click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const title = detail.locator('.thread-composer textarea');
+  await title.fill('Keep this draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(title).toHaveValue('Keep this draft'); await expect(usage).toBeVisible();
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await leave.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(detail).toHaveCount(0); await expect(member).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(usage).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('chain usage member Discussion draft survives Back from Overview', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Draft across Back');
+  const original = await draft.elementHandle();
+  await detail.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(detail.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(detail.getByRole('tab', { name: 'Discussion', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(draft).toHaveValue('Draft across Back');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  await expect(usage).toHaveCount(0); expect(writes).toEqual([]);
+});
+
+test('temporary project metadata failure preserves chain member draft and rejected navigation', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  let failing = false;
+  await page.route(`**/api/v1/projects/${projectId}`, route => failing ? route.fulfill({ status: 503, json: { error: { code: 'unavailable', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }) : route.fallback());
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Draft through project failure');
+  const original = await draft.elementHandle();
+  failing = true;
+  const failed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}` && response.status() === 503);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await failed;
+  await expect(page.locator('.snapshot-error')).toBeVisible();
+  await expect(draft).toHaveValue('Draft through project failure');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  failing = false;
+  await page.locator('.snapshot-error button').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator('.snapshot-error')).toHaveCount(0);
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  expect(writes).toEqual([]);
+});
+
+test('a cross-Goal scoped chain uses its visible member as an anchor for the whole chain', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000061';
+  await install(page, false, true, false, false, false, undefined, {}, {
+    previousChanges: { parentId: goalId }, additionalTasks: [detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', version: 5n, ready: false })],
+  });
+  const usage = await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  const trigger = page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`);
+  await trigger.click();
+  const dialog = page.locator('.chain-usage-dialog');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  expect(usage.requests.filter(request => request.includes('/aggregates/')).map(request => request.split('/').at(-1))).toEqual([taskId]);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+});
+
+test('account change discards a late chain usage response', async ({ page, context }) => {
+  await install(page, false, true);
+  await installChainUsage(page);
+  const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  await page.route(`**/api/projects/${projectId}/usage/v1/aggregates/chain/${taskId}`, async route => {
+    started.resolve(); await gate.promise;
+    await route.fulfill({ json: { scope: 'chain', scopeId: taskId, membershipPolicy: 'current_members_excludes_deleted', membershipRevision: 'old', summary: usageSummary('123456'),
+      members: { total: '1', withKnownUsage: '1', complete: '0', collecting: '0', partial: '1', unsupported: '0', unavailable: '0', noData: '0', restricted: '0' },
+      missingMembers: [{ taskId: previousId, title: 'Private late result', completeness: 'partial', reasonCodes: [] }], nextMembersCursor: null, observedAt: time },
+      headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }).catch(() => {});
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  await started.promise;
+  const other = await context.newPage();
+  const secondUser = '00000000-0000-4000-8000-000000000022';
+  try {
+    await page.route('**/api/v1/me', route => route.fulfill({ json: { id: secondUser, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Other', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': secondUser } }));
+    await other.route('**/identity-sender', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Identity sender</title>' }));
+    await other.goto('/identity-sender');
+    await other.evaluate(userId => { localStorage.setItem('daynight.activeUser', JSON.stringify(userId)); const channel = new BroadcastChannel('daynight-identity'); channel.postMessage('identity-changed'); channel.close(); }, secondUser);
+    await expect(page.locator('.chain-usage-dialog')).toHaveCount(0);
+    await expect(page.getByText('Account changed', { exact: true }).first()).toBeVisible();
+    gate.resolve();
+    await expect(page.getByText('Private late result')).toHaveCount(0);
+  } finally { gate.resolve(); await other.close(); }
+});
+
+test('removing the usage anchor retains an open member detail and its draft', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, {}, { exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; } });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const title = detail.locator('.thread-composer textarea'); await title.fill('Retain this draft');
+  const original = await title.elementHandle();
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(title).toHaveValue('Retain this draft');
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  expect(await title.evaluate((element, before) => element === before, original)).toBe(true);
+  await expect(detail).toBeVisible();
+});
+
+test('removing the usage anchor retains a direct member detail and Discussion draft', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  const directRead = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200);
+  await usage.getByRole('button', { name: 'History origin' }).click(); await directRead;
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Direct member draft');
+  const original = await draft.elementHandle();
+  const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, async route => { started.resolve(); await gate.promise; await route.fallback(); });
+  try {
+    updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+    const synchronized = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    const reread = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200 && response.headers()['daynight-task-epoch'] === '00000000-0000-4000-8000-000000000901');
+    await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await synchronized; await started.promise;
+    await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+    gate.resolve(); await reread;
+    await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+    await expect(detail).toHaveAccessibleName('History origin'); await expect(draft).toHaveValue('Direct member draft');
+    expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  } finally { gate.resolve(); }
+  expect(writes).toEqual([]);
+});
+
+test('direct member draft survives a failed recheck but is retired on denial', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  await page.locator('.chain-usage-dialog').getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Private direct draft');
+  const original = await draft.elementHandle();
+  let outcome: 'temporary' | 'denied' | 'ok' = 'temporary';
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, route => outcome === 'ok' ? route.fallback() : route.fulfill({ status: outcome === 'temporary' ? 503 : 403, json: { error: { code: outcome === 'temporary' ? 'unavailable' : 'forbidden', message: 'Fixture failure', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(detail.locator('.task-detail-error')).toBeVisible();
+  await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  outcome = 'denied'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(draft).toHaveCount(0);
+  outcome = 'ok'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(detail.locator('.thread-composer textarea')).toHaveValue('');
+  expect(writes).toEqual([]);
+});
+
+test('browser history does not restore the transient chain usage layer', async ({ page }) => {
+  await install(page, false, true); await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  await expect(page.locator('.task-detail-dialog:not(.chain-usage-dialog)')).toHaveAccessibleName('History origin');
+  await page.goBack(); await expect(usage).toHaveCount(0);
+  await page.goForward(); await expect(usage).toHaveCount(0);
+  await expect(page.locator('.task-detail-dialog:not(.chain-usage-dialog)')).toHaveAccessibleName('History origin');
+});
+
+test('Goal graph and restored nested chain graph retain usage', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000061';
+  await install(page, false, true, false, false, false, undefined, { parentId: goalId }, {
+    previousChanges: { parentId: goalId }, additionalTasks: [detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', version: 5n, ready: false })],
+  });
+  const usage = await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const graph = page.locator(`#task-graph-${goalId}`);
+  await expect(graph.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect.poll(() => usage.requests.filter(request => request.includes('/task-summaries')).length).toBeGreaterThan(0);
+  await expect(graph.locator('.task-node-usage').first()).toBeVisible();
+  await graph.locator('.task-chain-close').click();
+  await card.locator('.goal-list-detail').click();
+  const goal = page.locator('.goal-detail-surface'); await expect(goal).toHaveAccessibleName('Goal');
+  await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined && typeof window.selectGoalReading === 'function');
+  await page.evaluate(({ goalId, taskId }) => window.selectGoalReading(goalId, { graphRootId: taskId, task: null }), { goalId, taskId });
+  const nested = page.locator(`#task-graph-${taskId}`);
+  await expect(nested.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect(nested.locator('.task-node-usage').first()).toBeVisible();
+  await nested.locator('.graph-fullscreen-toggle').click();
+  await expect(nested.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect(nested.locator('.task-node-usage').first()).toBeVisible();
+});
+
+
+test('removing the usage anchor retains an open member Session draft', async ({ page }) => {
+  const { source } = imageBrowserData();
+  const snapshot = { ...source, identity: { ...source.identity, projectId, taskId: previousId }, lastEventSeq: '0', lastTimelineSeq: '0',
+    lifecycle: 'active' as const, activity: 'idle' as const, connectionState: 'connected' as const, currentTurnId: null,
+    operations: { canSend: true, canCancel: false, canRespond: false } };
+  const worker = { claimId: source.claimId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
+    machine: { id: source.identity.controllerId, name: 'Session fixture' }, platform: 'linux' as const, agent: 'codex' as const,
+    agentControlMode: 'web' as const, worktreeId: source.identity.worktreeId, phase: 'executing' as const,
+    herdr: null, nativeSessionId: source.identity.nativeSessionId, claimedAt: time };
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, { status: 'done', ready: false, completedAt: time }, {
+    previousChanges: { status: 'in_progress', ready: false, blockedBy: [], startedAt: time, properties: { worker } },
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  const sessionRoot = `/api/v1/projects/${projectId}/tasks/${previousId}/sessions`;
+  const reply = (route: Route, body: unknown) => route.fulfill({ json: body, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  await page.route(`**${sessionRoot}/current`, route => reply(route, { status: 'registered', session: snapshot }));
+  await page.route(`**${sessionRoot}/${snapshot.sessionId}/timeline**`, route => reply(route, {
+    sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null,
+    hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0',
+  }));
+  await page.routeWebSocket('**/channel*', socket => {
+    socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'fixture-event-0' }));
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Session', exact: true }).click();
+  const draft = detail.locator('.task-agent-session').getByRole('textbox', { name: 'Message' });
+  await draft.fill('Retain the Session draft');
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: false, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  await expect(draft).toHaveValue('Retain the Session draft');
+  await expect(detail).toBeVisible();
+});
+
+test('member detail denial after anchor deletion clears retained draft through recovery', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  let denied = false, deniedReads = 0;
+  await install(page, false, true, false, false, false, undefined, {}, {
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, route => {
+    if (denied) { deniedReads++; return route.fulfill({ status: 403, json: { error: { code: 'forbidden', message: 'Forbidden', requestId: 'fixture-denied' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }); }
+    const detail = detailFixture(projectId, previousId, deniedReads ? { title: 'History origin', version: 6n, dependsOn: [], blockedBy: [], ready: true, updatedAt: '2026-10-24T09:00:00Z' } : { title: 'History origin', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
+    return route.fulfill({ status: 200, body: stringifyWireJson(detail), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': deniedReads ? '00000000-0000-4000-8000-000000000901' : taskSyncEpoch(projectId) } });
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Private denied draft');
+  denied = true; updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect.poll(() => deniedReads).toBeGreaterThan(0);
+  const retry = detail.getByRole('button', { name: /retry/i }).first();
+  await expect(retry).toBeVisible();
+  await expect(draft).toHaveCount(0);
+  denied = false;
+  await retry.click();
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(detail.locator('.thread-composer textarea')).toHaveValue('');
+});
+
+test('member Discussion draft survives anchor deletion and protects close', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, {}, {
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}/thread/messages**`, route => route.fulfill({ json: { items: [], hasMoreBefore: false, hasMoreAfter: false }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Keep this discussion draft');
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  await expect(draft).toHaveValue('Keep this discussion draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Keep this discussion draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await leave.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(detail).toHaveCount(0);
+});

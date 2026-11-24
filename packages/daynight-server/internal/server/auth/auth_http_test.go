@@ -24,7 +24,7 @@ import (
 func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.Login(t, "user-one")
-	if cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 604800 {
+	if cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 400*24*60*60 {
 		t.Fatalf("session cookie: %+v", cookie)
 	}
 	cookies := []*http.Cookie{cookie}
@@ -40,7 +40,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if empty.Items == nil || len(empty.Items) != 0 {
 		t.Fatalf("empty tokens: %+v", empty)
 	}
-	createResponse := h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin)
+	createResponse := createScopedHTTPPAT(t, h, cookie, "CI agent", nil)
 	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createResponse, 201)
 	if !strings.Contains(createResponse.Body.String(), `"lastUsedAt":null`) {
 		t.Fatal("created PAT must contain null lastUsedAt")
@@ -73,7 +73,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if got := h.Request("POST", "/mutation", "", cookies, bearer, "https://foreign.test"); got.Code != 204 {
 		t.Fatalf("Bearer origin behavior: %d %s", got.Code, got.Body)
 	}
-	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v2/me/tokens", `{"name":"nested","expiresAt":null}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
 		got := h.Request(call.method, call.path, call.body, cookies, bearer, h.Origin)
 		testsupport.AssertProjectError(t, got, 403, "forbidden")
 	}
@@ -400,7 +400,7 @@ func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
 	user := testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", cookies, nil, ""), http.StatusOK)
 	mint := func(name string) api.CreatedPersonalAccessToken {
 		t.Helper()
-		return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request(http.MethodPost, "/api/v1/me/tokens", `{"name":"`+name+`","expiresAt":null}`, cookies, nil, h.Origin), http.StatusCreated)
+		return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createScopedHTTPPAT(t, h, cookie, name, nil), http.StatusCreated)
 	}
 	expired, active := mint("Expired independently"), mint("Active independently")
 	result, err := h.Database.Pool.Exec(context.Background(), `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, expired.ID)
@@ -434,11 +434,11 @@ func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
 // completionIdentity isolates the HTTP adapter while keeping the real request parser and router.
 type completionIdentity struct {
 	*strictIdentity
-	complete func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	complete func(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error)
 }
 
-func (i *completionIdentity) CompleteLogin(ctx context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
-	return i.complete(ctx, values, binding)
+func (i *completionIdentity) CompleteLogin(ctx context.Context, values url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
+	return i.complete(ctx, values, binding, userAgent)
 }
 
 func TestCallbackNavigatesThroughCompletion(t *testing.T) {
@@ -446,10 +446,10 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 		t.Run(destination, func(t *testing.T) {
 			calls := 0
 			identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
-			identity.complete = func(_ context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
+			identity.complete = func(_ context.Context, values url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
 				calls++
-				if values.Get("state") != "state" || values.Get("code") != "private-code" || binding != "browser-binding" {
-					t.Fatalf("callback arguments: %v %q", values, binding)
+				if values.Get("state") != "state" || values.Get("code") != "private-code" || binding != "browser-binding" || userAgent != "sample browser" {
+					t.Fatalf("callback arguments: %v %q %q", values, binding, userAgent)
 				}
 				return identitycore.LoginCompletion{LoginID: "login", User: model.User{ID: "private-user"}, Session: model.Session{ID: "private-session", ExpiresAt: time.Now().Add(time.Hour)}, Secret: "private-secret", ReturnPath: destination}, nil
 			}
@@ -460,6 +460,7 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 			mux := http.NewServeMux()
 			h.RegisterRoutes(mux)
 			request := httptest.NewRequest(http.MethodGet, "/auth/callback?state=state&code=private-code", nil)
+			request.Header.Set("User-Agent", "sample browser")
 			request.AddCookie(&http.Cookie{Name: h.bindingCookieName("state"), Value: "browser-binding"})
 			response := httptest.NewRecorder()
 			mux.ServeHTTP(response, request)
@@ -482,7 +483,7 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 
 func TestCallbackStartsPreviewAfterIssuingMainSession(t *testing.T) {
 	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
-	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+	identity.complete = func(_ context.Context, _ url.Values, _, _ string) (identitycore.LoginCompletion, error) {
 		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "/projects?view=1#part"}, nil
 	}
 	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -515,7 +516,7 @@ func TestCallbackStartsPreviewAfterIssuingMainSession(t *testing.T) {
 
 func TestCallbackPreservesActualEscapedBase(t *testing.T) {
 	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/custom/callback" }}}
-	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+	identity.complete = func(_ context.Context, _ url.Values, _, _ string) (identitycore.LoginCompletion, error) {
 		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "%2Fprojects?view=1#part"}, nil
 	}
 	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))

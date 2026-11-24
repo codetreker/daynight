@@ -34,6 +34,9 @@ func (f projectionFixture) TaskCacheEpoch(context.Context, string) (string, erro
 func (f projectionFixture) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return f.records, f.err
 }
+func (f projectionFixture) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	panic("unexpected Goal prerequisite read")
+}
 func (f projectionFixture) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
 	return map[string]model.TaskDependencyState{}, f.err
 }

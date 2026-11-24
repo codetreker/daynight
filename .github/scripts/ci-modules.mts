@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
-type Module = "cli" | "server" | "api" | "web" | "e2e";
+type Module = "cli" | "server" | "api" | "web" | "mobile" | "e2e";
 export type ModuleSelection = Record<Module, boolean>;
 
-const allModules: ModuleSelection = { cli: true, server: true, api: true, web: true, e2e: true };
+const allModules: ModuleSelection = { cli: true, server: true, api: true, web: true, mobile: true, e2e: true };
+const noModules: ModuleSelection = { cli: false, server: false, api: false, web: false, mobile: false, e2e: false };
 const nodeInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
 const cliManifestPath = "packages/daynight/package.json";
 const cliBuildInputs = new Set([
@@ -30,15 +31,8 @@ const serverRuntimeInput = (path: string): boolean =>
   !path.endsWith("_test.go") && !path.includes("/testdata/");
 
 export const selectModules = (paths: readonly string[]): ModuleSelection => {
-  const selected: ModuleSelection = { cli: false, server: false, api: false, web: false, e2e: false };
+  const selected = { ...noModules };
   for (const path of paths) {
-    if (nodeInputs.has(path)) {
-      selected.cli = true;
-      selected.web = true;
-      selected.api = true;
-      selected.e2e = true;
-      continue;
-    }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
       selected.api = true;
@@ -51,9 +45,10 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       path === ".github/workflows/publish.yml"
     ) continue;
     if (path.startsWith("packages/e2e_tests/")) selected.e2e = true;
-    else if (path.startsWith("patches/")) {
+    else if (nodeInputs.has(path) || path.startsWith("patches/")) {
       selected.cli = true;
       selected.web = true;
+      selected.mobile = true;
       selected.api = true;
       selected.e2e = true;
     } else if (path.startsWith("packages/daynight/")) {
@@ -70,7 +65,8 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       selected.web = true;
       selected.api ||= webProductionInput(path);
       selected.e2e ||= webProductionInput(path);
-    } else if (path.startsWith("deployment/")) selected.web = true;
+    } else if (path.startsWith("packages/mobile/")) selected.mobile = true;
+    else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;
@@ -140,7 +136,7 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
       const before = parseManifest(beforeSource);
       const after = parseManifest(afterSource);
       if (diff.changes.length === 1 && beforeMode === afterMode && isDeepStrictEqual(before.inputs, after.inputs) && before.version !== after.version) {
-        return { cli: false, server: false, api: false, web: false, e2e: false };
+        return { ...noModules };
       }
     }
   }

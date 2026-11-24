@@ -25,10 +25,10 @@ const nullable = (source: string, map: (source: string) => string): string => so
 const tools = (source: string): string => project(source, ["codex", "copilot"], Object.fromEntries(["codex", "copilot"].map(key => [key, (source: string) => nullable(source, value => {
   return project(value, ["kind", "path"]);
 })])));
-const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true): string => {
+const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true, recognizeWindowsProcessCleanup = true, recognizePlatformTaskMode = true): string => {
   const capabilities = workerConfigurationCapabilities(options);
   return project(source, ["revision", "updatedAt", "value"], { value: source => project(source,
-    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(recognizeTagFilter ? ["taskTagFilter"] : []), ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : []), ...(capabilities.archiveSessions ? ["archiveSessions"] : [])],
+    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", ...(recognizePlatformTaskMode ? ["platformTaskMode"] : []), "native", "projects", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(recognizeWindowsProcessCleanup ? ["enableWindowsProcessCleanup"] : []), ...(recognizeTagFilter ? ["taskTagFilter"] : []), ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : []), ...(capabilities.archiveSessions ? ["archiveSessions"] : [])],
     { taskTagFilter: source => project(source, ["names", "match"]), native, projects: source => arraySource(source, source => project(source, ["projectId", "nativeOverrides"], { nativeOverrides: native })), toolPaths: tools }) });
 };
 const knownJson = (source: string): unknown => {
@@ -46,7 +46,7 @@ const sourceOf = (value: unknown): string => {
   jsonObjectSources(value.json);
   return value.json;
 };
-export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true): ReceivedWorkerDesired => {
+export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true, recognizeWindowsProcessCleanup = true, recognizePlatformTaskMode = true): ReceivedWorkerDesired => {
   const root = jsonObjectSources(json), value = root.get("value");
   if (value === undefined || !root.has("revision") || !root.has("updatedAt")) return malformed();
   const members = jsonObjectSources(value);
@@ -55,20 +55,21 @@ export const receiveWorkerDesired = (json: string, options?: WorkerConfiguration
   if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(updatedAt)) return malformed();
   const capabilities = options ?? { controlMode: false, toolPaths: true, archiveSessions: members.has("archiveSessions") };
   const enabled = workerConfigurationCapabilities(capabilities);
+  if (typeof options === "object" && options.platformTaskMode !== undefined && members.has("platformTaskMode") !== options.platformTaskMode) return { json, revision, updatedAt, known: null };
   // The full source was validated above; a known-field shape or value that this
   // binary cannot decode is retained as raw authority, not a partial target.
   let known: WorkerCloudDesired | null;
   try {
     if (enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return { json, revision, updatedAt, known: null };
-    known = parseWorkerCloudDesired(knownJson(desiredProjection(json, { ...enabled, controlMode: false }, recognizeSudo, recognizeTagFilter)), false, { ...enabled, controlMode: false });
+    known = parseWorkerCloudDesired(knownJson(desiredProjection(json, { ...enabled, controlMode: false }, recognizeSudo, recognizeTagFilter, recognizeWindowsProcessCleanup, recognizePlatformTaskMode)), false, { ...enabled, controlMode: false });
   }
   catch (error) { if (!(error instanceof ProtocolError || error instanceof SyntaxError)) throw error; known = null; }
   return { json, revision, updatedAt, known };
 };
 const failure = (source: string): string => nullable(source, value => project(value, ["code", "category", "phase", "occurredAt"]));
-const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
+const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true, recognizeTagFilter = true, recognizeWindowsProcessCleanup = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
   items: source => {
-    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(recognizeTagFilter ? ["taskTagFilter"] : []), "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : []), ...(workerConfigurationCapabilities(options).archiveSessions ? ["archiveSessions"] : [])];
+    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "platformTaskMode", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(recognizeWindowsProcessCleanup ? ["enableWindowsProcessCleanup"] : []), ...(recognizeTagFilter ? ["taskTagFilter"] : []), "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : []), ...(workerConfigurationCapabilities(options).archiveSessions ? ["archiveSessions"] : [])];
     if (!source.trimStart().startsWith("[")) return malformed();
     const items = jsonContainerSources(source).filter(source => {
       const key = jsonObjectSources(source).get("key");
@@ -85,8 +86,8 @@ const observationProjection = (source: string, options: WorkerConfigurationCapab
     return `[${items.join(",")}]`;
   },
 });
-export const validateWorkerRemoteObservation = (json: string, observationRevision: string, recognizeSudo = true, recognizeTagFilter = true): void => {
-  const projection = jsonObjectSources(observationProjection(json, { controlMode: true, toolPaths: true, archiveSessions: true }, recognizeSudo, recognizeTagFilter)), reportedAt = projection.get("reportedAt");
+export const validateWorkerRemoteObservation = (json: string, observationRevision: string, recognizeSudo = true, recognizeTagFilter = true, recognizeWindowsProcessCleanup = true): void => {
+  const projection = jsonObjectSources(observationProjection(json, { controlMode: true, toolPaths: true, archiveSessions: true }, recognizeSudo, recognizeTagFilter, recognizeWindowsProcessCleanup)), reportedAt = projection.get("reportedAt");
   if (reportedAt === undefined) return malformed();
   const instant = timestamp(knownJson(reportedAt));
   if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(instant)) return malformed();
@@ -162,8 +163,22 @@ export const configurationDesiredSourcesComparable = (left: string, right: strin
   const leftRoot = jsonObjectSources(left), rightRoot = jsonObjectSources(right);
   const leftValue = desiredCapabilitySources(left), rightValue = desiredCapabilitySources(right);
   const hidden = new Set<WorkerCapabilityKey>(leftValue.has("archiveSessions") !== rightValue.has("archiveSessions") ? ["archiveSessions"] : []);
+  // Old checkpoints could preserve a then-unknown mode sibling alongside the
+  // boolean. Only the boolean was understood; compare it to the old projection
+  // of the newly negotiated authority without treating that sibling as proof.
+  const legacyMode = (value: ReadonlyMap<string, string>) => value.has("preferPlatformSpecificTasks");
+  const useLegacyMode = legacyMode(leftValue) || legacyMode(rightValue);
   const comparable = (root: ReadonlyMap<string, string>, value: ReadonlyMap<string, string>): string => objectSource(
-    [...root].map(([key, source]) => [key, key === "value" ? objectSource([...value].filter(([name]) => !hidden.has(name as WorkerCapabilityKey))) : source]),
+    [...root].map(([key, source]) => [key, key === "value" ? objectSource([...value].flatMap(([name, part]) => {
+      if (hidden.has(name as WorkerCapabilityKey)) return [];
+      if (name === "platformTaskMode" && useLegacyMode) {
+        if (value.has("preferPlatformSpecificTasks")) return [];
+        const mode = JSON.parse(part) as unknown;
+        if (mode !== "all" && mode !== "prefer" && mode !== "only") return [[name, part]];
+        return [["preferPlatformSpecificTasks", mode === "all" ? "false" : "true"]];
+      }
+      return [[name, part]];
+    })) : source]),
   );
   return configurationJsonSourcesEqual(comparable(leftRoot, leftValue), comparable(rightRoot, rightValue));
 };

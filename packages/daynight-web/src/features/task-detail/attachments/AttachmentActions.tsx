@@ -1,6 +1,7 @@
 import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError } from '../../../api/client';
+import { isTopOverlay, OverlayOwnerContext } from '../../../app/overlay';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { dialogFocusables } from '../focus';
 import { useDraftNavigationDecision } from '../TaskDraftNavigation';
@@ -8,13 +9,13 @@ import '../../../styles/auth.css';
 
 export type AttachmentActionTarget = { readonly path: string; readonly trigger: HTMLButtonElement };
 
-export const AttachmentActionMenu = ({ target, onDelete, onDismiss }: {
+export const AttachmentActionMenu = ({ target, menu, onDelete, onDismiss }: {
   readonly target: AttachmentActionTarget;
+  readonly menu: RefObject<HTMLDivElement | null>;
   readonly onDelete: () => void;
   readonly onDismiss: (restoreFocus: boolean) => void;
 }) => {
   const { messages } = useI18n();
-  const menu = useRef<HTMLDivElement>(null);
   const item = useRef<HTMLButtonElement>(null);
   const callbacks = useRef({ onDismiss });
   callbacks.current = { onDismiss };
@@ -41,7 +42,7 @@ export const AttachmentActionMenu = ({ target, onDelete, onDismiss }: {
       document.removeEventListener('scroll', position, true);
       element.hidePopover();
     };
-  }, [target]);
+  }, [menu, target]);
   return <div ref={menu} popover="auto" role="menu" className="attachment-action-menu" aria-label={messages.inspection.attachments.fileActions({ path: target.path })} onKeyDown={(event) => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -65,23 +66,33 @@ type AttachmentDeleteProps = {
   readonly busy: boolean;
   readonly paused?: boolean;
   readonly error: unknown;
-  readonly fallback: RefObject<HTMLElement | null>;
+  readonly onRestoreFocus: () => void;
   readonly onConfirm: () => void;
   readonly onDismiss: () => void;
 };
 
 export const AttachmentDeleteDialog = (props: AttachmentDeleteProps) => {
   const decision = useDraftNavigationDecision();
+  const owner = useContext(OverlayOwnerContext);
+  const restoration = useRef({ decision, owner, restore: props.onRestoreFocus });
+  restoration.current = { decision, owner, restore: props.onRestoreFocus };
   useLayoutEffect(() => { if (decision !== null) props.onDismiss(); }, [decision, props.onDismiss]);
-  return decision === null ? <DeleteDialog {...props} /> : null;
+  return decision === null ? <DeleteDialog {...props} onRestoreFocus={() => {
+    const current = restoration.current;
+    if (current.decision !== null || current.owner !== null && (current.owner.current === null || !isTopOverlay(current.owner.current))) return;
+    current.restore();
+  }} /> : null;
 };
 
-const DeleteDialog = ({ target, busy, paused, error, fallback, onConfirm, onDismiss }: AttachmentDeleteProps) => {
+const DeleteDialog = ({ target, busy, paused, error, onRestoreFocus, onConfirm, onDismiss }: AttachmentDeleteProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const id = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  // Changing the return target must not move focus out of an open confirmation.
+  const restoreFocus = useRef(onRestoreFocus);
+  restoreFocus.current = onRestoreFocus;
   const [attempted, setAttempted] = useState(false);
   useLayoutEffect(() => {
     const element = dialog.current!;
@@ -92,10 +103,7 @@ const DeleteDialog = ({ target, busy, paused, error, fallback, onConfirm, onDism
   useLayoutEffect(() => {
     if (busy) dialog.current!.focus();
   }, [busy]);
-  useEffect(() => () => {
-    const opener = target.trigger.isConnected ? target.trigger : fallback.current;
-    if (opener !== null && opener.closest('[hidden], [inert]') === null) opener.focus();
-  }, [target, fallback]);
+  useEffect(() => () => restoreFocus.current(), []);
   return <dialog ref={dialog} className="auth-dialog attachment-delete-dialog" aria-labelledby={`${id}-title`} aria-describedby={`${id}-copy ${id}-path`} aria-busy={busy} tabIndex={-1} onKeyDown={(event) => {
     event.stopPropagation();
     if (event.key !== 'Tab') return;

@@ -230,6 +230,7 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
+	BotBarrierDAOFn            func() store.BotBarrierDAO
 	CaptureDAOFn               func() store.WebhookCaptureDAO
 	ProjectDAOFn               func() store.ProjectWriteDAO
 	TaskDAOFn                  func() store.TaskWriteDAO
@@ -280,8 +281,6 @@ func (mock *taskHTTPProjectScopeMock) SessionDAO() store.ProjectSessionDAO {
 
 type taskHTTPReaderMock struct {
 	TaskHeaderFn func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn   func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn  func(context.Context, string) ([]model.TaskStep, error)
 	taskHTTPMockBase
 	TaskFn                     func(context.Context, string, string) (model.Task, error)
 	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
@@ -295,6 +294,7 @@ type taskHTTPReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
 	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
@@ -339,26 +339,6 @@ func (mock *taskHTTPReaderMock) TaskHeader(p0 context.Context, p1 string, p2 str
 	return mock.TaskHeaderFn(p0, p1, p2)
 }
 
-func (mock *taskHTTPReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", mock.TaskStepFn != nil)
-	return mock.TaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	mock.need("TaskStepPage", false)
-	panic("unreachable")
-}
-
-func (mock *taskHTTPReaderMock) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	mock.need("TaskStepSummary", false)
-	panic("unreachable")
-}
-
 func (mock *taskHTTPReaderMock) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
 	mock.need("ThreadMessage", false)
 	panic("unreachable")
@@ -399,6 +379,11 @@ func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
 }
 
+func (mock *taskHTTPReaderMock) TaskSyncGoalDependsOn(ctx context.Context, project string, ids []string) (map[string][]string, error) {
+	mock.need("TaskSyncGoalDependsOn", mock.TaskSyncGoalDependsOnFn != nil)
+	return mock.TaskSyncGoalDependsOnFn(ctx, project, ids)
+}
+
 func (mock *taskHTTPReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
 	mock.need("TaskSyncActiveTasks", mock.TaskSyncActiveTasksFn != nil)
 	return mock.TaskSyncActiveTasksFn(ctx, project)
@@ -413,17 +398,13 @@ type taskHTTPWriterMock struct {
 	ParentTaskFn     func(context.Context, string) (model.Task, error)
 	GoalProgressesFn func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TaskHeaderFn     func(context.Context, string) (model.TaskHeader, error)
-	TaskStepsFn      func(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStepFn func(context.Context, string, model.TaskStep) error
 	TouchTaskFn      func(context.Context, string, time.Time) error
-	UpdateTaskStepFn func(context.Context, string, model.TaskStep) error
-	MoveTaskStepFn   func(context.Context, string, string, int64, int64) error
-	DeleteTaskStepFn func(context.Context, string, string, int64, int64) error
 	taskHTTPMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDsFn     func(context.Context, []string) ([]string, error)
 	ActiveDependentIDsFn func(context.Context, string) ([]string, error)
+	UnfinishedChildIDsFn func(context.Context, string) ([]string, error)
 	ReachableFn          func(context.Context, string, string, store.DependencyReplacement) (bool, error)
 	CreateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
 	UpdateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
@@ -462,6 +443,11 @@ func (mock *taskHTTPWriterMock) ActiveDependentIDs(p0 context.Context, p1 string
 	return mock.ActiveDependentIDsFn(p0, p1)
 }
 
+func (mock *taskHTTPWriterMock) UnfinishedChildIDs(ctx context.Context, id string) ([]string, error) {
+	mock.need("UnfinishedChildIDs", mock.UnfinishedChildIDsFn != nil)
+	return mock.UnfinishedChildIDsFn(ctx, id)
+}
+
 func (mock *taskHTTPWriterMock) Reachable(p0 context.Context, p1 string, p2 string, p3 store.DependencyReplacement) (bool, error) {
 	mock.need("Reachable", mock.ReachableFn != nil)
 	return mock.ReachableFn(p0, p1, p2, p3)
@@ -497,34 +483,9 @@ func (mock *taskHTTPWriterMock) TaskHeader(p0 context.Context, p1 string) (model
 	return mock.TaskHeaderFn(p0, p1)
 }
 
-func (mock *taskHTTPWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
-	return mock.InsertTaskStepFn(p0, p1, p2)
-}
-
 func (mock *taskHTTPWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
 	mock.need("TouchTask", mock.TouchTaskFn != nil)
 	return mock.TouchTaskFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
-	return mock.UpdateTaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
-	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskHTTPWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
-	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 type taskHTTPProjectReaderMock struct {
@@ -760,7 +721,7 @@ func (mock *taskHTTPReaderMock) TaskWorkGroups(context.Context, string, store.Ta
 	panic("unreachable")
 }
 
-func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	mock.need("TaskWorkTargets", false)
 	panic("unreachable")
 }
@@ -1190,4 +1151,26 @@ type taskHTTPClaimAdmission struct {
 
 func (m taskHTTPClaimAdmission) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 	return m.read(ctx, user, worker)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
+}
+
+func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskHTTPWriterMock) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskHTTPWriterMock) HasTerminalAncestorGoal(ctx context.Context, id string) (bool, error) {
+	parent, err := mock.ParentTask(ctx, id)
+	return parent.Status.IsTerminal(), err
+}
+
+func (d *taskHTTPWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

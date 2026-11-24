@@ -205,18 +205,26 @@ func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, i
 	if err != nil {
 		return core.TransferReceipt{}, err
 	}
+	access, err := s.Access(ctx, p, id)
+	if err != nil {
+		return core.TransferReceipt{}, err
+	}
+	if err = ownerAdmin(access); err != nil {
+		return core.TransferReceipt{}, err
+	}
+	writer, ok := s.store.(store.ProjectTransferWriter)
+	if !ok {
+		return core.TransferReceipt{}, errors.New("project transfer writer unavailable")
+	}
 	var result core.TransferReceipt
-	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
-		if err := scope.ProjectGoalDependencyDAO().LockTeam(ctx); err != nil {
-			return err
-		}
+	c, err := writer.WriteProjectTransfer(ctx, id, func(scope store.ProjectWriteScope) error {
 		var err error
 		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
 		if err != nil {
 			return err
 		}
 		if result.Changed {
-			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, false); err != nil {
 				return err
 			}
 		}

@@ -181,15 +181,15 @@ func TestCommandRootSelection(t *testing.T) {
 		{name: "unknown flag", args: []string{"--secret=value"}, invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command, root, err := parseCommand(tc.args, lookupTestEnvironment(tc.env))
+			options, err := parseCommand(tc.args, lookupTestEnvironment(tc.env))
 			if tc.invalid {
 				if err == nil {
 					t.Fatal("invalid arguments accepted")
 				}
 				return
 			}
-			if err != nil || command != tc.command || root != tc.root {
-				t.Fatalf("command=%q root=%q error=%v", command, root, err)
+			if err != nil || options.command != tc.command || options.root != tc.root {
+				t.Fatalf("options=%+v error=%v", options, err)
 			}
 		})
 	}

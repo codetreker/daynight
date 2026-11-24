@@ -84,7 +84,7 @@ describe('Worker tool path details', () => {
     expect(screen.getByText(/Permission to access or execute the tool was denied./)).toBeInTheDocument();
     expect(screen.queryByText('Applied')).toBeNull();
     view.rerender(<WorkerToolPathDetails tool="codex" online />);
-    expect(screen.getByText('This Worker has not reported tool path support. Upgrade it or wait for a supported report.')).toBeInTheDocument();
+    expect(screen.getByText('This Worker has not reported tool launch path support. Upgrade it or wait for a supported report.')).toBeInTheDocument();
     expect(screen.queryByText('1.2.3')).toBeNull();
   });
 });

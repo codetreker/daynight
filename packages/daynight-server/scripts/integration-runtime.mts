@@ -320,7 +320,7 @@ const removeContainers = async (ownership: Ownership) => {
   }
 };
 
-const terminateRunChildren = async (ownership: Ownership) => {
+const terminateMarkedChildren = async (ownership: Ownership, markerName: string, markerValue: string) => {
   const ancestors = new Set<number>();
   let pid = process.pid;
   while (pid > 0 && !ancestors.has(pid)) {
@@ -335,8 +335,8 @@ const terminateRunChildren = async (ownership: Ownership) => {
       if (!/^[0-9]+$/.test(name) || ancestors.has(Number(name)) || !await currentUserProcess(name)) continue;
       const data = await discoveryEnvironment(name);
       if (data === null) continue;
-      const marker = data.split("\0").find((entry) => entry.startsWith("DAYNIGHT_INTEGRATION_RUN_ROOT="));
-      if (marker !== "DAYNIGHT_INTEGRATION_RUN_ROOT=" + ownership.root) continue;
+      const marker = data.split("\0").find((entry) => entry.startsWith(markerName + "="));
+      if (marker !== markerName + "=" + markerValue) continue;
       const identity = await readProcessIdentity(Number(name));
       if (identity === null) continue;
       if (basename(identity.executable) === "tee") {
@@ -353,6 +353,15 @@ const terminateRunChildren = async (ownership: Ownership) => {
     for (const identity of children) await terminateOwnedProcess(identity);
   }
   throw new Error("Integration child-process drain did not converge");
+};
+
+const terminateRunChildren = async (ownership: Ownership) => terminateMarkedChildren(ownership, "DAYNIGHT_INTEGRATION_RUN_ROOT", ownership.root);
+
+// The reviewer fixture can stop detached Controller and native processes while
+// the Server and test runner remain alive. Its marker is inherited at spawn.
+export const terminateReviewerChildren = async (ownerModule: string, root: string) => {
+  const ownership = await readOwnership(ownerModule, root);
+  await terminateMarkedChildren(ownership, "DAYNIGHT_INTEGRATION_REVIEWER_ROOT", join(root, "reviewer-worker"));
 };
 
 export const cleanupRun = async (ownerModule: string, root: string) => {
@@ -456,6 +465,7 @@ const cli = async (arguments_: string[]) => {
     case "redis-planned": await planRedis(moduleRoot, root); return;
     case "auth": await recordAuth(moduleRoot, root, values[0]); return;
     case "cleanup-binary": await recordCleanupBinary(moduleRoot, root); return;
+    case "reviewer-cleanup": await terminateReviewerChildren(moduleRoot, root); return;
     case "receipt": {
       if (!["true", "false"].includes(values[2])) throw new Error("Invalid integration race receipt");
       await writeBuildReceipt(moduleRoot, root, values[0], values[1], values[2] === "true"); return;

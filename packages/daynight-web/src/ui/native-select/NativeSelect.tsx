@@ -10,12 +10,12 @@ export type NativeSelectProps = Omit<ComponentPropsWithRef<"select">, "className
 };
 
 export const NativeSelect = ({
-  density = "form", layout = "content", focusTone = "default", touchMode = "none",
+  density = "form", layout = "content", focusTone = "default", touchMode = "none", textSize = "sm",
   pending = false, wrapperClassName, hidden, dir, multiple, size, children, ...props
 }: NativeSelectProps) => {
   const list = multiple === true || (size !== undefined && size > 1);
   return <span className={wrapperClassName === undefined ? "selection-control native-select" : `selection-control native-select ${wrapperClassName}`}
-    data-density={density} data-layout={layout} data-focus-tone={focusTone}
+    data-density={density} data-layout={layout} data-focus-tone={focusTone} data-text-size={textSize}
     data-touch-mode={touchMode} data-pending={pending} data-mode={list ? "list" : "popup"}
     hidden={hidden} dir={dir}>
     <select {...props} className="native-select__control" hidden={hidden} dir={dir} multiple={multiple} size={size}>

@@ -13,6 +13,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   const ready = owned.ready.then(async ({ port, token }) => {
     if (closing) throw new Error("Copilot runtime closed during startup.");
     const bridgeEnv = { ...(options.env ?? process.env) }; delete bridgeEnv.NODE_DEBUG; delete bridgeEnv.COPILOT_CONNECTION_TOKEN;
+    options.assertNativeDispatch?.();
     bridge = startCopilotBridge({ cwd: options.cwd, env: bridgeEnv, port, token, onSpawn: options.onSpawn,
       onLost: error => { if (!closing) lost(error); }, ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}), ...(media ? { media } : {}) });
     client = await copilotDeadline(Promise.race([bridge.ready, owned.failed]), "Copilot SDK connection", 15_000);

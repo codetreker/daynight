@@ -53,6 +53,7 @@ export const createWorkerReporter = (options: {
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
   configuration?: WorkerConfigurationExchange;
+  executionActive?: () => boolean;
   now?: () => number;
 }): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
@@ -140,7 +141,7 @@ export const createWorkerReporter = (options: {
         phase = options.configuration === undefined ? "send" : "configuration";
         return Object.freeze({ ...sample.telemetry, taskInventory: inventory });
       };
-      if (options.configuration === undefined) {
+      if (options.configuration === undefined || options.executionActive?.() === false) {
         const report = await collect();
         phase = "send";
         await options.send(report, operation);

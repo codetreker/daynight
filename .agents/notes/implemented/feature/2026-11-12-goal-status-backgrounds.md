@@ -14,8 +14,9 @@ Goal list headings and their outer borders use the shared task status palette
 for the Goal's own four states. The heading retains separate disclosure and
 detail buttons, and the expanded content stays neutral with independently
 colored child rows. Auxiliary text uses the shared readable color. The
-[UI design standard](../../../../docs/ui-design.md#semantic-color-roles) owns
-the required palette, contrast and semantic hierarchy; the
+[Web visual tokens](../../../../docs/design/web-visual-tokens.md#任务状态与交互色)
+own the palette, and the [UI principles](../../../../docs/ui-design.md#semantic-color-roles)
+own contrast and semantic hierarchy; the
 [semantic color decision](../process/2026-11-13-semantic-ui-color-standard.md)
 records that ownership. The earlier
 [task status background decision](../../archived/feature/2026-10-28-task-status-backgrounds.md)

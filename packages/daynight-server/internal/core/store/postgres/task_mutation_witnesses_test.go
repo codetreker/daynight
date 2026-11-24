@@ -15,6 +15,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	tasktext "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -191,6 +194,18 @@ func TestTaskQueryCancellationPreservesCauseAndCompleteState(t *testing.T) {
 	project := queryProject(t, database, 1)
 	predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
 	target := queryTask(t, database, project.ID, 12, model.TaskInProgress, predecessor.ID)
+	replacement := queryTask(t, database, project.ID, 13, model.TaskDone)
+	putTaskPropertyFixture(t, database, target.ID, "pullRequests", []byte(`[{"url":"old\u0000","title":"Old"}]`))
+	target = snapshotTask(t, database, project.ID, target.ID)
+	update := func(ctx context.Context, dao TaskWriteDAO) error {
+		values := taskMutationValues(target)
+		values.Status = model.TaskDone
+		values.Title = "Changed"
+		values.DependsOn = []string{replacement.ID}
+		values.Properties = taskMutationPR(t, "changed\x00", "Changed")
+		_, err := dao.UpdateTask(ctx, target.ID, values)
+		return err
+	}
 	before := taskMutationProjectFacts(t, database, project.ID)
 	queries := []struct {
 		name, fragment string
@@ -209,12 +224,8 @@ func TestTaskQueryCancellationPreservesCauseAndCompleteState(t *testing.T) {
 			_, err := dao.ActiveDependentIDs(ctx, predecessor.ID)
 			return err
 		}},
-		{"status write", "UPDATE tasks SET", func(ctx context.Context, dao TaskWriteDAO) error {
-			values := taskMutationValues(target)
-			values.Status = model.TaskDone
-			_, err := dao.UpdateTask(ctx, target.ID, values)
-			return err
-		}},
+		{"status write", "UPDATE tasks SET", update},
+		{"dependency write", "INSERT INTO task_dependencies", update},
 	}
 	for _, query := range queries {
 		for _, after := range []bool{false, true} {
@@ -547,17 +558,38 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 
 func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, external := range []bool{false, true} {
-		t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
-			successor := queryTask(t, database, project.ID, 12, model.TaskTodo)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+	database := isolatedStore(t)
+	for index, external := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			predecessor := queryTask(t, database, project.ID, offset+11, model.TaskDone)
+			successor := queryTask(t, database, project.ID, offset+12, model.TaskTodo)
+			var wantExternal []string
+			if external {
+				wantExternal = []string{predecessor.ID}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			var waiterDone <-chan struct{}
+			defer func() {
+				cancel()
+				if waiterDone == nil {
+					return
+				}
+				cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stop()
+				select {
+				case <-waiterDone:
+				case <-cleanup.Done():
+					t.Errorf("dependency decision waiter did not drain: %v", cleanup.Err())
+				}
+			}()
 			results := make(chan error, 1)
 			if err := writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
+				finished := make(chan struct{})
+				waiterDone = finished
 				go func() {
+					defer close(finished)
 					results <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
 						current, err := waiter.TaskDAO().Task(ctx, successor.ID)
 						if err != nil {
@@ -565,6 +597,9 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 						}
 						if current.Status != model.TaskInProgress || current.Version != successor.Version+1 || !slices.Equal(current.DependsOn, []string{predecessor.ID}) {
 							return errors.New("post-lock target read lost the preceding dependency/status write")
+						}
+						if !slices.Equal(current.ExternalDependsOn, wantExternal) {
+							return fmt.Errorf("post-lock external dependencies = %v, want %v", current.ExternalDependsOn, wantExternal)
 						}
 						prerequisites, err := waiter.TaskDAO().TasksByID(ctx, current.DependsOn)
 						if err != nil {
@@ -593,9 +628,7 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 				taskMutationWaitForWriters(t, ctx, database, 1)
 				values := taskMutationValues(successor)
 				values.Status, values.DependsOn = model.TaskInProgress, []string{predecessor.ID}
-				if external {
-					values.ExternalDependsOn = []string{predecessor.ID}
-				}
+				values.ExternalDependsOn = slices.Clone(wantExternal)
 				_, err := holder.TaskDAO().UpdateTask(ctx, successor.ID, values)
 				return err
 			}); err != nil {
@@ -607,78 +640,73 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 			if after := snapshotTask(t, database, project.ID, predecessor.ID); !reflect.DeepEqual(after, predecessor) {
 				t.Fatalf("decision reads mutated their prerequisite: %#v", after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
 func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, scenario := range []struct {
+	database := isolatedStore(t)
+	for index, scenario := range []struct {
 		sourceKind    string
 		removeDepends bool
 	}{{"existing source", true}, {"new source", true}, {"new source", false}} {
-		t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			project := queryProject(t, database, 1)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+		if !t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
+			ctx := t.Context()
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			target := queryTask(t, database, project.ID, offset+11, model.TaskTodo)
+			sourceNumber := offset + 12
 			var source model.Task
 			if scenario.sourceKind == "existing source" {
-				source = queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID)
+				source = queryTask(t, database, project.ID, sourceNumber, model.TaskTodo, target.ID)
 			}
 			refused := errors.New("preceding source/deletion changed the visible facts")
-			results := make(chan error, 2)
-			if err := writeProjectForTest(database, ctx, project.ID, func(ProjectWriteScope) error {
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if !scenario.removeDepends {
-							incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
-							if err != nil {
-								return err
-							}
-							if len(incoming) > 0 {
-								return refused
-							}
-						}
-						_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
-						return err
-					})
-				}()
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if scenario.sourceKind == "existing source" {
-							current, err := scope.TaskDAO().Task(ctx, source.ID)
-							if err != nil {
-								return err
-							}
-							if current.Version != source.Version {
-								return refused
-							}
-							values := taskMutationValues(current)
-							values.Title = "Changed"
-							_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
-							return err
-						}
-						prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+			results := taskMutationRace(t, database, project.ID,
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if !scenario.removeDepends {
+						incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
 						if err != nil {
 							return err
 						}
-						if len(prerequisites) == 0 {
+						if len(incoming) > 0 {
 							return refused
 						}
-						_, err = scope.TaskDAO().CreateTask(ctx, queryID(12), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					}
+					_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
+					return err
+				},
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if scenario.sourceKind == "existing source" {
+						current, err := scope.TaskDAO().Task(ctx, source.ID)
+						if err != nil {
+							return err
+						}
+						if current.Version != source.Version {
+							return refused
+						}
+						values := taskMutationValues(current)
+						values.Title = "Changed"
+						_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
 						return err
-					})
-				}()
-				taskMutationWaitForWriters(t, ctx, database, 2)
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
+					}
+					prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+					if err != nil {
+						return err
+					}
+					if len(prerequisites) == 0 {
+						return refused
+					}
+					_, err = scope.TaskDAO().CreateTask(ctx, queryID(sourceNumber), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					return err
+				},
+			)
+			testutil.AssertPoolReusable(t, database.Pool)
 			success := 0
-			for range 2 {
-				err := receiveQueryResult(t, ctx, results)
+			for _, err := range results {
 				if err == nil {
 					success++
 				} else if !errors.Is(err, refused) {
@@ -709,12 +737,14 @@ func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 					t.Fatalf("serialized existing source lost CAS or removal version: %#v success=%d", current, success)
 				}
 			} else if success == 2 {
-				current := snapshotTask(t, database, project.ID, queryID(12))
+				current := snapshotTask(t, database, project.ID, queryID(sourceNumber))
 				if current.Version != 2 || len(current.DependsOn) != 0 || !current.Ready {
 					t.Fatalf("new source committed before deletion retained a dangling edge: %#v", current)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -885,5 +915,79 @@ func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(
 				}
 			}
 		}
+	}
+}
+
+func TestCreateTagsPersistAndRejectAtomically(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s, principal, _, project := membershipFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at)
+        SELECT gen_random_uuid(),$1,format('tag-%s',n),format('tag-%s',n),statement_timestamp(),statement_timestamp() FROM generate_series(1,400) n`, project.ID)
+	rows, err := s.Pool.Query(ctx, `SELECT id::text,name FROM project_tags WHERE project_id=$1 ORDER BY id`, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	var refs []model.TagReference
+	for rows.Next() {
+		var ref model.TagReference
+		if err := rows.Scan(&ref.ID, &ref.Name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		ids = append(ids, ref.ID)
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	tasks := taskservice.NewTasks(s)
+	selected := []string{ids[1], ids[0], ids[1]}
+	goal, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Type: model.TaskTypeGoal, Title: "tagged goal", TagIDs: &selected})
+	if err != nil || goal.Version != 1 || !reflect.DeepEqual(goal.Tags, refs[:2]) {
+		t.Fatalf("goal receipt: %#v %v", goal, err)
+	}
+	child, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "untagged child", ParentID: &goal.ID})
+	if err != nil || len(child.Tags) != 0 || child.ParentID == nil || *child.ParentID != goal.ID {
+		t.Fatalf("child receipt: %#v %v", child, err)
+	}
+	readGoal := snapshotTask(t, s, project.ID, goal.ID)
+	readChild := snapshotTask(t, s, project.ID, child.ID)
+	if !reflect.DeepEqual(readGoal.Tags, refs[:2]) || len(readChild.Tags) != 0 {
+		t.Fatalf("independent readback goal=%#v child=%#v", readGoal.Tags, readChild.Tags)
+	}
+
+	otherProject := queryProject(t, s, 91)
+	foreignID := queryID(92)
+	mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$2,'foreign','foreign',statement_timestamp(),statement_timestamp())`, foreignID, otherProject.ID)
+	for i, bad := range []string{queryID(93), foreignID} {
+		input := []string{ids[0], bad}
+		title := fmt.Sprintf("invalid-create-%d", i)
+		_, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: title, TagIDs: &input})
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "tag_not_found" {
+			t.Fatalf("invalid tag: %v", err)
+		}
+		var count int
+		if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE project_id=$1 AND title=$2`, project.ID, title).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("invalid create persisted %d: %v", count, err)
+		}
+	}
+	var associationsBefore int
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1`, project.ID).Scan(&associationsBefore); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "capacity-create", Description: strings.Repeat("&", tasktext.MaxDescriptionBytes), TagIDs: &ids})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("capacity refusal: %v", err)
+	}
+	var taskCount, associationCount int
+	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM tasks WHERE project_id=$1 AND title='capacity-create'), (SELECT count(*) FROM task_tags WHERE project_id=$1)`, project.ID).Scan(&taskCount, &associationCount); err != nil || taskCount != 0 || associationCount != associationsBefore {
+		t.Fatalf("capacity rollback task=%d tags=%d (before %d): %v", taskCount, associationCount, associationsBefore, err)
 	}
 }

@@ -19,6 +19,8 @@ import (
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
@@ -41,11 +43,26 @@ type transferAdmission interface {
 }
 
 type Uploads struct {
-	lifecycle       *Lifecycle
-	files           filestorage.TransferStorage
-	attachments     attachmentPut
-	admitTransfer   func(context.Context, model.Principal, string, string, string, string, filestorage.TransferNamespace) (transferAdmission, error)
-	renewalInterval time.Duration
+	lifecycle           *Lifecycle
+	files               filestorage.TransferStorage
+	attachments         attachmentPut
+	scopedAttachments   *attachmentservice.ScopedAttachments
+	admitTransfer       func(context.Context, model.Principal, string, string, string, string, filestorage.TransferNamespace) (transferAdmission, error)
+	admitScopedTransfer func(context.Context, model.Principal, string, string, string, string, filestorage.TransferNamespace, func(context.Context, store.AttachmentMutationScope) error) (transferAdmission, error)
+	renewalInterval     time.Duration
+}
+
+// NewScopedUploads requires a lifecycle that enforces current transfer authority.
+func NewScopedUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachments *attachmentservice.Attachments) (*Uploads, error) {
+	if lifecycle == nil || !lifecycle.scoped || files == nil || attachments == nil {
+		return nil, errors.New("scoped upload dependencies are required")
+	}
+	s := NewUploads(lifecycle, files, attachments)
+	s.scopedAttachments = attachmentservice.NewScopedAttachments(attachments, nil)
+	s.admitScopedTransfer = func(ctx context.Context, p model.Principal, project, task, path, contentType string, ns filestorage.TransferNamespace, authorize func(context.Context, store.AttachmentMutationScope) error) (transferAdmission, error) {
+		return attachments.AdmitTransferAuthorized(ctx, p, project, task, path, contentType, ns, authorize)
+	}
+	return s, nil
 }
 
 func NewUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachments attachmentPut) *Uploads {
@@ -129,6 +146,28 @@ func (s *Uploads) bound(ctx context.Context, a transfer.Actor, project, task, id
 	return r, nil
 }
 func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
+	if s != nil && (s.scopedAttachments != nil || (s.lifecycle != nil && s.lifecycle.scoped)) {
+		return nil, errors.New("scoped upload requires authorization")
+	}
+	return s.execute(ctx, nil, a, project, task, in)
+}
+
+// ExecuteScoped accepts the current request authentication while the transfer
+// and publication boundaries independently recheck the original authority.
+func (s *Uploads) ExecuteScoped(ctx context.Context, auth model.CredentialAuthorization, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
+	if s == nil || s.scopedAttachments == nil || !s.lifecycle.scoped {
+		return nil, errors.New("scoped upload service unavailable")
+	}
+	if err := auth.Validate(); err != nil {
+		return nil, err
+	}
+	if auth.Principal != a.Principal || (a.AuthorityKind == "pat" && auth.Profile != model.ScopedPATProfile) || (a.AuthorityKind == "oauth" && auth.Profile != model.ScopedMCPProfile) {
+		return nil, model.Unauthenticated(nil)
+	}
+	return s.execute(ctx, &auth, a, project, task, in)
+}
+
+func (s *Uploads) execute(ctx context.Context, auth *model.CredentialAuthorization, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
 	if s == nil || s.lifecycle == nil || s.files == nil || s.attachments == nil {
 		return nil, errors.New("upload service unavailable")
 	}
@@ -146,7 +185,13 @@ func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task s
 		if e != nil {
 			return map[string]any{"writeOutcome": "not_committed"}, e
 		}
-		item, created, e := s.attachments.Put(ctx, a.Principal, project, task, in.Path, in.ContentType, bytes.NewReader(b))
+		var item model.Attachment
+		var created bool
+		if auth != nil {
+			item, created, e = s.scopedAttachments.Put(ctx, *auth, project, task, in.Path, in.ContentType, bytes.NewReader(b))
+		} else {
+			item, created, e = s.attachments.Put(ctx, a.Principal, project, task, in.Path, in.ContentType, bytes.NewReader(b))
+		}
 		if e != nil {
 			outcome := "not_committed"
 			if attachmentservice.FileEffectPossible(e) {
@@ -173,7 +218,7 @@ func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task s
 		if e != nil {
 			return nil, e
 		}
-		result, e := uploadResult(r)
+		result, e := s.authorizedUploadResult(ctx, a, r)
 		if e == nil {
 			result["maxChunkBytes"] = MaxChunkBytes
 		}
@@ -194,16 +239,16 @@ func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task s
 				return nil, e
 			}
 		}
-		return uploadResult(r)
+		return s.authorizedUploadResult(ctx, a, r)
 	case "abort":
-		if _, e := s.bound(ctx, a, project, task, in.TransferID); e != nil {
+		if _, e := s.boundForCleanup(ctx, a, project, task, in.TransferID); e != nil {
 			return nil, e
 		}
 		r, e := s.lifecycle.RequestCleanup(ctx, a, in.TransferID)
 		if e != nil {
 			return nil, e
 		}
-		return uploadResult(r)
+		return s.authorizedUploadResult(ctx, a, r)
 	case "chunk":
 		return s.chunk(ctx, a, project, task, in)
 	case "commit":
@@ -213,7 +258,43 @@ func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task s
 	}
 }
 
+func (s *Uploads) boundForCleanup(ctx context.Context, a transfer.Actor, project, task, id string) (model.PrivateTransfer, error) {
+	if s.scopedAttachments == nil {
+		return s.bound(ctx, a, project, task, id)
+	}
+	r, err := s.lifecycle.LookupBoundForCleanup(ctx, a, id)
+	if err != nil {
+		return r, err
+	}
+	if r.Direction != "upload" || r.ProjectID != project || r.TaskID != task {
+		return model.PrivateTransfer{}, transfer.ErrConflict
+	}
+	return r, nil
+}
+
+func (s *Uploads) authorizedUploadResult(ctx context.Context, a transfer.Actor, r model.PrivateTransfer) (map[string]any, error) {
+	result, err := uploadResult(r)
+	if err != nil || s.scopedAttachments == nil || result["attachment"] == nil {
+		return result, err
+	}
+	if _, err := s.lifecycle.LookupBoundForRead(ctx, a, r.ID); err != nil {
+		return map[string]any{"transferId": r.ID, "writeOutcome": ""}, err
+	}
+	return result, nil
+}
+
 func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (result map[string]any, err error) {
+	newWriteRejected := false
+	defer func() {
+		if !newWriteRejected {
+			return
+		}
+		fault, known := operation.KnownFault(err)
+		facts := operation.CompletionFacts(err)
+		if known && fault.Code == "insufficient_scope" && facts.Outcome == store.TransactionNotCommitted && !facts.CleanupFailed {
+			result["writeOutcome"] = "not_committed"
+		}
+	}()
 	if !transfer.Canonical(in.ChunkID) {
 		return nil, uploadFault("Invalid chunk ID.")
 	}
@@ -237,7 +318,11 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
 	}
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
-		defer func() { err = errors.Join(err, lease.Close()) }()
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}()
 	}
 	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
 	defer cancelUpload()
@@ -245,7 +330,11 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	if e != nil {
 		return nil, e
 	}
-	defer func() { err = errors.Join(err, p.Close()) }()
+	defer func() {
+		if closeErr := p.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -261,6 +350,11 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	var receiptMissing bool
 	e = s.lifecycle.admittedUpload(p.Context, p, func(dao store.PrivateTransferDAO, current model.PrivateTransfer) error {
 		var err error
+		if s.lifecycle.scoped {
+			if err = s.lifecycle.authorize(p.Context, dao, a, current); err != nil {
+				return err
+			}
+		}
 		if err = dao.LockProjectLifecycle(p.Context, current.ProjectID, current.TaskID); err != nil {
 			return projectcore.LookupError(err)
 		}
@@ -296,6 +390,12 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	chunk := model.UploadChunk{TransferID: in.TransferID, ChunkID: in.ChunkID, ObjectID: uuid.NewString(), Offset: off, Size: int64(len(b)), SHA256: hash}
 	e = s.lifecycle.admittedUpload(p.Context, p, func(dao store.PrivateTransferDAO, current model.PrivateTransfer) error {
 		var err error
+		if s.lifecycle.scoped {
+			if err = s.lifecycle.authorize(p.Context, dao, a, current); err != nil {
+				newWriteRejected = true
+				return err
+			}
+		}
 		if err = dao.LockProjectLifecycle(p.Context, current.ProjectID, current.TaskID); err != nil {
 			return projectcore.LookupError(err)
 		}
@@ -433,9 +533,9 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		return nil, e
 	}
 	if observed.State != "receiving" {
-		result, err := uploadResult(observed)
+		result, err := s.authorizedUploadResult(ctx, a, observed)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
 		return result, transfer.ErrState
 	}
@@ -444,7 +544,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
 	}
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
-		defer func() { err = errors.Join(err, lease.Close()) }()
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}()
 	}
 	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
 	defer cancelUpload()
@@ -452,16 +556,20 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		if errors.Is(e, transfer.ErrState) {
 			if current, readErr := s.bound(ctx, a, project, task, in.TransferID); readErr == nil && current.State != "receiving" {
-				result, resultErr := uploadResult(current)
+				result, resultErr := s.authorizedUploadResult(ctx, a, current)
 				if resultErr != nil {
-					return nil, resultErr
+					return result, resultErr
 				}
 				return result, e
 			}
 		}
 		return nil, e
 	}
-	defer func() { err = errors.Join(err, p.Close()) }()
+	defer func() {
+		if closeErr := p.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -471,7 +579,10 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		return nil, e
 	}
 	if r.State != "receiving" {
-		result, _ := uploadResult(r)
+		result, resultErr := s.authorizedUploadResult(ctx, a, r)
+		if resultErr != nil {
+			return result, resultErr
+		}
 		return result, transfer.ErrState
 	}
 	if total > attachmentcore.MaxFileBytes || d.NextOffset > attachmentcore.MaxFileBytes {
@@ -484,11 +595,25 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		return nil, e
 	}
-	admission, e := s.admitTransfer(p.Context, a.Principal, project, task, r.Path, r.ContentType, namespace)
+	var admission transferAdmission
+	if s.scopedAttachments != nil {
+		if s.admitScopedTransfer == nil {
+			return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, errors.New("scoped transfer admission unavailable")
+		}
+		admission, e = s.admitScopedTransfer(p.Context, a.Principal, project, task, r.Path, r.ContentType, namespace, func(ctx context.Context, scope store.AttachmentMutationScope) error {
+			return authorizeUploadPublication(ctx, scope, a, project, task)
+		})
+	} else {
+		admission, e = s.admitTransfer(p.Context, a.Principal, project, task, r.Path, r.ContentType, namespace)
+	}
 	if e != nil {
 		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, e
 	}
-	defer func() { err = errors.Join(err, admission.Close()) }()
+	defer func() {
+		if closeErr := admission.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	targetCtx, cancelTarget := filestorage.GateContext(p.Context, admission)
 	defer cancelTarget()
 	opCtx, cancel := context.WithCancel(targetCtx)
@@ -520,7 +645,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		cancel()
 		return <-done
 	}
-	defer func() { err = errors.Join(err, stop()) }()
+	defer func() {
+		if stopErr := stop(); stopErr != nil {
+			err = errors.Join(err, stopErr)
+		}
+	}()
 	reader, e := s.stream(opCtx, p, r.ID, total)
 	if e != nil {
 		return nil, e
@@ -591,5 +720,23 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		defer finishCancel()
 		finishErr = s.lifecycle.markAdmittedUnknown(finishCtx, p, d.OperationID, encodeUpload(d))
 	}
-	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", errors.Join(e, renewErr, finishErr, cleanupErr))
+	if renewErr != nil || finishErr != nil || cleanupErr != nil {
+		e = errors.Join(e, renewErr, finishErr, cleanupErr)
+	}
+	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", e)
+}
+
+func authorizeUploadPublication(ctx context.Context, scope store.AttachmentMutationScope, a transfer.Actor, project, task string) error {
+	credential, ok := scope.(store.TransferAttachmentCredentialScope)
+	if !ok {
+		return errors.New("attachment transaction cannot recheck transfer authority")
+	}
+	current, err := credential.CurrentTransferAttachmentAuthorization(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, project, task)
+	if err != nil {
+		return projectcore.LookupError(err)
+	}
+	if current.Principal != a.Principal || (a.AuthorityKind == "pat" && current.Profile != model.ScopedPATProfile) || (a.AuthorityKind == "oauth" && current.Profile != model.ScopedMCPProfile) {
+		return model.Unauthenticated(nil)
+	}
+	return scopeadmission.Require(current, scopepolicy.AttachmentUpload, scopepolicy.AttachmentRead)
 }

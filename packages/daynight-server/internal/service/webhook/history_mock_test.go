@@ -104,6 +104,10 @@ func (m *historyReaderMock) Endpoints(context.Context, Owner) ([]wm.Endpoint, er
 	retentionRequire(m.t, "history.Endpoints", func() {}, false)
 	panic("unreachable")
 }
+func (m *historyReaderMock) LiveEndpointByClientKey(context.Context, Owner, string) (wm.Endpoint, error) {
+	retentionRequire(m.t, "history.LiveEndpointByClientKey", func() {}, false)
+	panic("unreachable")
+}
 func (m *historyReaderMock) SigningKeys(context.Context, string) ([]wm.SigningKey, error) {
 	retentionRequire(m.t, "history.SigningKeys", func() {}, false)
 	panic("unreachable")

@@ -107,6 +107,10 @@ func (h *Routes) userChannelOrigin(r *http.Request, p model.Principal) error {
 }
 
 func (h *Routes) closeUserChannel(ctx context.Context, conn *websocket.Conn, err error) {
+	if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" {
+		_ = conn.Close(websocket.StatusPolicyViolation, fault.Code)
+		return
+	}
 	if _, application := userAccess(ctx); !application {
 		return
 	}

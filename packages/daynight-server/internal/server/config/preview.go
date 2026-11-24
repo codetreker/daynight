@@ -25,26 +25,33 @@ func (c Config) ValidatePreviewOrigin() error {
 		}
 		return err
 	}
-	reject := func(rule string) error {
-		return &configvalue.ConfigurationError{Field: "preview_origin", Rule: rule}
+	reject := func(field, rule string) error {
+		return &configvalue.ConfigurationError{Field: field, Rule: rule}
 	}
 	mainHost, previewHost := main.Hostname(), preview.Hostname()
 	if address := net.ParseIP(mainHost); c.AllowHTTPTestOrigin && main.Scheme == "http" && preview.Scheme == "http" && address != nil && address.IsLoopback() && previewHost == mainHost && main.Host != preview.Host {
 		return nil
 	}
-	if !canonicalDNSHost(mainHost) || !canonicalDNSHost(previewHost) {
-		return reject("requires canonical DNS hostnames for the main and preview origins")
+	const hostnameRule = "requires a canonical lowercase DNS hostname containing a dot; IP addresses, single-label names, and trailing dots are not allowed"
+	if !canonicalDNSHost(mainHost) {
+		return reject("public_origin", hostnameRule)
 	}
-	if preview.Scheme != main.Scheme || mainHost == previewHost || strings.HasSuffix(mainHost, "."+previewHost) {
-		return reject("must use the main-site scheme and a preview cookie domain that excludes the main host")
+	if !canonicalDNSHost(previewHost) {
+		return reject("preview_origin", hostnameRule)
+	}
+	if mainHost == previewHost {
+		return reject("preview_origin", "must use a hostname different from the main site; different ports do not isolate preview cookies")
+	}
+	if preview.Scheme != main.Scheme || strings.HasSuffix(mainHost, "."+previewHost) {
+		return reject("preview_origin", "must use the main-site scheme and a preview cookie domain that excludes the main host")
 	}
 	mainSite, mainErr := publicsuffix.EffectiveTLDPlusOne(mainHost)
 	previewSite, previewErr := publicsuffix.EffectiveTLDPlusOne(previewHost)
 	if mainErr != nil || previewErr != nil || mainSite != previewSite {
-		return reject("must share the main site's registrable domain")
+		return reject("preview_origin", "must share the main site's registrable domain")
 	}
 	if main.Scheme == "http" && (!localTestHost(mainHost) || !localTestHost(previewHost)) {
-		return reject("HTTP test origins require local .test or .localhost hostnames")
+		return reject("preview_origin", "HTTP test origins require local .test or .localhost hostnames")
 	}
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -26,30 +27,53 @@ import (
 	"github.com/google/uuid"
 )
 
-type attachmentHandler struct {
-	attachments     attachmentOperations
+type attachmentHandler = handler[model.Principal]
+
+type attachmentOperations = operations[model.Principal]
+
+type handler[A any] struct {
+	attachments     operations[A]
+	principal       func(A) model.Principal
 	logger          *slog.Logger
 	bodyReadTimeout time.Duration
+	afterOpen       func(*http.Request, model.Principal) error
 }
 
-type attachmentOperations struct {
-	List        func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
-	PutRetained func(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
-	Delete      func(context.Context, model.Principal, string, string, string) error
-	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
+type operations[A any] struct {
+	List        func(context.Context, A, string, string, model.PageRequest) (attachmentcore.Page, error)
+	PutRetained func(context.Context, A, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
+	Delete      func(context.Context, A, string, string, string) error
+	Open        func(context.Context, A, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
+func RegisterRoutes(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
+	RegisterRoutesWithScopeObserver(mux, attachments, auth, logger, previewOrigin, nil)
+}
+
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
 	handler := newAttachmentHandler(attachments, logger)
-	handler.registerRoutes(mux, auth.Require, previewOrigin)
+	handler.registerRoutesWithScopeObserver(mux, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
+		return auth.Require(httpx.AuthenticatedHandler(next))
+	}, previewOrigin, observe)
 }
 
 // RegisterPreviewRoutes exposes only attachment reads on a Task preview host.
-func RegisterPreviewRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
+func RegisterPreviewRoutes(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
+	RegisterPreviewRoutesWithScopeObserver(mux, attachments, require, logger, nil)
+}
+
+func RegisterPreviewRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute), afterOpen ...func(*http.Request, model.Principal) error) {
 	handler := newAttachmentHandler(attachments, logger)
+	if len(afterOpen) > 1 || len(afterOpen) == 1 && afterOpen[0] == nil {
+		panic("invalid protected preview activity callback")
+	}
+	if len(afterOpen) == 1 {
+		handler.afterOpen = afterOpen[0]
+	}
+	routes := routeRegistry{mux: mux, observe: observe}
 	const route = "/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}"
-	mux.HandleFunc("GET "+route, require(handler.preview))
-	mux.HandleFunc(route, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("GET "+route, require(handler.preview), routePreviewCookie, true)
+	routes.handle(route, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routePreviewCookieFallback, false)
 }
 
 func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
@@ -58,31 +82,36 @@ func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *sl
 			List: attachments.List, PutRetained: attachments.PutRetained,
 			Delete: attachments.Delete, Open: attachments.Open,
 		},
-		logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
+		principal: principalIdentity,
+		logger:    logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
 	}
 }
 
-func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, require func(httpx.AuthenticatedHandler) http.HandlerFunc, previewOrigin string) {
-	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
-	mux.HandleFunc("GET "+base+"/attachments", require(handler.list))
-	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", require(handler.put))
-	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", require(handler.download))
-	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", require(handler.delete))
-	redirect := handler.redirectPreview(previewOrigin)
-	head := require(handler.preview)
-	mux.HandleFunc("GET "+base+"/preview/{path...}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			head(w, r)
-			return
-		}
-		redirect(w, r)
-	})
-	mux.HandleFunc(base+"/attachments", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+func principalIdentity(p model.Principal) model.Principal { return p }
+
+func (handler *handler[A]) registerRoutes(mux httpx.RouteRegistrar, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string) {
+	handler.registerRoutesWithScopeObserver(mux, require, previewOrigin, nil)
 }
 
-func (h *attachmentHandler) redirectPreview(origin string) http.HandlerFunc {
+func (handler *handler[A]) registerRoutesWithScopeObserver(mux httpx.RouteRegistrar, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string, observe func(ScopeRoute)) {
+	routes := routeRegistry{mux: mux, observe: observe}
+	methodNotAllowed := func(allowed string) func(http.ResponseWriter, *http.Request, A) {
+		return func(w http.ResponseWriter, r *http.Request, a A) {
+			httpx.ResourceMethodNotAllowed(handler.logger, allowed)(w, r, handler.principal(a))
+		}
+	}
+	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
+	routes.handle("GET "+base+"/attachments", require(handler.list), routeRead, true)
+	routes.handle("PUT "+base+"/attachments/files/{path...}", require(handler.put), routeUpload, false)
+	routes.handle("GET "+base+"/attachments/files/{path...}", require(handler.download), routeRead, true)
+	routes.handle("DELETE "+base+"/attachments/files/{path...}", require(handler.delete), routeDelete, false)
+	routes.handlePreview(base+"/preview/{path...}", handler.redirectPreview(previewOrigin), require(handler.preview))
+	routes.handle(base+"/attachments", require(methodNotAllowed("GET, HEAD")), routeFallback, false)
+	routes.handle(base+"/attachments/files/{path...}", require(methodNotAllowed("GET, HEAD, PUT, DELETE")), routeFallback, false)
+	routes.handle(base+"/preview/{path...}", require(methodNotAllowed("GET, HEAD")), routeFallback, false)
+}
+
+func (h *handler[A]) redirectPreview(origin string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		projectID, err := model.CanonicalID(r.PathValue("projectId"))
@@ -113,15 +142,15 @@ func attachmentResponse(attachment model.Attachment) api.Attachment {
 	return attachmentprotocol.REST(attachment)
 }
 
-func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
-	projectID, taskID, logger, err := taskhttp.TaskResource(request, principal, h.logger)
+func (h *handler[A]) resource(request *http.Request, principal A) (string, string, *slog.Logger, error) {
+	projectID, taskID, logger, err := taskhttp.TaskResource(request, h.principal(principal), h.logger)
 	if err == nil && request.PathValue("path") != "" {
 		logger = logger.With("path", request.PathValue("path"))
 	}
 	return projectID, taskID, logger, err
 }
 
-func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) list(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -145,7 +174,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) put(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -172,6 +201,22 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 			}
 		}()
 	}
+	if err != nil && definiteAttachmentRejection(err) {
+		// A native HTTP/1 body Close can read the remaining socket after its
+		// deadline and cancel the request. Deliver a known refusal first, while
+		// the original request is still responsible for its response.
+		defer func() {
+			if closeErr := body.Close(); closeErr != nil {
+				httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
+			}
+		}()
+		if request.Context().Err() != nil {
+			httpx.LogFailure(logger, request.Context(), "attachment", "put", err)
+			panic(http.ErrAbortHandler)
+		}
+		writeAttachmentRejection(w, request, logger, err)
+		return
+	}
 	if closeErr := body.Close(); closeErr != nil {
 		httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
 	}
@@ -187,7 +232,80 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 	httpx.WriteJSON(w, request, logger, status, attachmentResponse(attachment))
 }
 
-func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+// Only known non-publication refusals qualify for response-before-close.
+// Independent failures and uncertain effects retain their existing handling.
+func definiteAttachmentRejection(err error) bool {
+	fault, ok := httpx.KnownFault(err)
+	if !ok || httpx.ErrorKind(err) != fault.Code {
+		return false
+	}
+	switch fault.Code {
+	case "path_conflict", "invalid_input", "invalid_path", "permission_denied", "forbidden", "insufficient_scope", "unauthenticated", "not_found", "task_deleted", "resource_busy", "quota_exceeded", "payload_too_large":
+	default:
+		return false
+	}
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if _, joined := current.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		if _, effect := current.(*attachmentservice.FileEffectError); effect {
+			return false
+		}
+		if tx, ok := current.(*store.TransactionError); ok && (tx.CommitAttempted || tx.CleanupFailed || tx.Phase != "operation" || tx.Outcome != store.TransactionNotCommitted) {
+			return false
+		}
+		if tx, ok := current.(*store.ThreadTransactionError); ok && (tx.CommitAttempted || tx.RollbackFailed || tx.OutcomeUnknown) {
+			return false
+		}
+		if publication, ok := current.(*filestorage.PublicationError); ok && publication.Outcome != filestorage.NotPublished {
+			return false
+		}
+	}
+	return true
+}
+
+func writeAttachmentRejection(w http.ResponseWriter, request *http.Request, logger *slog.Logger, err error) {
+	httpx.CloseUnreadBody(w, request)
+	controller := http.NewResponseController(w)
+	if deadlineErr := controller.SetWriteDeadline(time.Now().Add(time.Second)); deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+		httpx.LogFailure(logger, request.Context(), "attachment", "rejection write deadline", deadlineErr)
+		panic(http.ErrAbortHandler)
+	}
+	// WriteError encodes its complete JSON envelope in one Write. Sending its
+	// exact length makes the flushed response complete before lease cleanup,
+	// even when that cleanup outlives the connection's write deadline.
+	httpx.WriteError(&fixedLengthRejectionWriter{ResponseWriter: w}, request, logger, "attachment", "put", err)
+	if request.Context().Err() != nil {
+		panic(http.ErrAbortHandler)
+	}
+	if flushErr := controller.Flush(); flushErr != nil && !errors.Is(flushErr, http.ErrNotSupported) {
+		httpx.LogFailure(logger, request.Context(), "attachment", "rejection flush", flushErr)
+		panic(http.ErrAbortHandler)
+	}
+	if !request.Close {
+		if deadlineErr := controller.SetWriteDeadline(time.Time{}); deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+			httpx.LogFailure(logger, request.Context(), "attachment", "rejection clear deadline", deadlineErr)
+			panic(http.ErrAbortHandler)
+		}
+	}
+}
+
+type fixedLengthRejectionWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *fixedLengthRejectionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *fixedLengthRejectionWriter) WriteHeader(status int) { w.status = status }
+
+func (w *fixedLengthRejectionWriter) Write(body []byte) (int, error) {
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.ResponseWriter.WriteHeader(w.status)
+	return w.ResponseWriter.Write(body)
+}
+
+func (h *handler[A]) delete(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err == nil {
@@ -203,15 +321,15 @@ func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request,
 	}
 }
 
-func (h *attachmentHandler) download(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) download(w http.ResponseWriter, request *http.Request, principal A) {
 	h.content(w, request, principal, "attachment", "download")
 }
 
-func (h *attachmentHandler) preview(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) preview(w http.ResponseWriter, request *http.Request, principal A) {
 	h.content(w, request, principal, "inline", "preview")
 }
 
-func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request, principal model.Principal, disposition, phase string) {
+func (h *handler[A]) content(w http.ResponseWriter, request *http.Request, principal A, disposition, phase string) {
 	w.Header().Set("Cache-Control", "no-store")
 	if disposition == "attachment" {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -225,6 +343,13 @@ func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", phase, err)
 		return
+	}
+	if h.afterOpen != nil {
+		if err := h.afterOpen(request, h.principal(principal)); err != nil {
+			err = errors.Join(err, object.Body.Close())
+			httpx.WriteError(w, request, logger, "attachment", phase, err)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", attachment.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(object.Info.Size, 10))

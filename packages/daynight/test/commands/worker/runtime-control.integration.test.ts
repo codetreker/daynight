@@ -218,11 +218,17 @@ describe("worker synchronous management runtime ownership", () => {
     const remoteTask: Task = { type: "task", parentId: null, tags: [], id: f.task.taskId, projectId: f.project.projectId, title: "Original assignment", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 5n, properties: { worker: { claimId: f.task.claimId, workerId: uuid(4), machine: { id: uuid(5), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, userId: uuid(6), state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-12T00:00:00Z" } }, createdAt: "2026-11-12T00:00:00Z", updatedAt: "2026-11-12T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
     const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => uuid(6)), authorizeControl: vi.fn(async () => {}), readTask: vi.fn(async () => remoteTask), release: vi.fn(async () => remoteTask), configuration: vi.fn() };
     mocks.remote.mockReturnValue(remote);
-    mocks.git.mockReturnValue({ dispose: vi.fn(async () => {}), prepareRepository: vi.fn(async () => {}), resolveWorktreeBinding: vi.fn(async () => null), removeUnpublishedReservation: vi.fn(async () => {}) });
+    const prepareRepository = vi.fn(async () => {});
+    const scanWorktrees = vi.fn(async () => {
+      if (prepareRepository.mock.calls.length === 0) throw new Error("The repository has not been prepared.");
+      return { enumerationComplete: true, validated: [], quarantined: [], unknown: [] };
+    });
+    mocks.git.mockReturnValue({ dispose: vi.fn(async () => {}), prepareRepository, scanWorktrees, resolveWorktreeBinding: vi.fn(async () => null), removeUnregisteredReservation: vi.fn(async () => {}) });
     mocks.coordinator.mockImplementation(createWorkerCoordinator); mocks.submit.mockImplementation(submitWorkerControl);
     await runWorkerControl(f);
     expect(remote.configuration).not.toHaveBeenCalled();
     expect(remote.release).toHaveBeenCalledOnce();
+    expect(scanWorktrees).toHaveBeenCalledBefore(remote.release);
     expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).archiveSessions!()).toBe(value);
     const reopened = openWebExecutionStore(webFile);
     try { expect(reopened.getTask(f.task)).toMatchObject({ status: "done", cleanup: { kind: "terminal", discardRecording: value === false } }); }

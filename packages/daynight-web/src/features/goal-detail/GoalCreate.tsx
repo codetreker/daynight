@@ -24,7 +24,7 @@ const entryFor = (scope: object, projectId: string, userId: string): Entry => {
 };
 const publish = (entry: Entry, state: State) => { entry.state = state; for (const listener of entry.listeners) listener(); };
 
-export const GoalCreate = ({ projectId, onClose, onRefreshGraph }: { readonly projectId: string; readonly onClose: () => void; readonly onRefreshGraph: () => void }) => {
+export const GoalCreate = ({ projectId, onClose, onRefreshGraph, onRestoreFocus }: { readonly projectId: string; readonly onClose: () => void; readonly onRefreshGraph: () => void; readonly onRestoreFocus?: () => void }) => {
   const { locale, messages } = useI18n();
   const zh = locale === 'zh-CN';
   const scope = useTaskCacheScope();
@@ -58,7 +58,7 @@ export const GoalCreate = ({ projectId, onClose, onRefreshGraph }: { readonly pr
   };
   const busy = state.phase === 'pending';
   const close = () => { if (entry.state.phase === 'idle' && entry.state.error === null) update({ tags: [] }); onClose(); };
-  return <FormDialog title={zh ? '新建 Goal' : 'New Goal'} onClose={close}><form onSubmit={create}><div className="dialog-body task-organization-fields">
+  return <FormDialog {...(onRestoreFocus === undefined ? {} : { onRestoreFocus })} title={zh ? '新建 Goal' : 'New Goal'} onClose={close}><form onSubmit={create}><div className="dialog-body task-organization-fields">
     <label>{zh ? '名称' : 'Name'}<input value={state.title} required disabled={busy} onChange={(event) => update({ title: event.currentTarget.value })} /></label>
     <label>{zh ? '目标描述' : 'Description'}<textarea value={state.description} disabled={busy} onChange={(event) => update({ description: event.currentTarget.value })} /></label>
     <div><span className="assignee-field-label">{messages.assignment.label}</span><AssigneePicker projectId={projectId} label={messages.assignment.label} value={state.assignedTo ?? ''} choices={[{ value: '', label: messages.assignment.unassigned }]} disabled={busy} onSelect={(value) => update({ assignedTo: value || null })}><TaskAssigneeIdentity projectId={projectId} assignedTo={state.assignedTo} compact /></AssigneePicker></div>

@@ -75,3 +75,39 @@ test("observe accepts legacy capability absence and rejects unsupported declarat
   capability = 1; expect((await requestController(t, { kind: "observe" })).workerInputProtocol).toBe(1);
   capability = 2; await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });
+
+test("observe identifies recovered initial input separately from the legacy Worker input capability", async () => {
+  const base = ticket(); let recovery: unknown = undefined;
+  const t = await listen(base, req => ({ requestId: req.requestId, ok: true, snapshot: snapshot(base), workerInputProtocol: 1, ...(recovery === undefined ? {} : { recoveredInitialInputProtocol: recovery }) }));
+  expect((await requestController(t, { kind: "observe" })).recoveredInitialInputProtocol).toBeUndefined();
+  recovery = 1;
+  expect((await requestController(t, { kind: "observe" })).recoveredInitialInputProtocol).toBe(1);
+  recovery = 2;
+  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+});
+
+test("original v2 stop uses the launch secret and process identity", async () => {
+  const current = ticket();
+  const base: ControllerLaunchTicket = { ...current, schemaVersion: 2, lifecycleBinding: {
+    instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1",
+    serverOrigin: current.serverOrigin, userId: current.userId!, workerId: current.workerId!,
+  } };
+  let received: ControllerLocalRequest | undefined;
+  let responseSnapshot = snapshot(base);
+  let legacyCapability: unknown;
+  const t = await listen(base, req => {
+    received = req;
+    return { requestId: req.requestId, ok: true, snapshot: responseSnapshot, ...(legacyCapability === undefined ? {} : { workerLifecycleProtocol: legacyCapability }) };
+  });
+  const stop = { kind: "stop", deadline: Date.now() + 10_000 } as const;
+  expect((await requestController(t, stop)).snapshot).toEqual(responseSnapshot);
+  expect(received).toMatchObject({ secret: base.ipcSecret, controllerInstanceId: base.controllerInstanceId, action: stop });
+  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBeUndefined();
+  legacyCapability = 1;
+  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBe(1);
+  legacyCapability = 2;
+  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+  legacyCapability = 1;
+  responseSnapshot = { ...responseSnapshot, controllerInstanceId: randomUUID() };
+  await expect(requestController(t, stop)).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+});

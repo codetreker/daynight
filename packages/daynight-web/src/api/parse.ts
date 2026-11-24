@@ -140,11 +140,11 @@ export type ServerError = {
   readonly code: string;
   readonly requestId: string;
   readonly serverMessage?: string;
-  readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
   readonly writeOutcome?: "not_committed";
+  readonly taskIds?: readonly string[];
 };
 
-export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
+export const parseServerError = (value: unknown, includeServerMessage = false): ServerError => {
   const data = record(record(value).error);
   const code = string(data.code);
   const requestId = string(data.requestId);
@@ -153,12 +153,12 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
   const detailsValue = data.details;
   const writeOutcome = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue) &&
     (detailsValue as Record<string, unknown>).writeOutcome === "not_committed" ? "not_committed" as const : undefined;
+  const taskIdsValue = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue)
+    ? (detailsValue as Record<string, unknown>).taskIds : undefined;
+  const taskIds = taskIdsValue === undefined ? undefined : array(taskIdsValue, id);
+  if (taskIds !== undefined && new Set(taskIds).size !== taskIds.length) return malformed();
   const withOutcome = (error: ServerError): ServerError => writeOutcome === undefined ? error : { ...error, writeOutcome };
-  if (includeSteps && code === "steps_limit_exceeded") {
-    const details = record(data.details);
-    return withOutcome({ code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } });
-  }
-  return withOutcome({ code, requestId, ...(includeSteps ? { serverMessage: message } : {}) });
+  return withOutcome({ code, requestId, ...(includeServerMessage ? { serverMessage: message } : {}), ...(taskIds === undefined ? {} : { taskIds }) });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

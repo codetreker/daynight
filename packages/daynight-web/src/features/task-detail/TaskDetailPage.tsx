@@ -12,6 +12,7 @@ import { TaskExecutionClockProvider } from '../task-execution/TaskExecutionClock
 import { useProjectAssigneeReceipt } from '../task-assignees/TaskAssignees';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { ResourceExternalDraftHost, ResourcePageDraftHost } from './TaskDraftNavigation';
+import { GoalAcceptanceProvider } from '../goal-acceptance-graph/GoalAcceptanceProvider';
 import '../../styles/task-detail.css';
 
 type TaskDetailPageProps = {
@@ -42,7 +43,7 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
   };
   const navigateExternalTask = (id: string, trigger: HTMLElement) => {
     const node = graph.snapshot?.index.nodes.get(id);
-    if (node === undefined) { graph.refresh(); return; }
+    if (node === undefined) { select(id, { tab: 'overview', path: null }); return; }
     if (node.parentId === null) { navigate(`/projects/${encodeURIComponent(projectId)}#task=${encodeURIComponent(id)}`); return; }
     targetTrigger.current = trigger;
     history.select({ goalChildren: null, externalGoal: { id: node.parentId, witness: id, navigation: { tab: 'description', path: null }, goalChildren: { graphRootId: null, task: { id, navigation: { tab: 'overview', path: null } } } } });
@@ -67,7 +68,7 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
       navigate(href);
     });
   };
-  return <TaskExecutionClockProvider projectId={projectId} snapshot={graph.snapshot}><div className="task-detail-page-container">
+  return <GoalAcceptanceProvider projectId={projectId} snapshot={graph.syncedSnapshot} detailSnapshot={graph.snapshot} graphError={graph.error} onRefreshGraph={graph.refresh}><TaskExecutionClockProvider projectId={projectId} snapshot={graph.snapshot}><div className="task-detail-page-container">
     {access.status === 'unavailable' && <section className="state-box" role="alert"><h1>{shell.accessUnavailable}</h1><p>{shell.accessUnavailableDetail}</p><a className="button primary" href="/projects" onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate('/projects'); }}>{app.returnToProjects}</a></section>}
     {history.error && <div className="notice error" role="alert">{locale === 'zh-CN' ? '页面导航状态无效。' : 'Invalid page navigation state.'}</div>}
     <div className="task-detail-page-content" hidden={access.status === 'unavailable' || history.error} inert={access.status === 'unavailable' || history.error}>
@@ -76,7 +77,7 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
     {target !== null && <ResourceExternalDraftHost parentId={target.id}><TaskDetailDialog key={target.id} projectId={projectId} taskId={target.id} snapshot={graph.snapshot} goalGraphError={graph.error} navigation={target.navigation} onNavigate={(navigation) => history.select({ ...history.selection, externalGoal: { ...target, navigation } })} goalChildren={target.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...history.selection, externalGoal: { ...target, goalChildren } }, options?.replace)} onNavigateExternalTask={navigateExternalTask} onNavigateExternalChain={navigateExternalChain} onNavigateParent={returnToRoot} onRefreshGraph={graph.refresh} onSelectTask={(id) => select(id, { tab: 'overview', path: null })} onClose={() => history.select({ ...history.selection, externalGoal: null }, true)} onRestoreFocus={() => { const trigger = targetTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus(); else document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title')?.focus(); }} /></ResourceExternalDraftHost>}
     </ResourcePageDraftHost>
     </div>
-  </div></TaskExecutionClockProvider>;
+  </div></TaskExecutionClockProvider></GoalAcceptanceProvider>;
 };
 
 export const TaskDetailPage = (props: TaskDetailPageProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDetailSessionBoundary><TaskDetailPageContent {...props} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

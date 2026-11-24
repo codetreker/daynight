@@ -1,0 +1,283 @@
+import { ApiError, isAbortError } from '../../api/client';
+import { getGoalDependencies, type GoalDependencies, type RelatedGoal } from '../../api/goal-dependencies';
+import type { TaskSummary } from '../../api/types';
+import type { TaskCacheScope } from '../task-cache/project-cache';
+import { projectGoalAcceptance } from './model';
+import { combineGoalRelations, contributionConflicts, relationTargets, selectLegalContributions, type GoalRelationContribution } from './relation-projection';
+import { reachableGoalSources } from './relation-ownership';
+
+export type GoalRelationPhase = 'queued' | 'loading' | 'partial' | 'ready' | 'failed' | 'unavailable' | 'denied' | 'conflict' | 'interrupted';
+export type GoalRelationSource = {
+  readonly mode: 'root' | 'inspection' | 'expanded';
+  readonly goalId: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly phase: GoalRelationPhase;
+  readonly contribution: GoalRelationContribution | null;
+  readonly hiddenCount: number;
+  readonly error: unknown;
+};
+export type GoalRelationSnapshot = { readonly sources: ReadonlyMap<string, GoalRelationSource>; readonly deniedIds: ReadonlySet<string> };
+type Source = { generation: number; key: string; controller: AbortController | null; view: GoalRelationSource };
+const emptySummaries: ReadonlyMap<string, TaskSummary> = new Map();
+const deniedError = (error: unknown) => error instanceof ApiError && error.kind === 'server' && [403, 404, 410].includes(error.status ?? 0);
+const pageIdentity = (page: GoalDependencies) => JSON.stringify([page.canEdit, page.revision, page.completionBlocked, page.prerequisites]);
+
+export class GoalRelationSession {
+  private readonly sources = new Map<string, Source>();
+  private readonly listeners = new Set<() => void>();
+  private readonly denied = new Set<string>();
+  private readonly withdrawnProjects = new Set<string>();
+  private readonly prerequisiteTargets = new Map<string, Map<string, string>>();
+  private readonly targetWithdrawals = new Map<string, number>();
+  private withdrawalGeneration = 0;
+  private queue: string[] = [];
+  private active = 0;
+  private disposed = false;
+  private qualified = false;
+  private summaries = emptySummaries;
+  private focusId: string | null = null;
+  private visible: GoalRelationSnapshot = { sources: new Map(), deniedIds: new Set() };
+  private readonly unsubscribe: () => void;
+
+  constructor(private readonly scope: TaskCacheScope, private readonly projectId: string,
+    private readonly read = getGoalDependencies, private readonly timeoutMilliseconds = 30_000) {
+    this.unsubscribe = scope.subscribe(event => {
+      if (event.accessRestored) {
+        this.withdrawnProjects.delete(event.projectId);
+        if (this.qualified) for (const id of this.sources.keys()) this.enqueue(id);
+        return;
+      }
+      if (!event.accessRevoked && !event.directAccessUncertain && !event.historyChanged && !event.scopeSuspended) return;
+      if (event.accessRevoked || event.directAccessUncertain || event.scopeSuspended) this.withdrawnProjects.add(event.projectId);
+      this.cancelAll();
+      for (const source of this.sources.values()) {
+        const ownLoss = event.projectId === source.view.projectId;
+        const contribution = source.view.contribution;
+        source.view = { ...source.view, phase: 'interrupted', hiddenCount: ownLoss ? 0 : source.view.hiddenCount,
+          contribution: contribution === null || ownLoss ? null : { ...contribution,
+            prerequisites: contribution.prerequisites.map(item => item.target?.projectId === event.projectId ? { ...item, target: null } : item),
+            successors: contribution.successors.filter(goal => goal.projectId !== event.projectId) } };
+      }
+      this.prune(); this.publish();
+    });
+  }
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  snapshot = () => this.visible;
+  private publish = () => {
+    this.visible = { sources: new Map([...this.sources].map(([id, source]) => [id, source.view])), deniedIds: new Set(this.denied) };
+    for (const listener of this.listeners) listener();
+  };
+  setRoots = (summaries: ReadonlyMap<string, TaskSummary> | null, focusId: string | null = null) => {
+    if (this.disposed) return;
+    this.focusId = focusId;
+    const previouslyQualified = this.qualified;
+    this.qualified = summaries !== null;
+    if (summaries === null) {
+      this.cancelAll();
+      for (const source of this.sources.values()) source.view = { ...source.view, phase: 'interrupted' };
+      this.publish(); return;
+    }
+    this.summaries = summaries;
+    const roots = new Map([...summaries].filter(([, goal]) => goal.type === 'goal' && (goal.id === focusId || goal.status === 'todo' || goal.status === 'in_progress')));
+    for (const [id, source] of this.sources) if (source.view.mode === 'root' && !roots.has(id)) source.view = { ...source.view, mode: 'inspection' };
+    for (const [id, summary] of roots) {
+      if (this.targetWithdrawals.has(id) && this.denied.has(id)) continue;
+      const key = `${summary.version}:${this.scope.getHistoryGeneration(this.projectId)}`;
+      const existing = this.sources.get(id);
+      if (existing === undefined) {
+        this.sources.set(id, { generation: 0, key, controller: null,
+          view: { mode: 'root', goalId: id, projectId: this.projectId, title: summary.titlePreview, phase: 'queued', contribution: null, hiddenCount: 0, error: null } });
+        this.enqueue(id);
+      } else {
+        existing.view = { ...existing.view, mode: 'root', title: summary.titlePreview };
+        if (existing.key !== key || !previouslyQualified && existing.view.phase === 'interrupted') {
+          existing.key = key; this.denied.delete(id); this.enqueue(id);
+        }
+      }
+    }
+    const baseline = projectGoalAcceptance(summaries, this.focusId);
+    const legal = selectLegalContributions(this.projectId, baseline, this.contributions(), this.denied);
+    for (const id of legal.conflictingIds) { const source = this.sources.get(id)!; this.cancel(source); source.view = { ...source.view, phase: 'conflict', contribution: null }; }
+    this.prune();
+    for (const [id, source] of this.sources) {
+      if (source.view.mode === 'root') continue;
+      const local = summaries.get(id);
+      const key = local?.type === 'goal' ? `${local.version}:${this.scope.getHistoryGeneration(this.projectId)}` : `${this.scope.getHistoryGeneration(source.view.projectId)}`;
+      if (local?.type === 'goal') source.view = { ...source.view, title: local.titlePreview };
+      if (source.key !== key || !previouslyQualified && source.view.phase === 'interrupted') { source.key = key; this.enqueue(id); }
+    }
+    this.publish(); this.pump();
+  };
+  private withdrawHiddenTargets = (source: Source, page: GoalDependencies, readGeneration: number) => {
+    const prior = source.view.contribution?.prerequisites;
+    let known = this.prerequisiteTargets.get(source.view.goalId);
+    if (known === undefined) { known = new Map(); this.prerequisiteTargets.set(source.view.goalId, known); }
+    // Keep opaque edge identity after public references are scrubbed so repeated losses remain attributable.
+    for (const item of page.prerequisites) if (item.edgeId !== undefined && item.target !== null &&
+      readGeneration >= (this.targetWithdrawals.get(item.target.goalId) ?? 0)) known.set(item.edgeId, item.target.goalId);
+    const hidden = page.prerequisites.flatMap(item => {
+      if (item.target !== null || item.edgeId === undefined) return [];
+      const target = known.get(item.edgeId) ?? prior?.find(previous => previous.edgeId === item.edgeId)?.target?.goalId;
+      return target === undefined ? [] : [target];
+    });
+    if (hidden.length === 0) return;
+    const generation = ++this.withdrawalGeneration;
+    for (const id of hidden) {
+      this.targetWithdrawals.set(id, generation); this.denied.add(id);
+      const target = this.sources.get(id);
+      if (target !== undefined) { this.cancel(target); this.sources.delete(id); }
+    }
+    const removed = new Set(hidden);
+    for (const retained of this.sources.values()) {
+      const contribution = retained.view.contribution;
+      if (contribution === null) continue;
+      const prerequisites = contribution.prerequisites.map(item => item.target !== null && removed.has(item.target.goalId) ? { ...item, target: null } : item);
+      retained.view = { ...retained.view, contribution: { ...contribution, prerequisites,
+        successors: contribution.successors.filter(goal => !removed.has(goal.goalId)) }, hiddenCount: prerequisites.filter(item => item.target === null).length };
+    }
+    this.queue = this.queue.filter(id => this.sources.has(id));
+    this.prune(); this.publish();
+  };
+  private admitsTarget = (goal: RelatedGoal, readGeneration: number) => {
+    const withdrawal = this.targetWithdrawals.get(goal.goalId);
+    if (withdrawal !== undefined && readGeneration < withdrawal || this.withdrawnProjects.has(goal.projectId)) return false;
+    if (withdrawal !== undefined) this.denied.delete(goal.goalId);
+    return true;
+  };
+  private canvasContributions = () => [...this.sources.values()].flatMap(source => source.view.mode === 'inspection' || source.view.contribution === null ? [] : [source.view.contribution]);
+  private prune = () => {
+    const baseline = projectGoalAcceptance(this.summaries, this.focusId);
+    const reachable = reachableGoalSources(this.projectId, baseline, { sources: new Map([...this.sources].map(([id, source]) => [id, source.view])), deniedIds: this.denied });
+    for (const [id, source] of this.sources) {
+      const view = reachable.get(id);
+      if (view === undefined) { this.cancel(source); this.sources.delete(id); if (!this.targetWithdrawals.has(id)) this.denied.delete(id); }
+      else if (view !== source.view) { this.cancel(source); source.view = view; }
+    }
+    this.queue = this.queue.filter(id => this.sources.has(id));
+  };
+  private cover = (id: string, mode: 'inspection' | 'expanded') => {
+    if (!this.qualified || this.disposed || this.denied.has(id)) return;
+    const baseline = projectGoalAcceptance(this.summaries, this.focusId);
+    const visible = combineGoalRelations(this.projectId, baseline, this.canvasContributions(), this.denied);
+    if (!visible.goals.has(id)) return;
+    const existing = this.sources.get(id);
+    if (existing !== undefined) {
+      if (mode === 'expanded' && existing.view.mode === 'inspection') {
+        existing.view = { ...existing.view, mode }; this.prune(); this.publish();
+      }
+      return;
+    }
+    const related = relationTargets(this.canvasContributions(), this.denied).get(id);
+    const goal = visible.goals.get(id)!;
+    const sourceProjectId = goal.project === undefined ? this.projectId : related!.projectId;
+    if (this.withdrawnProjects.has(sourceProjectId)) return;
+    const local = this.summaries.get(id);
+    const key = local?.type === 'goal' ? `${local.version}:${this.scope.getHistoryGeneration(sourceProjectId)}` : `${this.scope.getHistoryGeneration(sourceProjectId)}`;
+    this.sources.set(id, { generation: 0, key, controller: null,
+      view: { goalId: id, projectId: sourceProjectId, title: goal.titlePreview, mode, phase: 'queued', contribution: null, hiddenCount: 0, error: null } });
+    this.enqueue(id);
+  };
+  inspect = (id: string) => this.cover(id, 'inspection');
+  expand = (id: string) => this.cover(id, 'expanded');
+  private contributions = (candidate?: GoalRelationContribution) => [...this.sources.values()].flatMap(source =>
+    source.view.goalId === candidate?.sourceId ? [candidate] : source.view.contribution === null ? [] : [source.view.contribution]);
+  private cancel = (source: Source) => { source.generation++; source.controller?.abort(); source.controller = null; };
+  private cancelAll = () => { this.queue = []; for (const source of this.sources.values()) this.cancel(source); };
+  private enqueue = (id: string) => {
+    const source = this.sources.get(id);
+    if (source === undefined || !this.qualified || this.disposed) return;
+    this.cancel(source); source.view = { ...source.view, phase: 'queued', error: null };
+    if (!this.queue.includes(id)) this.queue.push(id);
+    this.publish(); this.pump();
+  };
+  retry = (id: string) => { this.enqueue(id); };
+  reenter = () => {
+    if (!this.qualified) return;
+    this.setRoots(this.summaries, this.focusId);
+    for (const [id, source] of this.sources) if (!['queued', 'loading', 'partial'].includes(source.view.phase)) this.enqueue(id);
+  };
+  private pump = () => {
+    while (!this.disposed && this.qualified && this.active < 4 && this.queue.length > 0) {
+      const id = this.queue.shift()!, source = this.sources.get(id);
+      if (source === undefined || source.controller !== null) continue;
+      this.active++;
+      void this.load(source).finally(() => { this.active--; this.pump(); });
+    }
+  };
+  private load = async (source: Source) => {
+    // An incomplete replacement prefix cannot prove that later successors disappeared.
+    const replacing = source.view.contribution !== null;
+    const retainedContribution = () => selectLegalContributions(this.projectId, projectGoalAcceptance(this.summaries, this.focusId), this.contributions(), this.denied).accepted
+      .find(contribution => contribution.sourceId === source.view.goalId) ?? null;
+    const controller = new AbortController(); source.controller = controller;
+    const generation = source.generation;
+    const signal = AbortSignal.any([controller.signal, this.scope.signal, this.scope.mismatchSignal]);
+    const current = () => !this.disposed && this.qualified && generation === source.generation && !signal.aborted;
+    let fence: ReturnType<TaskCacheScope['captureTaskHistoryFence']> = null;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    try {
+      await this.scope.ready(signal);
+      if (!current()) return;
+      fence = this.scope.captureTaskHistoryFence(source.view.projectId, source.view.goalId, generation, generation);
+      if (fence === null) { source.view = { ...source.view, phase: 'interrupted' }; this.publish(); return; }
+      source.view = { ...source.view, phase: 'loading' }; this.publish();
+      let cursor: string | null = null, identity: string | null = null;
+      const seen = new Set<string>(), successors = new Map<string, RelatedGoal>(), successorGenerations = new Map<string, number>();
+      do {
+        let readGeneration = this.withdrawalGeneration;
+        const result = await this.read(source.view.projectId, source.view.goalId, cursor, signal, {
+          userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
+          onDispatch: () => { readGeneration = this.withdrawalGeneration; timeout = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeoutMilliseconds); },
+        });
+        if (timeout !== null) clearTimeout(timeout); timeout = null;
+        if (!current() || !await this.scope.verifyTaskRead(fence, signal) || !current()) return;
+        if (result.kind === 'unavailable') {
+          const retained = retainedContribution();
+          source.view = { ...source.view, phase: 'unavailable', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.prune(); this.publish(); return;
+        }
+        const page = result.page;
+        this.withdrawHiddenTargets(source, page, readGeneration);
+        if (!current()) return;
+        if (identity !== null && identity !== pageIdentity(page)) throw new ApiError('protocol');
+        if (page.nextCursor !== null && seen.has(page.nextCursor)) throw new ApiError('protocol');
+        identity = pageIdentity(page);
+        for (const goal of page.successors) if (this.admitsTarget(goal, readGeneration)) { successors.set(goal.goalId, goal); successorGenerations.set(goal.goalId, readGeneration); }
+        for (const [id] of successors) if (this.denied.has(id) || (this.targetWithdrawals.get(id) ?? 0) > successorGenerations.get(id)!) successors.delete(id);
+        const prerequisites = page.prerequisites.map(item => item.target !== null && !this.admitsTarget(item.target, readGeneration) ? { ...item, target: null } : item);
+        const candidate: GoalRelationContribution = { sourceId: source.view.goalId, sourceProjectId: source.view.projectId, prerequisites, successors: [...successors.values()] };
+        const denied = new Set(this.denied); denied.delete(source.view.goalId);
+        if (contributionConflicts(this.projectId, projectGoalAcceptance(this.summaries, this.focusId), this.contributions(candidate), denied)) {
+          const retained = retainedContribution();
+          source.view = { ...source.view, phase: 'conflict', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.prune(); this.publish(); return;
+        }
+        this.denied.delete(source.view.goalId);
+        const complete = page.nextCursor === null;
+        source.view = { ...source.view, phase: complete ? 'ready' : 'partial',
+          contribution: replacing && !complete ? source.view.contribution : candidate,
+          hiddenCount: replacing && !complete ? source.view.hiddenCount : prerequisites.filter(item => item.target === null).length, error: null }; this.prune(); this.publish();
+        cursor = page.nextCursor;
+        if (cursor !== null) seen.add(cursor);
+      } while (cursor !== null && current());
+    } catch (error) {
+      if (this.disposed || !this.qualified || generation !== source.generation || fence === null) return;
+      if (timedOut) error = new ApiError('network');
+      else if (signal.aborted || isAbortError(error)) return;
+      const denied = deniedError(error);
+      if (!this.scope.isTaskHistoryPossiblyCurrent(fence)) return;
+      if (!denied) {
+        try { if (!await this.scope.verifyTaskRead(fence, this.scope.signal)) return; }
+        catch (verificationError) { if (isAbortError(verificationError)) return; error = verificationError; }
+      }
+      if (generation !== source.generation || this.disposed) return;
+      if (denied) this.denied.add(source.view.goalId);
+      source.view = { ...source.view, phase: denied ? 'denied' : 'failed', contribution: denied ? null : source.view.contribution, hiddenCount: denied ? 0 : source.view.hiddenCount, error };
+      this.prune(); this.publish();
+    } finally {
+      if (timeout !== null) clearTimeout(timeout);
+      if (source.controller === controller) source.controller = null;
+    }
+  };
+  dispose = () => { this.disposed = true; this.cancelAll(); this.unsubscribe(); this.listeners.clear(); };
+}

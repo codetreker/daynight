@@ -94,6 +94,7 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 	} else {
 		sql = `UPDATE project_github SET version=$2, generation=$3, revision=$4, enabled=$5, app_id=$6,
 		 installation_id=$7, repository_id=$8, installation_account_login=$9, repository_full_name=$10,
+		 repository_default_branch=CASE WHEN repository_id IS DISTINCT FROM $8 THEN NULL ELSE repository_default_branch END,
 		 repository_private=$11, poll_interval_minutes=$12, access_state=$13, access_reason=$14,
 		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17, sync_enabled=$19,
          claim_token=CASE WHEN generation<>$3 THEN NULL ELSE claim_token END,
@@ -159,6 +160,23 @@ func summaryTargets(p *githubpr.PullRequestSummary) []any {
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID, &p.RepositoryID, &p.RepositoryFullName}
 }
+func (r *reader) RequireRepositoryVisible(ctx context.Context, id string, repositoryID int64) error {
+	var one int
+	if err := r.tx.QueryRow(ctx, `SELECT 1 FROM project_github_repositories WHERE project_id=$1 AND repository_id=$2`, id, repositoryID).Scan(&one); err != nil {
+		return pg.QueryError("check github repository visibility", err)
+	}
+	return nil
+}
+
+func (r *reader) RequirePullRequestVisible(ctx context.Context, id string, number int64, repositoryID *int64) error {
+	var one int
+	err := r.tx.QueryRow(ctx, `SELECT 1 FROM project_pull_requests WHERE project_id=$1 AND repository_id=COALESCE($3::bigint, (SELECT legacy_repository_id FROM project_github WHERE project_id=$1)) AND number=$2`, id, number, repositoryID).Scan(&one)
+	if err != nil {
+		return pg.QueryError("check github pull request visibility", err)
+	}
+	return nil
+}
+
 func (r *reader) PullRequest(ctx context.Context, id string, number int64, repositoryID *int64) (githubpr.PullRequest, error) {
 	if repositoryID != nil {
 		return r.pullRequest(ctx, id, *repositoryID, number)

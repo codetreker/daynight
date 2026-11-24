@@ -1,3 +1,4 @@
+import { NativeDispatchRejectedError } from "../../../src/commands/controller/providers/native-rpc.js";
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { test, expect, vi } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -70,7 +71,7 @@ test("Claude approval stays pending after SDK callback resolution until the matc
   } finally { await provider.close(); }
 });
 
-const nativeFixture = (echo = true) => {
+const nativeFixture = (echo = true, profile?: import("../../../src/commands/controller/providers/claude-live.js").ClaudeRuntimeProfile) => {
   historyOpen.mockImplementation(async options => {
     const info = await sdk.getSessionInfo(options.nativeSessionId, { dir: options.cwd });
     if (!info || info.sessionId !== options.nativeSessionId) throw new Error("Claude history identity is unavailable.");
@@ -84,6 +85,7 @@ const nativeFixture = (echo = true) => {
     captured = options;
     void (async () => { for await (const user of prompt) { inputs.push(user); if (echo) emit(user); } })();
     return {
+      get profile() { return profile; },
       async initializationResult() {
         await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: "SessionStart", session_id: options.sessionId ?? options.resume!, transcript_path: "", cwd: process.cwd(), source: "startup" }, undefined, { signal: new AbortController().signal });
         return {};
@@ -92,7 +94,7 @@ const nativeFixture = (echo = true) => {
       close() { ended = true; wake?.(); }, interrupt,
     };
   });
-  return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
+  return { emit, interrupt, inputs, options: () => captured, setProfile(value: typeof profile) { profile = value; }, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
 test("Claude provider retries failed native resource cleanup without requesting another native stop", async () => {
   nativeFixture(); const activities: string[] = [];
@@ -289,6 +291,18 @@ test("Claude cannot submit input when the working-state callback fences dispatch
   try {
     await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
     expect(fixture.inputs).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test("Claude reports a final Controller stop without retaining an unstarted native turn", async () => {
+  const fixture = nativeFixture(); let fenced = false, finalState: { activity: string; currentTurnId: string | null } | undefined;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline() {}, onSpawn() {}, onState: state => { finalState = state; if (state.activity === "working") fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw new NativeDispatchRejectedError("Controller stopped before native dispatch."); },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBeInstanceOf(NativeDispatchRejectedError);
+    expect(fixture.inputs).toEqual([]); expect(finalState).toMatchObject({ activity: "idle", currentTurnId: null });
   } finally { await provider.close(); }
 });
 
@@ -621,5 +635,127 @@ test("Claude native text and thinking become complete only at a block stop or co
       { complete: true, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "plain", truncated: false },
     ]);
     expect(events[0]!.entry.entryId).toBe(events[1]!.entry.entryId); expect(events[1]!.entry.entryId).toBe(events[2]!.entry.entryId);
+  } finally { await provider.close(); }
+});
+
+test("Claude usage receives only identified root messages from the verified live profile", async () => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_usage", stop_reason: "end_turn", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+  try {
+    expect(usageRuntime.ready).toHaveBeenCalledWith({ nativeSessionId: provider.nativeSessionId, providerVersion: "0.3.247/2.1.247/anthropic" });
+    fixture.emit(message); fixture.emit({ ...message, parent_tool_use_id: "child" }); fixture.emit({ ...message, type: "stream_event" });
+    fixture.emit({ ...message, message: { ...message.message, id: "msg_second" } });
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledTimes(2));
+    expect(usageRuntime.observe.mock.calls[0]![0]).toEqual({ nativeSessionId: provider.nativeSessionId, providerVersion: "0.3.247/2.1.247/anthropic", event: message });
+    usageRuntime.observe.mockImplementation(() => { throw new Error("disk failed"); }); fixture.emit(message);
+    await vi.waitFor(() => expect(usageRuntime.gap).toHaveBeenCalledWith("collector_failed"));
+  } finally { await provider.close(); }
+});
+
+test("Claude history cannot acquire the current process's version qualification", async () => {
+  nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const nativeId = randomUUID(), usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([{ type: "assistant", parent_tool_use_id: null, message: { id: "msg_history", model: "claude-test", content: [], usage: { input_tokens: 100 } } }]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: nativeId, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  try { expect(usageRuntime.observe).not.toHaveBeenCalled(); expect(usageRuntime.gap).toHaveBeenCalledWith("native_recovery_gap"); }
+  finally { await provider.close(); }
+});
+
+test("Claude missing native profile records a gap without interpreting usage", async () => {
+  const fixture = nativeFixture(), usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  try {
+    fixture.emit({ type: "assistant", parent_tool_use_id: null, session_id: provider.nativeSessionId, message: { id: "msg_unverified", content: [], usage: { input_tokens: 2 } } });
+    await vi.waitFor(() => expect(usageRuntime.gap.mock.calls.filter(call => call[0] === "profile_unverified").length).toBeGreaterThan(1));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+    expect(usageRuntime.ready).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test.each(["missing", "pending"])("Claude %s native profile fixes the first usage identity without an unverified state", async kind => {
+  const fixture = nativeFixture(true, kind === "pending" ? { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "unknown", backendPending: true } : undefined), versions: string[] = [];
+  const usageRuntime = {
+    ready: vi.fn((value: { nativeSessionId: string; providerVersion: string }) => {
+      if (versions.length && versions[0] !== value.providerVersion) throw new Error("Usage generation identity changed.");
+      versions.push(value.providerVersion);
+    }), observe: vi.fn(), gap: vi.fn(),
+  };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_late_profile", stop_reason: "end_turn", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+  try {
+    const gaps = usageRuntime.gap.mock.calls.length;
+    fixture.emit(message);
+    await vi.waitFor(() => expect(usageRuntime.gap.mock.calls.length).toBeGreaterThan(gaps));
+    expect(usageRuntime.ready).not.toHaveBeenCalled(); expect(usageRuntime.observe).not.toHaveBeenCalled();
+    fixture.setProfile({ sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+    fixture.emit({ type: "system", subtype: "init", session_id: provider.nativeSessionId });
+    await vi.waitFor(() => expect(usageRuntime.ready).toHaveBeenCalledOnce());
+    fixture.emit(message);
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledOnce());
+    expect(versions).toEqual(["0.3.247/2.1.247/anthropic", "0.3.247/2.1.247/anthropic"]);
+    expect(usageRuntime.gap).not.toHaveBeenCalledWith("local_storage_failed");
+  } finally { await provider.close(); }
+});
+
+test("Claude known versions with unknown backend register only an unqualified identity", async () => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "unknown" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  try {
+    expect(usageRuntime.ready).toHaveBeenCalledWith({ nativeSessionId: provider.nativeSessionId, providerVersion: "0.3.247/2.1.247/unknown" });
+    const gaps = usageRuntime.gap.mock.calls.length;
+    fixture.emit({ type: "assistant", parent_tool_use_id: null, session_id: provider.nativeSessionId, message: { id: "msg_unknown_backend", content: [] } });
+    await vi.waitFor(() => expect(usageRuntime.gap.mock.calls.length).toBeGreaterThan(gaps));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test("Claude provider commits corrected input only after the root stream stops", async () => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  let steering = false;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState(value) { steering = value.capabilities.steer; }, onSpawn() {}, usageRuntime });
+  const stream = (event: unknown, parent_tool_use_id: string | null = null) => fixture.emit({ type: "stream_event", session_id: provider.nativeSessionId, parent_tool_use_id, event });
+  try {
+    stream({ type: "message_start", message: { id: "msg_final", model: "claude-test", usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    fixture.emit({ type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_final", model: "claude-test", stop_reason: null, content: [], usage: { input_tokens: 0 } } });
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 11, cache_read_input_tokens: 22, cache_creation_input_tokens: 33 } });
+    stream({ type: "message_stop" }, "child");
+    fixture.emit({ type: "system", subtype: "init", session_id: provider.nativeSessionId, capabilities: ["msg_lifecycle_v1", "interrupt_cancel_queued_v1"] });
+    await vi.waitFor(() => expect(steering).toBe(true));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+    // The following stop is the only usage completion boundary in the sequence.
+    stream({ type: "message_stop" });
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledOnce());
+    expect(usageRuntime.observe.mock.calls[0]![0].event).toMatchObject({ message: { id: "msg_final", stop_reason: "end_turn", usage: { input_tokens: 11, cache_read_input_tokens: 22, cache_creation_input_tokens: 33 } } });
+    stream({ type: "message_start", message: { id: "msg_interrupted", model: "claude-test", usage: { input_tokens: 99 } } });
+    fixture.emit({ type: "result", session_id: provider.nativeSessionId, is_error: true });
+    await vi.waitFor(() => expect(usageRuntime.gap).toHaveBeenCalledWith("native_recovery_gap"));
+    expect(usageRuntime.observe).toHaveBeenCalledOnce();
+  } finally { await provider.close(); }
+});
+
+test.each(["system", "iterations"])("Claude %s fallback cannot attribute old-message usage to its initial model", async signal => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  const stream = (event: unknown) => fixture.emit({ type: "stream_event", session_id: provider.nativeSessionId, parent_tool_use_id: null, event });
+  const message = { id: "msg_fallback", model: "claude-test", stop_reason: "end_turn", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+  try {
+    stream({ type: "message_start", message });
+    if (signal === "system") fixture.emit({ type: "system", subtype: "model_refusal_fallback", session_id: provider.nativeSessionId, original_model: "claude-test", fallback_model: "other-model" });
+    else stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { iterations: [{ type: "fallback_message", model: "other-model" }] } });
+    stream({ type: "message_stop" });
+    fixture.emit({ type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message });
+    await vi.waitFor(() => expect(usageRuntime.gap).toHaveBeenCalledWith("native_recovery_gap"));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+    stream({ type: "message_start", message: { ...message, id: "msg_after_fallback", model: "other-model" } });
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} });
+    stream({ type: "message_stop" });
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledOnce());
+    expect(usageRuntime.observe.mock.calls[0]![0].event).toMatchObject({ message: { id: "msg_after_fallback", model: "other-model" } });
   } finally { await provider.close(); }
 });

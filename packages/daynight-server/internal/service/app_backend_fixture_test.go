@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,7 @@ type appBackend struct {
 	store.WebhookRetentionTransactions
 	store.WebhookReceiptGC
 	store.WebhookConfigGC
+	store.ReviewAssignmentStore
 	t                                                                                 *testing.T
 	mu                                                                                sync.Mutex
 	calls                                                                             map[string]int
@@ -42,6 +44,13 @@ type appBackend struct {
 	privateActor                                                                      *model.Principal
 	privateGets, privatePuts                                                          int
 	collector                                                                         *appTestCollector
+}
+
+func (b *appBackend) ReviewScanStart(ctx context.Context) (time.Time, *store.ReviewWorkerKey, error) {
+	if err := b.check(ctx); err != nil {
+		return time.Time{}, nil, err
+	}
+	return time.Now(), nil, nil
 }
 
 func (b *appBackend) ListArchiveCleanup(ctx context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
@@ -715,4 +724,15 @@ func (s unexpectedAppTransactions) WriteGitHubProjectDeletion(context.Context, s
 }
 func (s unexpectedAppTransactions) WriteGitHubTeamDeletion(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
 	return store.Completion{}, s.backend.unexpected("WriteGitHubTeamDeletion")
+}
+
+func (d *appMaintenanceDAO) CurrentTransferAuthorization(ctx context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+	if err := d.backend.check(ctx); err != nil {
+		return model.CredentialAuthorization{}, err
+	}
+	if d.backend.privateActor == nil || p != *d.backend.privateActor {
+		return model.CredentialAuthorization{}, d.backend.unexpected("transfer policy actor")
+	}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"attachment:upload"}, 1)
+	return model.CredentialAuthorization{Principal: p, Profile: model.ScopedPATProfile, Policy: &policy}, err
 }

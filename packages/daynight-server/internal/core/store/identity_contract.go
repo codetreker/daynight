@@ -21,8 +21,8 @@ type IdentityScope interface {
 
 type IdentityDAO interface {
 	CleanupCredentials(context.Context, time.Time) error
-	// Login admission uses its post-lock database time for login expiry and the
-	// application clock for session and PAT expiry.
+	// Login admission uses its post-lock database time for login and browser
+	// session expiry; PAT expiry retains the supplied application clock.
 	CleanupLoginCredentials(context.Context, time.Time, time.Time) error
 	// AdmitLogin serializes capacity checks until the surrounding transaction
 	// ends. The returned time is sampled after the lock is acquired. A nonempty
@@ -59,6 +59,15 @@ type IdentityDAO interface {
 	SetDeviceDecision(context.Context, string, string, string) error
 	DelayDevicePoll(context.Context, string, time.Time, bool) error
 	ConsumeDevice(context.Context, string) error
+}
+
+// PATManagementDAO is the transaction-bound capability for account metadata.
+// An IdentityDAO provided by the production identity scope also implements it.
+type PATManagementDAO interface {
+	FreshPATTime(context.Context, time.Time) (time.Time, error)
+	ListAllPATs(context.Context, string) ([]model.PersonalAccessToken, error)
+	ComparePATDescription(context.Context, string, string, *string, *string) (bool, error)
+	PATExists(context.Context, string, string) (bool, error)
 }
 
 type PersonalTeamDAO interface {

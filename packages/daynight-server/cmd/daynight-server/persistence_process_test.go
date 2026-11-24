@@ -169,6 +169,7 @@ func processPersistenceDecode[T any](t *testing.T, response *http.Response, data
 
 func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	values := processAPIEnvironment(t)
+	values["DAYNIGHT_S2S_ALLOWED_ORIGIN"] = "https://application.example"
 	gateway := testauth.StartGateway(t, values["DAYNIGHT_UNIAUTH_CALLBACK_URL"])
 	values["DAYNIGHT_UNIAUTH_URL"], values["DAYNIGHT_UNIAUTH_APP_ID"], values["DAYNIGHT_UNIAUTH_APP_SECRET"] = gateway.Origin, gateway.AppID, gateway.AppSecret
 	adminURL := values["DAYNIGHT_DATABASE_URL"]
@@ -437,26 +438,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		}
 	}
 	checkReferences(target)
-	stepsPath := projectPath + "/tasks/" + target.ID + "/steps"
-	for _, input := range []map[string]any{
-		{"id": "abcdef01", "title": "Review evidence", "description": "First\n中文", "status": "in_progress"},
-		{"id": "00000000", "title": "Follow-up", "description": "Second", "status": "todo"},
-	} {
-		input["version"] = target.Version
-		response, body = jsonRequest(http.MethodPost, stepsPath, input)
-		resource := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusCreated)
-		if resource.Version != target.Version+1 {
-			t.Fatalf("Step creation did not advance parent version: %+v", resource)
-		}
-		target.Version = resource.Version
-	}
-	maxTask := createTask("Maximum Step version", "Independent Step parent", []string{}, []string{})
-	maxStepsPath := projectPath + "/tasks/" + maxTask.ID + "/steps"
-	response, body = jsonRequest(http.MethodPost, maxStepsPath, map[string]any{"version": maxTask.Version, "id": "fedcba98", "title": "Maximum Step", "description": "Retained at maximum", "status": "done"})
-	maxAdded := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusCreated)
-	if maxAdded.Version != maxTask.Version+1 || len(maxAdded.Steps) != 1 || maxAdded.Steps[0].ID != "fedcba98" {
-		t.Fatalf("maximum Step fixture: %+v", maxAdded)
-	}
+	maxTask := createTask("Maximum Task version", "Independent parent", []string{}, []string{})
 	const exact int64 = 9_007_199_254_740_993
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	_, err = admin.Exec(ctx, "UPDATE projects SET settings_version=$1 WHERE id=$2", exact, project.ID)
@@ -482,27 +464,76 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		response, body := request(http.MethodGet, projectPath+"/task-graph?taskId="+url.QueryEscape(target.ID), "", nil)
 		return processPersistenceDecode[api.TaskGraph](t, response, body, http.StatusOK)
 	}
+	checkRetiredSteps := func(parent api.Task) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var absent bool
+		if err := admin.QueryRow(ctx, "SELECT to_regclass('task_steps') IS NULL").Scan(&absent); err != nil || !absent {
+			t.Fatalf("retired Steps table remains: absent=%t error=%v", absent, err)
+		}
+		base := projectPath + "/tasks/" + parent.ID + "/steps"
+		for _, suffix := range []string{"", "/abcdef01", "/abcdef01/status", "/abcdef01/position"} {
+			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodPut} {
+				req, err := http.NewRequest(method, values["DAYNIGHT_PUBLIC_ORIGIN"]+base+suffix, strings.NewReader(`{"version":9007199254740993,"id":"abcdef01","title":"Retired","status":"done","position":"first"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Accept", "text/html")
+				response, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, readErr := io.ReadAll(response.Body)
+				closeErr := response.Body.Close()
+				if readErr != nil || closeErr != nil {
+					t.Fatalf("read retired response: %v; close: %v", readErr, closeErr)
+				}
+				if response.StatusCode != http.StatusNotFound || response.Header.Get("X-Request-ID") == "" || !strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+					t.Fatalf("retired %s %s: status=%d headers=%v", method, req.URL.Path, response.StatusCode, response.Header)
+				}
+				if method == http.MethodHead {
+					if len(data) != 0 {
+						t.Fatal("retired HEAD returned a body")
+					}
+				} else {
+					failure := processPersistenceDecode[api.ErrorResponse](t, response, data, http.StatusNotFound)
+					if failure.Error.Code != "not_found" || failure.Error.RequestID != response.Header.Get("X-Request-ID") {
+						t.Fatalf("retired response was not a correlated API error: %+v", failure)
+					}
+				}
+				t.Logf("retired route=%s method=%s status=%d requestId=%s parentVersion=%d", req.URL.Path, method, response.StatusCode, response.Header.Get("X-Request-ID"), parent.Version)
+				preflight, err := http.NewRequest(http.MethodOptions, req.URL.String(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				preflight.Header.Set("Origin", values["DAYNIGHT_S2S_ALLOWED_ORIGIN"])
+				preflight.Header.Set("Access-Control-Request-Method", method)
+				response, err = client.Do(preflight)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, readErr = io.Copy(io.Discard, response.Body)
+				closeErr = response.Body.Close()
+				if readErr != nil || closeErr != nil || response.StatusCode != http.StatusForbidden || response.Header.Get("Access-Control-Allow-Methods") != "" {
+					t.Fatalf("retired preflight %s %s: status=%d read=%v close=%v", method, req.URL.Path, response.StatusCode, readErr, closeErr)
+				}
+			}
+		}
+		if actual := readTask(parent.ID); !reflect.DeepEqual(actual, parent) {
+			t.Fatalf("retired requests changed parent: before=%+v after=%+v", parent, actual)
+		}
+	}
 	project = readProject()
 	first, second, target, completed, maxTask = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID), readTask(maxTask.ID)
 	if current := readTask(legacyDone.ID); !reflect.DeepEqual(current, legacyDone) {
 		t.Fatalf("unknown-start completion was not persisted: %+v", current)
 	}
 	checkReferences(target)
-	response, body = request(http.MethodGet, maxStepsPath, "", nil)
-	maxStepsBefore := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
-	if maxTask.Version != math.MaxInt64 || maxStepsBefore.ProjectID != project.ID || maxStepsBefore.TaskID != maxTask.ID || maxStepsBefore.Version != math.MaxInt64 || !reflect.DeepEqual(maxStepsBefore.Steps, maxAdded.Steps) || !bytes.Contains(body, []byte(`"version":9223372036854775807`)) {
-		t.Fatalf("maximum Step read lost exact scope, version or contents: %+v", maxStepsBefore)
-	}
-	response, body = request(http.MethodGet, stepsPath, "", nil)
-	stepsBefore := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
-	if stepsBefore.Version != exact || len(stepsBefore.Steps) != 2 || stepsBefore.Steps[0].ID != "abcdef01" || stepsBefore.Steps[0].Title != "Review evidence" || stepsBefore.Steps[0].Description != "First\n中文" || stepsBefore.Steps[0].Status != "in_progress" || stepsBefore.Steps[1].ID != "00000000" || stepsBefore.Steps[1].Title != "Follow-up" || stepsBefore.Steps[1].Description != "Second" || stepsBefore.Steps[1].Status != "todo" {
-		t.Fatalf("persisted Steps fixture: %+v", stepsBefore)
-	}
-	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
-		t.Fatalf("Steps read changed parent before restart: %+v", actual)
-	}
+	checkRetiredSteps(target)
 	graph := readGraph()
-	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
+	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || maxTask.Version != math.MaxInt64 || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
 		return item.ID == target.ID && reflect.DeepEqual(item.ExternalDependsOn, []string{second.ID})
 	}) {
 		t.Fatalf("persistence fixture incomplete: project=%#v first=%#v second=%#v target=%#v attachments=%#v", project, first, second, target, attachments)
@@ -547,27 +578,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 			checkReferences(actual)
 		}
 	}
-	response, body = request(http.MethodGet, stepsPath, "", nil)
-	stepsAfter := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
-	if !reflect.DeepEqual(stepsAfter, stepsBefore) {
-		t.Fatalf("Steps changed across restart: before=%+v after=%+v", stepsBefore, stepsAfter)
-	}
-	response, body = request(http.MethodGet, stepsPath+"/ABCDEF01", "", nil)
-	item := processPersistenceDecode[api.StepResource](t, response, body, http.StatusOK)
-	if item.ProjectID != project.ID || item.TaskID != target.ID || item.Version != stepsBefore.Version || !reflect.DeepEqual(item.Step, stepsBefore.Steps[0]) {
-		t.Fatalf("uppercase Step read lost scope, version or fields across restart: %+v", item)
-	}
-	response, body = request(http.MethodGet, maxStepsPath, "", nil)
-	maxStepsAfter := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
-	if !reflect.DeepEqual(maxStepsAfter, maxStepsBefore) || !bytes.Contains(body, []byte(`"version":9223372036854775807`)) {
-		t.Fatalf("maximum Step collection changed across restart: before=%+v after=%+v", maxStepsBefore, maxStepsAfter)
-	}
-	if actual := readTask(maxTask.ID); !reflect.DeepEqual(actual, maxTask) {
-		t.Fatalf("maximum Step read changed parent after restart: %+v", actual)
-	}
-	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
-		t.Fatalf("Steps read changed parent after restart: %+v", actual)
-	}
+	checkRetiredSteps(target)
 	checkAttachmentContents()
 	after := readGraph()
 	if !after.ObservedAt.After(graph.ObservedAt) {

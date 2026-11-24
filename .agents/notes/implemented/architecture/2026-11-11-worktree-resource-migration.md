@@ -11,6 +11,8 @@ resources appear ready for the new format.
 
 ## Decision
 
+This historical decision was superseded by [Git registration discovery](../simplification/2026-11-24-worker-git-worktree-discovery.md).
+
 An explicit migration component publishes and reads back manifests before
 rechecking and releasing matching legacy locks and removing associated obsolete
 sidecars. A re-enumeration precedes the final format marker. Retries preserve the

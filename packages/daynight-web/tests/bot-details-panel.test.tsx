@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BotDetailsPanel } from '../src/features/bots/BotDetailsPanel';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { botDefinition, botWorkerDefaults } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
 import { mockWideAssistantWorkspace } from './helpers/assistant-ui';
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
@@ -177,20 +178,22 @@ it('retains confirmed details and focus during identity checks, then removes the
   expect(f.source.api.command).not.toHaveBeenCalled();
 });
 
-it('uses only the matching Worker observation and marks stale availability as unknown', () => {
+it('uses the matching Bot observation and retains stale machine facts without claiming live availability', () => {
   const props = { id: 'details', bot: botDefinition(), worker: botWorkerDefaults(), stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
-  const view = renderWithLocale(<BotDetailsPanel {...props} />, { locale: 'en' });
+  const observation = { value: botObservation(1, { machine: props.worker.machine, state: 'idle', reason: 'idle' }), stale: false, busy: false, error: null, refresh: vi.fn() };
+  const view = renderWithLocale(<BotDetailsPanel {...props} observation={observation} />, { locale: 'en' });
   expect(screen.getByText('Machine 20')).toBeVisible();
-  expect(screen.getByText('Worker online')).toBeVisible();
-  view.rerender(<BotDetailsPanel {...props} stale />);
-  expect(screen.queryByText('Worker online')).toBeNull();
-  expect(screen.getByText('Worker status unknown')).toBeVisible();
-  view.rerender(<BotDetailsPanel {...props} worker={botWorkerDefaults(21)} />);
+  expect(screen.getByText('Online · idle')).toBeVisible();
+  view.rerender(<BotDetailsPanel {...props} observation={{ ...observation, stale: true }} />);
+  expect(screen.getByText('Observation out of date')).toBeVisible();
+  expect(screen.getByText('Last observed status')).toBeVisible();
+  expect(screen.getByText('Machine 20')).toBeVisible();
+  view.rerender(<BotDetailsPanel {...props} worker={botWorkerDefaults(21)} observation={{ ...observation, value: botObservation(2) }} />);
   expect(screen.queryByText('Machine 20')).toBeNull();
   expect(screen.queryByText('Machine 21')).toBeNull();
-  expect(screen.getByText(props.bot.workerId)).toBeVisible();
-  expect(screen.getByText('Worker status unknown')).toBeVisible();
-  expect(screen.queryByText('Worker online')).toBeNull();
+  expect(screen.getByText('Machine unknown')).toBeVisible();
+  expect(screen.getByText('Status unknown')).toBeVisible();
+  expect(screen.queryByText('Online · idle')).toBeNull();
 });
 
 it.each([

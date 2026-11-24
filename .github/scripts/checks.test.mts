@@ -12,28 +12,28 @@ const gate = jobs.get("checks")!;
 const required = gate.match(/^    needs: \[([^\]]+)\]$/m)![1]!.split(", ");
 const command = gate.match(/^        run: (.+)$/m)![1]!;
 
-test("workflow concurrency isolates each main run and supersedes only the same PR", () => {
+test("workflow concurrency protects running main runs and isolates PR refs", () => {
   const mainRef = "refs/heads/main";
-  const groupExpression = "${{ github.workflow }}-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}-{1}', github.sha, github.run_id) || '' }}";
   const policies = [workflow, shellBrowserWorkflow].map((source) => {
     const name = source.match(/^name: (.+)$/m)![1]!;
-    const group = source.match(/^  group: (.+)$/m)![1]!;
-    assert.equal(group, groupExpression);
-    assert.match(source, /^  cancel-in-progress: \$\{\{ github.ref != 'refs\/heads\/main' \}\}$/m);
+    const concurrency = source.match(/^concurrency:\n([\s\S]*?)(?=^[a-zA-Z][\w-]*:)/m)![1]!.trimEnd();
+    assert.equal(concurrency, "  group: ${{ github.workflow }}-${{ github.ref }}\n" +
+      "  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}");
     return name;
   });
-  // The asserted expression renders the main-only suffix using the full SHA and run ID.
-  const group = (name: string, ref: string, sha: string, runId: number) =>
-    `${name}-${ref}${ref === mainRef ? `-${sha}-${runId}` : ""}`;
-  const shas = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
+  assert.deepEqual(policies, ["checks", "shell and browser acceptance"]);
+  const group = (run: { name: string; ref: string; sha: string; event: string }) => `${run.name}-${run.ref}`;
   for (const name of policies) {
-    const mainRuns = shas.map((sha, i) => group(name, mainRef, sha, i + 1));
-    assert.equal(new Set(mainRuns).size, 3);
-    assert.notEqual(group(name, mainRef, shas[0]!, 1), group(name, mainRef, shas[0]!, 4));
-    assert.equal(group(name, "refs/pull/42/merge", shas[0]!, 1), group(name, "refs/pull/42/merge", shas[1]!, 2));
-    assert.notEqual(group(name, "refs/pull/42/merge", shas[0]!, 1), group(name, "refs/pull/43/merge", shas[0]!, 1));
+    const mainPush = { name, ref: mainRef, sha: "a", event: "push" };
+    const mainManual = { name, ref: mainRef, sha: "b", event: "workflow_dispatch" };
+    const pr = { name, ref: "refs/pull/42/merge", sha: "a", event: "pull_request" };
+    assert.equal(group(mainPush), group(mainManual));
+    assert.equal(group(pr), group({ ...pr, sha: "b" }));
+    assert.notEqual(group(pr), group({ ...pr, ref: "refs/pull/43/merge" }));
+    assert.notEqual(group(mainPush), group(pr));
   }
-  assert.notEqual(group(policies[0]!, mainRef, shas[0]!, 1), group(policies[1]!, mainRef, shas[0]!, 1));
+  const mainRun = { name: policies[0]!, ref: mainRef, sha: "a", event: "push" };
+  assert.notEqual(group(mainRun), group({ ...mainRun, name: policies[1]! }));
 });
 
 test("the final gate waits for every independent validation stage", () => {
@@ -43,7 +43,7 @@ test("the final gate waits for every independent validation stage", () => {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
-    assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
+    assert.ok(job.includes(`bash scripts/check.sh --${mode}`));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -72,7 +72,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-mobile", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -120,7 +120,7 @@ test("Linux, Windows and macOS share independent ordinary and installed CLI matr
     assert.ok(stage.includes("run: pnpm build"));
     assert.doesNotMatch(stage, /VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error/);
   }
-  assert.ok(ordinary.includes("    timeout-minutes: ${{ matrix.os == 'macos-15' && 15 || 10 }}"));
+  assert.ok(ordinary.includes("    timeout-minutes: ${{ matrix.os == 'macos-15' && 20 || 10 }}"));
   assert.match(installed, /^    timeout-minutes: 10$/m);
 });
 
@@ -514,6 +514,37 @@ for (const quality of ["success", "skipped", "failure", "cancelled"]) {
 }
 
 const productE2E = jobs.get("verify-e2e")!;
+const selectedMobileStep = gate.match(/      - name: Require selected mobile validation to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedMobileCommand = selectedMobileStep.match(/^        run: (.+)$/m)![1]!;
+
+test("mobile validation installs only its workspace and exports both platforms independently", () => {
+  const mobile = jobs.get("verify-mobile")!;
+  assert.match(workflow, /^      mobile: \$\{\{ steps.modules.outputs.mobile \}\}$/m);
+  assert.match(mobile, /^    needs: detect-changes$/m);
+  assert.match(mobile, /^    if: \$\{\{ needs.detect-changes.outputs.mobile == 'true' \}\}$/m);
+  assert.doesNotMatch(mobile, /continue-on-error|download-artifact/);
+  const command = "pnpm --filter @codetreker/daynight-mobile --fail-if-no-match";
+  for (const args of ["install --frozen-lockfile", "typecheck", "exec expo install --check", "bundle"]) {
+    assert.ok(mobile.includes(`${command} ${args}\n`));
+  }
+  const manifest = JSON.parse(readFileSync(new URL("../../packages/mobile/package.json", import.meta.url), "utf8"));
+  assert.match(manifest.scripts.bundle, /^expo export --platform ios --platform android /);
+  assert.match(selectedMobileStep, /^        if: \$\{\{ needs.detect-changes.outputs.mobile == 'true' \}\}$/m);
+  assert.match(selectedMobileStep, /MOBILE_RESULT: \$\{\{ needs.verify-mobile.result \}\}/);
+});
+
+for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
+  test(`selected mobile validation ${outcome} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedMobileCommand], {
+      env: { ...process.env, MOBILE_RESULT: outcome },
+      encoding: "utf8", timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, outcome === "success");
+  });
+}
+
 const selectedE2EStep = gate.match(/      - name: Require selected product E2E to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedE2ECommand = selectedE2EStep.match(/^        run: (.+)$/m)![1]!;
 
@@ -625,6 +656,42 @@ const selectedServerCommand = selectedServerStep.match(/^        run: (.+)$/m)![
 const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go API integration to succeed\n"))!;
 const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
 
+test("Go coverage partitions provide isolated Azure migration storage", () => {
+  for (const stage of [server, startupShutdown]) {
+    assert.match(stage, /^      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=[^;]+;BlobEndpoint=http:\/\/127\.0\.0\.1:10000\/daynight;'$/m);
+    assert.match(stage, /^      azurite:\n        image: mcr\.microsoft\.com\/azure-storage\/azurite:3\.35\.0@sha256:/m);
+    assert.match(stage, /^          AZURITE_ACCOUNTS: daynight:/m);
+  }
+});
+
+test("PR Azure validation uses the current module capture while main retains the separate commands", () => {
+  const steps = stepsOf(server);
+  const validation = steps.find(step => step.includes("id: server-validation\n"))!;
+  const evidence = steps.find(step => step.includes("name: Validate Azure tests in the covered invocation\n"))!;
+  const separate = steps.find(step => step.includes("name: Validate Azure storage and startup\n"))!;
+  assert.ok(steps.indexOf(validation) < steps.indexOf(evidence));
+  assert.match(validation, /rm -rf \.tmp\/go-test-evidence\/module\n          bash scripts\/check\.sh --coverage/);
+  assert.match(evidence, /^        if: \$\{\{ github.event_name == 'pull_request' \}\}$/m);
+  assert.match(evidence, /node --test scripts\/azure-evidence\.test\.mts\n          node scripts\/azure-evidence\.mts \.tmp\/go-test-evidence\/module/);
+  assert.match(separate, /^        if: \$\{\{ github.event_name != 'pull_request' \}\}$/m);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzurite\(ArchiveStaging\)\?\$'/);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzureStartupWithAzurite\$'/);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzure' \.\/internal\/service\/mcpdownload \.\/internal\/core\/session/);
+});
+
+test("the Go module runner bounds PostgreSQL storage in memory and checks the actual data mount", () => {
+  const options = server.match(/^      postgres:\n([\s\S]*?)^    defaults:/m)?.[1];
+  assert.ok(options);
+  assert.match(options, /^          --tmpfs \/var\/lib\/postgresql:rw,size=3g$/m);
+  assert.doesNotMatch(startupShutdown + apiIntegration, /--tmpfs \/var\/lib\/postgresql/);
+  const steps = stepsOf(server);
+  const prepare = steps.find(step => step.includes("name: Create the Store root test database\n"))!;
+  const validation = steps.find(step => step.includes("id: server-validation\n"))!;
+  assert.match(prepare, /stat -f -c %T "\$PGDATA"\)" = tmpfs/);
+  assert.match(prepare, /createdb -U daynight daynight_store_root/);
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(validation));
+});
+
 test("Go module coverage and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
@@ -642,7 +709,7 @@ test("Go module coverage and API integration prepare independent runners", () =>
   const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
   assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
   const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
-  assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
+  assert.ok(validation.includes("bash scripts/check.sh --coverage\n"));
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
   assert.deepEqual(artifactPaths(coverage), [
     "packages/daynight-server/coverage.out",

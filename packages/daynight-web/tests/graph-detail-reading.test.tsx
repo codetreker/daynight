@@ -82,8 +82,10 @@ describe('graph inspection and detail reading integration', () => {
     expect(state.hiddenUpstream).toBe('3');
     expect(state.nodes.filter((node) => node.inspection === 'selected').map((node) => node.id)).toEqual([selectedId]);
     expect(state.nodes.filter((node) => node.inspection === 'prerequisite').map((node) => node.id)).toEqual([]);
-    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId, detailNode.id]);
+    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId]);
+    expect(state.nodes.filter((node) => node.inspection === 'successor').map((node) => node.id)).toEqual([detailNode.id]);
     expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(0);
+    expect(state.edges.filter((edge) => edge.inspection === 'successor')).toHaveLength(1);
     const trigger = within(document.body.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
     const dialog = await screen.findByRole('dialog', { name: detail.title });
@@ -114,3 +116,5 @@ describe('graph inspection and detail reading integration', () => {
     expect(getTask).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function) });
   });
 });
+// Dependency-path and attachment continuity do not own ordinary-parent reads.
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: Pick<import('../src/features/task-detail/OrdinaryTaskRelations').OrdinaryTaskRelationsProps, 'render'>) => render?.({ parent: null, children: null }) ?? null }));

@@ -13,8 +13,8 @@ while background producers still use them.
 
 The service recorder explicitly starts one database worker and a separate
 consumer for bounded fault summaries. It copies safe request correlation into
-sampler state, applies a deadline to each batch, and retries only the idempotent
-metadata write. The consumer acknowledges a copied fault revision after logging;
+sampler state and applies a deadline to each batch. Confirmed uncommitted
+metadata writes may retry; unknown outcomes do not replay. The consumer acknowledges a copied fault revision after logging;
 request-local rejections use a fixed collector supplied by the caller. Drain
 seals admission and joins both producers. A completed drain can retain a failure
 and lost-sample count; a timeout preserves the same work for a later join.
@@ -22,7 +22,11 @@ The [authentication design](../../../../docs/design/daynight-auth.md#凭据使�
 owns the lifecycle and diagnostic contract. The
 [sampling decision](2026-11-12-credential-usage-sampling.md) owns state selection
 and capacity, and the [persistence decision](2026-11-12-credential-usage-persistence.md)
-owns transaction outcomes and driver cleanup.
+owns transaction outcomes and driver cleanup. The
+[retry decision](2026-11-23-credential-usage-lock-recovery.md) owns the
+lock-conflict exception and unknown-outcome handling. The
+[diagnostic decision](../bug-fix/2026-11-24-credential-usage-lock-diagnostics.md)
+owns silent intermediate contention and per-sample final diagnostics.
 
 The production App constructs the recorder from its existing persistence backend
 and explicitly starts that single instance. Root cancellation leaves admitted

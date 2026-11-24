@@ -12,7 +12,6 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
@@ -81,18 +80,14 @@ func (w *completionWriter) WriteSession(ctx context.Context, work func(store.Ses
 }
 
 func TestSessionWriterCompletionControlsLivePublication(t *testing.T) {
+	db := newServiceStore(t)
 	for _, mode := range []string{"committed_cleanup", "unknown", "unknown_committed", "cancel"} {
-		t.Run(mode, func(t *testing.T) {
+		if !t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(db.Close)
 			owner := testsupport.ServicePrincipal(t, db)
 			credentialID := uuid.NewString()
 			hash := sha256.Sum256([]byte(credentialID))
-			if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'completion',now(),now()+interval '1 day')`, credentialID, owner.UserID, hash[:]); err != nil {
+			if _, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'completion',now(),now()+interval '1 day')`, credentialID, owner.UserID, hash[:]); err != nil {
 				t.Fatal(err)
 			}
 			principal := model.Principal{Kind: model.PATCredential, UserID: owner.UserID, CredentialID: credentialID}
@@ -159,6 +154,8 @@ func TestSessionWriterCompletionControlsLivePublication(t *testing.T) {
 			if err != nil || retry.ConnectionEpoch != "1" {
 				t.Fatalf("rolled-back connection could not retry: %+v %v", retry, err)
 			}
-		})
+		}) {
+			t.FailNow()
+		}
 	}
 }

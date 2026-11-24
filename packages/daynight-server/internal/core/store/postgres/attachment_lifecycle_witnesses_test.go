@@ -91,7 +91,7 @@ func attachmentWitnessWait(t *testing.T, ctx context.Context, reached <-chan str
 func attachmentWitnessPID(t *testing.T, ctx context.Context, database *Store) int32 {
 	t.Helper()
 	var pid int32
-	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT parent_id::text,type,parent_type,effective_deleted_at FROM task_resource_rows%' LIMIT 1),0)`).Scan(&pid)
+	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks%' LIMIT 1),0)`).Scan(&pid)
 	if err != nil || pid == 0 {
 		t.Fatalf("attachment lifecycle transaction not found: %d %v", pid, err)
 	}
@@ -265,7 +265,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 			})
 			attachmentWitnessWait(t, ctx, reached)
 			var deletingPID int32
-			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'UPDATE tasks%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
+			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'WITH RECURSIVE descendants%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
 				t.Fatal(err)
 			}
 			mutation := attachmentWitnessAsync(t, ctx, func() error {
@@ -605,5 +605,66 @@ func TestAttachmentCompletionRetainsCommittedRowsWhenReceiptIsLost(t *testing.T)
 	var size int64
 	if err := f.database.Pool.QueryRow(ctx, `SELECT size_bytes FROM task_attachments WHERE task_id=$1 AND path='file'`, f.task).Scan(&size); err != nil || size != 9 {
 		t.Fatalf("actual attachment commit was lost: %d %v", size, err)
+	}
+}
+
+func TestStoreAttachmentMutationCommitsAndRollsBackCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
+	value := model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: "transaction.txt", ContentType: "text/plain", SizeBytes: 7}
+	calls := 0
+	completion, err := database.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		calls++
+		presence, err := scope.LockTaskPresence(ctx, project.ID, task.ID)
+		if err != nil {
+			return err
+		}
+		if !presence.Found || presence.DeletedAt != nil {
+			t.Fatalf("presence=%#v", presence)
+		}
+		actual, created, err := scope.AttachmentDAO().PutAttachment(ctx, value)
+		if err != nil {
+			return err
+		}
+		if !created || actual.Path != value.Path || actual.SizeBytes != 7 {
+			t.Fatalf("mutation insert=%#v, created=%v", actual, created)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted || calls != 1 {
+		t.Fatalf("completion=%#v, calls=%d, error=%v", completion, calls, err)
+	}
+	cause := errors.New("file stream refused")
+	completion, err = database.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		calls++
+		if err := scope.AttachmentDAO().DeleteAttachment(ctx, project.ID, task.ID, value.Path); err != nil {
+			return err
+		}
+		return cause
+	})
+	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, cause) || calls != 2 {
+		t.Fatalf("rollback completion=%#v, calls=%d, error=%v", completion, calls, err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		actual, err := snapshot.AttachmentDAO().Attachment(ctx, project.ID, task.ID, value.Path)
+		if err != nil {
+			return err
+		}
+		if actual.Path != value.Path || actual.SizeBytes != 7 {
+			t.Fatalf("rolled back attachment=%#v", actual)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	completion, err = database.WriteAttachmentMutation(canceled, func(store.AttachmentMutationScope) error { calls++; return nil })
+	var failure *store.Error
+	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, context.Canceled) || calls != 2 || !errors.As(err, &failure) || failure.Phase != "begin attachment mutation" {
+		t.Fatalf("begin completion=%#v, calls=%d, error=%v", completion, calls, err)
 	}
 }

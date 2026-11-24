@@ -76,7 +76,7 @@ describe('chain Session status controls', () => {
   it('exposes keyboard status hints and opens the working Session on Enter', async () => {
     const user = userEvent.setup(); const session = vi.fn();
     renderWithLocale(content(session), { locale: 'zh-CN', taskCache: true }); expand();
-    const button = within(child('Working') as HTMLElement).getByRole('button', { name: /Working.*进行中.*Session 工作中.*打开 Session/ });
+    const button = within(child('Working') as HTMLElement).getByRole('button', { name: /Working.*进行中.*工作中.*打开 Session/ });
     button.focus();
     await user.keyboard('{Enter}'); expect(session).toHaveBeenCalledWith('Working', button);
   });

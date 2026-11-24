@@ -118,6 +118,8 @@ original circumstances. Explicit archives remain immutable.
 - Perform code, configuration, and documentation changes in one dedicated
   worktree under the repository's `.worktrees/` directory. Keep the primary
   checkout clean. One task shares one worktree and branch across its agents.
+- Never use a depth-limited checkout or clone of `main`, including when a clone
+  selects `main` as its default branch. Use full history for these operations.
 - Inspect existing work before changing files; preserve unrelated modifications.
   Define file ownership for workers and coordinate concurrent edits. Install
   dependencies once per task.
@@ -138,6 +140,15 @@ original circumstances. Explicit archives remain immutable.
   remove it after authorized integration into the mainline.
 
 ## Decision workflow
+
+- Keep Worker execution independent of server scheduling. The server owns Task
+  eligibility, claims and business-resource authorization. The Worker owns
+  local process startup, shutdown, saved state and recovery. Server review must
+  reject any requirement for a Worker management registration, host stop/save
+  proof or activation handshake as a prerequisite to ordinary scheduling.
+  Preserve authorization and evidence for individual claims, Bot hosts and
+  Session executions. The [Worker design](docs/design/daynight-worker.md#worker-与服务端的职责边界)
+  owns the boundary and its rationale.
 
 A nontrivial change alters behavior, architecture, a shared contract, tooling,
 verification strategy, a stored or exchanged format, or a decision worth

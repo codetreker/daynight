@@ -1,3 +1,4 @@
+import { isProcessBirth } from "./linux-process-proof.js";
 import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
@@ -6,7 +7,7 @@ import { canonicalId } from "../../api/parse.js";
 import { sqliteDatabaseIsMissing, closeSqliteDatabase } from "../../platform/sqlite-access.js";
 import { inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { controllerJournalFormat } from "./journal-format.js";
+import { controllerJournalFormat, inspectReadCompatibleControllerJournal } from "./journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { parseStartupObservation } from "../../session/startup.js";
@@ -17,7 +18,7 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError } from "./storage-preparation.js";
 
 export type ControllerLaunchObservation =
-  | { kind: "observed"; snapshot: ControllerSnapshot }
+  | { kind: "observed"; snapshot: ControllerSnapshot; workerLifecycleProtocol?: 1 }
   | { kind: "running-unobserved"; process: ProcessProof }
   | { kind: "controller-exited"; process: ProcessProof; snapshot: ControllerSnapshot }
   | { kind: "pre-writer-exited"; process: ProcessProof; journal: "missing" | "preceding-generation" }
@@ -80,13 +81,17 @@ const readExitedJournal = (file: string, ticket: ControllerLaunchTicket, process
     result = db.transaction(() => {
       const source = inspectSqlite(db, controllerJournalFormat);
       if (source.kind === "empty") return { kind: "pre-writer-exited", process, journal: "missing" } as const;
-      if (source.kind !== "current") throw new ControllerLaunchJournalConflictError("Controller launch journal is not in the current format.");
+      try { inspectReadCompatibleControllerJournal(db); }
+      catch (cause) {
+        if (cause instanceof SqliteAccessError) throw cause;
+        throw new ControllerLaunchJournalConflictError("Controller launch journal is not in a supported read-only format.", { cause });
+      }
       const row = db.prepare("SELECT ticket_hash, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
       if (row === undefined) return { kind: "pre-writer-exited", process, journal: "missing" } as const;
       const snapshot = JSON.parse(row.snapshot) as ControllerSnapshot;
       if (snapshot === null || typeof snapshot !== "object" || snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.claimId !== ticket.claimId || snapshot.testExecutionId !== ticket.testExecutionId || typeof snapshot.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(snapshot.executionGeneration)) throw new ControllerLaunchJournalConflictError("Controller launch journal identity conflict.");
       const validId = (value: unknown) => typeof value === "string" && canonicalId(value) === value;
-      const validProof = (proof: ProcessProof) => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && typeof proof.startedAt === "string" && proof.startedAt.trim() !== "" && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
+      const validProof = (proof: ProcessProof) => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && isProcessBirth(proof.startedAt) && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
       if (!validId(snapshot.controllerInstanceId) || BigInt(snapshot.executionGeneration) > 9_223_372_036_854_775_807n || !["starting", "ready", "working", "stopping", "stopped", "paused", "failed"].includes(snapshot.lifecycle) || !["initializing", "idle", "working", "waiting_input", "stopped", "unknown"].includes(snapshot.activity) || !["not_required", "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"].includes(snapshot.initialInputState) || typeof snapshot.nativeStopped !== "boolean" || !Array.isArray(snapshot.nativeProcesses) || !snapshot.nativeProcesses.every(validProof) || !(snapshot.nativeSessionId === null || typeof snapshot.nativeSessionId === "string" && snapshot.nativeSessionId.trim() !== "" && snapshot.nativeSessionId.isWellFormed()) || !(snapshot.controllerProcess === null || validProof(snapshot.controllerProcess)) || !(snapshot.stoppedAt === null || typeof snapshot.stoppedAt === "string" && Number.isFinite(Date.parse(snapshot.stoppedAt))) || !(snapshot.error === null || typeof snapshot.error === "string")) throw new ControllerLaunchJournalConflictError("Controller launch journal snapshot format conflict.");
       if (snapshot.startup !== undefined) parseStartupObservation(snapshot.startup);
       if (snapshot.executionGeneration === ticket.executionGeneration) {
@@ -173,7 +178,7 @@ export const reconcileSubmittedControllerLaunch = async (input: { journalFile: s
   if (response === undefined) checkAfterFailure(ipcFailure); else check();
   if (response !== undefined) {
     if (response.snapshot.sessionId !== input.ticket.sessionId) throw new ControllerIpcIdentityConflictError("Controller IPC session identity mismatch.");
-    return { kind: "observed", snapshot: response.snapshot };
+    return { kind: "observed", snapshot: response.snapshot, ...(response.workerLifecycleProtocol === 1 ? { workerLifecycleProtocol: 1 } : {}) };
   }
   let state: Awaited<ReturnType<typeof inspectBootstrapProcessProof>>, mismatch: { sameBirth: boolean } | undefined;
   const processTimeout = timeoutAfterFailure(5000, ipcFailure);
@@ -225,7 +230,9 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
     remaining();
     if (state === "replaced") {
       if (mismatch?.sameBirth === false) throw new ControllerBootstrapReplacedError(conflict!.message);
-      if (mismatch?.sameBirth === true && mismatch.sameParent && mismatch.sameGroup) {
+      if (mismatch?.sameBirth === true && mismatch.sameGroup) {
+        // Losing the original Host can reparent this same process before its
+        // exit clears argv. Wait only; signaling still requires full identity.
         uncertainty = conflict;
         return "uncertain";
       }

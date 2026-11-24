@@ -38,7 +38,7 @@ export const TaskGraphDialogShell = ({ dialogId, labelId, focusRevision, onClose
 
   useLayoutEffect(() => {
     const parent = parentOverlay?.current ?? document.getElementById('root');
-    const release = registerOverlay(dialog.current!, parent);
+    const release = registerOverlay(dialog.current!, parent, dialog.current!.closest<HTMLElement>('.task-chain-backdrop'));
     close.current!.focus({ preventScroll: true });
     return release;
   }, [parentOverlay]);

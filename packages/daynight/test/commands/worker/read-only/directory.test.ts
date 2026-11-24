@@ -40,6 +40,51 @@ const fakeFileSystem = (names: readonly string[] = []): DirectoryFileSystem => (
 });
 
 describe("Worker directory browsing", () => {
+  it("joins a late read and its late handle close after cancelling the response", async () => {
+    let readStarted!: () => void, releaseRead!: () => void, closeStarted!: () => void, releaseClose!: () => void;
+    const reading = new Promise<void>(resolve => { readStarted = resolve; });
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+    const closing = new Promise<void>(resolve => { closeStarted = resolve; });
+    const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+    const fs = fakeFileSystem();
+    const realpath = vi.fn(fs.realpath); fs.realpath = realpath;
+    fs.openDirectory = async () => ({
+      read: async () => { readStarted(); await readGate; return null; },
+      close: async () => { closeStarted(); await closeGate; },
+    });
+    const browse = createWorkerDirectoryBrowser({ filesystem: fs });
+    const request = browse({}, options()), cancelled = expect(request).rejects.toMatchObject({ code: "cancelled" });
+    let joined = false;
+    try {
+      await reading; browse.close(); await cancelled;
+      const joining = browse.join().then(() => { joined = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(joined).toBe(false);
+      expect(browse.snapshot()).toMatchObject({ closed: true, occupied: 1, pending: 1, unclosedDirectories: 1 });
+      releaseRead(); await closing;
+      await new Promise(resolve => setImmediate(resolve));
+      expect(joined).toBe(false);
+      releaseClose(); await joining;
+      expect(browse.snapshot()).toMatchObject({ occupied: 0, pending: 0, unclosedDirectories: 0 });
+      const calls = realpath.mock.calls.length;
+      await expect(browse({}, options())).rejects.toMatchObject({ code: "cancelled" });
+      expect(realpath).toHaveBeenCalledTimes(calls);
+    } finally { releaseRead(); releaseClose(); await browse.join(); }
+  });
+
+  it("retains failed handle cleanup after its cancelled caller has left", async () => {
+    let started!: () => void, release!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fs = fakeFileSystem();
+    fs.openDirectory = async () => ({ read: async () => { started(); await gate; return null; }, close: async () => { throw new Error("OS close failed"); } });
+    const browse = createWorkerDirectoryBrowser({ filesystem: fs });
+    const request = browse({}, options()), cancelled = expect(request).rejects.toMatchObject({ code: "cancelled" });
+    await reading; browse.close(); await cancelled; release();
+    await expect(browse.join()).rejects.toThrow("resource responsibility is retained");
+    expect(browse.snapshot()).toMatchObject({ pending: 0, unclosedDirectories: 1, cleanupFailures: 1 });
+  });
+
   it("uses the target default, returns only directory names and leaves file bytes unchanged", async () => {
     await mkdir(path.join(root, "zeta")); await mkdir(path.join(root, "alpha")); await mkdir(path.join(root, ".hidden"));
     const file = path.join(root, "secret.txt"); await writeFile(file, "unchanged private content");

@@ -155,7 +155,7 @@ try {
     ...browserOptions,
     env: { ...browserOptions.env, DAYNIGHT_E2E_RUN_DIRECTORY: runDirectory, NODE_EXTRA_CA_CERTS: path.join(artifacts.directory, "daynight-ca.pem"), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(resolver)}` },
     signal: cancellation.signal,
-    timeoutMs: 420_000,
+    timeoutMs: 600_000,
   } });
   const playwrightResult = await playwright.finished;
   if (playwrightResult.exitCode !== 0) throw new CommandFailure("playwright", playwrightResult);

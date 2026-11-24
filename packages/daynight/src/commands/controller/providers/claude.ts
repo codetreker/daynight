@@ -9,12 +9,13 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SDKUserMessage, PermissionResult, Options } from "@anthropic-ai/claude-agent-sdk";
 import { queryClaudeLive, releaseClaudeLiveRecord, type ClaudeLiveQuery } from "./claude-live.js";
+import { claudeUsageProfileSupported, claudeUsageProviderVersion, createClaudeUsageCollector } from "./claude-usage.js";
 import { ClaudeImageInputs } from "./claude-image-input.js";
 import { ClaudeProjection } from "./claude-image-projection.js";
 import { openClaudeTranscriptHelper } from "./claude-transcript-helper.js";
 import type { ClaudeTranscriptReader, ClaudeTranscriptRecord } from "./claude-transcript.js";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
-import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
+import { record, string, NativeRpcError, NativeDispatchRejectedError, NativeRpcTimeoutError } from "./native-rpc.js";
 import { ControllerStartupError } from "../startup.js";
 import { nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
 import { claudeApprovalDetail } from "./claude-approval-detail.js";
@@ -40,6 +41,23 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   let controls: ClaudeControls | undefined, turnStartedAt: string | null = null, native: ClaudeLiveQuery | undefined;
   let settingInFlight = false, settingDispatched = false;
   let historyReader: ClaudeTranscriptReader | undefined;
+  const usageGap = (reason: string) => {
+    try { options.usageRuntime?.gap(reason); }
+    catch { options.onDiagnostic?.("Usage collection is incomplete; the native task continues."); }
+  };
+  const usageReady = () => {
+    if (!verified || !options.usageRuntime) return;
+    const providerVersion = claudeUsageProviderVersion(native?.profile);
+    // A generation's version is immutable. A pending probe cannot establish an
+    // "unverified" identity that would conflict with its eventual native profile.
+    if (providerVersion === "unverified") return;
+    try { options.usageRuntime.ready?.({ nativeSessionId: nativeId, providerVersion }); }
+    catch { usageGap("local_storage_failed"); }
+  };
+  const usageCollector = createClaudeUsageCollector(event => {
+    try { options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion: claudeUsageProviderVersion(native?.profile), event }); }
+    catch { usageGap("collector_failed"); }
+  }, () => usageGap("native_recovery_gap"));
   const pendingInputMessages = new Map<string, string>();
   const projectionOptions: ProviderOptions = { ...options, onInputMessage: (operationId, sessionId, entryId) => {
     if (sessionId !== nativeId) throw new Error("Native Claude input provenance identity mismatch.");
@@ -61,7 +79,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const identity = new Promise<void>((resolve, reject) => { identityResolve = resolve; identityReject = reject; });
   void identity.catch(() => {});
   const verify = (sessionId: unknown) => { if (sessionId !== nativeId) { const error = new Error("Native Claude session identity mismatch."); identityReject(error); throw error; } if (!verified) {
-    verified = true; identityResolve(); state();
+    verified = true; identityResolve(); state(); if (native?.profile) usageReady();
     // The first dispatch can precede SessionStart. Publish the verified identity
     // before associating its retained input with the Controller's durable journal.
     for (const [operationId, entryId] of pendingInputMessages) options.onInputMessage?.(operationId, nativeId, entryId);
@@ -87,6 +105,18 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const project = async (raw: unknown, history = false, historyContext?: { row: ClaudeTranscriptRecord; reader: ClaudeTranscriptReader; acknowledged?: Promise<void> }) => {
     const m = record(raw), message = record(m.message), type = string(m.type);
     if (m.session_id !== undefined) verify(m.session_id);
+    if (!history && !closed && !disconnected && (type === "system" || type === "assistant" || type === "stream_event")) usageReady();
+    if ((type === "assistant" || type === "stream_event" || type === "system" && m.subtype === "model_refusal_fallback") && options.usageRuntime && !closed && !disconnected) {
+      // History has no original SDK/backend provenance. The existing durable
+      // usage ledger can replay its own facts without requalifying transcript rows.
+      if (history) usageGap("native_recovery_gap");
+      else if (!verified || !claudeUsageProfileSupported(native?.profile)) { usageCollector.discard(); usageGap("profile_unverified"); }
+      else if (m.parent_tool_use_id === undefined && type !== "system") usageGap("subagent_scope_unknown");
+      else if (m.parent_tool_use_id === null || type === "system") {
+        try { usageCollector.observe(m); }
+        catch { usageGap("collector_failed"); }
+      }
+    }
     const confirmedImage = imageInputs.observe(m, history);
     if (confirmedImage) { accepted.get(confirmedImage)?.resolve(); accepted.delete(confirmedImage); }
     if (!history && !m.parent_tool_use_id && type === "system") {
@@ -136,6 +166,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
 
     if (type === "result") {
       if (history || m.parent_tool_use_id || m.user_message_uuid && m.user_message_uuid !== currentTurnId) return;
+      usageCollector.discard();
       const interrupted = cancellation && cancellation.turnId === currentTurnId && m.user_message_uuid === currentTurnId && ["aborted_streaming", "aborted_tools"].includes(string(m.terminal_reason));
       // The result can precede the interrupt receipt. Only a successful native
       // receipt and an explicitly aborted result establish user cancellation.
@@ -163,9 +194,10 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     if (!options.imageRuntime) throw new Error("Claude history storage component is unavailable.");
     const hint = options.imageRuntime.readState(`claude:transcript:${nativeId}`) ?? recovery?.transcriptPath;
     return { nativeHome: options.env?.CLAUDE_CONFIG_DIR ?? path.join(options.env?.HOME ?? homedir(), ".claude"), cwd: options.cwd, nativeSessionId: nativeId,
-      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn };
+      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn, ...(options.assertNativeDispatch === undefined ? {} : { assertNativeDispatch: options.assertNativeDispatch }) };
   };
   if (options.resumeNativeSessionId) {
+    usageGap("native_recovery_gap");
     try {
       historyReader = await openClaudeTranscriptHelper(historyOptions());
       for (;;) {
@@ -220,6 +252,8 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     });
   const disconnect = (error: Error) => {
     if (disconnected || closed) return;
+    usageCollector.discard();
+    usageGap("native_recovery_gap");
     disconnected = true; controls?.close(); input.close(); native?.close(); identityReject(error);
     for (const item of steered.values()) item.reject(error); steered.clear();
     for (const pending of accepted.values()) pending.reject(error); accepted.clear();
@@ -242,6 +276,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     const stopped = new Error("Native Claude process stopped; pending operation results are unknown.");
     try {
       await (closeRequested ??= (async () => {
+        usageCollector.discard();
         closed = true; controls?.close(); input.close(); native?.close();
         for (const item of steered.values()) item.reject(stopped); steered.clear();
         for (const pending of accepted.values()) pending.reject(stopped); accepted.clear();
@@ -262,7 +297,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   })().catch(error => { closing = null; throw error; });
   try { await deadline(native!.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization.");
     if (recovery) { if (!native?.profile) throw new Error("Claude recovery requires its actual SDK and CLI versions."); recovery.validateVersion({ sdkVersion: native.profile.sdkVersion, cliVersion: native.profile.cliVersion }); }
-    await controls.refresh(); if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) }); activity = "idle"; state(); }
+    await controls.refresh(); if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) }); if (!claudeUsageProfileSupported(native?.profile)) usageGap("profile_unverified"); usageReady(); activity = "idle"; state(); }
   catch (error) {
     // The SDK marks a native control_response rejection separately from transport errors.
     const failure = error instanceof Error && "errorClass" in error && error.errorClass === "control_request_failed"
@@ -271,13 +306,19 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     throw failure;
   }
   const submit = async (inputValue: NativeInput, operationId: string, text: string) => {
-    options.assertNativeDispatch?.();
     try {
+      options.assertNativeDispatch?.();
       if (inputValue.content.some(part => part.type === "image")) assertNativeImageAdmission(inputValue, imageCapabilities(), null);
       recovery?.markDirty();
       if (native?.submit) await native.submit({ uuid: operationId, sessionId: nativeId, input: inputValue });
       else input.push({ type: "user", uuid: operationId as ReturnType<typeof randomUUID>, session_id: nativeId, message: { role: "user", content: text }, parent_tool_use_id: null });
     } catch (error) {
+      if (error instanceof NativeDispatchRejectedError) {
+        accepted.get(operationId)?.reject(error); accepted.delete(operationId);
+        steered.get(operationId)?.reject(error); steered.delete(operationId);
+        if (currentTurnId === operationId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; }
+        state(); throw error;
+      }
       disconnect(new Error("Claude input submission ended without an execution receipt; its result is unknown.", { cause: error }));
       throw error;
     }
@@ -330,7 +371,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       catch (error) {
         // A control deadline does not cancel the underlying native setter. No
         // later turn can certify a recovery point while that mutation is unknown.
-        if (recovery && settingDispatched) disconnect(new Error("Claude setting result is unknown; recovery cannot accept further operations.", { cause: error }));
+        if (recovery && settingDispatched && !(error instanceof NativeDispatchRejectedError)) disconnect(new Error("Claude setting result is unknown; recovery cannot accept further operations.", { cause: error }));
         throw error;
       }
       finally { settingInFlight = false; settingDispatched = false; }
@@ -344,7 +385,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       let waiter!: { resolve(): void; reject(error: Error): void };
       const stopped = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; cancelWaiters.add(waiter); }); void stopped.catch(() => {});
       const attempt = { turnId: currentTurnId, acknowledged: false, result: undefined as unknown }; cancellation = attempt;
-      try { options.assertNativeDispatch?.(); const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
+      try { const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
         const result = await deadline(interrupt(capabilities.steer ? { cancelQueued: true } : undefined), "Claude interrupt receipt is unconfirmed.");
         if (closed || disconnected) throw new Error("Native Claude closed before interrupt confirmation.");
         attempt.acknowledged = true;

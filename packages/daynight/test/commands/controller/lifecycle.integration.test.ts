@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -9,7 +11,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { validateControllerLocalRequest } from "../../../src/commands/controller/local-client.js";
-import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCurrentControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
@@ -37,6 +39,21 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "worker-managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   return { home, ticket };
 };
+it.each(["Thu Nov 19 19:43:08 2026", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:9007199254740993"])("retains process birth evidence unchanged when the Controller journal reopens (%s)", async startedAt => {
+  const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt, commandHash: "a".repeat(64) };
+  const store = openControllerLifecycleStore(file, ticket);
+  let original: ReturnType<typeof store.getSnapshot>;
+  try {
+    store.patchSnapshot({ controllerProcess, nativeProcesses: [{ ...controllerProcess, pid: 124, parentPid: 123 }] });
+    original = store.getSnapshot();
+  } finally { store.close(); }
+  const observed = readCurrentControllerSnapshot(file, ticket);
+  expect(observed).toEqual(original);
+  expect(observed.controllerProcess).toEqual(controllerProcess);
+  expect(observed.nativeProcesses[0]?.startedAt).toBe(startedAt);
+});
+
 it("keeps explicit body-history writes independent of pending operations and source acknowledgements", async () => {
   const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
   let store = openControllerLifecycleStore(file, ticket);
@@ -292,14 +309,15 @@ it("publishes the first generation and its Controller proof in one visible commi
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
     if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
-      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(15); }
+      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
       finally { observer.close(); }
       observedInitialCommit = true;
     }
     return execute.call(this, sql);
   });
-  const store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
+  let store: ReturnType<typeof openControllerLifecycleStore> | undefined;
   try {
+    store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
     expect(observedInitialCommit).toBe(true);
     const observer = new Database(file, { readonly: true });
     try {
@@ -308,7 +326,7 @@ it("publishes the first generation and its Controller proof in one visible commi
       expect(row.owner_pid).toBe(process.pid);
       expect(row.ticket_hash).toBe(controllerPayloadHash(ticket));
     } finally { observer.close(); }
-  } finally { spy.mockRestore(); store.close(); }
+  } finally { spy.mockRestore(); store?.close(); }
 });
 
 it("holds writer ownership until close and keeps a supplied permit with its caller", async () => {

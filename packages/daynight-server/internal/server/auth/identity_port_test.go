@@ -17,22 +17,29 @@ import (
 )
 
 type strictIdentity struct {
-	t             *testing.T
-	callback      func() string
-	validateLogin func(string, string) error
-	startLogin    func(context.Context, string, string, string) (identitycore.LoginStart, error)
-	completeLogin func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
-	authenticate  func(context.Context, model.CredentialKind, string) (model.Principal, error)
-	user          func(context.Context, model.Principal) (model.User, error)
-	patchUser     func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
-	createPAT     func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
-	listPATs      func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
-	revokePAT     func(context.Context, model.Principal, string) error
-	updatePAT     func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
-	startDevice   func(context.Context, string, string) (identitycore.DeviceStart, error)
-	inspectDevice func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
-	decideDevice  func(context.Context, model.Principal, string, string, string) error
-	redeemDevice  func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
+	t                    *testing.T
+	callback             func() string
+	validateLogin        func(string, string) error
+	startLogin           func(context.Context, string, string, string) (identitycore.LoginStart, error)
+	completeLogin        func(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error)
+	authenticate         func(context.Context, model.CredentialKind, string) (model.Principal, error)
+	authenticateActivity func(context.Context, string, string) (model.Principal, error)
+	user                 func(context.Context, model.Principal) (model.User, error)
+	patchUser            func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
+	createPAT            func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
+	listBrowserSessions  func(context.Context, model.Principal, string, int) (identitycore.BrowserSessionPage, error)
+	getBrowserSession    func(context.Context, model.Principal, string) (model.Session, error)
+	revokeBrowserSession func(context.Context, model.Principal, string, string, string) error
+	listPATs             func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	listPATsV2           func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	createPATV2          func(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error)
+	updateDescription    func(context.Context, model.Principal, string, string, *string, *string) (string, *string, error)
+	revokePAT            func(context.Context, model.Principal, string) error
+	updatePAT            func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
+	startDevice          func(context.Context, string, string) (identitycore.DeviceStart, error)
+	inspectDevice        func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
+	decideDevice         func(context.Context, model.Principal, string, string, string) error
+	redeemDevice         func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -56,6 +63,12 @@ func (m *strictIdentity) Authenticate(ctx context.Context, kind model.Credential
 	}
 	return m.authenticate(ctx, kind, credential)
 }
+func (m *strictIdentity) AuthenticateBrowserActivity(ctx context.Context, credential, expected string) (model.Principal, error) {
+	if m.authenticateActivity == nil {
+		return model.Principal{}, m.unexpected("AuthenticateBrowserActivity")
+	}
+	return m.authenticateActivity(ctx, credential, expected)
+}
 func (m *strictIdentity) ValidateLogin(provider, returnPath string) error {
 	if m.validateLogin == nil {
 		return m.unexpected("ValidateLogin")
@@ -68,11 +81,11 @@ func (m *strictIdentity) StartLogin(ctx context.Context, provider, returnPath, b
 	}
 	return m.startLogin(ctx, provider, returnPath, browserScope)
 }
-func (m *strictIdentity) CompleteLogin(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
+func (m *strictIdentity) CompleteLogin(ctx context.Context, query url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
 	if m.completeLogin == nil {
 		return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
 	}
-	return m.completeLogin(ctx, query, binding)
+	return m.completeLogin(ctx, query, binding, userAgent)
 }
 func (m *strictIdentity) User(ctx context.Context, principal model.Principal) (model.User, error) {
 	if m.user == nil {
@@ -95,11 +108,47 @@ func (m *strictIdentity) CreatePAT(ctx context.Context, principal model.Principa
 	}
 	return m.createPAT(ctx, principal, input)
 }
+func (m *strictIdentity) ListBrowserSessions(ctx context.Context, p model.Principal, cursor string, limit int) (identitycore.BrowserSessionPage, error) {
+	if m.listBrowserSessions == nil {
+		return identitycore.BrowserSessionPage{}, m.unexpected("ListBrowserSessions")
+	}
+	return m.listBrowserSessions(ctx, p, cursor, limit)
+}
+func (m *strictIdentity) GetBrowserSession(ctx context.Context, p model.Principal, id string) (model.Session, error) {
+	if m.getBrowserSession == nil {
+		return model.Session{}, m.unexpected("GetBrowserSession")
+	}
+	return m.getBrowserSession(ctx, p, id)
+}
+func (m *strictIdentity) RevokeBrowserSession(ctx context.Context, p model.Principal, id, user, session string) error {
+	if m.revokeBrowserSession == nil {
+		return m.unexpected("RevokeBrowserSession")
+	}
+	return m.revokeBrowserSession(ctx, p, id, user, session)
+}
 func (m *strictIdentity) ListPATs(ctx context.Context, principal model.Principal) ([]model.PersonalAccessToken, error) {
 	if m.listPATs == nil {
 		return nil, m.unexpected("ListPATs")
 	}
 	return m.listPATs(ctx, principal)
+}
+func (m *strictIdentity) ListPATsV2(ctx context.Context, p model.Principal) ([]model.PersonalAccessToken, error) {
+	if m.listPATsV2 == nil {
+		return nil, m.unexpected("ListPATsV2")
+	}
+	return m.listPATsV2(ctx, p)
+}
+func (m *strictIdentity) CreatePATV2(ctx context.Context, p model.Principal, user string, input identitycore.CreatePAT, description *string) (identitycore.MintedPAT, error) {
+	if m.createPATV2 == nil {
+		return identitycore.MintedPAT{}, m.unexpected("CreatePATV2")
+	}
+	return m.createPATV2(ctx, p, user, input, description)
+}
+func (m *strictIdentity) UpdatePATDescription(ctx context.Context, p model.Principal, id, user string, expected, description *string) (string, *string, error) {
+	if m.updateDescription == nil {
+		return "", nil, m.unexpected("UpdatePATDescription")
+	}
+	return m.updateDescription(ctx, p, id, user, expected, description)
 }
 func (m *strictIdentity) RevokePAT(ctx context.Context, principal model.Principal, tokenID string) error {
 	if m.revokePAT == nil {

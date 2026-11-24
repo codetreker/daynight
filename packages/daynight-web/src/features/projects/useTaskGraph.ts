@@ -1,5 +1,5 @@
 import { useProjectAccessSession, type ProjectAccessSession } from "./ProjectAccess";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ApiError, authRequestsPauseRevision, getTaskSync, isAbortError } from "../../api/client";
 import { pollingInterval } from "../../app/polling";
 import type { TaskGraph, TaskSummary, WorkerMachine } from "../../api/types";
@@ -62,7 +62,6 @@ export const useTaskGraph = (projectId: string) => {
   const observingHistory = useRef(false);
   const liveAccess = useRef(false);
   const receipt = useRef<{ observedAt: string; receivedMonotonic: number; receivedAt: number; revision: number } | null>(null);
-  const displayed = useRef<{ projectId: string; scope: TaskCacheScope; access: ProjectAccessSession | null; snapshot: GraphSnapshot | null } | null>(null);
   const publish = useCallback((project: CachedProject, synced = false) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
@@ -189,13 +188,10 @@ export const useTaskGraph = (projectId: string) => {
       }
       if (event.historyChanged === true) {
         liveAccess.current = false; receipt.current = null;
-        const lastDisplay = displayed.current;
         setState(previous => {
           const current = previous.projectId === projectId && previous.scope === scope && previous.access === access;
-          const displaySnapshot = current && previous.displaySnapshot !== null && lastDisplay?.projectId === projectId && lastDisplay.scope === scope && lastDisplay.access === access
-            ? lastDisplay.snapshot ?? previous.displaySnapshot : current ? previous.displaySnapshot : null;
           const error = current ? previous.error : null;
-          return { projectId, scope, access, snapshot: null, displaySnapshot, status: displaySnapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: false, error };
+          return { projectId, scope, access, snapshot: null, displaySnapshot: null, status: error === null ? "loading" : "error", refreshing: false, error };
         });
         if (!observingHistory.current) void request("reconcile", event.historyHint !== true);
         return;
@@ -237,6 +233,10 @@ export const useTaskGraph = (projectId: string) => {
   const projection = useMemo(() => visible.snapshot === null ? null : projectCommittedTasks(visible.snapshot, committed, { cacheGeneration, scopeRevision, historyGeneration }),
     [visible.snapshot, committed, cacheGeneration, scopeRevision, historyGeneration]);
   const displaySnapshot = visible.snapshot !== null && visible.snapshot === visible.displaySnapshot ? projection?.snapshot ?? visible.displaySnapshot : visible.displaySnapshot;
-  useLayoutEffect(() => { displayed.current = { projectId, scope, access, snapshot: displaySnapshot }; }, [projectId, scope, access, displaySnapshot]);
-  return { snapshot: projection?.snapshot ?? visible.snapshot, displaySnapshot, reconcile, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore, observationStore };
+  const synchronizedDisplay = useRef<{ projectId: string; scope: TaskCacheScope; access: ProjectAccessSession | null; snapshot: GraphSnapshot | null }>({ projectId, scope, access, snapshot: null });
+  if (synchronizedDisplay.current.projectId !== projectId || synchronizedDisplay.current.scope !== scope || synchronizedDisplay.current.access !== access || visible.displaySnapshot === null)
+    synchronizedDisplay.current = { projectId, scope, access, snapshot: null };
+  if (visible.snapshot !== null) synchronizedDisplay.current.snapshot = visible.snapshot;
+  // Every presentation expires with its project history, including read-only graphs.
+  return { syncedSnapshot: synchronizedDisplay.current.snapshot, snapshot: projection?.snapshot ?? visible.snapshot, displaySnapshot, reconcile, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore, observationStore };
 };

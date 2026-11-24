@@ -1,0 +1,211 @@
+# Agent Note: Project Goal Acceptance Graph
+
+Status: implemented
+
+## Problem
+
+Project readers need to see which Goal outcomes precede other Goals, including
+isolated active Goals and finished prerequisite context. The existing Goal
+overview graph describes ordinary child Task execution, so its membership and
+readiness rules cannot describe Goal acceptance. Detail receipts also do not
+observe acceptance edges and cannot supply a complete graph baseline. Direct
+relationships may cross Projects, and independent authorized reads can finish at
+different times or lose access while a graph remains visible.
+
+## Decision
+
+The project Goals toolbar and Goal detail's right column open a separate
+acceptance graph. Project dialogs, standalone detail pages, My Tasks and nested
+Goal readers use the current Goal's actual Project. An inherited Project-source
+registry is separate from each reader's child graph controller. Each source pairs
+its committed synchronization baseline with the actual `ProjectAccessSession`
+from `useProjectAccess(projectId).session`. `ProjectAccessScope` validates the
+Project and current cache scope before restoring that existing session around
+the reader-local provider. A→B→A reading reuses both ancestor A owners: restoring
+only A's graph source would leave project-scoped editors under B's nearer access
+boundary. The restored session retains its original identity, scope, revocation
+and cancellation guards; context restoration starts no access lifecycle and
+grants no permission. A missing
+foreign source starts normal `useTaskGraph` on admitted detail mount, before a
+graph action. A child graph keeps its source detail and ancestor graphs open.
+Active Goals are roots; a detail entry also selects and retains its current Goal
+and direct prerequisites even when that Goal is completed or cancelled.
+Synchronized Goal `dependsOn` supplies project-local acceptance edges,
+while ordinary child Task graphs keep their existing members, execution rules
+and URLs. The existing committed TaskSync baseline remains separate from detail
+receipt projections. Opening, closing and canvas actions do not install another
+synchronization lifecycle or change requests and watermarks.
+
+A graph-owned relationship session calls the existing Goal relationship GET for
+qualified roots, including a detail entry's terminal current Goal. It displays
+the local graph first, limits concurrent
+sources to four and reads each source's successor pages sequentially. Complete
+prerequisites and accumulated readable successors form session-only
+contributions. An initial traversal publishes verified partial pages; a repeated
+traversal stages new pages and keeps the prior still-authorized legal contribution
+until the complete replacement passes protocol, scope and cycle checks. Failure,
+conflicting replacement or unsupported capability does not prove withdrawal;
+the explicit source phase records the result while its prior contribution stays
+authorized and legal against the current synchronized graph. An initial conflict
+can retain only an already verified prefix still admitted by the current cycle
+filter; an initially unsupported read contributes nothing. Actual access or
+history loss and trusted resource denial withdraw prior content immediately.
+Source phases distinguish pending coverage, partial results,
+failures, unsupported reads, withdrawal and conflicting observations. There is
+no graph polling loop; root/version changes, uncovered inspection, external
+expansion, qualified reentry and explicit retry drive reads, and closing cancels
+queued and in-flight work. Inspection and expansion share each source's admitted
+results and in-flight request. Inspection contributions describe direct
+relationships; explicit expansion promotes the source's contribution into the
+canvas without repeating an already covered read. Source modes distinguish roots,
+inspection and expansion. Reachability starts from synchronized active roots, the
+detail entry's focused Goal and their current direct prerequisites, then follows
+legal root/expanded external contributions. Canvas
+eligibility, source discovery and external edge inclusion share the same Project
+boundary policy. Raw relationships whose source and target both belong to the
+graph's Project cannot establish ownership or canvas eligibility; TaskSync alone
+determines those local paths. Otherwise a stale local prerequisite could qualify
+a removed terminal Goal for another foreign source's successor edge, rendering a
+card after its reader has been pruned. Genuine cross-project prerequisites can
+qualify terminal Goals; successors qualify only active Goals unless independently
+included by synchronized scope or a legal prerequisite. An external source can
+still reach a known synchronized local target, using its synchronized status,
+and real relations within one foreign Project remain eligible. Rendering filters
+disconnected inspection and expansion sources. Session reconciliation removes
+them and synchronously cancels queued or in-flight reads. Request finalizers release slots and dispatch eligible roots
+without waiting for an abandoned response. Otherwise a cached local edge can retain
+a removed terminal inspection source and consume the four available read slots.
+Earlier discovery or an inverse stale contribution cannot keep a branch admitted.
+
+External cards retain the API's actual Project, Goal, title and status without
+invented Task versions or child progress. Graph scope is relative to its owning
+Project, so an expanded source retains real edges within a foreign Project even
+when the API classifies its target as internal to that source. Only
+synchronization supplies edges whose endpoints belong to the graph's Project.
+Inspection uses complete synchronized Goal relations and metadata rather
+than just the visible canvas. Raw relationship data supplements external and
+inspection-only context without replacing local relations, titles or lifecycle
+states already observed through synchronization. Hidden prerequisites remain
+inaccessible indicators, and local or partial
+coverage cannot prove global acceptance. The service continues to own the final
+completion decision. Subject, source generation and history fences qualify each
+publication; trusted withdrawal clears affected nodes, edges and inspection data
+and cancels pages that could otherwise restore them.
+
+An admitted page that turns a previously known prerequisite edge's readable
+target into `null` supplies narrow withdrawal evidence when its stable edge ID
+matches the source's earlier record. The graph session immediately removes that
+target's identity, cards and inspection context from retained contributions,
+including during a staged traversal that later fails or conflicts. The readable
+source and other targets in the same Project remain available. An unmatched or
+ID-less hidden prerequisite cannot identify a prior target; ordinary candidate
+absence or status changes still wait for the complete atomic replacement.
+A withdrawal generation sampled at real request dispatch prevents older pages
+from restoring the target; a newly dispatched, currently qualified readable
+response can admit it again. The source privately retains each opaque edge ID's
+last verified target ID after clearing public references. If another fresh read
+restores that target, a later hidden response for the same edge can withdraw it
+again. This correlation is not exposed in cards, relations or inspection context.
+
+Candidate external contributions are checked together with current synchronized
+edges. When independently read edge reversal would create a cycle, the conflicting
+contribution is rejected while the legal local graph and valid reading state
+remain available for retry. Retained presentation is distinct from the current
+qualified baseline and cannot authorize new relationship or detail reads.
+
+Goal-specific projection, cards and inspection reuse neutral geometry, edge
+painting, semantic highlights, toolbar and dialog mechanisms. Valid selection
+and viewport survive updates, and an existing position anchors topology changes.
+Following an inspector relationship transfers focus to the persistent inspection
+heading without scrolling before the changing relation list can remove its
+trigger. The programmatically focusable heading remains outside ordinary Tab
+order and keeps the graph's Escape and fullscreen handling reachable.
+Detail entries register the graph under the originating reading layer without
+remounting its draft, tabs, fullscreen or scroll owners. Within the same admitted Project history, detail loading or Goal surface
+remounts preserve the open graph and reattach its actual reading root, including
+its loading surface. The entry controller and synchronization source outlive
+ordinary detail remounts. Trusted deletion, epoch replacement or another
+`historyChanged` clears the source's snapshot and display snapshot immediately
+and retires the graph session. The shared cache cannot prove that the old
+projection was unaffected without complete ordinary parent relationships. A fresh
+admitted baseline enables an explicit entry action; it does not reopen the
+retired graph. Trusted access or resource loss also retires it.
+Graph, detail and confirmation layers provide their actual visual surfaces to
+the shared overlay lease, so each child remains above its parent's current
+surface through nesting and fullscreen. The
+[shared frame decision](../architecture/2026-11-11-shared-detail-frame.md)
+owns visual stacking and release behavior. Goal Details use the
+existing detail and draft reading layers and restore their actual graph trigger.
+Each reader has a separate local draft identity, so discarding a nested reader's
+draft cannot discard a still-mounted parent's draft for the same Goal. Local
+departure checks inspect that reader's drafts.
+Opening the graph adds no browser history entry; accepted navigation closes it,
+and ordinary graph close restores the original detail entry or a visible reading
+heading. Surface attachment synchronously records the current root and focusable
+heading before batched entry attachment or retirement. Source-unavailable closure
+prefers that current heading, including a loading or failure heading: relationship
+denial can precede detail failure or trigger removal, and a still-connected old
+button is not sufficient restoration evidence. Retirement records a heading-focus
+intent for that Goal. When a fresh admitted reader replaces its loading heading,
+the intent transfers focus to the current visible heading only while the old
+heading owns focus, or after its removal during automatic reader registration.
+Otherwise the new reader's own focus effect can leave focus at the page root
+instead of the promised heading. Moving focus to another live control cancels
+the intent, and explicit graph opening clears it. The intent retains no old graph
+data and never reopens a retired graph. Restoration does not scroll.
+The [relationship design](../../../../docs/design/goal-dependencies.md#项目-goal-验收图)
+owns the mechanism and the [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-验收依赖图)
+own visible behavior.
+
+## Alternatives
+
+**Reuse the ordinary Goal child-Task graph as the acceptance graph.** Its Parent
+membership, execution readiness, activity and ordinary external-edge semantics
+would misrepresent Goal outcomes. Dedicated Goal presentation can reuse the
+neutral mechanical components without inheriting those rules.
+
+**Open another TaskSync reader for the graph.** A second owner would add requests
+and independently manage the same project watermark. Observing the existing
+committed baseline keeps graph actions independent of synchronization scheduling.
+
+**Use detail-projected summaries as graph facts.** Goal details do not carry
+acceptance edges. Keeping the graph on synchronized facts prevents a metadata
+receipt from changing relationships before normal project reconciliation.
+
+**Reuse the description's relationship hook for every source.** That reader owns
+a polling interval and requires admitted Goal detail content. Applying it to
+graph roots would add repeated relationship polling and unnecessary detail
+qualification. The graph session can reuse the raw authorized API while owning
+its finite source scheduling and cancellation.
+
+**Represent external Goals as complete Task summaries.** The relationship API
+does not provide their business versions, timestamps or child progress. A narrow
+external node keeps rendering truthful and prevents made-up fields from becoming
+cache or detail admission evidence.
+
+**Replace a prior traversal with each newly read page.** Early successor pages
+are not a complete replacement and can omit still-readable old successors.
+Staging repeated reads preserves their cards and reading state until the complete
+new contribution is known, while initial reads can still show useful partial
+context immediately.
+
+**Filter external branches by the API's source-relative kind.** An
+external source and target can share their own Project while both lie outside
+the graph's Project. Filtering the API's internal category would drop a real
+branch; graph ownership determines presentation while actual endpoints
+determine deduplication.
+
+## Consequences
+
+Readers can enter from project overview or their current Goal detail, including
+terminal Goals. They see the local graph immediately and readable direct cross-project
+context as it arrives, without changing ordinary Task graphs or synchronization
+traffic. Explicit external expansion adds readable branches while ordinary
+inspection preserves the canvas scope. Source reuse avoids repeated reads when
+inspection and expansion target the same Goal. Relationship reads add bounded
+per-source network work and hold only online-session data. Independent pages do
+not form a global snapshot, so changed
+revision pages and graph cycles remain explicit recoverable failures. Local and
+partial information cannot establish global acceptance. Shared geometry and
+reading mechanics preserve useful interaction state without treating retained
+content as authorization or supplying nonexistent external summary facts.

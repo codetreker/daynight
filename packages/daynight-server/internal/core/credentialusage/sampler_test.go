@@ -151,11 +151,168 @@ func TestRetriesAndNewBudget(t *testing.T) {
 	s.Seal()
 	take(t, s, 0)
 	c.advance(time.Second)
-	b = take(t, s, 1)
-	complete(t, s, b, Committed, Failure{})
-	if v := s.Snapshot(); v.Unknown != 1 || v.Pending != 0 {
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Unknown != 1 || v.Abandoned != 2 || v.Pending != 0 {
 		t.Fatalf("new candidate %+v", v)
 	}
+}
+
+func TestRecoverableLockConflictDiagnosticsFollowEachAttemptBudget(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	failure := Failure{Code: CodeWriteFailed, Cause: CauseDatabase, SQLState: "55P03", RecoverableLockConflict: true}
+	for attempt := 1; attempt < MaxAttempts; attempt++ {
+		complete(t, s, take(t, s, 1), NotCommitted, failure)
+		if v := s.Snapshot(); v.Failed != uint64(attempt) || v.Pending != 1 || v.Dirty != 0 || v.Abandoned != 0 {
+			t.Fatalf("retry %d: %+v", attempt, v)
+		}
+		take(t, s, 0)
+		c.advance(RetryInterval)
+	}
+	fresh := obs(2, c.now)
+	record(t, s, fresh, Accepted)
+	batch := take(t, s, 2)
+	complete(t, s, batch, NotCommitted, failure)
+	if v := s.Snapshot(); v.Failed != 4 || v.Abandoned != 1 || v.Pending != 1 || v.Dirty != 1 {
+		t.Fatalf("mixed budgets: %+v", v)
+	}
+	faults := s.Faults()
+	if len(faults) != 1 || faults[0].Latest.Observation != old || faults[0].Latest.SQLState != "55P03" || faults[0].Counts[PhaseFlush][CodeWriteFailed] != 1 {
+		t.Fatalf("abandoned diagnostic: %+v", faults)
+	}
+	c.advance(RetryInterval)
+	batch = take(t, s, 1)
+	if batch.Observations[0] != fresh {
+		t.Fatalf("retry did not preserve fresh observation: %+v", batch)
+	}
+	complete(t, s, batch, Committed, Failure{})
+}
+
+func TestRecoverableLockConflictKeepsIndependentFaultAndFinalInflightAbandonment(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	failure := Failure{Code: CodeWriteFailed, Cause: CauseDatabase, SQLState: "55P03", RecoverableLockConflict: true}
+	lag := Fault{Phase: PhaseFlush, Code: CodeLagExceeded, Cause: CauseNone, Observation: old, OccurredAt: c.now}
+	if err := s.ReportFault(lag); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt < MaxAttempts; attempt++ {
+		complete(t, s, take(t, s, 1), NotCommitted, failure)
+		c.advance(RetryInterval)
+	}
+	faults := s.Faults()
+	if len(faults) != 1 || faults[0].Counts[PhaseFlush][CodeLagExceeded] != 1 || faults[0].Counts[PhaseFlush][CodeWriteFailed] != 0 {
+		t.Fatalf("independent diagnostic: %+v", faults)
+	}
+	batch := take(t, s, 1)
+	c.advance(time.Microsecond)
+	newer := obs(1, c.now)
+	record(t, s, newer, Accepted)
+	complete(t, s, batch, NotCommitted, failure)
+	if v := s.Snapshot(); v.Pending != 1 || v.Abandoned != 1 || v.Failed != 3 {
+		t.Fatalf("final inflight failure: %+v", v)
+	}
+	faults = s.Faults()
+	if len(faults) != 1 || faults[0].Latest.Observation != old || faults[0].Counts[PhaseFlush][CodeWriteFailed] != 1 {
+		t.Fatalf("missing old abandonment: %+v", faults)
+	}
+	c.advance(RetryInterval)
+	batch = take(t, s, 1)
+	if batch.Observations[0] != newer {
+		t.Fatalf("newer observation: %+v", batch)
+	}
+	complete(t, s, batch, Committed, Failure{})
+}
+
+func TestRecoverableLockConflictRejectsContradictoryClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome Outcome
+		failure Failure
+	}{
+		{"committed", Committed, Failure{Code: CodeWriteFailed, Cause: CauseDatabase, SQLState: "55P03", RecoverableLockConflict: true}},
+		{"unknown", Unknown, Failure{Code: CodeWriteOutcomeUnknown, Cause: CauseUnknown, SQLState: "55P03", RecoverableLockConflict: true}},
+		{"timeout", NotCommitted, Failure{Code: CodeWriteTimeout, Cause: CauseTimeout, SQLState: "55P03", RecoverableLockConflict: true}},
+		{"cancelled", NotCommitted, Failure{Code: CodeWriteFailed, Cause: CauseCancelled, SQLState: "55P03", RecoverableLockConflict: true}},
+		{"other database error", NotCommitted, Failure{Code: CodeWriteFailed, Cause: CauseDatabase, SQLState: "23505", RecoverableLockConflict: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, c := newSampler()
+			record(t, s, obs(1, c.now), Accepted)
+			batch := take(t, s, 1)
+			if err := s.Complete(batch.ID, tc.outcome, tc.failure); err != ErrInvalidFault {
+				t.Fatalf("completion: %v", err)
+			}
+			if v := s.Snapshot(); v.Inflight != 1 || v.Failed != 0 || v.Dirty != 0 {
+				t.Fatalf("invalid completion changed state: %+v", v)
+			}
+			complete(t, s, batch, Committed, Failure{})
+		})
+	}
+}
+
+func TestUnknownDoesNotReplayAndRetainsNewerInflightEvent(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	b := take(t, s, 1)
+	c.advance(3 * time.Second)
+	newer := obs(1, c.now)
+	record(t, s, newer, Accepted)
+	complete(t, s, b, Unknown, Failure{Code: CodeWriteOutcomeUnknown, Cause: CauseUnknown})
+	if v := s.Snapshot(); v.Failed != 1 || v.Unknown != 1 || v.Abandoned != 1 || v.Pending != 1 || v.OldestPendingAge != 0 {
+		t.Fatalf("unknown completion: %+v", v)
+	}
+	faults := s.Faults()
+	if len(faults) != 1 || faults[0].Latest.Code != CodeWriteOutcomeUnknown || faults[0].Latest.Observation != old {
+		t.Fatalf("unknown diagnostic: %+v", faults)
+	}
+	s.Seal()
+	take(t, s, 0)
+	for i := 0; i < MaxAttempts; i++ {
+		c.advance(RetryInterval)
+		b = take(t, s, 1)
+		if b.Observations[0] != newer {
+			t.Fatalf("attempt %d replayed old event: %+v", i, b.Observations)
+		}
+		if i == MaxAttempts-1 {
+			complete(t, s, b, Committed, Failure{})
+		} else {
+			complete(t, s, b, NotCommitted, Failure{Code: CodeWriteFailed, Cause: CauseDatabase})
+		}
+	}
+	c.advance(RetryInterval)
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Abandoned != 1 || v.Pending != 0 || v.Exhausted != 0 {
+		t.Fatalf("newer completion: %+v", v)
+	}
+}
+
+func TestUnknownRetainsReplayGuardAfterDiagnosticAcknowledgement(t *testing.T) {
+	s, c := newSampler()
+	old := obs(1, c.now)
+	record(t, s, old, Accepted)
+	b := take(t, s, 1)
+	complete(t, s, b, Unknown, Failure{Code: CodeWriteOutcomeUnknown, Cause: CauseUnknown})
+	fault := s.Faults()[0]
+	if !s.AcknowledgeFault(old.Key(), fault.Revision) {
+		t.Fatal("fault acknowledgement failed")
+	}
+	c.advance(RetryInterval)
+	record(t, s, old, Coalesced)
+	take(t, s, 0)
+	if v := s.Snapshot(); v.Abandoned != 1 || v.Exhausted != 1 || v.Dirty != 0 {
+		t.Fatalf("unknown replay guard: %+v", v)
+	}
+	newer := obs(1, c.now)
+	record(t, s, newer, Accepted)
+	b = take(t, s, 1)
+	if b.Observations[0] != newer {
+		t.Fatalf("wrong observation: %+v", b.Observations)
+	}
+	complete(t, s, b, Committed, Failure{})
 }
 
 func TestNewerEventReplacesRetryAndGetsFreshBudget(t *testing.T) {

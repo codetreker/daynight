@@ -26,6 +26,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
@@ -52,6 +53,7 @@ type identityHTTPScope struct {
 
 var _ store.IdentityScope = (*identityHTTPScope)(nil)
 var _ store.IdentityDAO = (*identityHTTPScope)(nil)
+var _ store.BrowserSessionDAO = (*identityHTTPScope)(nil)
 var _ store.PersonalTeamDAO = (*identityHTTPScope)(nil)
 
 func (s *identityHTTPScope) invoke(name string, args ...any) any {
@@ -69,7 +71,18 @@ func (s *identityHTTPScope) invoke(name string, args ...any) any {
 	return call.check(args)
 }
 
-func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
+func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO { return s }
+func (s *identityHTTPScope) SessionTime(ctx context.Context) (time.Time, error) {
+	return s.invoke("SessionTime", ctx).(time.Time), nil
+}
+func (s *identityHTTPScope) LockBrowserSession(ctx context.Context, hash []byte, preview bool) (model.Session, time.Time, error) {
+	result := s.invoke("LockBrowserSession", ctx, hash, preview).(identityHTTPBrowserSession)
+	return identityHTTPCloneSession(result.session), result.now, nil
+}
+func (s *identityHTTPScope) TouchBrowserSession(ctx context.Context, id string, used, expires time.Time) error {
+	s.invoke("TouchBrowserSession", ctx, id, used, expires)
+	return nil
+}
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
 	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
@@ -180,11 +193,25 @@ type identityHTTPPlan struct {
 
 type loginPreviewDAO struct {
 	store.PreviewSSODAO
-	plan *identityHTTPPlan
+	plan     *identityHTTPPlan
+	position int
+	issuedAt time.Time
 }
 
-func (d loginPreviewDAO) CleanupPreviewSSO(_ context.Context, _ time.Time) error { return nil }
-func (d loginPreviewDAO) InsertPreviewSSO(_ context.Context, login model.PreviewSSOLogin) error {
+func (d *loginPreviewDAO) CleanupPreviewSSO(ctx context.Context, now time.Time) error {
+	identityHTTPCheck(d.plan.t, d.position == 0 && ctx.Err() == nil, "preview login cleanup order/context")
+	identityHTTPNow(d.plan.t, now)
+	d.position++
+	return nil
+}
+func (d *loginPreviewDAO) SessionTime(ctx context.Context) (time.Time, error) {
+	identityHTTPCheck(d.plan.t, d.position == 1 && ctx.Err() == nil, "preview login clock order/context")
+	d.position++
+	return d.issuedAt, nil
+}
+func (d *loginPreviewDAO) InsertPreviewSSO(ctx context.Context, login model.PreviewSSOLogin) error {
+	identityHTTPCheck(d.plan.t, d.position == 2 && ctx.Err() == nil && login.ExpiresAt == d.issuedAt.Add(identitycore.LoginLifetime), "preview login issuance uses database time")
+	d.position++
 	d.plan.previewLogin = login
 	return nil
 }
@@ -312,6 +339,7 @@ func identityHTTPUser(persona string) model.User {
 }
 
 func (p *identityHTTPPlan) complete(persona string) {
+	issuedAt := time.Date(2026, 11, 20, 10, 0, 0, 123000000, time.UTC)
 	user := identityHTTPUser(persona)
 	var teamID string
 	calls := []identityHTTPCall{{"UpsertUser", func(args []any) any {
@@ -364,10 +392,14 @@ func (p *identityHTTPPlan) complete(persona string) {
 		identityHTTPCheck(p.t, args[1].(string) == user.ID, "login identity read actor")
 		return user
 	}})
+	calls = append(calls, identityHTTPCall{"SessionTime", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil, "session issuance context")
+		return issuedAt
+	}})
 	calls = append(calls, identityHTTPCall{"InsertSession", func(args []any) any {
 		session := args[1].(model.Session)
 		_, err := uuid.Parse(session.ID)
-		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.ExpiresAt.Sub(session.CreatedAt) == identitycore.SessionLifetime, "session write arguments")
+		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.CreatedAt == issuedAt && session.ExpiresAt == issuedAt.Add(identitycore.SessionLifetime) && session.LastUsedAt != nil && *session.LastUsedAt == issuedAt, "session write arguments")
 		identityHTTPNow(p.t, session.CreatedAt)
 		p.mu.Lock()
 		p.sessionDraft = identityHTTPCloneSession(session)
@@ -390,6 +422,27 @@ func (p *identityHTTPPlan) authenticate(user model.User, kind model.CredentialKi
 		}
 		return identityHTTPPrincipal(user, kind)
 	}})
+}
+
+type identityHTTPBrowserSession struct {
+	session model.Session
+	now     time.Time
+}
+
+func (p *identityHTTPPlan) activity(user model.User, token string) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 456000000, time.UTC)
+	principal := identityHTTPPrincipal(user, model.SessionCredential)
+	p.expect(identityHTTPCall{"LockBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && bytes.Equal(args[1].([]byte), secret.Hash(token)) && !args[2].(bool), "browser activity lock credential")
+		return identityHTTPBrowserSession{session: model.Session{ID: principal.CredentialID, UserID: user.ID, TokenHash: secret.Hash(token), CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}, now: now}
+	}}, identityHTTPCall{"TouchBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && args[1].(string) == principal.CredentialID && args[2].(time.Time) == now && args[3].(time.Time) == now.Add(identitycore.SessionLifetime), "browser activity write uses locked database time")
+		return nil
+	}})
+}
+
+func (integration *identityIntegration) activity(t *testing.T, browser *http.Client, user model.User) {
+	integration.plan.activity(user, identityCookie(t, browser, integration.server.URL, integration.sessionCookie))
 }
 
 func (p *identityHTTPPlan) user(user model.User) {
@@ -523,9 +576,11 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	t.Helper()
 	database, plan := newIdentityHTTPPlan(t)
 	database.WritePreviewSSOCall = func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error) {
-		if err := fn(loginPreviewDAO{plan: plan}); err != nil {
+		dao := &loginPreviewDAO{plan: plan, issuedAt: time.Date(2026, 11, 20, 10, 1, 0, 123000000, time.UTC)}
+		if err := fn(dao); err != nil {
 			return store.Completion{Outcome: store.TransactionNotCommitted}, err
 		}
+		identityHTTPCheck(t, dao.position == 3, "preview login callback completed")
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
 	server := httptest.NewUnstartedServer(nil)
@@ -792,11 +847,11 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 	base := "/api/v1/projects/" + project.ID
 	collection := base + "/tasks"
 	taskPath := collection + "/" + task.ID
-	want := map[string]int{"snapshot": 1, "access": 1}
+	want := map[string]int{"snapshot": 2, "access": 1}
 	if allowed {
 		switch path {
 		case base:
-			want["project"] = 1
+			want["project"], want["snapshot"], want["access"] = 1, 3, 2
 		case base + "/task-graph?taskId=" + task.ID:
 			want["project"], want["presence"], want["graph"], want["observed"] = 1, 1, 1, 1
 		case collection:
@@ -808,9 +863,9 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 		case taskPath + "/attachments/files/" + item.Path, taskPath + "/preview/" + item.Path:
 			want["presence"], want["metadata"] = 1, 1
 		case base + "/members":
-			want["participants"] = 1
+			want["participants"], want["snapshot"], want["access"] = 1, 3, 2
 		case base + "/invitations":
-			want["invitations"] = 1
+			want["invitations"], want["snapshot"], want["access"] = 1, 3, 2
 		default:
 			t.Fatalf("unconfigured root resource: %s", path)
 		}
@@ -984,13 +1039,21 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 	integration := &identityIntegration{plan: plan, server: server, logs: logs, sessionCookie: "daynight_session"}
 	origin := map[string]string{"Origin": server.URL}
 	bobActor := identityHTTPPrincipal(bobUser, model.SessionCredential)
-	integration.session(t, bob, bobUser)
+	integration.activity(t, bob, bobUser)
 	projectHTTPCreate(t, tx, bobActor, "Bob private project", "https://example.test/bob", bobUser.PersonalTeam.ID, false)
 	_, data := identityRequest(t, bob, http.MethodPost, server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Bob private project", RepoURL: "https://example.test/bob", ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
 	bobProject := identityDecode[api.Project](t, data)
 	mint := func(browser *http.Client, user model.User, name string) api.CreatedPersonalAccessToken {
 		t.Helper()
 		integration.session(t, browser, user)
+		_, catalogBody := identityRequest(t, browser, http.MethodGet, server.URL+"/api/v1/me/credential-scope-catalog", "", nil, http.StatusOK)
+		var catalog struct {
+			PAT scopepolicy.CatalogSnapshot `json:"pat"`
+		}
+		if err := json.Unmarshal(catalogBody, &catalog); err != nil {
+			t.Fatal(err)
+		}
+		integration.activity(t, browser, user)
 		var draft model.PersonalAccessToken
 		plan.expect(integration.lockSession(identityHTTPPrincipal(user, model.SessionCredential)), identityHTTPCall{"CleanupCredentials", func(args []any) any { identityHTTPNow(t, args[1].(time.Time)); return nil }}, identityHTTPCall{"InsertPAT", func(args []any) any {
 			draft = args[1].(model.PersonalAccessToken)
@@ -998,8 +1061,8 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 				unexpectedHTTPCall(t, "private PAT draft")
 			}
 			return nil
-		}})
-		_, body := identityRequest(t, browser, http.MethodPost, server.URL+"/api/v1/me/tokens", jsonBody(t, map[string]any{"name": name, "expiresAt": nil}), origin, http.StatusCreated)
+		}}, integration.lockSession(identityHTTPPrincipal(user, model.SessionCredential)))
+		_, body := identityRequest(t, browser, http.MethodPost, server.URL+"/api/v2/me/tokens", jsonBody(t, map[string]any{"expectedUserId": user.ID, "name": name, "expiresAt": nil, "catalogRevision": catalog.PAT.CatalogRevision, "scopes": []string{"project:read", "project:write"}}), origin, http.StatusCreated)
 		created := identityDecode[api.CreatedPersonalAccessToken](t, body)
 		if created.ID == "" || !strings.HasPrefix(created.Token, "dnpat_") || created.ID != draft.ID || !bytes.Equal(draft.TokenHash, secret.Hash(created.Token)) {
 			t.Fatal("PAT creation did not return its proposed credential")
@@ -1036,7 +1099,7 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 	if !reflect.DeepEqual(bobAfter, bobBefore) {
 		t.Fatalf("Alice's project creation changed Bob's scope: %+v", bobAfter)
 	}
-	integration.session(t, alice, aliceUser)
+	integration.activity(t, alice, aliceUser)
 	plan.expect(integration.lockSession(identityHTTPPrincipal(aliceUser, model.SessionCredential)), identityHTTPCall{"DeletePAT", func(args []any) any {
 		projectHTTPCheck(t, []string{args[1].(string), args[2].(string)}, []string{aliceUser.ID, aliceToken.ID})
 		return nil

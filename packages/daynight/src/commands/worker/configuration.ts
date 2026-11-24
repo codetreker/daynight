@@ -9,6 +9,7 @@ import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import { parseLocalToolPaths, type Tool, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { createWorkerConfigurationPersistence, waitForConfigurationOperation, type ConfigurationPersistenceContext, type ConfigurationPersistenceEvent } from "./configuration-persistence.js";
 import { classifyConfigurationFailure } from "./configuration-failure.js";
+import type { WorkerCleanupPolicy } from "./worktrees.js";
 import { applicableConfigurationDesired, configurationAuthority, configurationDesired, configurationDesiredRevision, configurationKey as keyOf, configurationRetryDelays as retryDelays, freezeConfiguration as freeze, sameConfigurationValue as equal } from "./configuration-model.js";
 import type { ConfigurationProjection, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity, WorkerConfigurationReportContext, WorkerConfigurationSnapshot, WorkerConfigurationSource, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
 import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval as hasUnfinishedRemoval, configurationInheritanceSources, configurationProjects, configurationSnapshot as snapshot, configurationTarget as target, configurationToolTargets as toolTargets, findConfigurationRecord as findRecord, findCurrentConfigurationItem as findItem, projectConfigurationReport, pruneConfigurationRetained, replaceConfigurationRecord as replaceItem, transitionConfigurationDesired as desiredTransition } from "./configuration-state.js";
@@ -60,7 +61,7 @@ export type WorkerConfigurationManagerOptions = {
 };
 type Job = { readonly recordId: string; readonly key: WorkerCloudItemKey; readonly controller: AbortController; readonly promise: Promise<void>; proof: WorkerNativeProof | null; preparing: boolean };
 const nativeTools = (native: WorkerCloudNative): readonly ("codex" | "copilot")[] => native.agent === "codex" || native.agent === "copilot" ? [native.agent] : [];
-const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "agentControlMode" || key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup" || key.kind === "archiveSessions" || key.kind === "taskTagFilter";
+const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "agentControlMode" || key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "platformTaskMode" || key.kind === "enableSudoCleanup" || key.kind === "enableWindowsProcessCleanup" || key.kind === "archiveSessions" || key.kind === "taskTagFilter";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
 const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
@@ -406,13 +407,25 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   if (options.signal.aborted) halt();
   return {
     current: (): WorkerConfigurationSnapshot => snapshot(cache, usable(), validatedNative, localTools, proofFor),
-    readCleanupPolicy: (): { readonly enableSudoCleanup: boolean; readonly revision: string } | null => {
+    readCleanupPolicy: (): WorkerCleanupPolicy | null => {
       const authority = configurationAuthority(cache);
       if (authority === null) return null;
-      const target = desiredCapabilitySources(authority.json).get("enableSudoCleanup")?.trim();
-      const item = findItem(cache, { kind: "enableSudoCleanup" });
-      if (target !== "true" && target !== "false" || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
-      return { enableSudoCleanup: item.value.appliedValue, revision: item.actualSource.targetRevision };
+      const sources = desiredCapabilitySources(authority.json);
+      // Each member is captured from its own committed application. A member
+      // the service never sent, or one whose result is not an observed boolean,
+      // contributes nothing rather than defaulting to enabled.
+      const applied = (kind: "enableSudoCleanup" | "enableWindowsProcessCleanup"): { readonly value: boolean; readonly revision: string } | null => {
+        const target = sources.get(kind)?.trim();
+        const item = findItem(cache, { kind });
+        if (target !== "true" && target !== "false" || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
+        return { value: item.value.appliedValue, revision: item.actualSource.targetRevision };
+      };
+      const sudo = applied("enableSudoCleanup"), processes = applied("enableWindowsProcessCleanup");
+      if (sudo === null && processes === null) return null;
+      return {
+        enableSudoCleanup: sudo?.value ?? false, sudoRevision: sudo?.revision ?? null,
+        enableWindowsProcessCleanup: processes?.value ?? false, windowsProcessRevision: processes?.revision ?? null,
+      };
     },
     hasAuthority: (): boolean => synchronized,
     isReady: (): boolean => !stopped && fatal === undefined && storage.isReady(),

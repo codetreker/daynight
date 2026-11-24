@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureWorkerIdentity } from "../../../src/commands/worker/identity.js";
+import { ensureWorkerIdentity, readWorkerIdentity } from "../../../src/commands/worker/identity.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { readConfiguration } from "../../../src/config/document.js";
 import * as configurationFiles from "../../../src/config/files.js";
@@ -33,6 +33,14 @@ const fixture = async (source?: string) => {
 const identity = "E434211D-1116-4C73-A3AC-C1587A2B17CD";
 
 describe("stable worker identity", () => {
+  it("refuses missing management identity without writing a replacement", async () => {
+    const source = "serverUrl: https://service.example\n";
+    const paths = await fixture(source);
+    await expect(readWorkerIdentity(paths)).rejects.toThrow("original Worker identity is missing");
+    expect(configurationFiles.updateConfigurationFile).not.toHaveBeenCalled();
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+  });
+
   it("creates and reuses a persisted UUID without creating runtime state", async () => {
     const paths = await fixture();
     const generated = await ensureWorkerIdentity(paths);

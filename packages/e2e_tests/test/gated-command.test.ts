@@ -358,6 +358,32 @@ test("normal Worker SIGINT is forwarded through both gates and recorded only aft
   } finally { await rm(root, { recursive: true, force: true }); await rm(run, { recursive: true, force: true }); }
 });
 
+test("gate setup and unconfirmed cleanup preserve both failures", async () => {
+  const run = await create();
+  try {
+    await rm(path.join(run, "results"), { recursive: true, force: true });
+    await assert.rejects(startGatedCommand({ runDirectory: run, gateId: randomUUID(), command: process.execPath,
+      args: ["-e", "process.exit(0)"], options: { cwd: run, timeoutMs: 5_000, onOutput: () => {} } }), error => {
+      assert.ok(error instanceof AggregateError);
+      assert.ok(error.errors.some((failure: unknown) => failure instanceof Error && "code" in failure && failure.code === "ENOENT"));
+      assert.ok(error.errors.some((failure: unknown) => failure instanceof Error && /stop was not confirmed/.test(failure.message)));
+      return true;
+    });
+  } finally { await rm(run, { recursive: true, force: true }); }
+});
+
+test("gated target signal is retained separately from the gate exit", async () => {
+  const run = await create(), gateId = randomUUID();
+  try {
+    const gate = await startGatedCommand({ runDirectory: run, gateId, command: process.execPath,
+      args: ["-e", "process.stderr.write('target evidence');process.kill(process.pid,'SIGTERM')"], options: { cwd: run, timeoutMs: 5_000, onOutput: () => {} } });
+    const result = await gate.finished;
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(gate.diagnostics().targetExit, { code: null, signal: "SIGTERM" });
+    assert.match(gate.diagnostics().stderr, /target evidence/);
+  } finally { await rm(run, { recursive: true, force: true }); }
+});
+
 test("inner gate cannot launch its target when the proof writer disappears before authorization", async () => {
   const run = await create(), marker = path.join(run, "started"), gatePath = path.resolve(import.meta.dirname, "../src/gated-target.mjs");
   const gate = spawn(process.execPath, [gatePath, process.execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'started')`], { stdio: ["pipe", "ignore", "ignore"] });

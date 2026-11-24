@@ -6,6 +6,7 @@ import { taskReviewKey } from './freshness';
 import { TaskConfirmation } from './TaskConfirmation';
 import { TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 import type { TaskMutationState } from './TaskDetailSession';
+import { TaskLifecycleBlockers, taskLifecycleReason } from './TaskLifecycleBlockers';
 
 export type DeletionConfirmation = { readonly kind: 'delete'; readonly detail: TaskDetail; readonly removeDepends: true };
 export const matchesDeletionReview = (confirmation: DeletionConfirmation, detail: TaskDetail | null): boolean =>
@@ -24,17 +25,18 @@ export const TaskDeletionConfirmation = ({ confirmation, ...props }: {
     taskTitle={confirmation.detail.title} confirmLabel={m.confirm} cancelLabel={m.cancel} closeLabel={m.closeConfirmation} destructive />;
 };
 
-const DeletionError = ({ error }: { readonly error: unknown }) => {
-  const { messages: { inspection: { deletion: m }, common } } = useI18n();
-  const message = error instanceof ApiError
+const DeletionError = ({ error, projectId }: { readonly error: unknown; readonly projectId: string }) => {
+  const { messages: { inspection: { deletion: m, status }, common } } = useI18n();
+  const message = taskLifecycleReason(error, status) ?? (error instanceof ApiError
     ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError
       : error.code === 'version_conflict' ? m.versionConflict : error.code === 'dependency_unsatisfied' ? m.dependencyUnsatisfied
         : error.code === 'invalid_transition' ? m.invalidTransition : error.code === 'not_found' ? m.notFound : m.refused
-    : m.requestFailed;
-  return <><p>{message}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
+    : m.requestFailed);
+  return <><p>{message}</p><TaskLifecycleBlockers error={error} projectId={projectId} />{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
 };
 
-export const TaskDeletionFeedback = ({ mutation, onReconcile }: {
+export const TaskDeletionFeedback = ({ mutation, onReconcile, projectId }: {
+  readonly projectId: string;
   readonly mutation: TaskMutationState;
   readonly onReconcile: () => void;
 }) => {
@@ -49,7 +51,7 @@ export const TaskDeletionFeedback = ({ mutation, onReconcile }: {
     tone={mutation.phase === 'refused' ? 'error' : unresolved || mutation.phase === 'conflict' ? 'warning' : 'info'} recoverable={unresolved}>
     {summary !== null && <p role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{summary}</p>}
     {unresolved && <button className="button" type="button" disabled={busy} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.checkState}</button>}
-    {relevant && mutation.error !== null && <div role="alert"><DeletionError error={mutation.error} /></div>}
-    {relevant && mutation.reconciliationError !== null && <div role="alert"><p>{m.checkFailed}</p><DeletionError error={mutation.reconciliationError} /></div>}
+    {relevant && mutation.error !== null && <div role="alert"><DeletionError error={mutation.error} projectId={projectId} /></div>}
+    {relevant && mutation.reconciliationError !== null && <div role="alert"><p>{m.checkFailed}</p><DeletionError error={mutation.reconciliationError} projectId={projectId} /></div>}
   </TaskDetailNotice></div>;
 };

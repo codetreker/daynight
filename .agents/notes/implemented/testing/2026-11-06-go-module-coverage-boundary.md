@@ -20,10 +20,12 @@ their combined production coverage also exceeds 90%. Every production package
 has an owner. Critical-block failure is disabled by the checked-in configuration.
 The original gate ran race detection locally and disabled it in both PR and main
 CI. The [race policy](2026-11-07-go-coverage-streaming.md) now retains race
-instrumentation on main while PR CI overrides an inherited race flag. The coverage comparator's own tests
-run as part of the check. Package concurrency is limited to two because the
-isolated schemas share the database-wide migration advisory lock. Stress
-workloads remain a separate local entry.
+instrumentation on main while PR CI overrides an inherited race flag. The
+coverage comparator's own tests run as part of the check. The initial package
+limit of two accounted for the migration advisory lock shared by isolated
+schemas. The [module throughput decision](2026-11-24-go-module-ci-throughput.md)
+defines the current PR runner and its package limit. Stress workloads remain
+a separate local entry.
 
 The [snapshot cancellation decision](2026-11-06-snapshot-cancellation-observation.md)
 records how database query observation separates operation cancellation from

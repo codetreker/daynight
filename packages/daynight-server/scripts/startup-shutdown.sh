@@ -12,6 +12,16 @@ profile="$DAYNIGHT_MODULE_ROOT/startup-shutdown-coverage.out"
 rm -f -- "$profile"
 
 node --test scripts/startup-shutdown.test.mts
+
+ordinary_go_flags="$unit_go_flags"
+if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
+  ordinary_go_flags+=" -p=4"
+fi
+
+started=$SECONDS
+node scripts/command-timeout.mts 300000 5000 env GOFLAGS="$ordinary_go_flags" go vet ./cmd/daynight-server
+printf 'Command vet completed in %ss\n' "$((SECONDS - started))"
+
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 

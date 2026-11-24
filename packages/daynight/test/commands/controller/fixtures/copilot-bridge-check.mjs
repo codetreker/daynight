@@ -6,6 +6,7 @@ import { setImmediate as yieldNative, setTimeout as delay } from "node:timers/pr
 import { fileURLToPath } from "node:url";
 import { startCopilotRuntime } from "../../../../dist/commands/controller/providers/copilot-runtime.js";
 import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages, observeCopilotBridgeRoute } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
+import { NativeDispatchRejectedError } from "../../../../dist/commands/controller/providers/native-rpc.js";
 import { CopilotReadCorrelation, copilotReadMarker } from "../../../../dist/commands/controller/providers/copilot-read-authority-correlation.js";
 import { openNativeMediaSpool } from "../../../../dist/commands/controller/media/native-spool.js";
 import { validateImageFile } from "../../../../dist/commands/controller/media/image-validation.js";
@@ -151,6 +152,21 @@ try {
     } else if (mode === "route-error" || mode === "route-malformed") {
       assert.equal(await observeCopilotBridgeRoute(session), null);
       assert(!JSON.stringify({ events, losses, traces }).includes("endpoint-secret-canary"));
+      if (mode === "route-error") {
+        const filename = path.join(root, "default-send.png"), bytes = Buffer.alloc(1024, 7);
+        writeFileSync(filename, bytes, { mode: 0o400 });
+        const input = { prompt: "", mode: "immediate", attachments: [{ path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" }] };
+        const initial = await session.rpc.model.getCurrent();
+        await client.ping("model-route-change");
+        await eventually(() => events.some(event => event.id === "mode-change"));
+        await assert.rejects(sendCopilotBridgeImages(session, input, () => {}, null, initial.modelId), error => error instanceof NativeDispatchRejectedError && /model readback changed/.test(error.message));
+        assert.equal(records().filter(record => record.method === "session.send").length, 0);
+        const current = await session.rpc.model.getCurrent();
+        let admitted = 0;
+        assert.equal(await sendCopilotBridgeImages(session, input, () => { admitted++; }, null, current.modelId), "sent-1");
+        assert.equal(admitted, 1);
+        assert.equal(records().filter(record => record.method === "session.send").length, 1);
+      }
     } else if (mode === "kill-helper" || mode === "kill-native" || mode === "malformed") {
       const pending = client.ping("hold"), rejected = assert.rejects(pending, /unknown|exited|frame/);
       const history = session.rpc.eventLog.read({ cursor: "hold", max: 1, includeEphemeral: false }), historyRejected = assert.rejects(history, /unknown|exited|frame/);

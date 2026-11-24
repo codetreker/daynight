@@ -43,6 +43,7 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-history", "session-messages", "worker-operations", "overview"}
 	t.Run("MCP manuals without Projects", func(t *testing.T) {
 		// Read every published document over both supported protocols without a
 		// Project parameter, comparing the response to the candidate source.
@@ -50,7 +51,6 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if len(projects.Items) != 0 || projects.NextCursor != nil {
 			t.Fatalf("expected no Projects: %+v", projects)
 		}
-		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-history", "session-messages", "worker-operations", "overview"}
 		for _, version := range []string{"2025-11-25", "2026-07-28"} {
 			client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
 			session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: version})
@@ -95,6 +95,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 		}
 	})
+	t.Run("MCP project repository", func(t *testing.T) { serverAPIMCPProjectRepositoryNormalFlow(t, f) })
 	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
 	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
 	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
@@ -105,6 +106,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
 	t.Run("worker task tag admission", func(t *testing.T) { serverAPIWorkerTaskTagAdmissionFlow(t, f) })
+	t.Run("worker platform task mode", func(t *testing.T) { serverAPIWorkerPlatformTaskModeFlow(t, f) })
 	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
 	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
@@ -112,6 +114,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("task tags", func(t *testing.T) { serverAPITaskTagsNormalFlow(t, f) })
 	t.Run("Goal dependencies", func(t *testing.T) { serverAPIGoalDependenciesNormalFlow(t, f) })
+	t.Run("ordinary subtasks", func(t *testing.T) { serverAPIOrdinarySubtaskNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})
@@ -182,17 +185,14 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const (
-			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 16
-		)
+		const uri = "daynight://manuals/concepts.md"
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {
 			if resource.URI == uri {
 				manual = resource
 			}
 		}
-		if len(listing.Resources) != expectedManualCount || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
+		if len(listing.Resources) != len(manualNames) || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
 			t.Fatalf("manual discovery differs: %+v", listing)
 		}
 		read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: manual.URI})
@@ -434,32 +434,6 @@ func TestServerAPINormalFlows(t *testing.T) {
 		actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
 		if _, exists := actual.Properties["pullRequests"]; exists || actual.Version != resourceVersion(removed.Version) {
 			t.Fatal("deleted property remained in Sync readback")
-		}
-	})
-	t.Run("step reads and writes", func(t *testing.T) {
-		project := createProject(t, f, "API Steps")
-		task := createTask(t, f, project, "Step parent", nil)
-		path := taskPath(task) + "/steps"
-		first := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": task.Version, "id": "abcdef01", "title": "First Step", "description": "Initial content"}, http.StatusCreated)
-		second := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": first.Version, "id": "12345678", "title": "Second Step"}, http.StatusCreated)
-		read := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if read.ProjectID != project.ID || read.TaskID != task.ID || read.Version != second.Version || !reflect.DeepEqual(read.Steps, second.Steps) {
-			t.Fatalf("Step list differs: %+v", read)
-		}
-		single := requestJSON[api.StepResource](t, f, http.MethodGet, path+"/abcdef01", nil, http.StatusOK)
-		if single.TaskID != task.ID || single.Step.ID != "abcdef01" || single.Step.Description != "Initial content" {
-			t.Fatalf("Step get differs: %+v", single)
-		}
-		changed := requestJSON[api.StepsResource](t, f, http.MethodPatch, path+"/abcdef01", map[string]any{"version": second.Version, "title": "Edited Step", "description": "Updated content"}, http.StatusOK)
-		active := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/abcdef01/status", map[string]any{"version": changed.Version, "status": "in_progress"}, http.StatusOK)
-		moved := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/12345678/position", map[string]any{"version": active.Version, "position": "first"}, http.StatusOK)
-		if len(moved.Steps) != 2 || moved.Steps[0].ID != "12345678" || moved.Steps[1].ID != "abcdef01" || moved.Steps[1].Title != "Edited Step" || moved.Steps[1].Description != "Updated content" || moved.Steps[1].Status != "in_progress" {
-			t.Fatalf("Step move/content differs: %+v", moved)
-		}
-		removed := requestJSON[api.StepsResource](t, f, http.MethodDelete, path+"/12345678", map[string]any{"version": moved.Version}, http.StatusOK)
-		current := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if current.ProjectID != project.ID || current.TaskID != task.ID || current.Version != removed.Version || len(current.Steps) != 1 || current.Steps[0].ID != "abcdef01" || !reflect.DeepEqual(current.Steps, removed.Steps) {
-			t.Fatalf("Step deletion readback differs: %+v", current)
 		}
 	})
 	t.Run("thread messages and replies", func(t *testing.T) {

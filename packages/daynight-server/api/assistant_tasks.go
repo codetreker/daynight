@@ -73,6 +73,32 @@ type AssistantTaskAppendix struct {
 	Version       int64     `json:"version,string"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+	// Scope is omitted for an unrestricted appendix and Validation before the
+	// first validation, so clients that predate both keys can still read such
+	// appendices.
+	Scope      *AssistantTaskAppendixScope      `json:"scope,omitempty"`
+	Validation *AssistantTaskAppendixValidation `json:"validation,omitempty"`
+}
+
+// AssistantTaskAppendixScope lists every declared dimension; an empty array
+// leaves that dimension unrestricted.
+type AssistantTaskAppendixScope struct {
+	ProjectIDs     []string `json:"projectIds"`
+	EventTypes     []string `json:"eventTypes"`
+	ItemCategories []string `json:"itemCategories"`
+}
+
+type AssistantTaskAppendixValidation struct {
+	SuccessCount    int64     `json:"successCount,string"`
+	FailureCount    int64     `json:"failureCount,string"`
+	LastValidatedAt time.Time `json:"lastValidatedAt"`
+}
+
+// AssistantTaskRelatedAppendices lists at most five non-deleted appendices in
+// relevance order. It is complete for its query and has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix `json:"items"`
+	ObservedAt time.Time               `json:"observedAt"`
 }
 
 type AssistantTaskProposal struct {
@@ -106,15 +132,43 @@ type AssistantTaskItem struct {
 }
 
 type AssistantTaskRecord struct {
-	ID          string          `json:"id"`
-	TaskID      string          `json:"taskId"`
-	ItemID      *string         `json:"itemId"`
-	Author      string          `json:"author"`
-	AuthorBotID *string         `json:"authorBotId"`
-	Kind        string          `json:"kind"`
-	Text        string          `json:"text"`
-	Refs        json.RawMessage `json:"refs"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	ID          string  `json:"id"`
+	TaskID      string  `json:"taskId"`
+	ItemID      *string `json:"itemId"`
+	Author      string  `json:"author"`
+	AuthorBotID *string `json:"authorBotId"`
+	Kind        string  `json:"kind"`
+	Text        string  `json:"text"`
+	// Outcome and ActionRecordID are present only on outcome records. Other
+	// records omit both keys, so clients that validate records strictly can
+	// reject either key on every other kind.
+	Outcome        *string         `json:"outcome,omitempty"`
+	ActionRecordID *string         `json:"actionRecordId,omitempty"`
+	Refs           json.RawMessage `json:"refs"`
+	CreatedAt      time.Time       `json:"createdAt"`
+}
+
+// AssistantTaskMetrics is the trailing-window capability summary of one task.
+// AverageResolutionMs is null when no closure in the window has a known open
+// time; UntimedClosureCount counts the closures excluded from that average.
+type AssistantTaskMetrics struct {
+	ObservedAt          time.Time                   `json:"observedAt"`
+	WindowStart         time.Time                   `json:"windowStart"`
+	WindowEnd           time.Time                   `json:"windowEnd"`
+	ActionCount         int64                       `json:"actionCount"`
+	Outcomes            AssistantTaskOutcomeMetrics `json:"outcomes"`
+	EscalationCount     int64                       `json:"escalationCount"`
+	ResultUnknownCount  int64                       `json:"resultUnknownCount"`
+	ClosureCount        int64                       `json:"closureCount"`
+	UntimedClosureCount int64                       `json:"untimedClosureCount"`
+	AverageResolutionMs *int64                      `json:"averageResolutionMs"`
+	RecurringItemCount  int64                       `json:"recurringItemCount"`
+}
+
+type AssistantTaskOutcomeMetrics struct {
+	Effective    int64 `json:"effective"`
+	Ineffective  int64 `json:"ineffective"`
+	Inconclusive int64 `json:"inconclusive"`
 }
 
 type AssistantTaskEvent struct {
@@ -150,4 +204,50 @@ type AssistantTaskPage[T any] struct {
 	Items      []T       `json:"items"`
 	NextCursor *string   `json:"nextCursor"`
 	ObservedAt time.Time `json:"observedAt"`
+}
+
+// AssistantTaskInbox is the readable inbox state. It never carries a token or
+// token digest; a task without an enabled inbox reports enabled=false and null
+// identity and times.
+type AssistantTaskInbox struct {
+	InboxID         *string    `json:"inboxId"`
+	Enabled         bool       `json:"enabled"`
+	CreatedAt       *time.Time `json:"createdAt"`
+	RotatedAt       *time.Time `json:"rotatedAt"`
+	OverlapUntil    *time.Time `json:"overlapUntil"`
+	SuppressedCount int64      `json:"suppressedCount,string"`
+}
+
+// AssistantTaskInboxOperation is the committed receipt of an inbox management
+// operation.
+type AssistantTaskInboxOperation struct {
+	OperationID        string    `json:"operationId"`
+	Kind               string    `json:"kind"`
+	TaskID             string    `json:"taskId"`
+	RequestFingerprint string    `json:"requestFingerprint"`
+	AdmittedAt         time.Time `json:"admittedAt"`
+	ResultingVersion   int64     `json:"resultingVersion,string"`
+}
+
+// AssistantTaskInboxResult answers disable requests and receipt reads.
+type AssistantTaskInboxResult struct {
+	Operation AssistantTaskInboxOperation `json:"operation"`
+	Inbox     AssistantTaskInbox          `json:"inbox"`
+}
+
+// AssistantTaskInboxTokenResult answers enable and rotate requests. Token is
+// present only in the response of the request that generated it; a replay of
+// the same operation returns null.
+type AssistantTaskInboxTokenResult struct {
+	AssistantTaskInboxResult
+	Token *string `json:"token"`
+}
+
+// AssistantTaskInboxReceipt answers an accepted public inbox request. EventID
+// is null only for a suppressed request, which writes no event.
+type AssistantTaskInboxReceipt struct {
+	EventID        *string `json:"eventId"`
+	Classification string  `json:"classification"`
+	Duplicate      bool    `json:"duplicate"`
+	Suppressed     bool    `json:"suppressed"`
 }

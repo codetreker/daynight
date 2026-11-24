@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createOperation, type Operation } from "../../api/operation.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
+import { sameToolPathChoice } from "../../api/worker-tool-paths.js";
 import { ToolSelectionError, verifyToolLaunch, type ResolvedToolLaunch, type ToolPaths } from "../../platform/tool-executables.js";
 import { createCopilotToolMaterializer } from "./copilot-tool-materializer.js";
 import { createWorkerToolInspector } from "./native-selection.js";
@@ -19,11 +20,21 @@ export const createWorkerToolSelectionRuntime = (options: {
     verify: (launch, operation) => verifyToolLaunch(launch, operation, { trustedRuntimeRoot: toolRuntimeRoot }) });
   let targetSignature = "", nextPreparationAt = 0, preparing: Promise<boolean> | undefined;
   let lastCopilotRequired: boolean | undefined;
+  const checks = new Map<"codex" | "copilot", { nextAt: number; controller?: AbortController; pending?: Promise<void> }>();
+  let adoptedTargets: ToolSelectionTargets | null = null, closed = false;
   const setTargets = (targets: ToolSelectionTargets | null): void => {
-    if (targets === null) { manager.suspendTargets(); targetSignature = ""; nextPreparationAt = 0; return; }
+    if (targets === null) manager.suspendTargets();
+    else manager.setTargets(targets);
+    for (const [tool, check] of checks) {
+      const previous = adoptedTargets?.choices[tool], next = targets?.choices[tool];
+      if (previous == null || next == null || !sameToolPathChoice(previous, next)) {
+        check.nextAt = 0; check.controller?.abort();
+      }
+    }
+    adoptedTargets = targets === null ? null : structuredClone(targets);
+    if (targets === null) { targetSignature = ""; nextPreparationAt = 0; return; }
     const signature = JSON.stringify(targets.choices);
     if (signature !== targetSignature) { targetSignature = signature; nextPreparationAt = 0; }
-    manager.setTargets(targets);
   };
   setTargets(null);
   const withOperation = async <T>(signal: AbortSignal, action: (operation: Operation) => Promise<T>): Promise<T> => {
@@ -36,6 +47,30 @@ export const createWorkerToolSelectionRuntime = (options: {
   const selectToolLaunch = (agent: "codex" | "copilot", signal: AbortSignal): Promise<ResolvedToolLaunch> => withOperation(signal, operation => manager.selectForNewExecution(agent, "web", operation));
   return {
     manager, inspector, toolRuntimeRoot, selectToolLaunch, setTargets,
+    checkConfiguredTools: async (signal: AbortSignal): Promise<boolean> => {
+      if (closed || adoptedTargets === null || signal.aborted) return false;
+      const pending: Promise<void>[] = [];
+      for (const entry of manager.snapshot().entries) {
+        if (adoptedTargets.choices[entry.tool] === null || entry.state === "applied" || entry.state === "checking") continue;
+        let check = checks.get(entry.tool);
+        if (check === undefined) { check = { nextAt: 0 }; checks.set(entry.tool, check); }
+        if (check.pending !== undefined || Date.now() < check.nextAt) continue;
+        const owner = check, controller = new AbortController();
+        const cancel = () => controller.abort(signal.reason);
+        signal.addEventListener("abort", cancel, { once: true });
+        owner.controller = controller;
+        const job = withOperation(controller.signal, operation => manager.prepare(entry.tool, "web", operation)).catch(() => {
+          // The selection owner retains the concrete failure during retry backoff.
+          if (!controller.signal.aborted) owner.nextAt = Date.now() + 60_000;
+        }).finally(() => {
+          signal.removeEventListener("abort", cancel);
+          if (owner.pending === job) { delete owner.pending; delete owner.controller; }
+        });
+        owner.pending = job; pending.push(job);
+      }
+      await Promise.all(pending);
+      return pending.length > 0;
+    },
     hostInspector: { ...inspector, check: async (launch: ResolvedToolLaunch, operation: Operation) => {
       operation.check(); const observation = manager.observationFor(launch);
       if (observation === undefined) throw new Error("The selected tool has no current inspection proof.");
@@ -83,6 +118,8 @@ export const createWorkerToolSelectionRuntime = (options: {
       return { ...configuration, toolLaunch, toolObservation };
     },
     close: async (): Promise<void> => {
+      closed = true;
+      for (const check of checks.values()) check.controller?.abort();
       const operation = createOperation({ limits: { totalMs: 30_000 } });
       try {
         const results = await Promise.allSettled([manager.close(operation), materializer.close(operation)]);

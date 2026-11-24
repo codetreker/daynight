@@ -96,7 +96,7 @@ func (g *Gates) tryAcquire(ctx context.Context, key string) (io.Closer, error) {
 		}
 		return nil, filestorage.ErrGateBusy
 	}
-	permit := g.newLease(key, token, started.Add(g.ttl))
+	permit := g.newLease(key, token, started.Add(g.ttl), false)
 	if err := errors.Join(context.Cause(ctx), permit.check()); err != nil {
 		return nil, errors.Join(err, permit.Close())
 	}

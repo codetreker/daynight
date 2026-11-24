@@ -23,9 +23,25 @@ type SessionScope interface {
 	BotDAO() BotWriteDAO
 }
 
+// SessionCredentialScope provides credential policy reads in the Session
+// transaction. Locks held by these DAOs last through the Session write.
+type SessionCredentialScope interface {
+	SessionPATScopeDAO() PATScopeDAO
+	SessionPATManagementDAO() PATManagementDAO
+	SessionOAuthScopeDAO() OAuthScopeDAO
+}
+
+// SessionOperationExistenceDAO probes a ledger key without reading its receipt
+// or intent. Scoped command admission requires this transaction-bound capability.
+type SessionOperationExistenceDAO interface {
+	SessionOperationExists(context.Context, string, string) (bool, error)
+}
+
 // SessionRecord contains only durable ledger state; transient content remains
 // owned by the Session engine.
 type SessionRecord struct {
+	OnlineMode                                          string
+	HistoryContentPolicy                                *string
 	BotID                                               *string
 	ServerInstance                                      *string
 	FirstInputBlocked                                   bool
@@ -84,9 +100,9 @@ type BotSessionStop struct {
 }
 
 type TestSessionListItem struct {
-	Snapshot             sp.Snapshot
-	CreatedAt, UpdatedAt time.Time
-	LastSeen, DrainUntil *time.Time
+	Snapshot                               sp.Snapshot
+	CreatedAt, UpdatedAt                   time.Time
+	LastSeen, DrainUntil, ConnectionExpiry *time.Time
 }
 
 type SessionTask struct {
@@ -141,6 +157,7 @@ type SessionDAO interface {
 	SessionOperation(context.Context, string, string) (SessionOperation, error)
 	InsertSessionOperation(context.Context, SessionOperation) error
 	SetSessionOperationReceipt(context.Context, sp.Operation) error
+	RejectUnsentSessionOperations(context.Context, string, sp.OperationError) error
 	SetSessionOperationEpoch(context.Context, string, string, int64) error
 	HasOtherFirstInput(context.Context, string, string) (bool, error)
 	HasInteractionResponse(context.Context, string, string, string) (bool, error)

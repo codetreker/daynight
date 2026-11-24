@@ -424,7 +424,7 @@ const (
 
 func authorityConfiguration(project string, maximum int64) model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		PreferPlatformSpecificTasks: false, MaxConcurrent: maximum, PollIntervalMs: 60000, RecoveryLimit: 3,
+		PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: maximum, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
 	}
@@ -628,3 +628,10 @@ func (s configurationReadScope) TagDAO() store.TagReader {
 }
 
 func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

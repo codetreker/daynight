@@ -35,7 +35,7 @@ func TestThreadDAOAppendTraversalAndCredentialReadback(t *testing.T) {
 		t.Fatalf("source: %+v", source)
 	}
 	credentialID := uuid.NewString()
-	_, e = f.tx.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'thread',now())`, credentialID, f.user, make([]byte, 32))
+	_, e = f.tx.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'thread',now())`, credentialID, f.user, make([]byte, 32))
 	mustOK(t, e)
 	credential, e := d.Credential(ctx, model.Principal{Kind: model.PATCredential, UserID: f.user, CredentialID: credentialID})
 	mustOK(t, e)

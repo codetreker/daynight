@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -68,6 +69,45 @@ func commandHash(c sp.Command) []byte {
 	b := encode(sp.BindingFields(c.Fence, map[string]any{"sessionId": c.SessionID, "claimId": c.ClaimID, "executionGeneration": c.ExecutionGeneration, "operationId": c.OperationID, "kind": c.Kind, "payload": payload}))
 	h := sha256.Sum256(b)
 	return h[:]
+}
+
+func commandScope(kind string) (scopepolicy.Operation, error) {
+	switch kind {
+	case "send_message":
+		return scopepolicy.SessionSend, nil
+	case "cancel", "interaction_response", "update_setting", "execute_command", "refresh_controls":
+		return scopepolicy.SessionControl, nil
+	default:
+		return "", fault("invalid_input", "Unsupported session command.")
+	}
+}
+
+func (s *Execution) admitCommand(ctx context.Context, tx *operationTx, p model.Principal, operation scopepolicy.Operation) error {
+	check := s.commandAdmissionCheck()
+	if check == nil {
+		return nil
+	}
+	return check(ctx, tx.scope, p, operation)
+}
+
+// A replay may disclose a receipt or a conflicting intent. Read authorization
+// precedes loading either, while a new write requires only its own scope.
+func (s *Execution) admitReplay(ctx context.Context, tx *operationTx, p model.Principal, session, id string) error {
+	if s.commandAdmissionCheck() == nil {
+		return nil
+	}
+	probe, ok := tx.dao.(store.SessionOperationExistenceDAO)
+	if !ok {
+		return errors.New("session transaction cannot probe operation existence")
+	}
+	exists, err := probe.SessionOperationExists(ctx, session, id)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return s.admitCommand(ctx, tx, p, scopepolicy.SessionRead)
+	}
+	return nil
 }
 func (s *Execution) authorizeCommand(ctx context.Context, tx *operationTx, r *record, t task, c sp.Command) error {
 	if !active(t, r) || c.Fence != r.Snapshot.Fence {
@@ -362,6 +402,16 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 		if c.SessionID != id {
 			return conflict()
 		}
+		required, err := commandScope(c.Kind)
+		if err != nil {
+			return err
+		}
+		if err = s.admitCommand(ctx, tx, p, required); err != nil {
+			return err
+		}
+		if err = s.admitReplay(ctx, tx, p, id, c.OperationID); err != nil {
+			return err
+		}
 		old, err := loadOperation(ctx, tx, id, c.OperationID)
 		hash := commandHash(c)
 		if err == nil {
@@ -412,6 +462,9 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 func (s *Execution) Operation(ctx context.Context, p model.Principal, project, taskID, id, operationID string) (sp.Operation, error) {
 	var out sp.Operation
 	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, _ *record, _ task) error {
+		if err := s.admitCommand(ctx, tx, p, scopepolicy.SessionRead); err != nil {
+			return err
+		}
 		o, e := loadOperation(ctx, tx, id, operationID)
 		out = o.Receipt
 		return e
@@ -423,7 +476,27 @@ func (s *Execution) authorizeOperationActor(ctx context.Context, tx *operationTx
 	if !authority.Test && r.BotID == nil && o.Command.Kind == "send_message" {
 		authority.Purpose = TaskMessageAccess
 	}
-	return s.authorizationRun(ctx, tx.op, tx.scope, o.Actor, authority)
+	if err := s.authorizationRun(ctx, tx.op, tx.scope, o.Actor, authority); err != nil {
+		return err
+	}
+	required, err := commandScope(o.Command.Kind)
+	if err != nil {
+		return err
+	}
+	return s.admitCommand(ctx, tx, o.Actor, required)
+}
+
+func preDispatchRefusal(err error) bool {
+	var refusal *model.Fault
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	switch refusal.Code {
+	case "forbidden", "unauthenticated", "insufficient_scope", "session_conflict", "controller_offline", "capability_changed", "component_unsupported", "resource_conflict", "upload_expired", "unsupported_media_type", "quota_exceeded", "invalid_input":
+		return true
+	default:
+		return false
+	}
 }
 func (s *Execution) operationAuthorized(ctx context.Context, tx *operationTx, r *record, t task, o operationRecord) error {
 	err := s.authorizeOperationActor(ctx, tx, r, o)
@@ -442,11 +515,13 @@ func (s *Execution) updateReceipt(ctx context.Context, tx *operationTx, r *recor
 	return s.saveReceipt(ctx, tx, r, o, durableOperation(o))
 }
 
-// Only the server's pre-dispatch authorization check can persist this proof.
+const preDispatchRefusalCode = "permission_or_state_changed"
+
+// Only the server can persist this proof of refusal before dispatch.
 // Controller receipts may carry the same code, but still lose all error text.
 func (s *Execution) rejectBeforeDispatch(ctx context.Context, tx *operationTx, r *record, o sp.Operation) (sp.Operation, error) {
 	o.State = "rejected"
-	o.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
+	o.Error = &sp.OperationError{Code: preDispatchRefusalCode, Message: "Operation no longer has current permission or state."}
 	return o, s.saveReceipt(ctx, tx, r, o, o)
 }
 
@@ -487,6 +562,9 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 			if !s.now().Before(o.Deadline) {
 				o.Receipt.State = "expired"
 			} else if err = s.operationAuthorized(ctx, tx, r, t, o); err != nil {
+				if !preDispatchRefusal(err) {
+					return err
+				}
 				if _, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt); err != nil {
 					return err
 				}
@@ -540,8 +618,7 @@ func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t tas
 		return nil, conflict()
 	}
 	if err = s.operationAuthorized(ctx, tx, r, t, o); err != nil {
-		var refusal *model.Fault
-		if o.Receipt.State != "offered" || !errors.As(err, &refusal) || (refusal.Code != "forbidden" && refusal.Code != "unauthenticated" && refusal.Code != "session_conflict") {
+		if o.Receipt.State != "offered" || !preDispatchRefusal(err) {
 			return nil, err
 		}
 		// A stale offer has not crossed the native dispatch boundary. Reject only
@@ -612,11 +689,8 @@ func (s *Execution) reconcile(ctx context.Context, tx *operationTx, r *record, t
 				// An incomplete journal cannot erase a known native acceptance.
 			} else if state == "not_submitted" {
 				authorization := s.authorizeOperationActor(ctx, tx, r, o)
-				if authorization != nil {
-					var refusal *model.Fault
-					if !errors.As(authorization, &refusal) {
-						return nil, authorization
-					}
+				if authorization != nil && !preDispatchRefusal(authorization) {
+					return nil, authorization
 				}
 				if o.Receipt.State == "offered" && o.Available && o.Command.ExecutionGeneration == r.Snapshot.ExecutionGeneration && active(t, r) && authorization == nil && o.Actor.UserID == r.Owner {
 					o.Receipt.State = "accepted"

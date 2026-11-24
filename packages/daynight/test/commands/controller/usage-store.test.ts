@@ -20,6 +20,40 @@ const fixture = () => {
 const measurement = (sourceKey = "copilot-event-v1:call-1") => ({ sourceKey, nativeTurnId: null, nativeCallId: null, model: "model", profileId: "copilot-event-1.0.11-v1", revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, metrics: { inputTokens: null, outputTokens: "9007199254740993", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: "0", totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "9007199254740993" }, reasonCodes: ["input_cache_semantics_unknown"], observedAt: "2026-11-18T03:00:00Z" });
 const ack = (item: UsageQueuedEvent): UsageAck => ({ eventId: item.eventId, sourceKey: item.payload.sourceKey as string ?? null, outcome: "inserted", bodyHash: item.bodyHash, sourceRevision: item.payload.sourceRevision as string ?? null, stateSequence: item.payload.stateSequence as string ?? null, finality: item.payload.finality as string ?? null });
 
+test("Codex turn attribution and profile survive disk reopen and cannot move to a recovered generation", () => {
+  const { db, store } = fixture(), profileId = "codex-response-0.169.0-v1";
+  const original = store.ensureState("1", "native", "0.169.0", "codex", profileId);
+  store.bindTurn(original.stateId, "turn");
+  const file = db.name; db.close();
+  const reopened = new Database(file); databases.push(reopened); const recovered = storeFor(reopened);
+  const next = recovered.ensureState("2", "native", "0.169.0", "codex", profileId);
+  recovered.bindTurn(next.stateId, "turn");
+  expect(recovered.turnState("native", "turn")).toMatchObject({ stateId: original.stateId, generation: "1", profileId });
+  expect(recovered.turnState("native", "unbound")).toBeNull();
+  expect(recovered.turnState("other-native", "turn")).toBeNull();
+});
+
+test("an old Codex state keeps its snapshot profile during same-generation reopen", () => {
+  const { store } = fixture(); const original = store.ensureState("1", "native", "0.169.0", "codex");
+  expect(store.ensureState("1", "native", "0.169.0", "codex", "codex-response-0.169.0-v1")).toEqual(original);
+  expect(original.profileId).toBeUndefined();
+});
+
+test("pending eligibility precedes the limit and releases its read cursor without changing evidence", () => {
+  const { db, store } = fixture(), state = store.ensureState("1", "native", "v");
+  for (let i = 0; i < 102; i++) store.enqueueMeasurement(state.stateId, measurement(`event-${i}`));
+  const before = db.prepare("SELECT * FROM usage_outbox ORDER BY local_sequence").all();
+  const selected = store.pending(state.stateId, 1, "measurement", event => event.payload.sourceKey === "event-101");
+  expect(selected).toHaveLength(1); expect(selected[0]!.payload.sourceKey).toBe("event-101");
+  expect(store.pending(state.stateId, 1)[0]!.payload.sourceKey).toBe("event-0");
+  expect(db.prepare("SELECT * FROM usage_outbox ORDER BY local_sequence").all()).toEqual(before);
+  expect(() => store.pending(state.stateId, 1, undefined, () => { throw new Error("predicate failure"); })).toThrow("predicate failure");
+  expect(db.inTransaction).toBe(false);
+  // Both early completion and a predicate error must close the SQL iterator.
+  expect(store.enqueueMeasurement(state.stateId, measurement("after-read"))).toBe("inserted");
+  expect(store.pending(state.stateId, 1, "measurement", event => event.payload.sourceKey === "event-101")).toEqual(selected);
+});
+
 test("disk recovery preserves source identity, grants, state sequence and the original pending event", () => {
   const { db, store } = fixture(), state = store.ensureState("1", "native", "1.0.11/1.0.105");
   store.markRegistrationAttempted(state.stateId); store.saveGrant(state.stateId, { token: "private-token", expiresAt: "2026-11-25T00:00:00Z" }, "2");

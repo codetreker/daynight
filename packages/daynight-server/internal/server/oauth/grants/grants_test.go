@@ -16,6 +16,7 @@ import (
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -41,6 +42,10 @@ func (s observedLifecycle) ListSessionGrants(context.Context, model.Principal) (
 
 func (s observedLifecycle) RevokeSessionGrant(context.Context, model.Principal, string) (bool, error) {
 	return false, nil
+}
+
+func (s observedLifecycle) UpdateSessionGrantDescription(context.Context, model.Principal, string, string, *string, *string) (*string, error) {
+	panic("unexpected UpdateSessionGrantDescription")
 }
 
 func TestListUsesObservationTimeAndUTC(t *testing.T) {
@@ -158,7 +163,7 @@ func TestOwnerGrantsHTTP(t *testing.T) {
 	bob := h.Login(t, "grant-bob")
 	user := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{alice}, nil, ""), 200)
 	other := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{bob}, nil, ""), 200)
-	pat := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"owner-test","expiresAt":null}`, []*http.Cookie{alice}, nil, h.Origin), 201)
+	pat := h.MintBrowserPAT(t, alice, identitycore.CreatePAT{Name: "owner-test"})
 	grants := core.NewGrantLifecycle(h.Database)
 	install := func(service lifecycle) {
 		mux := http.NewServeMux()
@@ -219,7 +224,7 @@ func TestOwnerGrantsHTTP(t *testing.T) {
 	}
 	testsupport.AssertProjectError(t, h.Request("GET", "/api/v2/oauth/grants?extra=1", "", []*http.Cookie{alice}, nil, ""), 400, "invalid_input")
 	testsupport.AssertProjectError(t, h.Request("GET", "/api/v2/oauth/grants", "", nil, nil, ""), 401, "unauthenticated")
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v2/oauth/grants", "", nil, []string{"Bearer " + pat.Token}, ""), 403, "forbidden")
+	testsupport.AssertProjectError(t, h.Request("GET", "/api/v2/oauth/grants", "", nil, []string{"Bearer " + pat.Secret}, ""), 403, "forbidden")
 	for _, method := range []string{"HEAD", "POST"} {
 		got := h.Request(method, "/api/v2/oauth/grants", "", []*http.Cookie{alice}, nil, h.Origin)
 		if got.Code != 405 || got.Header().Get("Allow") != "GET" || got.Header().Get("Cache-Control") != "no-store" {
@@ -244,7 +249,7 @@ func TestOwnerGrantsHTTP(t *testing.T) {
 		if method == "POST" {
 			target = path
 		}
-		testsupport.AssertProjectError(t, h.Request(method, target, body, []*http.Cookie{alice}, []string{"Bearer " + pat.Token}, h.Origin), 403, "forbidden")
+		testsupport.AssertProjectError(t, h.Request(method, target, body, []*http.Cookie{alice}, []string{"Bearer " + pat.Secret}, h.Origin), 403, "forbidden")
 		testsupport.AssertProjectError(t, h.Request(method, target, body, []*http.Cookie{alice}, []string{"Bearer " + active.AccessToken}, h.Origin), 401, "unauthenticated")
 	}
 	changed := struct {

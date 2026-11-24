@@ -87,43 +87,33 @@ const deleteFirst = async (graph: HTMLElement) => {
 };
 
 describe('Goal graph reading after task deletion', () => {
-  it.each([1, 2])('keeps the Goal graph open after deleting a member from %i members', async count => {
+  it.each([1, 2])('withdraws the old Goal graph after deleting a member from %i members and admits only fresh graph data', async count => {
     if (count === 1) details = [goal, first];
     const graph = await openGraph();
-    const canvas = graph.querySelector('.react-flow');
-    const viewport = graph.querySelector('.react-flow__viewport');
-    const workspace = document.querySelector('.project-tasks');
-    const removed: Node[] = [];
-    const observer = new MutationObserver(records => records.forEach(record => removed.push(...record.removedNodes)));
-    observer.observe(document.body, { childList: true, subtree: true });
     pendingSnapshot = Promise.withResolvers();
     await deleteFirst(graph);
     await waitFor(() => expect(pendingSnapshotStarted).toBe(true));
-    expect(graph.isConnected).toBe(true);
-    expect(canvas?.isConnected).toBe(true);
-    expect(viewport?.isConnected).toBe(true);
-    expect(screen.queryByText('Loading task graph')).toBeNull();
+    expect(graph.isConnected).toBe(false);
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
+    expect(screen.queryByText(first.title)).toBeNull();
     expect(screen.queryByText('Refreshing')).toBeNull();
     await act(async () => { pendingSnapshot!.resolve(syncResult({})); });
     await waitFor(() => expect(fixtureTaskEpoch(projectId)).toBe(nextEpoch));
-    await waitFor(() => expect(within(graph).queryByRole('button', { name: `${first.title}, Details` })).toBeNull());
-    observer.disconnect();
-    expect(removed.some(node => node === graph || node.contains(graph) || node === canvas || node === viewport || node === workspace)).toBe(false);
-    expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
-    expect(graph.querySelector('.react-flow')).toBe(canvas);
-    expect(graph.querySelector('.react-flow__viewport')).toBe(viewport);
     expect(screen.queryByRole('dialog', { name: first.title })).toBeNull();
-    expect(within(graph).queryByRole('button', { name: `${first.title}, Details` })).toBeNull();
-    await waitFor(() => expect(graph.querySelectorAll('.react-flow__node')).toHaveLength(count - 1));
-    expect(graph.querySelectorAll('.task-dependency-edge')).toHaveLength(0);
-    const close = within(graph).getByRole('button', { name: 'Close dependency graph' });
-    expect(graph.contains(document.activeElement)).toBe(true);
-    if (count === 1) expect(within(graph).getByText('This Goal has no tasks.')).toBeVisible();
+    await waitFor(() => expect(document.getElementById(`project-goal-graph-${goalId}`)).not.toBeNull());
+    if (screen.queryByRole('dialog', { name: goal.title }) === null) fireEvent.click(document.getElementById(`project-goal-graph-${goalId}`)!);
+    const fresh = await screen.findByRole('dialog', { name: goal.title });
+    expect(fresh).not.toBe(graph);
+    expect(within(fresh).queryByRole('button', { name: `${first.title}, Details` })).toBeNull();
+    await waitFor(() => expect(fresh.querySelectorAll('.react-flow__node')).toHaveLength(count - 1));
+    expect(fresh.querySelectorAll('.task-dependency-edge')).toHaveLength(0);
+    const close = within(fresh).getByRole('button', { name: 'Close dependency graph' });
+    if (count === 1) expect(within(fresh).getByText('This Goal has no tasks.')).toBeVisible();
     else {
-      fireEvent.click(within(graph).getByRole('button', { name: `${second.title}, Details` }));
+      fireEvent.click(within(fresh).getByRole('button', { name: `${second.title}, Details` }));
       const remaining = await screen.findByRole('dialog', { name: second.title });
       fireEvent.click(within(remaining).getByRole('button', { name: 'Close task details' }));
-      expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
+      expect(screen.getByRole('dialog', { name: goal.title })).toBe(fresh);
     }
     fireEvent.click(close);
     await waitFor(() => expect(document.getElementById(`project-goal-graph-${goalId}`)).toHaveFocus());
@@ -142,7 +132,7 @@ describe('Goal graph reading after task deletion', () => {
     pendingSnapshot = Promise.withResolvers();
     await deleteFirst(graph);
     await waitFor(() => expect(pendingSnapshotStarted).toBe(true));
-    expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
     await act(async () => { pendingSnapshot!.resolve(syncResult({})); });
     await waitFor(() => expect(scope.getAuthorizedProject(projectId)?.summaries.has(firstId)).toBe(false));
@@ -150,7 +140,7 @@ describe('Goal graph reading after task deletion', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('does not recover a Goal graph after leaving and returning to its original history entry', async () => {
+  it('restores a retained Goal navigation only after fresh history when returning to its entry', async () => {
     const graph = await openGraph();
     pendingSnapshot = Promise.withResolvers();
     await deleteFirst(graph);
@@ -160,10 +150,12 @@ describe('Goal graph reading after task deletion', () => {
     expect(browserNavigation().snapshot().entryId).not.toBe(originalEntry);
     act(() => window.history.back());
     await waitFor(() => expect(browserNavigation().snapshot().entryId).toBe(originalEntry));
-    expect(screen.getByRole('dialog', { name: goal.title })).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
     await act(async () => { pendingSnapshot!.resolve(syncResult({})); });
     await waitFor(() => expect(scope.getAuthorizedProject(projectId)?.summaries.has(firstId)).toBe(false));
-    expect(screen.getByRole('dialog', { name: goal.title })).toBeVisible();
+    const restored = await screen.findByRole('dialog', { name: goal.title });
+    expect(restored).not.toBe(graph);
+    expect(within(restored).queryByRole('button', { name: `${first.title}, Details` })).toBeNull();
     expect(screen.getByRole('tab', { name: /^Goals?$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -172,7 +164,7 @@ describe('Goal graph reading after task deletion', () => {
     pendingSnapshot = Promise.withResolvers();
     await deleteFirst(graph);
     await waitFor(() => expect(pendingSnapshotStarted).toBe(true));
-    expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
     await act(async () => {
       const ticket = await scope.beginSync(projectId, scope.signal);
       expect(await scope.revokeProject(ticket, scope.signal)).toBe(true);
@@ -183,19 +175,20 @@ describe('Goal graph reading after task deletion', () => {
   });
 
 
-  it('retains the current Goal graph while a failed fresh sync is retried', async () => {
+  it('keeps the old Goal graph withdrawn through failed refresh and deliberate retry', async () => {
     const graph = await openGraph();
     pendingSnapshot = Promise.withResolvers();
     await deleteFirst(graph);
     await waitFor(() => expect(pendingSnapshotStarted).toBe(true));
-    expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
     await act(async () => { pendingSnapshot!.reject(new ApiError('network')); });
-    expect(screen.getByRole('dialog', { name: goal.title })).toBe(graph);
-    const retry = await within(graph).findByRole('button', { name: /retry/i });
+    expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
+    const retry = await screen.findByRole('button', { name: /^retry$/i });
     pendingSnapshot = null;
     fireEvent.click(retry);
+    await waitFor(() => expect(document.getElementById(`project-goal-graph-${goalId}`)).not.toBeNull());
     const recovered = await screen.findByRole('dialog', { name: goal.title });
-    expect(recovered).toBe(graph);
+    expect(recovered).not.toBe(graph);
     await waitFor(() => expect(within(recovered).queryByRole('button', { name: `${first.title}, Details` })).toBeNull());
     expect(within(recovered).getByRole('button', { name: `${second.title}, Details` })).toBeVisible();
     expect(deleteTask).toHaveBeenCalledOnce();

@@ -8,13 +8,15 @@
 
 `bots.css` 将 `.bots-page` 定义为命名 `bots-workspace` inline-size 容器。列表固定 256px（含边框），与对话之间没有额外 gap；工作区内容宽度低于 676px 时，只显示列表或当前选中的对话，等于 676px 时仍并列并为对话保留 420px。判断依据是扣除导航后的实际容器宽度。CSS 只改变既有面板可见性，不创建宽度状态、Session 宿主或新的目标绑定。单栏返回及关闭聊天都导航到 `/bots`，不停止或删除助手。
 
-工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板承载创建入口与搜索，长列表在自己的区域滚动；创建弹窗使用独立的可见视口约束，不占用列表高度。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
+工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板是有界的外层滚动区，承载创建入口、搜索、助手列表和助手任务；直属内容不受 flex 收缩。`.bot-list` 使用 `flex: 0 0 auto` 和 `max-height: clamp(144px, 40dvh, 288px)`，按实际内容占高，任务块增长不改变其可用行高，空列表也不保留最小高度。长列表内部滚动，保留默认滚动链，使触控或滚轮到达边界后可继续滚动外侧面板访问任务。外层面板保留 `overscroll-behavior: contain`，限制滚动传播到工作区之外。[高度分配决策](../../.agents/notes/implemented/bug-fix/2026-11-20-bot-list-height-budget.md)记录空间预算的取舍。创建弹窗使用独立的可见视口约束，不占用列表高度。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
 
-列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。刷新用 busy/disabled 表达状态，读取失败保留实际错误。列表沿用服务返回顺序，行内保留头像标记、名称、关注计数及必要的启动或 Worker 异常状态；主机、路径和完整信息在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
+列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。刷新用 busy/disabled 表达状态，读取失败保留实际错误。列表沿用服务返回顺序，行内保留头像标记、名称、关注计数、Bot 观测状态及机器名；路径和完整诊断在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
 
 ## API 与准入
 
 `api/bots.ts` 消费服务端 `/api/v1/me/bots` 的 list、defaults、create、get、delete。读取要求响应 principal 与当前账号一致；定义再次核对 owner、Worker 配置和 Session 双身份。删除响应是仅含身份及删除责任的联合类型。版本与创建顺序保持十进制字符串，不经浮点数转换。
+
+`api/bot-observation.ts` 独立消费 `GET /api/v1/me/bots/{botId}/observation`，不扩展旧管理 DTO。解析器要求 `schemaVersion=1`、完整字段、正确目标 Bot ID 及响应 principal；Bot 版本和代次保留十进制字符串，未知身份与时间保留 null。当前机器与承载 Worker 来自这份观测，不能用创建定义的 workerId 覆盖。服务端的状态优先级、持久定位及无副作用读取由[助手设计](assistant.md#服务端观测-v1-协议)拥有。
 
 创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/reasoningEffort/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
 
@@ -70,7 +72,7 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 选中详情由既有 `useBotDetail` / `BotDetailCache` 管理，按账号 scope、选择对象和请求代次隔离。页面传实际三席 pane 的 Bot ID 集合；新选择可读取自己的缓存详情与 `displayBinding`，但上次选择的确认不能成为本次 `actionBinding`。普通五秒轮询开始保留确认，真实网络、协议或服务错误撤确认，取消不产生成功或失败。`confirmed` 与 actionBinding 使用同一当前确认规则；无 Session 的启动详情仍可得到确认，不把空 binding 误解释成持续加载。
 
-列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，Worker 观测失败不会清空助手列表。当前可信列表名称可在冷详情等待时提供标题，不带入上一助手状态。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 不替代 Session 同步事实。
+列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，其失败不会清空助手列表，也不决定 Bot 的实时状态。当前可信列表名称可在冷详情等待时提供标题，不带入上一助手状态。`ready` 只记录已启动，Bot 可用性由独立观测提供，当前同步和输入准入继续由 Session View 拥有。
 
 `BotsPage` 在选中项之上创建一次 cache，`/bots` 与 `/bots/{id}` 使用同一个组件位置。Host 始终挂载，展示不受详情 stale 隐藏；它接收当前目标独立的显示与操作绑定，原 DOM、草稿和阅读先恢复，远端提交待当前完整身份确认。临时失败保留可读内容并显示局部错误和重试，权威拒绝访问及删除撤下失效内容。具体准入和原回执继续的责任见[Session 设计](bot-session-view.md#绑定和消费接口)。
 
@@ -78,9 +80,17 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 ## 统一标题与状态来源
 
-`BotsPage` 用 `BotConversationTarget` 向标题和详情传递同一次已准入的 Bot 读取、匹配的 Worker 观测、stale 标记、详情展开状态与触发 ref。有绑定时，`BotSessionHost` 将 `variant: 'assistant'` 和 `renderHeader` 透传给原 `SessionView`，`BotConversationHeader` 在共享标题元素内组合当前 Provider、会话活动、显示、专注和刷新控件；无绑定时才渲染页面的后备标题。详情使用独立按钮，更多 popover 容纳共享刷新与关闭聊天链接。显示和专注控件仍由共享 Session 创建和控制，不复制其状态机。
+`BotsPage` 将搜索结果与当前选中 Bot 合成去重集合，以较新定义版本交给唯一的 `useBotObservations`。同一 Bot 的列表、`BotConversationTarget` 标题及详情接收同一个观测条目。hook 按账号 scope 与 Bot ID 隔离记录，未包含的 Bot 不参与轮询；搜索变化不使另一 Bot 取得其状态。列表和详情仍拥有各自的定义读取，不由观测改写 Session binding。
 
-自定义标题只替换标题内容。共享视图继续渲染连接错误、启动与恢复原因、历史、审批、命令回执及输入能力；Bot 的 ready 不证明 Session 已连接或可发送。当前 Session 的连接与活动采用共享状态，未绑定时显示 Bot 启动及 Worker 观测；详情分别呈现 Bot 启动、Worker 可用性和 Session 状态。defaults 读取失败不得延用“可用”判断，临时身份核对则保留已确认展示并暂停业务准入。
+观测读取每五秒刷新，最多四个并发请求，同 Bot 的手动、轮询和到期刷新共用在途保护。每次读取等待 `scope.ready`，请求和发布分别核对准入、signal、原请求及 scope。隐藏、读取暂停和身份暂停取消当前请求；scope 失效清除记录。Bot 集合或定义版本变化退休旧周期，迟到返回只能完成自己的清理。Bot 版本和 hostingGeneration 各自不能倒退；同 Session 已知的 executionGeneration 不能倒退，同执行代次已知的 connectionEpoch 不能倒退。合法缺失 Session 的异常观测保留 null。observedAt 比较保留纳秒精度，旧时间和低于已知定义版本的观测同样无效。401、403、404、410 清除该 Bot 观测，普通网络、能力或协议失败保留旧事实并标记 stale。
+
+每个条目独立保存截止时间。有效预算取服务端 `freshUntil-observedAt` 的纳秒差并向下取整到毫秒，从本次实际请求开始的 `performance.now()` 起算，整个请求及发布等待都消耗预算，避免将慢响应重新计为完整有效期，也不依赖浏览器与服务端墙钟一致或本地校时。相同 observedAt 的重复响应只能保留或缩短已有截止。offline 的 null 期限只给予五秒最近离线读取窗口，其它 null 期限无实时资格。最近截止时间驱动独立 timer，到期立即标 stale 并在准入允许时刷新；隐藏及暂停仍保留过期判断。读取停用或身份暂停时，当前投影不具有实时资格；准入恢复立即刷新。普通五秒轮询、可见性恢复及读取结果也检查截止，不能因尚未收到下一份响应而延长实时显示。记录只保留于当前页面内存，不加入 Session 显示快照持久化。
+
+有绑定时，`BotSessionHost` 将 `variant: 'assistant'` 和 `renderHeader` 透传给原 `SessionView`，`BotConversationHeader` 在共享标题元素内组合 Provider、`BotStatus`、显示、专注和刷新控件；无绑定时渲染页面后备标题，同样使用 `BotStatus`。详情使用独立按钮，更多 popover 容纳共享刷新与关闭聊天链接。显示和专注控件仍由共享 Session 创建和控制，不复制其状态机。
+
+`BotStatus` 仅将新鲜观测的 state 作为实时状态。无观测显示未知，stale 显示观测过期与 observedAt，不回退到持久 ready 或 defaults。列表机器标签以观测 workerId 查询别名，并保留已确认主机名；未知机器不从其它读取补全。详情另呈现完整原始机器名及 ID、Worker ID、Provider、平台与原生 Session ID、观测与最后上报时间、原因码和补救；历史观测单独标上次状态。中英文状态与原因由 `observation-messages.ts` 拥有，未知原因码原样保留。离线提示在对应机器运行 `daynight worker run`；Provider、原生记录、身份冲突、目录和同步问题各有相应检查建议，过期原因不继续提供当前补救判断。
+
+自定义标题只替换标题内容。共享视图继续渲染连接错误、启动与恢复原因、历史、审批、命令回执及输入能力，详情的 Session 区域仍订阅原 pane。刷新观测只发 GET，补救文案不启动 Provider，不接管执行或重发操作；可读事实不赋予输入权限。临时身份核对保留已确认展示并暂停业务准入，但继续消耗观测有效期。客户端策略与替代成本见[Web 观测决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-web-observation.md)。
 
 `.bot-conversation` 是标题的 inline-size 查询容器。名称默认 17px 单行省略，完整名称从详情读取。可用宽度不超过 600px 时，名称为 15px，返回、名称和操作形成三列，状态独占下一行，关键按钮为 44px；不超过 300px 时再允许操作换行。名称区域可收缩，控件保留自身空间，状态原因允许断行。这些规则不参与 Session 或详情模式选择，标题也不依赖主机名撑开宽度。
 
@@ -100,11 +110,13 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)及[独立核对生命周期决策](../../.agents/notes/implemented/architecture/2026-11-17-bot-deletion-check-lifetime.md)。
 
+`execution_evidence_missing` 直接取自既有 Bot 删除 DTO。`BotDeletionStatus` 为已知删除显示原机器的 `bot show` 核对与 `bot recover` 指引，保留真实失败并隐藏该状态的无效原 DELETE 重试，状态核对继续沿既有 GET 生命周期。没有独立恢复资源、账号级恢复集合、网页补偿写入或额外完成状态；停止原 generation 不能替代两端清理完成。CLI 补偿由[Worker 设计](worker-bot-runtime.md)拥有。
+
 ## 详情、焦点与全屏边界
 
-`BotsPage` 拥有局部 `detailsOpen` 和当前详情按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板在 `.bot-conversation-body` 中与 `.bot-conversation-content` 并列，接收当前 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离立即撤下旧目标值；面板可保留展开意图并显示局部加载，随后与标题及绑定接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时准入暂停保留已确认展示。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
+`BotsPage` 拥有局部 `detailsOpen` 和当前详情按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板在 `.bot-conversation-body` 中与 `.bot-conversation-content` 并列，接收当前 Bot 及页面共享的目标观测，不另行读取或保存选中 Bot。切换时账号、Bot ID 与详情选择隔离立即撤下旧目标值；面板可保留展开意图并显示局部加载，随后与标题及绑定接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时准入暂停保留已确认展示。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
 
-详情显示完整名称、Bot 启动阶段、独立 Worker 观测、主机名称或 Worker ID，以及冻结的 cwd 和 Agent；defaults 变化不改写冻结启动配置。Session 信息从现有 cache 中按完整绑定找到 pane，订阅其 client，并再次核对 snapshot 的 owner、Session 和执行 ID。无匹配时显示不可用，不借用上一目标信息。共享状态选择器解释连接、启动与恢复；模型和权限来自 `controls.settings` 的确认值，setting intent 与 operation 另行表达 pending、等待或结果未知，保留设置错误和 next-turn 范围说明。详情不发起第二个 Session client，也不将尚未确认的选择当成已生效。
+详情完整名称与冻结 cwd 来自已准入定义，运行状态、机器和 Session 关联来自共享观测；未取得 Provider 观测时仍可显示定义中的已解析 Provider，其它未知观测字段明确为未知。defaults 变化不改写冻结启动配置。Session 信息从现有 cache 中按完整绑定找到 pane，订阅其 client，并再次核对 snapshot 的 owner、Session 和执行 ID。无匹配时显示不可用，不借用上一目标信息。共享状态选择器解释连接、启动与恢复；模型和权限来自 `controls.settings` 的确认值，setting intent 与 operation 另行表达 pending、等待或结果未知，保留设置错误和 next-turn 范围说明。详情不发起第二个 Session client，也不将尚未确认的选择当成已生效。
 
 非模态详情须同时满足 `window.innerWidth >= 1280` 和稳定 `.bot-conversation-body` 内容宽度 `>= 760px`。ResizeObserver 与窗口 resize 读取父容器 clientWidth 并扣除 padding；不测量已经被详情压缩的内容列，也不随开关减去 340px，避免模式振荡。条件满足时，同一 `dialog` 以非模态 open 和 complementary 语义参加 flex，340px 宽度含边框，剩余会话至少 420px；任一不足时通过 `showModal()` 进入 top layer。
 
@@ -120,4 +132,4 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 ## 验证边界
 
-管理页规格定义容器临界值、长内容、短视口和焦点矩阵。API 与组件测试验证默认覆盖、Worker 绑定和级联重置、目录/模型分页与迟到响应、未知结果、当前身份、缓存、标题组合和模态协同；浏览器测试才能验证真实几何、原生 dialog、滚动与 DOM 身份。原型只用于设计交互核对，受控 API 或 Session 测试只证明 Web 消费行为，不证明真实 Worker、Provider、偏好持久化或真机软键盘。共享阅读、输入和图片能力的设计由各自所有者说明，不从标题及详情改造推断其已交付。
+管理页规格定义容器临界值、长内容、短视口和焦点矩阵。API 与组件测试验证默认覆盖、Worker 绑定和级联重置、目录/模型分页与迟到响应、未知结果、当前身份、缓存、标题组合和模态协同。Bot 观测另用受控响应、时钟与 Promise 验证状态矩阵、首次无原生 ID、同机独立状态、期限与传输预算、精确版本和时间顺序、账号/取消/迟到隔离、错误保留及补救。浏览器测试才能验证长机器名、状态和刷新入口的真实几何、原生 dialog、键盘、滚动与 DOM 身份。原型只用于设计交互核对，受控 API 或 Session 测试只证明 Web 消费行为，不证明服务端状态计算、真实 Worker、Provider 恢复、偏好持久化或真机软键盘。共享阅读、输入和图片能力的设计由各自所有者说明，不从标题及详情改造推断其已交付。

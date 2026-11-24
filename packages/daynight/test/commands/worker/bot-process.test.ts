@@ -13,6 +13,7 @@ import { ControllerStartupError } from "../../../src/commands/controller/startup
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
@@ -24,6 +25,39 @@ import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 
 afterEach(cleanupBotProcesses);
+
+test("ordinary shutdown retains failed preflight cleanup until the original probe and aliases close", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  const alias = path.join(f.home, "state", "agent-cli-aliases", "scope-probe");
+  mkdirSync(alias, { recursive: true }); writeFileSync(path.join(alias, "daynight"), "private shim");
+  const retryCleanup = vi.fn(async () => {}).mockRejectedValueOnce(new Error("original probe still running"));
+  const failure = new BotEnvironmentCleanupError(alias, new BotCliProbeCleanupError({ launchId: id(95), pid: null, process: null, jobObjectName: null, targetStarted: false }, retryCleanup));
+  const manager = f.createProcess({ prepareEnvironment: async () => { throw failure; } });
+  await expect(manager.advance(f.current(), signal)).rejects.toBe(failure);
+  expect(f.current().intent).toBeNull();
+  await expect(manager.shutdown(f.current(), signal)).rejects.toThrow("original probe still running");
+  await expect(manager.close()).rejects.toThrow("preparation cleanup remains unconfirmed");
+  expect(existsSync(alias)).toBe(true);
+  await manager.shutdown(f.current(), signal); await manager.close();
+  expect(existsSync(alias)).toBe(false);
+  expect(retryCleanup).toHaveBeenCalledTimes(2);
+  expect(f.register).not.toHaveBeenCalled(); expect(f.launch).not.toHaveBeenCalled();
+});
+
+test("ordinary shutdown retries retained aliases for a never-submitted execution without changing its identity", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.grant.mockRejectedValueOnce(new Error("grant denied"));
+  f.release.mockRejectedValueOnce(new Error("alias removal denied"));
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("alias removal denied");
+  const original = f.current().intent, execution = f.executions.get(f.current());
+  expect(execution?.launchSubmission).toBe("not-submitted");
+  await expect(f.process.close()).rejects.toThrow("preparation cleanup remains unconfirmed");
+  await f.process.shutdown(f.current(), signal); await f.process.close();
+  expect(f.current().intent).toEqual(original);
+  expect(f.executions.get(f.current())).toEqual(execution);
+  expect(f.release).toHaveBeenCalledTimes(2);
+  expect(f.launch).not.toHaveBeenCalled();
+});
 
 test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd with a persisted role and no user turn",async provider=>{
   const f=fixture(provider); const snapshot=await f.process.advance(f.current(),new AbortController().signal);
@@ -94,8 +128,10 @@ test("rejects unsupported native configuration before registration and leaves fa
 test("renews only expiring credentials and retains the observed native identity",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   await f.process.advance(f.current(),signal); await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(1);
+  expect(f.observe).not.toHaveBeenCalled();
   writeFileSync(f.getTicket().credentialFile,JSON.stringify({expiresAt:new Date(Date.now()+60000).toISOString()}));
   await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.observe).toHaveBeenCalledOnce();
   expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));expect(f.launch).toHaveBeenCalledTimes(1);
   writeFileSync(f.getTicket().credentialFile,"{}");await expect(f.process.refreshGrant(f.current(),signal)).rejects.toThrow(/expiry/);expect(f.grant).toHaveBeenCalledTimes(2);
 });
@@ -122,8 +158,8 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex") => {
-  const f = fixture(provider, configuration, false, dedicated), signal = new AbortController().signal;
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex", persistent = false) => {
+  const f = fixture(provider, configuration, persistent, dedicated), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   if (unacknowledged) {
     f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); await options.onSpawned(proof); throw new Error("observation unavailable"); });
@@ -158,6 +194,42 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps, recoveryLimit) };
 };
+
+test("refreshes authenticated IPC before renewing a credential from a cached starting snapshot", async () => {
+  const f = await recoveryFixture({}, false, true);
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "starting", nativeSessionId: null });
+  f.patch({ lifecycle: "ready", nativeSessionId: id(9), startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: id(9) });
+  expect(f.current().intent!.nativeSessionId).toBeNull();
+  expect(f.launch).toHaveBeenCalledOnce();
+});
+
+test("renews a ready lazy Provider before its native Session exists", async () => {
+  const f = await recoveryFixture({}, false, true, 3, false, "copilot");
+  f.patch({ lifecycle: "ready", nativeSessionId: null, startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBeNull();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: null });
+});
+
+test("does not renew after failed IPC authentication or a newly observed stopped Controller", async () => {
+  const f = await recoveryFixture({}, false, true);
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  const conflict = new ControllerIpcIdentityConflictError("Controller fence differs");
+  f.observe.mockRejectedValueOnce(conflict);
+  await expect(f.manager.refreshGrant(f.current(), f.signal)).rejects.toBe(conflict);
+  expect(f.grant).toHaveBeenCalledOnce();
+  f.observe.mockResolvedValueOnce({ ...f.saved(), lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() });
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledOnce();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+});
 
 test("shutdown retains Bot artifacts and restart resumes the original native session with a new generation", async () => {
   const f = await recoveryFixture(), original = f.current().intent!;
@@ -200,6 +272,28 @@ test("IPC loss with a live writer cannot grant or launch a new generation", asyn
   await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/stop|running|unreachable/i);
   expect(f.current().intent!.executionGeneration).toBe("1");
   expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+test("a new host reauthorizes an authenticated working Controller without replaying its turn", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.patch({ lifecycle: "working", activity: "working", currentTurnId: id(91) });
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).resolves.toMatchObject({ currentTurnId: id(91), lifecycle: "working" });
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.request).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
+});
+
+test("refused hosting authorization preserves the live Controller and its original generation", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.grant.mockRejectedValueOnce(new Error("resource_conflict"));
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).rejects.toThrow("resource_conflict");
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
 });
 
 test("shutdown fails visibly when its stop receipt cannot prove the process tree stopped", async () => {
@@ -410,6 +504,68 @@ test("only an unsubmitted first generation can attest never started", async () =
   expect(f.launch).not.toHaveBeenCalled();
 });
 
+test("a lost execution row cannot turn a retained launch intent into never-started proof", async () => {
+  const f = fixture("codex", {}, true), signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const database = new Database(path.join(f.home, "worker.sqlite"));
+  try { database.prepare("DELETE FROM bot_executions").run(); } finally { database.close(); }
+  const record = markDeleting(f);
+  let cleaned = false;
+  await expect(f.process.withDeletion(record, signal, async stop => { await stop(); cleaned = true; })).rejects.toThrow("execution_evidence_missing");
+  expect(cleaned).toBe(false); expect(existsSync(record.intent!.ticketPath)).toBe(true);
+  expect(f.current().intent).toEqual(record.intent);
+});
+
+const journalOnlyDeletion = async () => {
+  const f = await recoveryFixture({}, false, false, 3, false, "codex", true);
+  const database = new Database(path.join(f.home, "worker.sqlite"));
+  try { database.prepare("DELETE FROM bot_executions").run(); } finally { database.close(); }
+  const deleting = markDeleting(f), observed = deleting.observed;
+  if (observed.deletion === null) throw new Error("Expected deletion fixture");
+  const record = f.store.observe(f.owner, { ...observed, version: String(BigInt(observed.version) + 1n),
+    deletion: { ...observed.deletion, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } }, 3);
+  return { ...f, record };
+};
+
+test("explicit journal-only deletion stops its original generation without reconstructing execution or cleanup", async () => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  try {
+    const stop = () => f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }));
+    expect(await stop()).toMatchObject({ sessionId: f.record.intent!.sessionId, stopProof: { stoppedAt: "2026-11-05T00:00:00Z" } });
+    expect(f.deps.stopProcesses).toHaveBeenCalledOnce(); expect(f.deps.recordStopped).toHaveBeenCalledOnce();
+    expect(await stop()).toMatchObject({ stopProof: { stoppedAt: "2026-11-05T00:00:00Z" } });
+    expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith(f.record.intent!.journalPath, f.getTicket(), expect.any(Number));
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+    expect(f.current().intent).toEqual(f.record.intent); expect(existsSync(f.record.intent!.ticketPath)).toBe(true);
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+    expect(f.launch).toHaveBeenCalledOnce(); expect(f.deps.request).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.each(["ticket", "journal"])("journal-only deletion rejects a conflicting %s before stopping", async kind => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  const ticket = kind === "ticket" ? vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...f.getTicket(), controllerInstanceId: id(99) }) : undefined;
+  if (kind === "journal") f.patch({ controllerInstanceId: id(99) });
+  try {
+    await expect(f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).rejects.toThrow(/original|fence/);
+    expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+  } finally { ticket?.mockRestore(); read.mockRestore(); }
+});
+
+test("journal-only deletion refuses an unavailable Windows Job identity before termination", async () => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => {},
+    retain: vi.fn(async () => { throw new Error("Windows original Job identity unavailable"); }), get: async () => undefined, release: vi.fn(async () => {}), close: async () => {} };
+  try {
+    await expect(f.createProcess(f.deps, 0, leases).withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).rejects.toThrow("Windows original Job identity unavailable");
+    expect(leases.retain).toHaveBeenCalledWith(f.record.intent!.launchId, f.saved().controllerProcess, expect.any(Number));
+    expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+    expect(f.current().cleanup).toBeUndefined(); expect(f.executions.get(f.record)).toBeNull();
+  } finally { read.mockRestore(); }
+});
+
 test("an unsubmitted recovery with unknown server generation cannot manufacture a deletion stop proof", async () => {
   const f = await recoveryFixture();
   await f.manager.shutdown(f.current(), f.signal);
@@ -470,6 +626,7 @@ test("deletion can attest a definite rejected first spawn without inventing a na
   await expect(f.process.advance(f.current(), signal)).rejects.toThrow("OS rejected spawn");
   const record = markDeleting(f);
   expect(await f.process.withDeletion(record, signal, stop => stop())).toMatchObject({ executionGeneration: "1", stopProof: { kind: "never_started" } });
+  expect(f.release).toHaveBeenCalledOnce(); await f.process.close();
   expect(f.observe).not.toHaveBeenCalled();
 });
 
@@ -851,7 +1008,7 @@ test("Bot blocks tree cleanup if an exited journal loses retained native proof",
 
 test("Bot keeps the same Job lease after a failed stop response and releases it after a confirmed retry", async () => {
   const f = await recoveryFixture(), lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
-  const leases = { enabled: true, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const manager = f.createProcess(f.deps, 3, leases), failure = new Error("stop response failed");
   f.deps.request.mockRejectedValueOnce(failure);
   await expect(manager.shutdown(f.current(), f.signal)).rejects.toBe(failure);
@@ -867,7 +1024,7 @@ test("Bot keeps the same Job lease after a failed stop response and releases it 
 
 test("Bot still stops its bootstrap if original Job acquisition fails", async () => {
   const f = await recoveryFixture(), failure = new Error("Job identity unavailable"), incomplete = new Error("Job lease required");
-  const leases = { enabled: true, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   f.deps.stopProcesses.mockRejectedValue(incomplete);
   const error = await f.createProcess(f.deps, 3, leases).shutdown(f.current(), f.signal).catch(error => error);
   expect(error.errors).toEqual([failure, incomplete]); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
@@ -902,7 +1059,7 @@ test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery 
       if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
     }
-    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
     const reconcile = vi.fn<typeof reconcileSubmittedControllerLaunch>(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: lifecycle.readControllerSnapshot(file)! }));
     const manager = f.createProcess({ reconcileLaunch: reconcile, recordStopped: lifecycle.recordStoppedControllerGeneration }, 3, leases);
     f.launch.mockClear(); confirm.mockClear();

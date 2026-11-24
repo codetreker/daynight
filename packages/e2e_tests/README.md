@@ -127,7 +127,22 @@ The Worker patrol journey uses the compiled Worker and Controller against the
 real Server and isolated PostgreSQL, with a controlled Codex protocol peer in
 place of the upstream model. It retains the original claim, worktree and native
 Session across Worker restart, verifies the resumed assignment and repeated idle
-pings, and checks pause, resumption and claim-bound completion. The peer does not
+pings, and checks pause, resumption and claim-bound completion. After the Task
+completes, the same Worker hosts a Bot that reaches the compiled CLI through
+`agentCliAliases`. For that Bot the peer presents the Codex 0.169.0 legacy
+rollout profile that Bot recovery verifies, writing the rollout file its
+recovery point captures. An auto-takeover assistant task with an enabled inbox is
+claimed by that Bot; an external JSON body posted with the bearer token becomes
+an `inbound` event, and the Worker renders it as fenced untrusted data into the
+Bot's native Session before acknowledging delivery. The peer rejects a turn
+addressed to another thread, and the journey requires the complete body inside
+the untrusted-data fence of the turn on the Bot's own native thread. The inbox
+enablement response carries the bearer token, so its output is neither forwarded
+to the test report nor included in failure diagnostics. Claiming and delivery wait
+for the Worker's minute-loop cadence. Each Worker run has a seven-minute process
+limit so the restarted run covers the rest of the patrol and the inbox journey,
+including a delivery that lands on a later minute-loop tick, while staying below
+the test deadline. The peer does not
 establish autonomous behavior by a real model. On an explicit version-conflict
 response to completion, the fixture reads the Task again and rechecks the original
 active assignment and authorization before another attempt. It makes at most
@@ -150,6 +165,13 @@ Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the
 compiled CLI, isolated configuration and topology. Product scenarios use valid
 data and ordinary sizes. Boundary, denial, conflict, race, recovery and stress
 matrices belong to module tests and their own integration entries.
+
+The credential-scope journey obtains device-issued PATs and OAuth grants through
+the public authorization flows. It checks the initial selections and independent
+management edits, then reads and updates the same tasks through REST and MCP
+before and after removing `task:write`. A separate credential of each kind remains
+usable, and a real refresh retains the edited grant's policy. Detailed admission
+and concurrency matrices remain with their owning module and store tests.
 
 Framework verification is separate from product journeys:
 
@@ -191,9 +213,9 @@ runner process is dead, and it does not replace the original test failure with
 success. Only results and logs are uploaded; private files and build artifacts
 stay excluded.
 
-The Playwright process has a seven-minute limit within the journey step; each
-test retains its own deadline. This leaves room for the sequential login and
-cross-client flows on CI without changing their assertions or the independent
+The Playwright process has a ten-minute limit within the journey step; each
+test retains its own deadline. This leaves room for the sequential login,
+cross-client flows and the assistant inbox's minute-loop waits on CI without changing their assertions or the independent
 recovery step's deadline. It leaves less time for normal cleanup within the
 journey step when the process approaches its limit.
 
@@ -220,7 +242,10 @@ stages for Console bootstrap. It freezes unresolved requests before browser
 shutdown, so shutdown aborts do not replace the original failure boundary.
 `logs/provider-diagnostics.json` records bounded CONNECT, TLS and provider HTTP
 stages; a live snapshot survives an unconfirmed runtime shutdown, while a
-completed snapshot marks a confirmed provider close. IDs are local to each
+completed snapshot marks a confirmed provider close. `logs/worker-patrol-*.json`
+records each patrol Worker's target and gate exit observations, group-stop
+confirmation, bounded output and errors; output truncation is explicit. A missing
+target report remains unknown and prevents a successful stop. IDs are local to each
 stream and do not associate browser requests with provider connections. Both
 streams report truncation and retain only allowlisted origins and paths, methods,
 status and restricted error codes, without query strings or credentials.
@@ -248,6 +273,10 @@ are persisted before they can launch their targets. Test CLI and Git commands
 have their own recorded process groups. Independent recovery
 first verifies that the original runner has exited, then stops the recorded
 groups and checks the Worker's original Controller and native process evidence.
+The fixture records the inbox Bot's ID before creating it. Recovery reads that
+Bot's own Worker store, launch ticket and Controller journal and stops the
+recorded Controller and native process tree with the same evidence checks as the
+patrol Task.
 Fixture credentials remain in a separate private, retained directory outside
 uploaded results. Before Chromium starts, the fixture records a browser launch
 intent and binds the original process-group leader's identity. Cleanup confirms

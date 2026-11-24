@@ -11,7 +11,8 @@ async function setup() {
   let admitted = true;
   const read = vi.fn(async () => blob), scope = store.createScope({ identity, read, canRead: () => admitted, canDownload: () => admitted });
   const asset = scope.asset({ resourceId: '00000004-1111-4111-8111-111111111111', revision: '1', name: 'sample.png', status: 'available', mediaType: 'image/png', byteLength: String(bytes.length), sha256, width: 3, height: 2, frameCount: 1, error: null })!;
-  return { scope, asset, downloads, read, store, deny: () => { admitted = false; }, request: (signal = new AbortController().signal) => ({ scope, asset, signal, label: 'Reference.png' }) };
+  const other = scope.asset({ resourceId: '00000005-1111-4111-8111-111111111111', revision: '1', name: 'other.png', status: 'available', mediaType: 'image/png', byteLength: String(bytes.length), sha256, width: 3, height: 2, frameCount: 1, error: null })!;
+  return { scope, asset, other, downloads, read, store, deny: () => { admitted = false; }, request: (signal = new AbortController().signal) => ({ scope, asset, signal, label: 'Reference.png' }) };
 }
 
 describe('image download lifetimes', () => {
@@ -25,16 +26,48 @@ describe('image download lifetimes', () => {
     await vi.advanceTimersByTimeAsync(60_000); expect(revoke).toHaveBeenCalledWith('blob:download');
   });
   it('bounds waiting downloads to two requests without acquiring their bytes', async () => {
-    vi.useFakeTimers(); const { request, downloads } = await setup();
+    vi.useFakeTimers(); const { request, downloads, asset, read } = await setup();
     const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const acquire = asset.acquire; let open!: () => void; const gate = new Promise<void>(resolve => { open = resolve; });
+    vi.spyOn(asset, 'acquire').mockImplementationOnce(async (signal, priority) => { await gate; return acquire(signal, priority); });
+    const first = downloads.download(request());
+    const second = downloads.download(request()), third = downloads.download(request());
+    const secondRejected = expect(second).rejects.toMatchObject({ code: 'download_busy' }), thirdRejected = expect(third).rejects.toMatchObject({ code: 'download_busy' });
+    await expect(downloads.download(request())).rejects.toMatchObject({ code: 'download_busy' });
+    await vi.advanceTimersByTimeAsync(65_001); await secondRejected; await thirdRejected;
+    expect(read).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+    open(); await first; expect(click).toHaveBeenCalledOnce();
+  });
+  it('starts each consecutive download once the previous one reaches the browser and bounds retained URLs to two', async () => {
+    vi.useFakeTimers(); const { request, downloads } = await setup();
+    let serial = 0; vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:download-${++serial}`);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const clicked: string[] = []; vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.href); });
     await downloads.download(request());
     const second = downloads.download(request()), third = downloads.download(request());
-    const thirdRejected = expect(third).rejects.toMatchObject({ code: 'download_busy' });
-    await expect(downloads.download(request())).rejects.toMatchObject({ code: 'download_busy' });
-    expect(create).toHaveBeenCalledOnce(); expect(click).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(60_000); await second; expect(click).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(5_001); await thirdRejected;
+    await expect(second).resolves.toBeUndefined(); await expect(third).resolves.toBeUndefined();
+    expect(clicked).toEqual(['blob:download-1', 'blob:download-2', 'blob:download-3']);
+    expect(revoke.mock.calls).toEqual([['blob:download-1']]);
+    await vi.advanceTimersByTimeAsync(59_999); expect(revoke).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(revoke.mock.calls).toEqual([['blob:download-1'], ['blob:download-2'], ['blob:download-3']]);
+  });
+  it('revokes every retained URL when the queue closes', async () => {
+    const { request, downloads } = await setup();
+    let serial = 0; vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:download-${++serial}`);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {}); vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await downloads.download(request()); await downloads.download(request());
+    expect(revoke).not.toHaveBeenCalled();
+    downloads.close();
+    expect(revoke.mock.calls).toEqual([['blob:download-1'], ['blob:download-2']]);
+  });
+  it('frees the foreground download reservation for an uncached original once a download is triggered', async () => {
+    const { request, downloads, other, read } = await setup();
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await downloads.download(request()); expect(read).toHaveBeenCalledOnce();
+    const lease = await other.acquire(new AbortController().signal, 'download');
+    expect(read).toHaveBeenCalledTimes(2); expect(lease.valid).toBe(true); lease.release();
   });
   it('cancels queued downloads and revokes a retained URL synchronously on access loss', async () => {
     const { request, downloads, scope } = await setup();

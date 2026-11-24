@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -5,7 +6,7 @@ import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -131,6 +132,58 @@ test("resume binds the original stopped native identity and holds an exclusive l
   await expect(acquireResume(input, f.context, config)).rejects.toThrow(/lease|already/i);
   await lease.release(); await lease.release(); const next = await acquireResume(input, f.context, config); await next.release();
 });
+
+test.each([[16, 16], [17, 17], [journalVersion, 16], [journalVersion, 17]] as const)("resume reads a stopped v%i target without migrating an unrelated live v%i writer", async (version, unrelatedVersion) => {
+  const f = await fixture(), executionId = randomUUID();
+  const unrelated = { ...f.ticket, launchId: randomUUID(), executionId, testExecutionId: executionId, controllerInstanceId: randomUUID(), sessionId: randomUUID() };
+  await f.save(unrelated, randomUUID(), false);
+  const file = path.join(controllerExecutionDirectory(f.home, executionId), "journal.sqlite"), db = new Database(file);
+  try { restoreControllerJournalVersion(db, unrelatedVersion); db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid); }
+  finally { db.close(); }
+  const selectedFile = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite");
+  if (version === 16 || version === 17) {
+    const selected = new Database(selectedFile);
+    try { restoreControllerJournalVersion(selected, version); } finally { selected.close(); }
+  }
+  const before = await readFile(file), selectedBefore = await readFile(selectedFile);
+  const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
+  try { expect(lease.nativeSessionId).toBe(f.nativeSessionId); } finally { await lease.release(); }
+  expect(await readFile(file)).toEqual(before);
+  expect(await readFile(selectedFile)).toEqual(selectedBefore);
+});
+
+test.each([16, 17, journalVersion])("resume refuses a v%i journal whose ticket hash conflicts with its inventory ticket", async version => {
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
+  try {
+    if (version === 16 || version === 17) restoreControllerJournalVersion(db, version);
+    db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
+  } finally { db.close(); }
+  const before = await readFile(file);
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow("no matching inventory ticket");
+  expect(f.fetch).not.toHaveBeenCalled(); expect(proof.capture).not.toHaveBeenCalled();
+  expect(await readFile(file)).toEqual(before);
+});
+
+test("resume retains permit-owned migration for a stopped v15 target", async () => {
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
+  try { restoreControllerJournalVersion(db, 15); } finally { db.close(); }
+  const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
+  try {
+    expect(lease.nativeSessionId).toBe(f.nativeSessionId);
+    const migrated = new Database(file, { readonly: true, fileMustExist: true });
+    try { expect(migrated.pragma("user_version", { simple: true })).toBe(journalVersion); } finally { migrated.close(); }
+  } finally { await lease.release(); }
+});
+test("an unrelated prepared journal without an execution row does not hide a stopped resume candidate", async () => {
+  const f = await fixture(), executionId = randomUUID();
+  const pending = { ...f.ticket, launchId: randomUUID(), executionId, testExecutionId: executionId, controllerInstanceId: randomUUID(), sessionId: randomUUID() };
+  await f.save(pending, randomUUID(), false);
+  const db = new Database(path.join(controllerExecutionDirectory(f.home, executionId), "journal.sqlite"));
+  try { db.exec("DELETE FROM execution"); } finally { db.close(); }
+  const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
+  try { expect(lease.nativeSessionId).toBe(f.nativeSessionId); } finally { await lease.release(); }
+});
+
 test("simultaneous resume invocations cannot both acquire the same native writer", async () => {
   const f = await fixture(); const outcomes = await Promise.allSettled([1, 2].map(() => acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)));
   expect(outcomes.filter(v => v.status === "fulfilled")).toHaveLength(1);
@@ -305,24 +358,20 @@ test("a committed lease release reports close failure and can close again withou
   } finally { closing.mockRestore(); }
 });
 
-const failLeaseCompletionReport = (failure: Error) => vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
-  const line = String(chunk);
-  if (line.includes('"kind":"sqlite-migration-completed"') && line.includes('"database":"native-resume-leases"')) throw failure;
-  return true;
-});
-
-test("format reporting failure occurs before lease acquisition", async () => {
+test("initializes lease storage silently before recording the lease", async () => {
   const f = await fixture(), input = { provider: "codex" as const, sessionId: f.ticket.sessionId };
-  const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), reportingFailure = new Error("Completion reporter failed");
-  const reporting = failLeaseCompletionReport(reportingFailure);
+  const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
+  const writes: string[] = [];
+  const reporting = vi.spyOn(process.stderr, "write").mockImplementation(chunk => { writes.push(String(chunk)); return true; });
   try {
-    const error = await acquireResume(input, f.context, config).catch(error => error);
-    expect(error).toMatchObject({ kind: "cleanup-failed", outcome: "committed", connectionClosed: true, cause: reportingFailure });
-    const check = new Database(file);
-    try { expect(check.pragma("user_version", { simple: true })).toBe(1); expect(check.prepare("SELECT count(*) AS total FROM leases").get()).toEqual({ total: 0 }); }
-    finally { check.close(); }
+    const lease = await acquireResume(input, f.context, config);
+    try {
+      const check = new Database(file);
+      try { expect(check.pragma("user_version", { simple: true })).toBe(1); expect(check.prepare("SELECT count(*) AS total FROM leases").get()).toEqual({ total: 1 }); }
+      finally { check.close(); }
+      expect(writes.join("")).not.toContain("sqlite-migration-");
+    } finally { await lease.release(); }
   } finally { reporting.mockRestore(); }
-  const next = await acquireResume(input, f.context, config); await next.release();
 });
 
 test.skipIf(process.platform === "win32")("failed inventory never removes a replacement lease nonce", async () => {

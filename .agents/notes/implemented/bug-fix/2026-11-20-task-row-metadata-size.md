@@ -1,0 +1,40 @@
+# Agent Note: Ordinary Task row metadata size
+
+Status: implemented
+
+## Problem
+
+Platform, execution permission, status labels and stuck warnings compete with Task titles in
+ordinary rows, making auxiliary facts harder to scan across personal and project
+lists. The same badges also appear in graph, detail and summary contexts with
+independent presentation needs.
+
+## Decision
+
+The shared ordinary row assigns these labels and stuck warnings to `--text-xs`.
+The original decision kept ready and dependency-blocked indicators at their
+existing size; the later [ready badge decision](2026-11-20-task-row-ready-size.md)
+changes the ready indicator to `--text-xs`, and the [not-ready badge decision](2026-11-23-task-row-not-ready-size.md)
+assigns dependency-blocked row indicators to the same size. The original row-scoped selectors
+overrode project list rules without changing shared badge defaults or Session
+button geometry. The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
+owns the visible contract. This refines the status role mapping in the
+[semantic typography decision](../architecture/2026-11-20-web-semantic-typography.md).
+
+## Alternatives
+
+**Keep interface size for all status text.** It preserves the former uniform
+status role but gives secondary row facts the same prominence as the title.
+
+**Change shared badge defaults.** Graph nodes, details and summaries would also
+change even though their hierarchy and geometry are independently owned.
+
+## Consequences
+
+The [list secondary text decision](2026-11-20-list-secondary-text-size.md) extends this hierarchy to assignees, Goal links and aggregate headers.
+
+The later [machine record decision](2026-11-20-task-row-machine-size.md) extends the same hierarchy to Worker records.
+
+Equivalent ordinary rows share the smaller auxiliary text at every viewport and
+scale with browser font preferences. Graph and detail contexts retain their independent sizes; browser checks remain
+necessary for wrapping and Session interaction.

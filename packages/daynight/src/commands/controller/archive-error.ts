@@ -1,8 +1,18 @@
 export type ArchiveRepairCode = "archive_incomplete" | "projection_gap" | "markdown_projection_failed";
 export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | { kind: "attempt" } | { kind: "complete" };
 
+export class ArchiveProtocolError extends Error {}
+
+/** A terminal receipt for the original, identity-checked archive file. */
+export class ArchiveFileFailedError extends Error {
+  constructor(readonly code: string, readonly serverMessage: string) {
+    super(`Archive file failed (${code}).`);
+    this.name = "ArchiveFileFailedError";
+  }
+}
+
 export class ArchiveRequestError extends Error {
-  constructor(readonly status: number, readonly code: string | undefined) {
+  constructor(readonly status: number, readonly code: string | undefined, readonly payload?: unknown, readonly uploadVersion?: string | null, readonly responseByteLength?: number) {
     super(`Session archive request failed (${status}).`);
     this.name = "ArchiveRequestError";
   }

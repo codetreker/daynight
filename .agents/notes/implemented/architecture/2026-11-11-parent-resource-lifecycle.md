@@ -13,13 +13,18 @@ deletion or another registration.
 
 ## Decision
 
-Independent resource transactions pre-read the target's Parent, acquire target
-and Parent physical row locks in UUID order with their final modes, and reread
-the relationship and effective deletion after locking. A changed Parent causes
-`resource_conflict` before side effects. Session registration takes UPDATE on
-the target and SHARE on the Parent in this one plan; other operations use SHARE.
-Authorization, Session and file operations retain their existing downstream
-ordering. The [server design](../../../../docs/design/daynight-server.md) and
+The original resource lock plan made independent transactions pre-read the
+target's Parent, acquire target and Parent physical row locks in UUID order with
+their final modes, and reread the relationship and effective deletion after
+locking. A changed Parent caused `resource_conflict` before side effects. Session
+registration took UPDATE on the target and SHARE on the Parent; other operations
+used SHARE. This protected the then-dynamic immediate-Goal deletion projection.
+
+The [subtree visibility decision](2026-11-23-task-subtree-visibility.md) supersedes
+that two-row plan: ancestor deletion updates the descendant marker under its
+physical row lock, so independent transactions lock only the target.
+Authorization, Session and file operations retain their downstream ordering.
+The [server design](../../../../docs/design/daynight-server.md) and
 [attachment design](../../../../docs/design/daynight-task-attachments.md)
 describe the resulting scopes.
 
@@ -40,7 +45,8 @@ the check and a file or Session operation, exposing or changing a hidden child.
 
 ## Consequences
 
-Parent deletion waits for in-flight resource transactions and later operations
-observe the deletion. A concurrent Parent move can require the caller to retry
-after a conflict. Long file operations can hold both row locks until completion;
-existing cross-storage and unknown-commit boundaries still apply.
+Ancestor deletion waits for in-flight resource transactions and later operations
+observe the inherited marker. The original plan held two row locks and could
+return a conflict after a concurrent Parent move; the replacement locks the
+actual target throughout file I/O. Existing cross-storage and unknown-commit
+boundaries still apply.

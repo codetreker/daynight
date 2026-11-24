@@ -71,3 +71,15 @@ test('a Project administrator without Team authority cannot connect', async ({ p
   await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toHaveCount(0);
   expect(state.discovery).toHaveLength(0); expect(state.writes).toHaveLength(0);
 });
+
+test('poll input follows browser text preferences at responsive widths', async ({ page }) => {
+  await install(page); await page.goto('/tests/navigation/github-consumption.html');
+  const input = page.getByLabel('Poll interval'); await expect(input).toHaveValue('5');
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+    }
+  }
+});

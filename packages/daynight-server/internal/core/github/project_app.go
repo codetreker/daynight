@@ -17,6 +17,8 @@ type ProjectAppSelection struct {
 type ProjectAppConnect struct {
 	ProjectAppSelection
 	Version, InstallationID int64
+	// RepositoryVersion identifies the Project state used for remote proof.
+	RepositoryVersion int64
 }
 type ProjectAppDisconnect struct{ Version, OwnershipVersion int64 }
 type ProjectAppRef struct {
@@ -111,6 +113,45 @@ func ProjectAppStatusFrom(ctx context.Context, dao store.GitHubProjectAppReadDAO
 // ManageProjectApp applies a proof inside the dedicated Project/Team/App scope.
 // Original authority and versions precede no-op checks.
 func ManageProjectApp(ctx context.Context, dao store.GitHubProjectAppWriteDAO, p model.Principal, action string, in ProjectAppConnect, minutes int32, enabled bool, expectedRepo string, candidate InstallationCandidate) (ProjectAppStatus, error) {
+	return ManageProjectAppWithAdmission(ctx, dao, p, action, in, minutes, enabled, expectedRepo, candidate, nil)
+}
+
+func ManageProjectAppWithAdmission(ctx context.Context, dao store.GitHubProjectAppWriteDAO, p model.Principal, action string, in ProjectAppConnect, minutes int32, enabled bool, expectedRepo string, candidate InstallationCandidate, admit func() error) (ProjectAppStatus, error) {
+	if admit != nil {
+		access, err := ProjectAppAccess(ctx, dao, p)
+		if err != nil {
+			return ProjectAppStatus{}, err
+		}
+		switch action {
+		case "connect", "disconnect":
+			if access.Access.TeamRole == nil || *access.Access.TeamRole != model.ProjectAdmin {
+				return ProjectAppStatus{}, &model.Fault{Code: "forbidden", Message: "Owner Team administrator permission is required."}
+			}
+			if access.OwnershipVersion != in.OwnershipVersion {
+				return ProjectAppStatus{}, &model.Fault{Code: "version_conflict", Message: "Project ownership changed."}
+			}
+		case "settings", "sync":
+			if access.Access.Role != model.ProjectAdmin {
+				return ProjectAppStatus{}, &model.Fault{Code: "forbidden", Message: "Project administrator permission is required."}
+			}
+		default:
+			return ProjectAppStatus{}, invalid("Invalid GitHub management operation.")
+		}
+		if in.Version < 1 {
+			return ProjectAppStatus{}, invalid("Version must be positive.")
+		}
+		if access.ConnectionVersion != in.Version {
+			return ProjectAppStatus{}, &model.Fault{Code: "version_conflict", Message: "GitHub configuration version changed."}
+		}
+		if action == "connect" {
+			if err := RequireSelectedProjectApp(ctx, dao, access, in.ProjectAppSelection); err != nil {
+				return ProjectAppStatus{}, err
+			}
+		}
+		if err := admit(); err != nil {
+			return ProjectAppStatus{}, err
+		}
+	}
 	f, err := ReadProjectAppFacts(ctx, dao, p)
 	if err != nil {
 		return ProjectAppStatus{}, err

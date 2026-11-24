@@ -44,7 +44,7 @@ func snapshot(user, id string, stamp time.Time) model.WorkerSnapshot {
 	return model.WorkerSnapshot{UserID: user, WorkerID: id, CreatedAt: stamp, LastReportedAt: stamp, Telemetry: model.WorkerTelemetry{Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Machine"}, Platform: model.PlatformLinux, WorkingDirectory: "/workspace", SampledAt: stamp}, TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}}
 }
 func configuration() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 func TestWorkerDAOSnapshotRetentionVisibilityAndPagination(t *testing.T) {
 	tx := workerTransaction(t)
@@ -243,6 +243,9 @@ func TestWorkerDAOReportedTaskSourcesAndStoredCorruption(t *testing.T) {
 	if err != nil || len(items) != 0 {
 		t.Fatalf("private sources: %+v %v", items, err)
 	}
+	// Transaction rollback restores the index after this fault injection, so
+	// the raw-property reader can still be tested against malformed storage.
+	execute(t, tx, `DROP INDEX task_properties_worker_active_claim_idx`)
 	execute(t, tx, `UPDATE task_properties SET value='invalid JSON' WHERE task_id=$1 AND name='worker'`, task)
 	items, err = writer.ReportTaskSnapshots(ctx, user, inventory)
 	if err != nil || len(items) != 1 || string(items[0].Task.Properties["worker"]) != "invalid JSON" {

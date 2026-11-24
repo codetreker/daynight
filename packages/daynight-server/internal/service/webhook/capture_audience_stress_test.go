@@ -35,7 +35,7 @@ func TestCaptureCompleteAudienceBeyondFormerLimitsStress(t *testing.T) {
 		}
 	}
 	dao := captureSuccessfulDAO(t, audience, 1)
-	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 {

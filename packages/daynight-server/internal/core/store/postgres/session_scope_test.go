@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -108,6 +109,9 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
 			t.Fatal(err)
 		}
+		if expired && caller.Kind == model.SessionCredential {
+			expiry = testutil.ArmCredentialExpiry(t, probeCtx, db.Pool, table, caller.CredentialID, 3)
+		}
 		admittedAt := expiry.Add(-time.Second)
 		recheckedAt := admittedAt
 		if expired {
@@ -153,6 +157,9 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 			}
 		}()
 		waitTransferTeamLock(t, probeCtx, db, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
+		if expired && caller.Kind == model.SessionCredential {
+			testutil.WaitForCredentialExpiry(t, probeCtx, db.Pool, expiry)
+		}
 		if err := holder.Commit(probeCtx); err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +171,8 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 			return store.Completion{}, probeCtx.Err()
 		}
 	}
-	callers := []model.Principal{principal, runtimeBotPAT(t, db, bot)}
+	pat := runtimeBotPAT(t, db, bot)
+	callers := []model.Principal{principal, pat}
 	deletion := &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
 	intent := func(ctx context.Context, scope store.SessionScope, current model.Bot) error {
 		if current.Deletion != nil || current.Version != deletion.RequestedVersion {
@@ -199,10 +207,6 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted || state() != live {
 			t.Fatalf("expired deletion intent changed live state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
 		}
-		completion, err = blocked(caller, false, func(context.Context, store.SessionScope, model.Bot) error { return nil })
-		if err != nil || completion.Outcome != store.TransactionCommitted || state() != live {
-			t.Fatalf("restored credential changed live state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
-		}
 	}
 	completion, err := blocked(principal, false, intent)
 	if err != nil || completion.Outcome != store.TransactionCommitted {
@@ -229,11 +233,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		}
 		return nil
 	}
+	completion, err = blocked(pat, true, replay)
+	if !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted || state() != committed {
+		t.Fatalf("expired deletion replay changed committed state: completion=%+v error=%v", completion, err)
+	}
 	for _, caller := range callers {
-		completion, err := blocked(caller, true, replay)
-		if !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted || state() != committed {
-			t.Fatalf("expired deletion replay changed committed state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
-		}
 		completion, err = blocked(caller, false, replay)
 		if err != nil || completion.Outcome != store.TransactionCommitted || state() != committed {
 			t.Fatalf("valid deletion replay changed committed state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)

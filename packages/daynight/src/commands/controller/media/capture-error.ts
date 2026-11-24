@@ -30,5 +30,19 @@ export class ImageCapturePrerequisiteError extends Error {
   }
 }
 
+/** The retry attempt already has this exact durable service failure. */
+export class ImageCaptureRetrySettledError extends Error {
+  constructor(readonly imageError: ImageError) { super(imageError.message); this.name = "ImageCaptureRetrySettledError"; }
+}
+
+/** A retry submission may have committed; only the original receipt can resolve it. */
+export class ImageCaptureRetryUnknownError extends Error {
+  constructor(cause: unknown) {
+    const raw = cause !== null && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+    const classification = typeof raw === "string" && /^(?:SQLITE_[A-Z_]+|EIO|ENOSPC|EACCES|EPERM)$/.test(raw) ? raw : cause instanceof SyntaxError ? "invalid_json" : "unclassified";
+    super(`Image capture retry result is unknown (${classification}).`, { cause }); this.name = "ImageCaptureRetryUnknownError";
+  }
+}
+
 export const isRetryableCaptureRefusal = (error: unknown): boolean =>
   error instanceof ImageCaptureNotDispatchedError || error instanceof ImageCaptureRequestError && error.code === "rate_limited";

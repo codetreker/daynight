@@ -42,10 +42,10 @@ replace 必须显式提交完整 prerequisites 数组，最多 30 项，不能�
 {"ifRevision":"7","mode":"replace","prerequisites":[{"edgeId":"22222222-2222-4222-8222-222222222222"}]}
 ```
 
-保留臂允许引用隐藏边；移除未知、已删除或属于另一 Goal 的 edgeId 使用相同 `400 invalid_input`。新增已有可读关系是空操作，保留其 edgeId。最终前置最多 30 条。成功仅在确认提交后返回 `200` 与 `{goalId,revision,changed}`，revision 仍为精确字符串。版本比较先于空操作；空操作不推进修订，清空保留已持久化修订，删除再新增获得新 edgeId。Task 元数据版本保持原值。
+保留臂允许引用隐藏边；移除未知、已删除或属于另一 Goal 的 edgeId 使用相同 `400 invalid_input`。新增已有可读关系是空操作，保留其 edgeId。最终前置最多 30 条。成功仅在确认提交后返回 `200` 与 `{goalId,revision,changed}`，revision 仍为精确字符串。版本比较先于空操作；空操作不推进修订，清空保留已持久化修订，删除再新增获得新 edgeId。真实编辑同时推进下游 Goal 的 Task 元数据版本和更新时间；空操作保持两者不变。
 
 ## 拒绝与写入结果
 
-入参失败返回 `400 invalid_input`。自依赖拒绝；跨 Team、循环、已完成下游含未完成前置，以及过期修订分别返回 `409 goal_dependency_team_mismatch`、`goal_dependency_cycle`、`goal_dependency_unsatisfied`、`goal_dependency_revision_conflict`。修订耗尽使用现有 `409 version_exhausted`。现有状态和删除入口继续使用 `goal_dependency_done_successor`、`goal_dependency_referenced`，所有失败保持原 Task 与关系。
+入参失败返回 `400 invalid_input`。自依赖拒绝；跨 Team、循环、已完成下游含未完成前置，以及过期修订分别返回 `409 goal_dependency_team_mismatch`、`goal_dependency_cycle`、`goal_dependency_unsatisfied`、`goal_dependency_revision_conflict`。关系修订或 Task 版本耗尽使用现有 `409 version_exhausted`。现有状态和删除入口继续使用 `goal_dependency_done_successor`、`goal_dependency_referenced`，所有失败保持原 Task 与关系。
 
 内部错误、取消、deadline 与已确认未提交结果保留现有错误 envelope。提交确认丢失返回 `503 write_outcome_unknown`。一次请求最多调用一次编辑用例；冲突或结果未知不重放，后续 GET 仅证明当前状态。旧 Goal detail、list、sync、普通 Task 图和 ready DTO 保持原合同；关系只由本独立资源读取。

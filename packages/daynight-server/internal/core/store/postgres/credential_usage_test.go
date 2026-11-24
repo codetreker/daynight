@@ -33,7 +33,7 @@ func usageWrite(t *testing.T, ctx context.Context, db *Store, events ...model.Cr
 
 func usageSeedPAT(t *testing.T, ctx context.Context, db *Store, user, id string, at time.Time) {
 	t.Helper()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at) VALUES ($1,$2,decode(replace(($1::uuid)::text,'-','')||replace(($1::uuid)::text,'-',''),'hex'),'fixture',$3,$4)`, id, user, at, at.Add(24*time.Hour))
+	_, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,decode(replace(($1::uuid)::text,'-','')||replace(($1::uuid)::text,'-',''),'hex'),'fixture',$3,$4)`, id, user, at, at.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,8 +418,84 @@ func TestCredentialUsageCommitCancellationRemainsUnknown(t *testing.T) {
 	if !attempted || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || !failure.CommitAttempted || completion.Outcome != store.TransactionUnknown {
 		t.Fatalf("commit outcome: attempted=%t completion=%+v error=%v", attempted, completion, err)
 	}
-	// The unknown operation is not called a rollback; retrying only the idempotent
-	// metadata write converges whether the original committed or not.
+	// A canceled COMMIT can return before PostgreSQL releases the row lock.
+	// Wait on the row in an implicit transaction before exercising the NOWAIT retry.
+	var lockedID string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM personal_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user).Scan(&lockedID); err != nil {
+		t.Fatalf("wait for usage row lock to be released: %v", err)
+	}
+	// The idempotent metadata write converges whether the original commit took effect.
 	usageWrite(t, ctx, db, event)
 	usageAssert(t, usageRead(t, ctx, db, "personal_access_tokens", id), &now)
+}
+
+func TestCredentialUsageBatchValidation(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	valid := model.CredentialUsageEvent{Kind: model.UsageSubjectPAT, UserID: "11111111-1111-1111-1111-111111111111", SubjectID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	cases := []struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{
+		{"valid", []model.CredentialUsageEvent{valid}, true},
+		{"empty", nil, false},
+		{"too large", make([]model.CredentialUsageEvent, 129), false},
+		{"duplicate", []model.CredentialUsageEvent{valid, valid}, false},
+	}
+	bad := valid
+	bad.Kind = "other"
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"kind", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.SubjectID = strings.ToUpper(valid.SubjectID)
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"noncanonical", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.UserID = "00000000-0000-0000-0000-000000000000"
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"nil id", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.At = time.Time{}
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"zero time", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.At = valid.At.Add(time.Nanosecond)
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"precision", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.At = valid.At.In(time.FixedZone("other", 0))
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"zone", []model.CredentialUsageEvent{bad}, false})
+	bad = valid
+	bad.Kind = model.UsageSubjectOAuthGrant
+	cases = append(cases, struct {
+		name   string
+		events []model.CredentialUsageEvent
+		valid  bool
+	}{"unordered", []model.CredentialUsageEvent{valid, bad}, false})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateUsageBatch(tc.events); (err == nil) != tc.valid {
+				t.Fatalf("validation: %v", err)
+			}
+		})
+	}
 }

@@ -1,9 +1,10 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  review: { title: 'PR 审查', label: '参与 PR 审查', detail: '支持 PR 审查的 Worker 在下次成功轮询时应用此设置。关闭后将停止进行中的 PR 审查。保存仅确认服务端设置，不代表 Worker 已处理。', loading: '正在读取 PR 审查设置…', unavailable: 'PR 审查设置不可用。', readError: '读取 PR 审查设置失败。', saving: '正在保存…', saved: 'PR 审查设置已保存。', rejected: '保存 PR 审查设置失败。', conflict: '设置已被其他位置修改，请核对当前值后再操作。', unknown: '保存结果未知。当前值不能确认原保存是否成功。', checkError: '无法核对当前值。' },
   toolPaths: {
-    title: '工具路径', detail: '填写此 Worker 机器上的绝对文件路径；恢复自动发现请使用对应按钮。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
-    unsupportedService: '升级服务后可配置工具路径。', unsupportedWorker: 'Worker 尚未上报工具路径能力，请升级或等待支持版本上报。',
+    title: '工具启动路径', detail: '自动选择工具，也可指定启动文件的完整路径。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
+    unsupportedService: '升级服务后可配置工具启动路径。', unsupportedWorker: 'Worker 尚未上报工具启动路径能力，请升级或等待支持版本上报。',
     invalidPath: '请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', unsaved: '未保存',
     target: '已保存目标', reportedTarget: '上报目标', actual: '新执行使用', previousActual: '此前实际选择', reportedActual: '上报的实际选择',
     candidate: '待应用选择', active: '运行中的选择', noActual: '尚无已验证的实际选择', otherContext: '其他执行模式', details: '查看实际路径',
@@ -26,13 +27,16 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   unsupportedFields: '已保存配置包含不再支持或缺少的字段。', unsupportedFieldsDetail: '请检查配置并保存以替换目标。读取页面不会修改原配置。',
   permissionError: '没有此配置的访问权限。', retainedDraft: '当前草稿已保留。', saved: '已保存到云端，生效结果以 Worker 上报为准。',
   reconciled: '已核对云端，提交的配置已保存。', notSaved: '云端没有提交的配置，请核对最新值后再保存。',
+  abandonedUnknown: '先前保存的结果未知，当前显示云端目标。',
   uncertain: '保存结果尚未确认，当前草稿已保留。', verifySave: '核对保存结果', conflict: '云端配置已被其他页面修改。',
   savedSource: '查看已保存的配置响应', sourceProjection: '此响应可能因能力协商而省略部分字段。', viewLatest: '查看最新云端配置响应', loadLatest: '载入最新配置', settings: '运行设置', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔',
   recoveryLimit: '自动恢复次数上限', milliseconds: '毫秒', defaultNative: '默认 Agent', agent: 'Agent', model: 'Model', args: '启动参数',
   agentControlMode: '托管模式', controlModeDetail: '应用后用于新任务，已运行的任务保持原模式。',
   controlModeAwaitingAdoption: '等待 Worker 同步托管模式。', controlModeUnsupported: '升级服务后可配置托管模式。',
   preferPlatformSpecificTasks: '优先领取平台特定任务', preferPlatformTasks: ({ platform }) => `优先领取 ${platform} 的任务`, platformPreferenceDetail: '优先从所有已选项目中领取指定此 Worker 平台的任务，再领取不限平台任务。', enabled: '开启', disabled: '关闭',
+  platformRule: '任务领取规则', platformCurrent: '当前平台', platformAll: '领取所有兼容任务', platformOnly: ({ platform }) => `只领取 ${platform} 的任务`, platformAllDetail: ({ platform }) => `按原有顺序领取不限平台或指定 ${platform} 的任务。`, platformPreferDetail: ({ platform }) => `先在所有已选项目中找指定 ${platform} 的任务；没有可领取的，再领不限平台的任务。`, platformOnlyDetail: ({ platform }) => `仅领取明确指定 ${platform} 的任务。没有符合条件的任务时，就等待。`, platformModeUnsupported: '当前服务仅支持前两种规则。', platformWorkerUnsupported: '最新 Worker 报告尚未确认支持严格规则。',
   enableSudoCleanup: '启用 sudo 清理', enableSudoCleanupDetail: '默认关闭。在 Linux 和 macOS 上，自动清理因权限不足失败后，Worker 会自动探测并尝试当次免密提权清理，无需人工执行命令或逐次确认。设置生效后将在下次清理时使用。', sudoCleanupUnsupportedService: '服务尚未提供此配置。', sudoCleanupUnsupportedPlatform: 'Windows 不支持 sudo 清理。', sudoCleanupUnknownPlatform: '等待识别 Worker 平台。',
+  enableWindowsProcessCleanup: '启用 Windows 进程清理', enableWindowsProcessCleanupDetail: '默认关闭。在 Windows 上，工作目录位于任务 worktree 内的运行中进程会一直占住该目录，自动清理无法删除。开启后，Worker 会终止这些进程，以及 Windows 归属为其子进程的那些进程，然后重试删除。被终止的子进程可能包含并非由 Worker 启动的进程。设置生效后将在下次清理时使用。', windowsProcessCleanupUnsupportedService: '服务尚未提供 Windows 进程清理配置。', windowsProcessCleanupUnsupportedPlatform: 'Windows 进程清理仅适用于 Windows Worker。', windowsProcessCleanupUnknownPlatform: '等待识别 Worker 平台后再决定是否提供 Windows 进程清理。',
   archiveSessions: '归档 Session', archiveSessionsDetail: '默认开启。Worker 清理已结束的 Session 时读取当前已生效的设置。关闭后跳过归档并释放录制，包括历史录制。运行中的 Session 仍可查看、控制和记录。已删除的录制不能补传，云端已有归档保持不变。',
   archiveSessionsUnsupportedService: '请升级服务以配置 Session 归档。', archiveSessionsUnsupportedWorker: '此 Worker 尚未报告支持 Session 归档。请升级 Worker 或等待支持报告。',
   defaultModel: '使用 Agent 默认模型', customModel: '指定模型', inherit: '继承适用设置', inheritGlobal: '继承全局', customArgs: '自定义参数', clearArgs: '没有附加参数',
@@ -49,7 +53,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   affectedProjects: '将移除的项目', affectedTasks: '上次观测中的任务', noObservedTasks: '上次观测中没有相关任务。',
   localSettings: '本机设置', localSettingsDetail: '以下设置保留在 Worker 本机。', localSettingsItems: ['仓库根目录与本机路径', 'Worker 身份、服务连接与凭据'],
   state: { pending: '等待生效', applying: '应用中', applied: '已生效', error: '失败', unsaved: '未保存' },
-  kind: { taskTagFilter: '任务标签筛选',  enableSudoCleanup: '启用 sudo 清理', archiveSessions: '归档 Session', agentControlMode: '托管模式', preferPlatformSpecificTasks: '优先领取平台特定任务', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔', recoveryLimit: '自动恢复次数上限', native: '默认 Agent', projectNative: '项目 Agent', projectPreparation: '仓库准备', projectRemoval: '停止项目执行' },
+  kind: { taskTagFilter: '任务标签筛选',   enableSudoCleanup: '启用 sudo 清理', enableWindowsProcessCleanup: '启用 Windows 进程清理', archiveSessions: '归档 Session', agentControlMode: '托管模式', preferPlatformSpecificTasks: '优先领取平台特定任务', platformTaskMode: '任务领取规则', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔', recoveryLimit: '自动恢复次数上限', native: '默认 Agent', projectNative: '项目 Agent', projectPreparation: '仓库准备', projectRemoval: '停止项目执行' },
   codes: { not_found: '资源不存在', permission_denied: '权限不足', timeout: '操作超时', command_failed: '命令执行失败', invalid_output: '命令输出无效', invalid_configuration: '配置无效', io_error: '存储或 I/O 错误', unavailable: '资源暂不可用' },
   phases: { validate: '校验', prepare: '准备', apply: '应用', stop: '停止', persist: '持久化' },
 };

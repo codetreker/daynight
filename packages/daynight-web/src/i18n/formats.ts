@@ -11,6 +11,7 @@ export type Formats = {
   readonly bytes: (value: number | bigint) => string;
   readonly plural: (value: number) => Intl.LDMLPluralRule;
   readonly duration: (milliseconds: number) => string;
+  readonly graphDuration: (milliseconds: number) => string;
 };
 
 const createFormats = (locale: Locale): Formats => {
@@ -27,6 +28,14 @@ const createFormats = (locale: Locale): Formats => {
   const completionWithoutYear = completionDate(false);
   const number = new Intl.NumberFormat(locale);
   const plural = new Intl.PluralRules(locale);
+  const duration = (milliseconds: number, graph: boolean): string => {
+    if (milliseconds < 60_000) return locale === "en" ? "< 1 min" : "不足 1 分钟";
+    const minutes = Math.floor(milliseconds / 60_000);
+    const parts = [Math.floor(minutes / 1440), Math.floor(minutes % 1440 / 60), minutes % 60];
+    const units = locale === "en" ? ["d", "h", "min"] : [" 天", " 小时", " 分钟"];
+    const visible = graph && parts[0] !== 0 ? parts.slice(0, 2) : parts;
+    return visible.flatMap((value, index) => value === 0 ? [] : [`${number.format(value)}${units[index]}`]).join(" ");
+  };
   return {
     date: (value) => date.format(new Date(value)),
     time: (value) => time.format(new Date(value)),
@@ -42,13 +51,8 @@ const createFormats = (locale: Locale): Formats => {
     number: (value) => number.format(value),
     bytes: (value) => `${number.format(value)} B`,
     plural: (value) => plural.select(value),
-    duration: (milliseconds) => {
-      if (milliseconds < 60_000) return locale === "en" ? "< 1 min" : "不足 1 分钟";
-      const minutes = Math.floor(milliseconds / 60_000);
-      const parts = [Math.floor(minutes / 1440), Math.floor(minutes % 1440 / 60), minutes % 60];
-      const units = locale === "en" ? ["d", "h", "min"] : [" 天", " 小时", " 分钟"];
-      return parts.flatMap((value, index) => value === 0 ? [] : [`${number.format(value)}${units[index]}`]).join(" ");
-    },
+    duration: (milliseconds) => duration(milliseconds, false),
+    graphDuration: (milliseconds) => duration(milliseconds, true),
   };
 };
 

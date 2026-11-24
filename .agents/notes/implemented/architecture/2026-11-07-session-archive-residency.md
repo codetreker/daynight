@@ -12,8 +12,8 @@ would leave direct core calls and internal reads outside the limit.
 ## Decision
 
 Archive operations acquire nonblocking per-instance and per-original-owner
-capacity before consuming large bodies or objects. Owner slots use the exact-key
-residency gate shared by instances in one storage deployment. A short access
+capacity before consuming large bodies or objects. The [owner permit decision](2026-11-21-session-archive-owner-permits.md)
+defines the shared owner and Session coordination. A short access
 scope obtains trusted ownership before acquiring capacity, with a separate
 nonblocking preflight slot preventing unbounded database waiters; the business operation
 retains its own authorization, fence and lock ordering. Nested readback shares

@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { portableFiles, preflightFocusedPlan, verifyFocusedEvidence } from "./cli-focused-evidence.mts";
+
+const identity = { sourceRevision: "a".repeat(40), sourceTree: "b".repeat(40), vitestVersion: "5.0.5", pnpmVersion: "11.28.6", prHead: "c".repeat(40), prRef: "feature" };
+const paths = ["test/cli/task-protocol.test.ts", "test/platform/windows-suspended-process.test.ts", "test/commands/controller/markdown/local-source-filesystem-darwin.test.ts", "test/commands/controller/markdown/local-source-filesystem.test.ts"];
+const nativeNames = ["portable protocol", "keeps the native thread suspended until its owner resumes and joins it", "local image filesystem records recognizes the actual local Darwin filesystem by name and mount flags", "synthetic filesystem record"];
+const portable = new Set([paths[0]!, paths[3]!]);
+function fixture(): Record<string, any> {
+  const labels = ["linux-full", "windows-full-1", "windows-full-2", "windows-focused-1", "windows-focused-2", "macos-full", "macos-focused"];
+  return Object.fromEntries(labels.map(label => {
+    const windows = label.startsWith("windows"), mac = label.startsWith("macos"), platform = windows ? "win32" : mac ? "darwin" : "linux";
+    const root = windows ? "C:\\work\\packages\\daynight" : "/work/packages/daynight";
+    const absolute = (p: string) => windows ? `${root}\\${p.replaceAll("/", "\\")}` : `${root}/${p}`;
+    const focused = label.includes("focused"), shard = /-([12])$/.exec(label)?.[1];
+    const selected = paths.filter((p, index) => (!focused || !portable.has(p)) && (!shard || (focused ? index % 2 === Number(shard) % 2 : index % 2 === Number(shard) - 1)));
+    const testResults = selected.map(p => {
+      const index = paths.indexOf(p), status = index === 1 && !windows || index === 2 && !mac ? "skipped" : "passed";
+      return { name: absolute(p), status: "passed", message: "", assertionResults: [{ ancestorTitles: index === 2 ? ["local image filesystem records"] : [], title: index === 2 ? "recognizes the actual local Darwin filesystem by name and mount flags" : nativeNames[index], status, failureMessages: [] }] };
+    });
+    const passed = testResults.filter(x => x.assertionResults[0]!.status === "passed").length;
+    return [label, { metadata: { ...identity, formatVersion: 2, label, platform, arch: mac ? "arm64" : "x64", nodeVersion: "v24.19.0", shard: shard ? `${shard}/2` : "", packageRoot: root, sourceDirty: false, testStepOutcome: "success" }, discovered: paths.map(file => ({ file: absolute(file) })), results: { success: true, numFailedTestSuites: 0, numFailedTests: 0, numTotalTests: selected.length, numPassedTests: passed, numPendingTests: selected.length - passed, numTodoTests: 0, testResults } }];
+  }));
+}
+const verify = (e: Record<string, any>) => verifyFocusedEvidence(e, identity, portable);
+const classification = (selected = [paths[0]!]) => {
+  const blob = "1".repeat(40);
+  const guards = Object.fromEntries(["packages/daynight/src", "packages/daynight/test", "packages/daynight/scripts", "packages/daynight/package.json", "packages/daynight/vitest.config.ts", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/vitest.focused-evidence.config.ts", "patches", ".github/workflows/cli-focused-evidence.yml"].map(path => [path, blob]));
+  guards[".npmrc"] = null as any;
+  return { manifest: { files: selected.map(path => ({ path, blob, reason: "DTO" })), guards }, get: (path: string) => path === ".npmrc" ? null : blob };
+};
+
+test("preflight retains unknown files and rejects stale classification, missing discovery and empty selection", () => {
+  const root = "/work/packages/daynight", discovered = paths.map(file => ({ file: `${root}/${file}` }));
+  const { manifest, get } = classification();
+  const plan = () => preflightFocusedPlan(manifest, get, discovered, root, "linux");
+  assert.deepEqual(plan(), { full: new Set(paths), focused: new Set(paths.slice(1)) });
+  const all = classification(paths);
+  assert.throws(() => preflightFocusedPlan(all.manifest, all.get, discovered, root, "linux"), /Empty focused plan/);
+  assert.throws(() => preflightFocusedPlan(manifest, get, discovered.slice(1), root, "linux"), /Stale portable path/);
+  assert.throws(() => preflightFocusedPlan(manifest, get, [], root, "linux"), /Empty discovery/);
+  assert.throws(() => preflightFocusedPlan(manifest, get, [...discovered, discovered[0]], root, "linux"), /Duplicate discovered/);
+  assert.throws(() => preflightFocusedPlan(manifest, path => path === "packages/daynight/src" ? "2".repeat(40) : get(path), discovered, root, "linux"), /Stale classification guard/);
+  assert.throws(() => preflightFocusedPlan(manifest, get, discovered, root, "freebsd"), /Invalid discovery platform/);
+});
+
+test("rejects reports from the wrong native platform and an empty focused plan", () => {
+  const e = fixture(); e["windows-full-1"].metadata.platform = "linux";
+  assert.throws(() => verify(e));
+  assert.throws(() => verifyFocusedEvidence(fixture(), identity, new Set(paths)), /Empty focused plan/);
+});
+
+test("rejects mixed hosted origins and groups while preserving per-job rerun attempts", () => {
+  const hosted = fixture();
+  for (const [index, value] of Object.values(hosted).entries()) Object.assign(value.metadata, { githubRunId: "123", githubRunAttempt: index === 0 ? "2" : "1", githubJob: "collect", comparisonGroup: "group-1" });
+  verify(hosted);
+  for (const [field, value] of Object.entries({ githubRunId: "456", githubRunAttempt: "0", githubJob: "", comparisonGroup: "group-2" })) {
+    const changed = structuredClone(hosted); changed["macos-focused"].metadata[field] = value;
+    assert.throws(() => verify(changed), field);
+  }
+  const mixed = structuredClone(hosted);
+  for (const field of ["githubRunId", "githubRunAttempt", "githubJob"]) delete mixed["macos-focused"].metadata[field];
+  assert.throws(() => verify(mixed), /Mixed execution origins/);
+});
+test("verifies a synthetic checkout separately from its PR head, native sentinels and retained case states", () => verify(fixture()));
+test("requires every Task protocol and synthetic filesystem case to pass on Linux", () => {
+  const e = fixture();
+  const portableModule = (value: any, label: string, file: string) => value[label].results.testResults.find((x: any) => x.name.endsWith(file));
+  for (const label of ["linux-full", "macos-full"]) for (const file of portable) {
+    portableModule(e, label, file).assertionResults.push({ ancestorTitles: ["suite"], title: "second case", status: "passed", failureMessages: [] });
+    e[label].results.numTotalTests++; e[label].results.numPassedTests++;
+  }
+  verify(e);
+  for (const file of portable) {
+    const missing = structuredClone(e);
+    portableModule(missing, "linux-full", file).assertionResults.pop();
+    missing["linux-full"].results.numTotalTests--; missing["linux-full"].results.numPassedTests--;
+    assert.throws(() => verify(missing), /Portable case did not pass on Linux/);
+    const skipped = structuredClone(e), report = skipped["linux-full"].results;
+    portableModule(skipped, "linux-full", file).assertionResults[1].status = "skipped";
+    report.numPassedTests--; report.numPendingTests++;
+    assert.throws(() => verify(skipped), /Portable case did not pass on Linux/);
+    for (const label of ["linux-full", "macos-full"]) {
+      const duplicate = structuredClone(e), result = duplicate[label].results;
+      const cases = portableModule(duplicate, label, file).assertionResults;
+      cases.push({ ...cases[0], status: "skipped" }); result.numTotalTests++; result.numPendingTests++;
+      assert.throws(() => verify(duplicate), /Duplicate portable test identity/);
+    }
+  }
+  const empty = structuredClone(e), mac = empty["macos-full"].results;
+  for (const a of mac.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults) a.status = "skipped";
+  mac.numPassedTests -= 2; mac.numPendingTests += 2;
+  assert.throws(() => verify(empty), /Portable file did not pass on macOS/);
+});
+test("rejects stale, duplicate, malformed and empty portable classifications", () => {
+  const blob = "1".repeat(40), good = { path: paths[0], blob, reason: "DTO" };
+  const guards = Object.fromEntries(["packages/daynight/src", "packages/daynight/test", "packages/daynight/scripts", "packages/daynight/package.json", "packages/daynight/vitest.config.ts", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/vitest.focused-evidence.config.ts", "patches", ".github/workflows/cli-focused-evidence.yml"].map(path => [path, blob]));
+  guards[".npmrc"] = null as any;
+  const get = (path: string) => path === ".npmrc" ? null : blob;
+  assert.deepEqual(portableFiles({ files: [good], guards }, get), new Set([paths[0]]));
+  assert.throws(() => portableFiles({ files: [good], guards: { ...guards, "packages/daynight/src": "2".repeat(40) } }, get), /Stale classification guard/);
+  assert.throws(() => portableFiles({ files: [good], guards: {} }, get), /guard paths/);
+  assert.throws(() => portableFiles({ files: [good], guards }, path => path === ".github/workflows/cli-focused-evidence.yml" ? "2".repeat(40) : get(path)), /Stale classification guard/);
+  for (const files of [[], [good, good], [{ ...good, path: "test/../outside.test.ts" }], [{ ...good, blob: "2".repeat(40) }], [{ ...good, reason: "" }]]) assert.throws(() => portableFiles({ files, guards }, get));
+});
+test("rejects identity mismatch, dirty sources, unsuccessful step and wrong architecture", () => {
+  for (const [field, value] of Object.entries({ sourceRevision: "d".repeat(40), sourceTree: "d".repeat(40), vitestVersion: "other", pnpmVersion: "11.0.0", prHead: "d".repeat(40), prRef: "other", sourceDirty: true, testStepOutcome: "failure", arch: "x64", nodeVersion: "v22.0.0" })) {
+    const e = fixture(); e["macos-full"].metadata[field] = value; assert.throws(() => verify(e), field);
+  }
+});
+test("rejects missing or duplicate discovery, escaping paths and a stale manifest", () => {
+  for (const change of [
+    (e: any) => e["linux-full"].discovered.pop(),
+    (e: any) => e["linux-full"].discovered.push(e["linux-full"].discovered[0]),
+    (e: any) => e["linux-full"].discovered[0].file = "/outside/test.test.ts",
+    (e: any) => e["linux-full"].discovered = [],
+  ]) { const e = fixture(); change(e); assert.throws(() => verify(e)); }
+  assert.throws(() => verifyFocusedEvidence(fixture(), identity, new Set(["test/absent.test.ts"])), /Stale portable/);
+});
+test("rejects missing, duplicate or overlapping execution and wrong counts", () => {
+  for (const change of [
+    (e: any) => e["windows-focused-1"].results.testResults = [],
+    (e: any) => e["macos-full"].results.testResults.push(e["macos-full"].results.testResults[0]),
+    (e: any) => e["windows-focused-1"].results.testResults[0].name = e["windows-focused-2"].results.testResults[0].name,
+    (e: any) => e["macos-full"].results.numPassedTests++,
+    (e: any) => e["linux-full"].results.success = false,
+  ]) { const e = fixture(); change(e); assert.throws(() => verify(e)); }
+});
+test("rejects changed skip semantics and a skipped native sentinel", () => {
+  const e = fixture(); e["macos-focused"].results.testResults[0].assertionResults[0].status = "passed";
+  e["macos-focused"].results.numPassedTests++; e["macos-focused"].results.numPendingTests--;
+  assert.throws(() => verify(e), /identities or statuses/);
+  const s = fixture(); for (const label of ["macos-full", "macos-focused"]) {
+    const report = s[label].results, a = report.testResults.find((x: any) => x.name.endsWith("local-source-filesystem-darwin.test.ts")).assertionResults[0];
+    a.status = "skipped"; report.numPassedTests--; report.numPendingTests++;
+  }
+  assert.throws(() => verify(s), /sentinel/);
+});
+
+test("distinguishes suite and case names that produce the same fullName", () => {
+  const e = fixture();
+  const a = e["macos-focused"].results.testResults[0].assertionResults[0];
+  a.ancestorTitles = ["portable"]; a.title = "";
+  assert.throws(() => verify(e), /identity/);
+  a.ancestorTitles = ["keeps"]; a.title = "the native thread suspended until its owner resumes and joins it";
+  assert.throws(() => verify(e), /identities or statuses/);
+});

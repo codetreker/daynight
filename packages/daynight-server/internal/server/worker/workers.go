@@ -25,6 +25,9 @@ type workersHandler struct {
 }
 
 type workerService interface {
+	ReviewPullRequests(context.Context, model.Principal, string, model.PageRequest) (service.ReviewPullRequestPage, error)
+	ReviewParticipation(context.Context, model.Principal, string) (model.WorkerReviewParticipation, error)
+	PutReviewParticipation(context.Context, model.Principal, string, string, bool) (model.WorkerReviewParticipation, error)
 	Alias(context.Context, model.Principal, string) (model.WorkerAlias, error)
 	PutAlias(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
 	Report(context.Context, model.Principal, string, model.WorkerReport) (service.WorkerReportResult, error)
@@ -57,33 +60,43 @@ func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult
 	return result
 }
 
-func RegisterRoutes(mux *http.ServeMux, workers workerService, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, workers workerService, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
 	registerRoutes(mux, handler, auth.Require)
 }
 
-func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
+func registerRoutes(mux httpx.RouteRegistrar, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
+	registerRoutesObserved(mux, handler, require, nil)
+}
+
+func registerRoutesObserved(mux httpx.RouteRegistrar, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc, observe func(ScopeRoute)) {
 	logger := handler.logger
+	routes := routeRegistry{mux: mux, observe: observe}
 	base := "/api/v1/me/workers"
-	mux.HandleFunc("GET "+base+"/{workerId}/alias", require(handler.alias))
-	mux.HandleFunc("PUT "+base+"/{workerId}/alias", require(handler.alias))
-	mux.HandleFunc(base+"/{workerId}/alias", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
-	mux.HandleFunc("POST "+base+"/monitoring/query", require(handler.queryMonitoring))
-	mux.HandleFunc(base+"/monitoring/query", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("GET "+base+"/{workerId}/monitoring", require(handler.getMonitoring))
-	mux.HandleFunc("HEAD "+base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT, POST")))
-	mux.HandleFunc("PUT "+base+"/{workerId}/monitoring", require(handler.putMonitoring))
-	mux.HandleFunc("POST "+base+"/{workerId}/monitoring", require(handler.postMonitoring))
-	mux.HandleFunc(base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT, POST")))
-	mux.HandleFunc("GET "+base+"/{workerId}/configuration", require(handler.configuration))
-	mux.HandleFunc("PUT "+base+"/{workerId}/configuration", require(handler.configuration))
-	mux.HandleFunc(base+"/{workerId}/configuration", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
-	mux.HandleFunc("POST "+base+"/{workerId}/report", require(handler.report))
-	mux.HandleFunc(base+"/{workerId}/report", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("GET "+base, require(handler.list))
-	mux.HandleFunc(base, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("GET "+base+"/{workerId}", require(handler.get))
-	mux.HandleFunc(base+"/{workerId}", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("GET "+base+"/{workerId}/review-pull-requests", require(handler.reviewPullRequests), routeReviewRead)
+	routes.handle(base+"/{workerId}/review-pull-requests", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("GET "+base+"/{workerId}/review-participation", require(handler.reviewParticipation), routeRead)
+	routes.handle("PUT "+base+"/{workerId}/review-participation", require(handler.reviewParticipation), routeConfigure)
+	routes.handle(base+"/{workerId}/review-participation", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")), routeFallback)
+	routes.handle("GET "+base+"/{workerId}/alias", require(handler.alias), routeRead)
+	routes.handle("PUT "+base+"/{workerId}/alias", require(handler.alias), routeConfigure)
+	routes.handle(base+"/{workerId}/alias", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")), routeFallback)
+	routes.handle("POST "+base+"/monitoring/query", require(handler.queryMonitoring), routeRead)
+	routes.handle(base+"/monitoring/query", require(httpx.ResourceMethodNotAllowed(logger, "POST")), routeFallback)
+	routes.handle("GET "+base+"/{workerId}/monitoring", require(handler.getMonitoring), routeReadNoHead)
+	routes.handle("HEAD "+base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT, POST")), routeFallback)
+	routes.handle("PUT "+base+"/{workerId}/monitoring", require(handler.putMonitoring), routeProduce)
+	routes.handle("POST "+base+"/{workerId}/monitoring", require(handler.postMonitoring), routeProduce)
+	routes.handle(base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT, POST")), routeFallback)
+	routes.handle("GET "+base+"/{workerId}/configuration", require(handler.configuration), routeRead)
+	routes.handle("PUT "+base+"/{workerId}/configuration", require(handler.configuration), routeConfigure)
+	routes.handle(base+"/{workerId}/configuration", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")), routeFallback)
+	routes.handle("POST "+base+"/{workerId}/report", require(handler.report), routeReport)
+	routes.handle(base+"/{workerId}/report", require(httpx.ResourceMethodNotAllowed(logger, "POST")), routeFallback)
+	routes.handle("GET "+base, require(handler.list), routeRead)
+	routes.handle(base, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("GET "+base+"/{workerId}", require(handler.get), routeRead)
+	routes.handle(base+"/{workerId}", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
 }
 
 func (h *workersHandler) resource(request *http.Request, principal model.Principal) (string, *slog.Logger, error) {
@@ -115,7 +128,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	if err == nil {
 		err = requireToolPaths(capabilities)
 	}
-	if err == nil && capabilities.ArchiveSessions && !configurationAware {
+	if err == nil && (capabilities.ArchiveSessions || capabilities.PlatformTaskMode) && !configurationAware {
 		err = httpx.InvalidInput("Worker extensions require the configuration protocol.")
 	}
 	if err != nil {

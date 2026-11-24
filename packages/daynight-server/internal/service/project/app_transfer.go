@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"log/slog"
 
 	github "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -16,14 +17,18 @@ import (
 // transfer and deletion coordinators for the application composition root.
 type AppProjects struct {
 	*Projects
-	lifecycle store.GitHubProjectLifecycleStore
+	lifecycle          store.GitHubProjectLifecycleStore
+	repositoryStore    store.ProjectRepositoryStore
+	repositoryObserver RepositoryObserver
+	repositoryLogger   *slog.Logger
 }
 
 func NewAppProjects(db interface {
 	database
 	store.GitHubProjectLifecycleStore
 }, engines ...*session.Engine) *AppProjects {
-	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db}
+	repositories, _ := any(db).(store.ProjectRepositoryStore)
+	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db, repositoryStore: repositories, repositoryLogger: slog.Default()}
 }
 
 func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string, input core.TransferInput) (core.TransferReceipt, error) {
@@ -33,6 +38,13 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 	}
 	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
 	defer cancel()
+	access, err := s.Access(ctx, p, id)
+	if err != nil {
+		return core.TransferReceipt{}, err
+	}
+	if err = ownerAdmin(access); err != nil {
+		return core.TransferReceipt{}, err
+	}
 	var result core.TransferReceipt
 	c, err := s.lifecycle.WriteGitHubProjectTransfer(ctx, id, func(scope store.GitHubProjectTransferScope) error {
 		var err error
@@ -41,7 +53,7 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 			return err
 		}
 		if result.Changed {
-			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, false); err != nil {
 				return err
 			}
 			dao := scope.GitHubDAO()

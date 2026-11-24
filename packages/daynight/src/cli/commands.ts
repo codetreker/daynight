@@ -22,7 +22,7 @@ export type CommandRegistration = CommandDefinition & {
 
 export const commands: readonly CommandRegistration[] = [
   { ...assistantTaskDefinition, load: async () => ({ run: (await import("../commands/assistant-task/command.js")).runAssistantTaskCommand }) },
-  { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/commands.js")).runBotCommand }) },
+  { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/index.js")).runBotCommand }) },
   { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
   { ...loginDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLoginCommand }) },

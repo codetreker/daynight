@@ -59,39 +59,38 @@ describe('native session interactions', () => {
       { fieldId: 'flag', label: 'Enabled', type: 'boolean', required: true },
     ] };
     const view = render(<SessionInteractionCard interaction={interaction} enabled onRespond={respond} />);
-    const regions = screen.getByRole('listbox', { name: 'Regions' }) as HTMLSelectElement;
+    const regions = screen.getByRole('group', { name: 'Regions *' });
+    const europe = screen.getByRole('checkbox', { name: 'Europe' });
+    const asia = screen.getByRole('checkbox', { name: 'Asia Pacific' });
     const flag = screen.getByRole('combobox', { name: 'Enabled' });
-    expect(regions).toHaveValue([]);
-    expect(regions.options).toHaveLength(5);
-    expect(regions).not.toBeRequired();
-    expect(regions.parentElement).toHaveAttribute('data-density', 'form');
-    expect(regions.parentElement).toHaveAttribute('data-layout', 'fill');
-    expect(regions.parentElement).toHaveAttribute('data-mode', 'list');
-    expect(regions.parentElement!.querySelector('svg')).toBeNull();
+    expect(regions.querySelectorAll('input')).toHaveLength(5);
     expect(flag.parentElement).toHaveAttribute('data-mode', 'popup');
     fireEvent.submit(screen.getByRole('button', { name: 'Submit' }).closest('form')!);
     expect(respond).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toBeVisible();
-    for (const option of regions.options) option.selected = ['eu', 'ap'].includes(option.value);
-    fireEvent.change(regions);
+    fireEvent.click(asia);
+    fireEvent.click(europe);
+    fireEvent.click(asia);
+    fireEvent.click(asia);
     fireEvent.change(flag, { target: { value: 'false' } });
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(respond).toHaveBeenCalledExactlyOnceWith({ kind: 'form', values: [
       { fieldId: 'regions', value: ['eu', 'ap'] }, { fieldId: 'flag', value: false },
     ] });
-    expect(regions).toBeDisabled();
+    expect(europe).toBeDisabled();
     expect(flag).toBeDisabled();
-    expect(regions.disabled).toBe(false);
-    expect(regions.closest('fieldset')).toBeDisabled();
-    expect(regions).toHaveValue(['eu', 'ap']);
+    expect(europe).toBeChecked();
+    expect(asia).toBeChecked();
     await act(async () => response.reject(new Error('Response unavailable')));
     await screen.findByText('Response unavailable');
-    expect(regions).toBeEnabled();
+    expect(europe).toBeEnabled();
     expect(flag).toHaveValue('false');
-    expect(regions).toHaveValue(['eu', 'ap']);
+    expect(europe).toBeChecked();
+    expect(asia).toBeChecked();
     view.rerender(<SessionInteractionCard interaction={interaction} enabled onRespond={respond} />);
-    expect(screen.getByRole('listbox', { name: 'Regions' })).toBe(regions);
-    expect(regions).toHaveValue(['eu', 'ap']);
+    expect(screen.getByRole('checkbox', { name: 'Europe' })).toBe(europe);
+    expect(europe).toBeChecked();
+    expect(asia).toBeChecked();
     expect(respond).toHaveBeenCalledOnce();
   });
   it.each(['resolved', 'expired'] as const)('keeps %s approval requests collapsed, readable and non-actionable', state => {

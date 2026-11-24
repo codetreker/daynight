@@ -2,6 +2,7 @@ package assistanttask
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,5 +50,38 @@ func TestPagesAndProposalMatchesProjectAllRows(t *testing.T) {
 	data, err := json.Marshal(proposalResultResponse(core.ProposalResult{Proposal: model.AssistantTaskProposal{ID: testID}, RejectedMatches: []model.AssistantTaskProposal{{ID: testOperation, Status: "rejected"}}}))
 	if err != nil || !strings.Contains(string(data), `"rejectedMatches":[{`) || !strings.Contains(string(data), testOperation) {
 		t.Fatalf("matches=%s err=%v", data, err)
+	}
+}
+
+func TestRelatedAppendicesResponseListsItemsWithoutContinuation(t *testing.T) {
+	at := time.Date(2026, 11, 19, 8, 0, 0, 0, time.FixedZone("east", 8*3600))
+	data, err := json.Marshal(relatedAppendicesResponse(model.AssistantTaskRelatedAppendices{ObservedAt: at}))
+	if err != nil || string(data) != `{"items":[],"observedAt":"2026-11-19T00:00:00Z"}` {
+		t.Fatalf("empty related response: %s %v", data, err)
+	}
+	item := model.AssistantTaskAppendix{ID: testID, TaskID: testTask, Text: "Restart", State: "edited", Version: 3, CreatedAt: at, UpdatedAt: at, LastValidatedAt: &at, SuccessCount: 2}
+	response := relatedAppendicesResponse(model.AssistantTaskRelatedAppendices{Items: []model.AssistantTaskAppendix{item}, ObservedAt: at})
+	if len(response.Items) != 1 || !reflect.DeepEqual(response.Items[0], appendixResponse(item)) {
+		t.Fatalf("related items not projected as appendices: %#v", response.Items)
+	}
+}
+
+func TestAppendixResponseOmitsUnusedScopeAndValidation(t *testing.T) {
+	at := time.Date(2026, 11, 19, 8, 0, 0, 0, time.FixedZone("east", 8*3600))
+	base := model.AssistantTaskAppendix{ID: testID, TaskID: testTask, Text: "Restart", State: "active", Version: 2, SourceRecords: []string{}, CreatedAt: at, UpdatedAt: at,
+		Scope: model.AssistantTaskAppendixScope{ProjectIDs: []string{}, EventTypes: []string{}, ItemCategories: []string{}}}
+	data, err := json.Marshal(appendixResponse(base))
+	if err != nil || strings.Contains(string(data), "scope") || strings.Contains(string(data), "validation") {
+		t.Fatalf("unused scope or validation encoded: %s %v", data, err)
+	}
+	scoped := base
+	scoped.Scope = model.AssistantTaskAppendixScope{ItemCategories: []string{"build"}}
+	scoped.SuccessCount, scoped.FailureCount, scoped.LastValidatedAt = 9007199254740993, 0, &at
+	response := appendixResponse(scoped)
+	scoped.Scope.ItemCategories[0] = "changed"
+	data, err = json.Marshal(response)
+	want := `"scope":{"projectIds":[],"eventTypes":[],"itemCategories":["build"]},"validation":{"successCount":"9007199254740993","failureCount":"0","lastValidatedAt":"2026-11-19T00:00:00Z"}}`
+	if err != nil || !strings.HasSuffix(string(data), want) {
+		t.Fatalf("scope or validation encoding: %s %v", data, err)
 	}
 }

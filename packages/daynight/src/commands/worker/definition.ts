@@ -57,8 +57,8 @@ export const workerDefinition: CommandDefinition = {
     details: "Stop worker run first. Recovery uses the original worker lock and never starts an Agent.",
     commands: [{
       name: "recover", description: "Verify or recover a completed Web execution's retained worktree", arguments: task,
-      options: [claim, { ...project, required: true }, { names: ["--worktree-id"], description: "Verify this exact original worktree UUID; omission reads the original journal", value: { name: "worktree-id", kind: "text" } }, { names: ["--confirm"], description: "Remove the verified clean original worktree and retire its manifest" }, help],
-      details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git marker or done Task alone is insufficient.",
+      options: [claim, { ...project, required: true }, { names: ["--worktree-id"], description: "Verify this exact original worktree UUID; omission reads the original journal", value: { name: "worktree-id", kind: "text" } }, { names: ["--confirm"], description: "Remove the verified clean original worktree" }, help],
+      details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git worktree or done Task alone is insufficient.",
     }],
   }, {
     name: "migrate-bot",

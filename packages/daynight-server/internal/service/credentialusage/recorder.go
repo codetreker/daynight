@@ -303,10 +303,15 @@ func (r *Recorder) writeBatch(batch usage.Batch) {
 		err = errors.Join(ErrInvalidCompletion, err)
 	}
 	if outcome != usage.Committed {
-		r.rememberCause(err)
 		_, state := store.DatabaseErrorFacts(err)
 		if validSQLState(state) {
 			failure.SQLState = state
+		}
+		// Only a confirmed rollback of the NOWAIT conflict can recover without
+		// leaving a sticky failure. Cancellation and cleanup failures remain fatal.
+		failure.RecoverableLockConflict = outcome == usage.NotCommitted && failure.Cause == usage.CauseDatabase && state == "55P03" && onlyLockConflict(err, "")
+		if !failure.RecoverableLockConflict {
+			r.rememberCause(err)
 		}
 	}
 	if outcome == usage.Committed && err != nil {
@@ -354,4 +359,37 @@ func validSQLState(s string) bool {
 		}
 	}
 	return true
+}
+
+// onlyLockConflict rejects independent joined failures, including batch close
+// errors, while accepting the driver's repeated report of the same SQLSTATE.
+func onlyLockConflict(err error, inherited string) bool {
+	if err == nil {
+		return false
+	}
+	if transaction, ok := err.(*store.TransactionError); ok && transaction.CleanupFailed {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyLockConflict(child, "") {
+				return false
+			}
+		}
+		return true
+	}
+	if failure, ok := err.(*store.Error); ok && failure.DatabaseFailure && failure.SQLState != "" {
+		inherited = failure.SQLState
+	}
+	if state, ok := err.(interface{ SQLState() string }); ok {
+		inherited = state.SQLState()
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok && wrapped.Unwrap() != nil {
+		return onlyLockConflict(wrapped.Unwrap(), inherited)
+	}
+	return inherited == "55P03"
 }

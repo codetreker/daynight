@@ -109,9 +109,10 @@ func waitDirectLock(t *testing.T, ctx context.Context, db *postgres.Store, like 
 }
 
 func TestDirectAndTeamJoinBothLockOrders(t *testing.T) {
+	_, database, _, _ := projectService(t)
 	for _, teamFirst := range []bool{true, false} {
-		t.Run(map[bool]string{true: "team first", false: "direct first"}[teamFirst], func(t *testing.T) {
-			f := newMembershipFixture(t)
+		if !t.Run(map[bool]string{true: "team first", false: "direct first"}[teamFirst], func(t *testing.T) {
+			f := membershipFixtureWithStore(t, database)
 			owner, target := f.user(t), f.user(t)
 			team := newTestTeam(t, teamservice.NewTeams(f.database), owner, "Lock ordering")
 			p, err := f.projects.Create(context.Background(), owner, core.CreateProject{ExpectedUserID: owner.UserID, Name: "Lock ordering", RepoURL: "https://example.test/" + uuid.NewString(), TeamID: &team.ID})
@@ -210,7 +211,9 @@ func TestDirectAndTeamJoinBothLockOrders(t *testing.T) {
 			if err != nil || got.Added || got.Participant.InheritedFrom == nil || (got.Participant.DirectGrant != nil) == teamFirst {
 				t.Fatalf("final %+v %v", got, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 

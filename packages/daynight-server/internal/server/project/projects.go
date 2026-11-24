@@ -19,7 +19,7 @@ type projectHandler struct {
 }
 
 // RegisterRoutes mounts the authenticated Project endpoints.
-func RegisterRoutes(mux *http.ServeMux, projects ProjectOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, projects ProjectOperations, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &projectHandler{projects: projects, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))
@@ -33,6 +33,10 @@ func RegisterRoutes(mux *http.ServeMux, projects ProjectOperations, auth RouteAu
 	mux.HandleFunc("/api/v1/projects/{projectId}/transfer-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/transfer", auth.Require(handler.transfer))
 	mux.HandleFunc("/api/v1/projects/{projectId}/transfer", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/repository/preview", auth.Require(handler.repositoryPreview))
+	mux.HandleFunc("/api/v1/projects/{projectId}/repository/preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/repository", auth.Require(handler.setRepository))
+	mux.HandleFunc("/api/v1/projects/{projectId}/repository", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/settings", auth.Require(handler.settings))
 	mux.HandleFunc("/api/v1/projects/{projectId}/settings", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("/api/v1/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))

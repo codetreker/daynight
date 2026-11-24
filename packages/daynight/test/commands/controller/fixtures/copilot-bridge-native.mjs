@@ -41,6 +41,7 @@ const server = createServer(socket => {
         respond(id, {});
       }
       else if (method === "session.options.update" || method === "session.destroy" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
+      else if (method === "session.interruptMainTurn") respond(id, { interrupted: true });
       else if (method === "session.model.getCurrent") respond(id, { modelId: "fixture-model" });
       else if (method === "session.provider.getEndpoint") {
         assert.equal(params.modelId, undefined);
@@ -64,6 +65,10 @@ const server = createServer(socket => {
         if (typeof params.message === "string" && params.message.startsWith('{"kind":"source-permission"')) {
           const source = JSON.parse(params.message);
           write({ method: "session.event", params: { sessionId: "fixture-session", event: { type: "permission.requested", id: "source-requested", data: { requestId: "source-request", permissionRequest: { kind: "read", path: source.path, intention: source.intention } } } } }); respond(id, {});
+        }
+        else if (params.message === "model-route-change") {
+          write({ method: "session.event", params: { sessionId: "fixture-session", event: { type: "session.mode_changed", id: "mode-change", data: {} } } });
+          respond(id, { message: params.message, timestamp: 1 });
         }
         else if (params.message === "emit") { write({ method: "session.event", params: { sessionId: "fixture-session", event } }); respond(id, {}); }
         else if (params.message === "malformed") socket.write("Content-Length: 134217729\r\n\r\n");

@@ -1,20 +1,150 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { migrateLegacyBot, readMigratedBotHistory } from "../../../src/commands/worker/bots/migration.js";
+import { migrateLegacyBot, readMigratedBotHistory, readMigratedBotRecoveryBinding } from "../../../src/commands/worker/bots/migration.js";
 import * as migrationFiles from "../../../src/commands/worker/bots/migration-files.js";
 import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
-import { inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
-import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
+import { currentSqliteVersion, inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
+import { cleanupMigrationResources, cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
-afterEach(cleanupMigrations);
+// A Vitest timeout does not stop the case; keep its resources isolated until it settles.
+let activeMigrationCase: { controller: AbortController; settled: Promise<void>; resources: (() => void)[] } | undefined;
+const trackMigrationCase = (run: (signal: AbortSignal, resources: (() => void)[]) => Promise<void>): Promise<void> => {
+  const controller = new AbortController();
+  const resources: (() => void)[] = [];
+  const result = Promise.resolve().then(() => run(controller.signal, resources));
+  activeMigrationCase = { controller, resources, settled: result.then(() => {}, () => {}) };
+  return result;
+};
+
+afterEach(async () => {
+  const active = activeMigrationCase;
+  activeMigrationCase = undefined;
+  cleanupMigrations();
+  if (active !== undefined) {
+    active.controller.abort();
+    await active.settled;
+    cleanupMigrationResources(active.resources);
+  }
+});
+
+const previousJournalFixture = async (version: 16 | 17 | 18 | 19 = 16, resources?: (() => void)[]) => {
+  const fixture = await migrationFixture(version === 19 ? { originalTicketVersion: 2 } : {}, resources);
+  const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
+  restoreControllerJournalVersion(journal, version);
+  expect(inspectSqlite(journal, controllerJournalFormat)).toEqual({ kind: "outdated", version });
+  journal.close();
+  return fixture;
+};
 
 describe("legacy Bot storage migration", () => {
+  it.each([16, 17, 18, 19] as const)("preserves checksummed v%i history and recovery copies with the current reader", version => trackMigrationCase(async (signal, resources) => {
+    const f = await previousJournalFixture(version, resources), original = readFileSync(f.record.intent!.journalPath);
+    signal.throwIfAborted();
+    expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
+    const originalTicket = readFileSync(f.record.intent!.ticketPath);
+    const manifest = await migrateLegacyBot({ ...f.input, signal }), paths = resolveBotPaths(f.stateDirectory, f.botId);
+    expect(readFileSync(path.join(paths.directory, manifest.ticket!))).toEqual(originalTicket);
+    expect(readFileSync(f.record.intent!.journalPath)).toEqual(original);
+    const copies = new Map(manifest.files.map(file => {
+      const destination = path.join(paths.directory, file.destination);
+      return [destination, readFileSync(destination)] as const;
+    }));
+    copies.set(path.join(paths.directory, "migration.json"), readFileSync(path.join(paths.directory, "migration.json")));
+    rmSync(path.dirname(f.record.intent!.journalPath), { recursive: true });
+    rmSync(f.record.intent!.ticketPath);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(readMigratedBotHistory(f.input)).toMatchObject({ snapshot: f.snapshot, entries: [{ ...f.entry, entrySeq: "1" }] });
+      expect(readMigratedBotRecoveryBinding(f.input)).toEqual({
+        sessionId: f.record.intent!.sessionId, testExecutionId: f.record.intent!.executionId, nativeSessionId: f.snapshot.nativeSessionId,
+      });
+      migrationFiles.verifyMigrationFiles(f.stateDirectory, manifest);
+      for (const [file, bytes] of copies) expect(readFileSync(file), file).toEqual(bytes);
+    }
+    const copiedJournal = path.join(paths.directory, manifest.journal!);
+    expect(() => readCurrentControllerSnapshot(copiedJournal, f.ticket)).toThrow(/current journal format/);
+  }), 15_000);
+
+  it.each(["future", "unversioned", "schema", "ticket"] as const)("refuses a protected v16 copy with invalid %s evidence", async conflict => {
+    const f = await previousJournalFixture(), manifest = await migrateLegacyBot(f.input);
+    const paths = resolveBotPaths(f.stateDirectory, f.botId), journal = path.join(paths.directory, manifest.journal!);
+    const db = f.openRaw(journal, false);
+    if (conflict === "future") db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
+    else if (conflict === "unversioned") db.pragma("user_version=0");
+    else if (conflict === "schema") db.exec("DROP TABLE timeline_entries");
+    else db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
+    db.close();
+    const altered = { ...manifest, files: manifest.files.map(file => file.destination === manifest.journal ? { ...file, ...migrationFiles.migrationFileDigest(journal) } : file) };
+    writeFileSync(path.join(paths.directory, "migration.json"), JSON.stringify(altered), { mode: 0o600 });
+    const bytes = readFileSync(journal);
+    expect(() => readMigratedBotHistory(f.input)).toThrow();
+    expect(() => readMigratedBotRecoveryBinding(f.input)).toThrow();
+    expect(readFileSync(journal)).toEqual(bytes);
+  });
+
+  it("verifies a committed Bot migration against its retained Worker v20 authority", async () => {
+    const f = await migrationFixture();
+    const manifest = await migrateLegacyBot(f.input);
+    const source = f.openRaw(f.legacyDatabaseFile, false);
+    const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+    source.exec("DROP TABLE claim_tool_reservations");
+    source.exec(steps.find(step => step.version === 16)!.sql);
+    source.exec(steps.find(step => step.version === 20)!.sql);
+    source.pragma("user_version=20");
+    expect(await migrateLegacyBot(f.input)).toEqual(manifest);
+    expect(source.pragma("user_version", { simple: true })).toBe(20);
+    source.close();
+  });
+
+  it("reads the native recovery binding from the verified copy after original Controller files disappear", async () => {
+    const f = await migrationFixture();
+    expect(f.record.intent!.nativeSessionId).toBeNull();
+    const manifest = await migrateLegacyBot(f.input);
+    rmSync(path.dirname(f.record.intent!.journalPath), { recursive: true });
+    rmSync(f.record.intent!.ticketPath);
+    expect(readMigratedBotRecoveryBinding(f.input)).toEqual({
+      sessionId: f.record.intent!.sessionId, testExecutionId: f.record.intent!.executionId, nativeSessionId: f.snapshot.nativeSessionId,
+    });
+    expect(JSON.parse(readFileSync(path.join(resolveBotPaths(f.stateDirectory, f.botId).directory, "migration.json"), "utf8"))).toEqual(manifest);
+  });
+
+  it("retains an explicitly null native binding only for a proven unsubmitted migration without a journal", async () => {
+    const f = await migrationFixture({ submitted: false, nativeSessionId: null });
+    rmSync(f.record.intent!.journalPath);
+    await migrateLegacyBot(f.input);
+    expect(readMigratedBotRecoveryBinding(f.input)).toEqual({
+      sessionId: f.record.intent!.sessionId, testExecutionId: f.record.intent!.executionId, nativeSessionId: null,
+    });
+  });
+
+  it.each(["sessionId", "executionGeneration", "nativeSessionId"] as const)("rejects a copied recovery snapshot with conflicting %s", async field => {
+    const f = await migrationFixture(), manifest = await migrateLegacyBot(f.input);
+    const directory = resolveBotPaths(f.stateDirectory, f.botId).directory;
+    const journal = path.join(directory, manifest.journal!);
+    const db = f.openRaw(journal, false);
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...f.snapshot, [field]: field === "executionGeneration" ? "2" : id(99) }));
+    db.close();
+    const altered = { ...manifest, files: manifest.files.map(file => file.destination === manifest.journal ? { ...file, ...migrationFiles.migrationFileDigest(journal) } : file) };
+    writeFileSync(path.join(directory, "migration.json"), JSON.stringify(altered), { mode: 0o600 });
+    expect(() => readMigratedBotRecoveryBinding(f.input)).toThrow();
+  });
+
+  it("refuses a missing copied journal instead of falling back to the original Controller", async () => {
+    const f = await migrationFixture(), manifest = await migrateLegacyBot(f.input);
+    rmSync(path.join(resolveBotPaths(f.stateDirectory, f.botId).directory, manifest.journal!));
+    expect(existsSync(f.record.intent!.journalPath)).toBe(true);
+    expect(() => readMigratedBotRecoveryBinding(f.input)).toThrow();
+  });
+
   it.each([null, "prepared", "copied"] as const)("preserves mixed alias ownership after legacy recovery (interrupted=%s)", async interrupted => {
     const f = await recoveredAliasFixture();
     const paths = resolveBotPaths(f.stateDirectory, f.botId);
@@ -206,7 +336,7 @@ describe("legacy Bot storage migration", () => {
     const botProcess = createBotProcess({ homeDirectory: f.homeDirectory, packageDirectory: f.homeDirectory,
       store: local.store, executions: local.executions, recoveryLimit: 3, canAdmitNewExecution: () => true,
       sessionApi: { grant } as never, dependencies: { launch },
-      jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },
+      jobLeases: { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },
     });
     try {
       const current = local.store.get(owner, f.botId)!;

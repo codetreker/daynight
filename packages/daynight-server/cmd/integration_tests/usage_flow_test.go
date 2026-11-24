@@ -4,6 +4,8 @@ package main
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,35 @@ import (
 )
 
 func TestServerAPIUsageNormalFlow(t *testing.T) {
+	t.Run("without pagination or S2S keys", func(t *testing.T) {
+		f := newFixtureConfigured(t, false, nil, "DAYNIGHT_S2S_SHARED_KEY=")
+		plain := &http.Client{Timeout: 5 * time.Second}
+		t.Cleanup(plain.CloseIdleConnections)
+		resp, _ := usageRequest(t, f, plain, http.MethodGet, "/api/usage/v1/capabilities", "", "", "", http.StatusUnauthorized)
+		if resp.Header.Get("X-Request-ID") == "" {
+			t.Fatal("unauthenticated capability response lacks request ID")
+		}
+		resp, data := usageRequest(t, f, f.client, http.MethodGet, "/api/usage/v1/capabilities", "", "", "", http.StatusOK)
+		capabilities := usageDecode[struct {
+			Protocol     string `json:"protocol"`
+			WriteEnabled bool   `json:"writeEnabled"`
+			TaskSummary  bool   `json:"taskSummary"`
+			Aggregates   bool   `json:"aggregates"`
+		}](t, data)
+		if resp.Header.Get("X-Request-ID") == "" || capabilities.Protocol != core.Protocol || capabilities.WriteEnabled || !capabilities.TaskSummary || !capabilities.Aggregates {
+			t.Fatalf("unexpected usage capabilities: %+v", capabilities)
+		}
+		project := createProject(t, f, "Usage without keys")
+		task := createTask(t, f, project, "Empty usage", nil)
+		summary := requestJSON[model.UsageSummary](t, f, http.MethodGet, "/api/projects/"+project.ID+"/tasks/"+task.ID+"/usage/v1/summary", nil, http.StatusOK)
+		if summary.MeasurementRecords != "0" {
+			t.Fatal("new task has unexpected measurements")
+		}
+	})
+	t.Run("report and paginate", usageReportingFlow)
+}
+
+func usageReportingFlow(t *testing.T) {
 	// This is synthetic protocol evidence, not Provider qualification.
 	profile := "copilot-event-1.0.11-v1"
 	version := "1.0.11+1.0.105"
@@ -80,9 +111,59 @@ func TestServerAPIUsageNormalFlow(t *testing.T) {
 		t.Fatal(summary)
 	}
 	f.request(t, "GET", summaryURL, "", nil, 304, http.Header{"If-None-Match": {`"` + summary.ETag + `"`}})
-	page := requestJSON[app.RecordsPage](t, f, "GET", "/api/projects/"+project.ID+"/tasks/"+task.ID+"/usage/v1/records?kind=measurement&limit=100", nil, 200)
-	if len(page.Items) != 1 || core.Value(page.Items[0].StateID) != stateID {
-		t.Fatal(page)
+	// More than one result exercises continuation through the real HTTP and SQL path.
+	keys := map[string]bool{event["sourceKey"].(string): true}
+	for i := 0; i < 2; i++ {
+		next := make(map[string]any, len(event))
+		for k, v := range event {
+			next[k] = v
+		}
+		next["eventId"] = uuid.NewString()
+		next["sourceKey"] = "copilot-event-v1:" + uuid.NewString()
+		keys[next["sourceKey"].(string)] = true
+		ack := requestJSON[app.BatchResult](t, &grantFixture, "POST", "/api/usage/v1/states/"+stateID+"/batches", map[string]any{"protocol": core.Protocol, "batchId": uuid.NewString(), "events": []any{next}}, 200)
+		if len(ack.Results) != 1 || ack.Results[0].Outcome != "inserted" {
+			t.Fatal("additional measurement was not inserted")
+		}
+	}
+	path := "/api/projects/" + project.ID + "/tasks/" + task.ID + "/usage/v1/records?kind=measurement&limit=1"
+	cursor := ""
+	var lastTime time.Time
+	lastID := ""
+	snapshot := ""
+	for i := 0; i < 3; i++ {
+		pagePath := path
+		if cursor != "" {
+			pagePath += "&cursor=" + url.QueryEscape(cursor)
+		}
+		resp, data := usageRequest(t, f, f.client, http.MethodGet, pagePath, "", "", "", http.StatusOK)
+		page := usageDecode[app.RecordsPage](t, data)
+		if resp.Header.Get("X-Request-ID") == "" || len(page.Items) != 1 || core.Value(page.Items[0].StateID) != stateID {
+			t.Fatal("measurement page has incorrect identity or request ID")
+		}
+		item := page.Items[0]
+		key := core.Value(item.SourceKey)
+		if !keys[key] || i > 0 && (item.CreatedAt.Before(lastTime) || item.CreatedAt.Equal(lastTime) && item.ID <= lastID) {
+			t.Fatal("measurement pages duplicated, omitted or reordered a record")
+		}
+		delete(keys, key)
+		lastTime, lastID = item.CreatedAt, item.ID
+		if i == 0 {
+			snapshot = page.SnapshotToken
+		} else if page.SnapshotToken != snapshot {
+			t.Fatal("snapshot changed between pages")
+		}
+		if i < 2 {
+			if page.NextCursor == nil || *page.NextCursor == "" || strings.Contains(*page.NextCursor, ".") {
+				t.Fatal("expected an unsigned continuation cursor")
+			}
+			cursor = *page.NextCursor
+		} else if page.NextCursor != nil {
+			t.Fatal("last measurement page has a continuation cursor")
+		}
+	}
+	if len(keys) != 0 {
+		t.Fatal("measurement pages did not contain all inserted records")
 	}
 	after := requestJSON[api.Task](t, f, "GET", taskPath(task), nil, 200)
 	if before.Version != after.Version || before.UpdatedAt != after.UpdatedAt {

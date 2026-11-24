@@ -37,7 +37,7 @@ import (
 
 // The process uses its production fixed-origin client through a controlled TLS
 // proxy. This keeps the complete server, worker and database path in the flow.
-func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) {
+func githubIntegrationRemote(t *testing.T, commits reviewerFixtureCommits) (*githubFixtureConfig, func(string), func(string), func(string), func(string)) {
 	t.Helper()
 	dir := filepath.Join(integrationRunRoot(t), "github-fixture")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -71,7 +71,14 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 	}
 	var mu sync.Mutex
 	title := "Initial PR"
+	firstBase := "trunk"
+	secondBase := "release"
+	secondState := "open"
+	secondRevision := 0
 	setTitle := func(v string) { mu.Lock(); title = v; mu.Unlock() }
+	setFirstBase := func(v string) { mu.Lock(); firstBase = v; mu.Unlock() }
+	setSecondBase := func(v string) { mu.Lock(); secondBase = v; mu.Unlock() }
+	setSecondState := func(v string) { mu.Lock(); secondState = v; secondRevision++; mu.Unlock() }
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -81,24 +88,55 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 			fmt.Fprint(w, `[{"id":99,"account":{"login":"example"}}]`)
 		case "/app/installations/99":
 			fmt.Fprint(w, `{"id":99,"suspended_at":null}`)
-		case "/repos/example/integration/installation":
+		case "/repos/example/integration/installation", "/repos/example/replacement/installation":
 			fmt.Fprint(w, `{"id":99,"account":{"login":"example"}}`)
 		case "/app/installations/99/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"token":"test","expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 		case "/repos/example/integration":
-			fmt.Fprint(w, `{"id":42,"full_name":"example/integration","private":false}`)
+			fmt.Fprint(w, `{"id":42,"full_name":"example/integration","private":false,"default_branch":"trunk"}`)
+		case "/repos/example/replacement":
+			fmt.Fprint(w, `{"id":43,"full_name":"example/replacement","private":false,"default_branch":"trunk"}`)
+		case "/repos/example/replacement/pulls":
+			fmt.Fprint(w, `[]`)
 		case "/installation/repositories":
-			fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"example/integration","private":false}]}`)
-		case "/repos/example/integration/pulls", "/repos/example/integration/pulls/1":
+			fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"example/integration","private":false,"default_branch":"trunk"},{"id":43,"full_name":"example/replacement","private":false,"default_branch":"trunk"}]}`)
+		case "/repos/example/integration/pulls", "/repos/example/integration/pulls/1", "/repos/example/integration/pulls/2":
 			mu.Lock()
-			current := title
+			current, firstBranch, second, state, revision := title, firstBase, secondBase, secondState, secondRevision
 			mu.Unlock()
-			pr := map[string]any{"number": 1, "id": 101, "html_url": "https://github.com/example/integration/pull/1", "title": current, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": "abc", "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
-			if r.URL.Path == "/repos/example/integration/pulls/1" {
-				_ = json.NewEncoder(w).Encode(pr)
-			} else {
-				_ = json.NewEncoder(w).Encode([]any{pr})
+			pull := func(number, id int, name, base string) map[string]any {
+				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "sha": commits.base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": commits.head, "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
+			}
+			first, other := pull(1, 101, current, firstBranch), pull(2, 102, "Second PR", second)
+			other["draft"] = true
+			if revision > 0 {
+				other["updated_at"] = fmt.Sprintf("2026-01-%02dT00:00:00Z", revision+2)
+			}
+			if state != "open" {
+				other["state"] = "closed"
+				other["closed_at"] = "2026-01-03T00:00:00Z"
+				if state == "merged" {
+					other["merged_at"] = "2026-01-05T00:00:00Z"
+				}
+			}
+			switch r.URL.Path {
+			case "/repos/example/integration/pulls/1":
+				_ = json.NewEncoder(w).Encode(first)
+			case "/repos/example/integration/pulls/2":
+				_ = json.NewEncoder(w).Encode(other)
+			default:
+				page := []any{first}
+				if state == "open" || r.URL.Query().Get("state") == "all" {
+					page = append(page, other)
+				}
+				if r.URL.Query().Get("direction") == "desc" && len(page) == 2 {
+					page[0], page[1] = page[1], page[0]
+				}
+				if r.URL.Query().Get("per_page") == "1" && len(page) > 1 {
+					page = page[:1]
+				}
+				_ = json.NewEncoder(w).Encode(page)
 			}
 		default:
 			http.Error(w, "unexpected GitHub request", http.StatusNotFound)
@@ -131,11 +169,12 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 		<-done
 	}))
 	t.Cleanup(proxy.Close)
-	return &githubFixtureConfig{privateKey: keyFile, caFile: caFile, proxyURL: proxy.URL}, setTitle
+	return &githubFixtureConfig{privateKey: keyFile, caFile: caFile, proxyURL: proxy.URL}, setTitle, setFirstBase, setSecondBase, setSecondState
 }
 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
-	config, change := githubIntegrationRemote(t)
+	commits := prepareReviewerFixtureGit(t)
+	config, change, changeFirstBase, changeSecondBase, changeSecondState := githubIntegrationRemote(t, commits)
 	f := newFixtureConfigured(t, false, config)
 	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
@@ -172,16 +211,16 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if status.SyncEnabled || !status.ServiceAvailable || !status.CanManageConnection {
 		t.Fatalf("initial: %+v", status)
 	}
-	connect := func(ownershipVersion int64, current api.GitHubProjectAppStatus, selected api.GitHubTeamGrant) api.GitHubProjectAppStatus {
+	connect := func(ownershipVersion int64, current api.GitHubProjectAppStatus, selected api.GitHubTeamGrant, repositoryID string) api.GitHubProjectAppStatus {
 		t.Helper()
 		selection := url.Values{"appResourceId": {appID}, "appVersion": {app.Version}, "grantId": {selected.ID}, "ownershipVersion": {strconv.FormatInt(ownershipVersion, 10)}}
 		candidate := requestJSON[api.GitHubInstallationCandidate](t, f, http.MethodGet, base+"/github/installation?"+selection.Encode(), nil, http.StatusOK)
-		if candidate.Installation.ID != "99" || candidate.Repository.ID != "42" {
+		if candidate.Installation.ID != "99" || candidate.Repository.ID != repositoryID {
 			t.Fatalf("discovery: %+v", candidate)
 		}
 		return requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodPost, base+"/github/connect", map[string]any{"version": current.Version, "ownershipVersion": strconv.FormatInt(ownershipVersion, 10), "appResourceId": appID, "appVersion": app.Version, "grantId": selected.ID, "installationId": candidate.Installation.ID}, http.StatusOK)
 	}
-	status = connect(project.Ownership.Version, status, currentGrant)
+	status = connect(project.Ownership.Version, status, currentGrant, "42")
 	if status.SyncEnabled || status.Connection != "connected" || status.Poll.NextAttemptAt != nil {
 		t.Fatalf("connected: %+v", status)
 	}
@@ -196,9 +235,9 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
-			page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
+			page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
 			current := requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
-			if len(page.Items) == 1 && page.Items[0].Title == want && !current.Initializing && current.Poll.LastSuccessAt != nil {
+			if len(page.Items) == 2 && page.Items[1].Title == want && !current.Initializing && current.Poll.LastSuccessAt != nil {
 				return
 			}
 			select {
@@ -209,36 +248,52 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 	}
 	waitTitle("Initial PR")
+	changeRepository := func(target string) {
+		t.Helper()
+		preview := requestJSON[api.RepositoryPreview](t, f, http.MethodPost, base+"/repository/preview", map[string]any{"repoUrl": target, "expectedUserId": f.userID}, http.StatusOK)
+		receipt := requestJSON[api.RepositoryReceipt](t, f, http.MethodPatch, base+"/repository", map[string]any{
+			"repoUrl": target, "expectedUserId": f.userID, "repositoryVersion": preview.RepositoryVersion,
+			"ownershipVersion": preview.OwnershipVersion, "classification": preview.Classification,
+			"targetGitHubRepositoryId": preview.TargetGitHubRepositoryID, "treatUnverifiedAsSwitch": preview.Classification == "unverified",
+		}, http.StatusOK)
+		if !receipt.Changed || !receipt.BindingsInvalidated || receipt.RepoURL != target {
+			t.Fatalf("repository switch: %+v", receipt)
+		}
+	}
+	serverAPIReviewAssignmentFlow(t, f, project.ID, commits, func() {
+		changeSecondBase("trunk")
+		sendPullWebhook(t, f, appBase, 2)
+	}, func(branch string) {
+		changeFirstBase(branch)
+		sendPullWebhook(t, f, appBase, 1)
+	}, func(state string) {
+		changeSecondState(state)
+		sendPullWebhook(t, f, appBase, 2)
+	}, func(restore bool) {
+		repositoryID := "43"
+		if !restore {
+			changeRepository("https://github.com/example/replacement")
+		} else {
+			changeRepository("https://github.com/example/integration")
+			repositoryID = "42"
+		}
+		status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
+		status = connect(project.Ownership.Version, status, currentGrant, repositoryID)
+		status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodPatch, base+"/github/sync", map[string]any{"version": status.Version, "syncEnabled": true}, http.StatusOK)
+		if restore {
+			waitTitle("Initial PR")
+		}
+	})
 	change("Updated by webhook")
-	body := []byte(`{"installation":{"id":99},"repository":{"id":42},"number":1}`)
-	mac := hmac.New(sha256.New, []byte("integration-only-secret"))
-	_, _ = mac.Write(body)
-	request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+appBase+"/webhook", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	request.Header.Set("X-GitHub-Event", "pull_request")
-	request.Header.Set("X-GitHub-Delivery", uuid.NewString())
-	response, err := f.client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, readErr := io.ReadAll(response.Body)
-	if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
-		t.Fatalf("webhook response read: %v %v", readErr, closeErr)
-	}
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("webhook response: %d %s", response.StatusCode, data)
-	}
+	sendPullWebhook(t, f, appBase, 1)
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		current := requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
-		page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-		if current.Webhook.LastSuccessAt != nil && len(page.Items) == 1 && page.Items[0].Title == "Updated by webhook" {
+		page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
+		if current.Webhook.LastSuccessAt != nil && len(page.Items) == 2 && page.Items[1].Title == "Updated by webhook" {
 			break
 		}
 		select {
@@ -253,8 +308,8 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("disable: %+v", status)
 	}
 	change("Updated while off")
-	page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated by webhook" {
+	page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated by webhook" {
 		t.Fatalf("retained: %+v", page)
 	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodPatch, base+"/github/sync", map[string]any{"version": status.Version, "syncEnabled": true}, http.StatusOK)
@@ -295,10 +350,18 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err = tx.Exec(f.context, `UPDATE project_github SET enabled=true, sync_enabled=true, app_id=13, installation_id=99, app_resource_id=NULL, team_grant_id=NULL, credential_version=NULL, installation_account_login='example', access_state='available' WHERE project_id=$1`, project.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version`); err != nil {
+		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity`); err != nil {
+		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_inbox_receipts, assistant_task_inboxes;
+			DROP INDEX assistant_task_events_inbound_settled;
+			ALTER TABLE assistant_task_events DROP COLUMN settled_at`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity, DROP COLUMN repository_version`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_state_number, project_pull_requests_author_number;
@@ -306,7 +369,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			ALTER TABLE project_pull_requests DROP COLUMN repository_id;
 			ALTER TABLE project_pull_requests ADD PRIMARY KEY (project_id,number);
 			CREATE INDEX project_pull_requests_state_number ON project_pull_requests (project_id,state,number DESC);
-			ALTER TABLE project_github DROP COLUMN legacy_repository_id;
+			ALTER TABLE project_github DROP COLUMN legacy_repository_id, DROP COLUMN repository_default_branch;
 			DROP TABLE project_github_repositories`); err != nil {
 			t.Fatal(err)
 		}
@@ -328,7 +391,61 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE task_dependencies DROP COLUMN dependency_type, DROP COLUMN goal_edge_id`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93)`); err != nil || result.RowsAffected() != 15 {
+		if _, err := tx.Exec(f.context, `DROP TABLE bot_recovery_operations, bot_recovery`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_task_records DROP COLUMN outcome, DROP COLUMN action_record_id`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE webhook_events DROP COLUMN actor_kind, DROP COLUMN actor_user_id, DROP COLUMN actor_bot_id`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_item_closures; ALTER TABLE assistant_task_items DROP COLUMN opened_at, DROP COLUMN closed_at`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `DROP INDEX webhook_endpoints_live_client_key_idx; ALTER TABLE webhook_endpoints DROP COLUMN client_key`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `DROP INDEX task_properties_worker_active_claim_idx`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode; DROP INDEX sessions_user_created_id; ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, `CREATE OR REPLACE VIEW task_resource_rows AS
+			SELECT t.id, t.project_id, t.title, t.description, t.status, t.version,
+			       t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents,
+			       t.required_platform, t.deleted_at, t.assigned_to, t.cancelled_at,
+			       t.type, t.parent_id, p.type AS parent_type, p.deleted_at AS parent_deleted_at,
+			       COALESCE(t.deleted_at, CASE WHEN t.type = 'task' AND p.type = 'goal' THEN p.deleted_at END) AS effective_deleted_at
+			FROM tasks t
+			LEFT JOIN tasks p ON p.project_id = t.project_id AND p.id = t.parent_id;
+			ALTER TABLE tasks DROP COLUMN ancestor_deleted_at`); err != nil {
+			t.Fatal(err)
+		}
+		// Restore the original 030 table before replaying its later retirement.
+		stepsSQL, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations", "030_task_steps.sql"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, string(stepsSQL)); err != nil {
+			t.Fatal(err)
+		}
+		// The ledger must stay an ordered prefix, so a later data-only backfill
+		// is withdrawn here too even though it reconstructs no schema.
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 48 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -338,16 +455,76 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if f.origin != origin || f.callbackURL != callback {
 		t.Fatal("public origin or gateway callback changed after restart")
 	}
+	db, err := pgxpool.New(f.context, f.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var repositoryVersion int64
+	var migrationCount int
+	var descriptionColumns int
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('personal_access_tokens','oauth_grants') AND column_name='description'`).Scan(&descriptionColumns); err != nil || descriptionColumns != 2 {
+		t.Fatalf("credential description migration: columns=%d error=%v", descriptionColumns, err)
+	}
+	if err := db.QueryRow(f.context, `SELECT repository_version,(SELECT count(*) FROM schema_migrations WHERE version=95) FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion, &migrationCount); err != nil || repositoryVersion != 1 || migrationCount != 1 {
+		t.Fatalf("upgraded repository version: version=%d migration count=%d error=%v", repositoryVersion, migrationCount, err)
+	}
+	var activityColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at'), (SELECT count(*) FROM schema_migrations WHERE version=118)`).Scan(&activityColumn, &migrationCount); err != nil || !activityColumn || migrationCount != 1 {
+		t.Fatalf("upgraded browser session activity: column=%t migration count=%d error=%v", activityColumn, migrationCount, err)
+	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("upgraded Step Webhook retirement: migration count=%d error=%v", migrationCount, err)
+	}
+	var managementColumns int
+	var managementIndex bool
+	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=120)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
+		t.Fatalf("upgraded browser session management: columns=%d index=%t migration count=%d error=%v", managementColumns, managementIndex, migrationCount, err)
+	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=121`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("upgraded Worker platform task mode: migration count=%d error=%v", migrationCount, err)
+	}
+	var ancestorVisibilityColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='ancestor_deleted_at'), (SELECT count(*) FROM schema_migrations WHERE version=123)`).Scan(&ancestorVisibilityColumn, &migrationCount); err != nil || !ancestorVisibilityColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Task ancestor visibility: column=%t migration count=%d error=%v", ancestorVisibilityColumn, migrationCount, err)
+	}
+	var historyPolicyColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Session history policy: column=%t migration count=%d error=%v", historyPolicyColumn, migrationCount, err)
+	}
+	var archiveUploadColumns int
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name IN ('upload_version','successor_file_id','terminal_error')`).Scan(&archiveUploadColumns); err != nil || archiveUploadColumns != 3 {
+		t.Fatalf("upgraded archive upload columns: count=%d error=%v", archiveUploadColumns, err)
+	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=116`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("archive upload migration ledger: count=%d error=%v", migrationCount, err)
+	}
+	var stagingMigration bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=122) AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&stagingMigration); err != nil || !stagingMigration {
+		t.Fatalf("single staging migration: applied=%t error=%v", stagingMigration, err)
+	}
+	var onlineModeColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='online_mode'), (SELECT count(*) FROM schema_migrations WHERE version=117)`).Scan(&onlineModeColumn, &migrationCount); err != nil || !onlineModeColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Session online mode: column=%t migration count=%d error=%v", onlineModeColumn, migrationCount, err)
+	}
+	var assignmentTable bool
+	if err := db.QueryRow(f.context, `SELECT to_regclass('project_pr_review_assignments') IS NOT NULL,(SELECT count(*) FROM schema_migrations WHERE version=96)`).Scan(&assignmentTable, &migrationCount); err != nil || !assignmentTable || migrationCount != 1 {
+		t.Fatalf("upgraded review assignment: table=%t migration count=%d error=%v", assignmentTable, migrationCount, err)
+	}
+	var assignmentIndex, pullIndex bool
+	if err := db.QueryRow(f.context, `SELECT to_regclass('project_pr_review_assignments_worker_cursor') IS NOT NULL, to_regclass('project_pull_requests_open_github_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=107)`).Scan(&assignmentIndex, &pullIndex, &migrationCount); err != nil || !assignmentIndex || !pullIndex || migrationCount != 1 {
+		t.Fatalf("upgraded review polling indexes: assignment=%t pull=%t migration count=%d error=%v", assignmentIndex, pullIndex, migrationCount, err)
+	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
 	if !status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.Repository == nil || status.Repository.ID != "42" {
 		t.Fatalf("upgraded state: %+v", status)
 	}
-	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated while off" {
+	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated while off" {
 		t.Fatalf("upgrade lost PR: %+v", page)
 	}
 	change("Updated after upgrade")
-	status = connect(project.Ownership.Version, status, currentGrant)
+	status = connect(project.Ownership.Version, status, currentGrant, "42")
 	if !status.SyncEnabled || status.Connection != "connected" {
 		t.Fatalf("upgraded reconnect: %+v", status)
 	}
@@ -364,12 +541,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.GrantID != nil {
 		t.Fatalf("after revocation: %+v", status)
 	}
-	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated after upgrade" {
+	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
 		t.Fatalf("revocation lost PR: %+v", page)
 	}
 	currentGrant = grant(project.Ownership.TeamID)
-	status = connect(project.Ownership.Version, status, currentGrant)
+	status = connect(project.Ownership.Version, status, currentGrant, "42")
 	if status.SyncEnabled || status.Connection != "connected" || status.GrantID == nil || *status.GrantID != currentGrant.ID {
 		t.Fatalf("reconnected: %+v", status)
 	}
@@ -388,12 +565,37 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.GrantID != nil {
 		t.Fatalf("after transfer: %+v", status)
 	}
-	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated after upgrade" {
+	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests?state=all", nil, http.StatusOK)
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
 		t.Fatalf("transfer lost PR: %+v", page)
 	}
-	status = connect(receipt.Ownership.Version, status, targetGrant)
+	status = connect(receipt.Ownership.Version, status, targetGrant, "42")
 	if status.SyncEnabled || status.Connection != "connected" || status.GrantID == nil || *status.GrantID != targetGrant.ID {
 		t.Fatalf("target reconnection: %+v", status)
+	}
+}
+
+func sendPullWebhook(t *testing.T, f *fixture, appBase string, number int) {
+	t.Helper()
+	body := []byte(fmt.Sprintf(`{"installation":{"id":99},"repository":{"id":42},"number":%d}`, number))
+	mac := hmac.New(sha256.New, []byte("integration-only-secret"))
+	_, _ = mac.Write(body)
+	request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+appBase+"/webhook", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	request.Header.Set("X-GitHub-Event", "pull_request")
+	request.Header.Set("X-GitHub-Delivery", uuid.NewString())
+	response, err := f.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(response.Body)
+	if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
+		t.Fatalf("webhook response read: %v %v", readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("webhook response: %d %s", response.StatusCode, data)
 	}
 }

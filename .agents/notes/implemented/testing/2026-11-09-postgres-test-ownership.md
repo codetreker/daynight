@@ -49,9 +49,14 @@ the root adds no separate binding or persistence guarantee.
 
 Small files are grouped by a common owner and mechanism, such as query
 contracts, mutation constraints, operation receipts, scope completion or
-historical upgrades. Grouping preserves fault conditions, build tags, barriers,
-cleanup and all unique assertions. Stress workloads keep an explicit independent
-entry and do not enter ordinary test discovery.
+historical upgrades. Task Search tests use the public Store entry for the common
+snapshot and callback-failure proof. Project grant completion uses a real
+PostgreSQL commit response loss and reads the committed grant both independently
+and through the Store snapshot. HTTP response mapping stays with route tests.
+When independent tests already exercise the same setup, write, and observation,
+the shared scenario includes their distinct assertions and runs once. Grouping
+preserves build tags, barriers and cleanup. Stress workloads keep an explicit
+independent entry and do not enter ordinary test discovery.
 
 `postgres/testdata/testutil` provides canonical domain data, historical fixture
 seeding and database observations. Helpers receive existing store interfaces

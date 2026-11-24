@@ -65,9 +65,15 @@ func TestProjectDeletionSerializesWithWebArchives(t *testing.T) {
 			uploadGate := &serviceStorageBarrier{Storage: files, kind: "upload", manifestOnly: true, entered: make(chan struct{}), release: make(chan struct{})}
 			var once sync.Once
 			releaseUpload := func() { once.Do(func() { close(uploadGate.release) }) }
-			t.Cleanup(releaseUpload)
 			engine := core.NewEngine(uploadGate)
-			defer engine.Stop(context.Background())
+			t.Cleanup(func() {
+				releaseUpload()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := engine.Stop(ctx); err != nil {
+					t.Errorf("stop archive engine: %v", err)
+				}
+			})
 			f.service = New(f.db, engine)
 			v := f.registerWeb(t)
 			id := v.SessionID
@@ -129,7 +135,7 @@ func TestProjectDeletionSerializesWithWebArchives(t *testing.T) {
 					t.Fatal(ctx.Err())
 				}
 				go upload()
-				if err = waitArchiveLock(ctx, f.db, "SELECT id::text FROM tasks WHERE project_id=$1 AND id=$2 FOR SHARE"); err != nil {
+				if err = waitArchiveLock(ctx, f.db, "SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks WHERE project_id=$1 AND id=$2 FOR SHARE"); err != nil {
 					t.Fatal(err)
 				}
 				releaseDelete()

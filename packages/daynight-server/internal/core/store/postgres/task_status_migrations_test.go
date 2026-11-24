@@ -406,7 +406,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 
 func cancellationMigrationRows(t *testing.T, database *Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id')::text FROM tasks t ORDER BY id`)
+	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id'-'ancestor_deleted_at')::text FROM tasks t ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 	t.Helper()
 	facts := statusMigrationRelatedFacts(t, database)
 	for name, query := range map[string]string{
-		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
+		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"properties": `SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name)::text FROM task_properties p`,
 		"ledger":     `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<46`,
 	} {
@@ -463,6 +463,10 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 	}
 	if !reflect.DeepEqual(cancellationMigrationRows(t, database), before) || !reflect.DeepEqual(cancellationMigrationFacts(t, database), related) {
 		t.Fatal("cancellation migration changed existing task data or related resources")
+	}
+	var repositoryVersion int64
+	if err := pool.QueryRow(t.Context(), `SELECT repository_version FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
+		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
 	}
 	var nonnull int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM tasks WHERE cancelled_at IS NOT NULL`).Scan(&nonnull); err != nil || nonnull != 0 {
@@ -521,5 +525,193 @@ func TestCancellationMigrationFailureRollsBackColumnConstraintAndLedger(t *testi
 	mustQueryExec(t, database, `DROP TRIGGER reject_cancellation_ledger ON schema_migrations; DROP FUNCTION reject_cancellation_ledger()`)
 	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
 		t.Fatalf("migration failed after repairing cause: %v", err)
+	}
+}
+
+func TestTaskProposedStateMigrationPreservesFourStateResources(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:59]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	project := queryProject(t, database, 1)
+	prerequisite := queryID(9)
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Prerequisite','done')`, prerequisite, project.ID)
+	for index, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone, model.TaskCancelled} {
+		id := queryID(index + 10)
+		mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status,version,allow_agents,started_at,completed_at,cancelled_at)
+ VALUES($1,$2,'Task','Retained description',$3,$4,true,
+ CASE WHEN $3 IN ('in_progress','done') THEN '2026-01-01T10:00:00Z'::timestamptz ELSE NULL END,
+ CASE WHEN $3='done' THEN '2026-01-01T11:00:00Z'::timestamptz ELSE NULL END,
+ CASE WHEN $3='cancelled' THEN '2026-01-01T12:00:00Z'::timestamptz ELSE NULL END)`, id, project.ID, status, index+20)
+		mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests','[{"url":"https://example.test/pr/1","title":"Retained"}]')`, id)
+		mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, id, prerequisite)
+	}
+	snapshot := func(typed bool) string {
+		t.Helper()
+		dependencyExpr := `to_jsonb(d)`
+		if typed {
+			dependencyExpr += ` - 'dependency_type' - 'goal_edge_id'`
+		}
+		var result string
+		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(to_jsonb(t)-'type'-'parent_id'-'ancestor_deleted_at' ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d))::text`).Scan(&result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := snapshot(false)
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshot(true); after != before {
+		t.Fatalf("proposed migration changed existing resources: before=%s after=%s", before, after)
+	}
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Default proposed')`, queryID(30), project.ID)
+	created := snapshotTask(t, database, project.ID, queryID(30))
+	if created.Status != model.TaskProposed || created.Ready || created.Version != 1 || created.StartedAt != nil || created.CompletedAt != nil || created.CancelledAt != nil {
+		t.Fatalf("new default did not create an unstarted proposed task: %+v", created)
+	}
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Confirmed todo','todo')`, queryID(31), project.ID)
+	if explicit := snapshotTask(t, database, project.ID, queryID(31)); explicit.Status != model.TaskTodo || !explicit.Ready {
+		t.Fatalf("explicit todo lost executable status: %+v", explicit)
+	}
+	var applied string
+	if err := pool.QueryRow(ctx, `SELECT applied_at::text FROM schema_migrations WHERE version=60`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	var reapplied string
+	if err := pool.QueryRow(ctx, `SELECT applied_at::text FROM schema_migrations WHERE version=60`).Scan(&reapplied); err != nil || applied != reapplied {
+		t.Fatalf("migration replay changed its ledger: before=%s after=%s err=%v", applied, reapplied, err)
+	}
+}
+
+func TestDropTaskStepsMigrationRollbackAndUpgrade(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 124 })
+	if index < 1 {
+		t.Fatal("migration 124 missing")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pool.Exec(ctx, `
+INSERT INTO projects(id,name,repo_url) VALUES('00000000-0000-0000-0000-000000000001','Migration','example');
+INSERT INTO tasks(id,project_id,title,version,updated_at,deleted_at) VALUES
+ ('00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001','Active',9007199254740993,'2026-01-02',NULL),
+ ('00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000001','Deleted',7,'2026-01-03','2026-01-04');
+INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES
+ ('00000000-0000-0000-0000-000000000002','00000001',0,'Active step','','done',now(),now()),
+ ('00000000-0000-0000-0000-000000000003','00000002',0,'Deleted step','','todo',now(),now());
+INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES
+ ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','result.txt','text/plain',0);
+INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,body) VALUES
+ ('00000000-0000-0000-0000-000000000002',now(),'00000000-0000-0000-0000-000000000004',false,'retained');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() string {
+		t.Helper()
+		var state string
+		err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
+ 'tasks',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM tasks t),
+ 'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY path) FROM task_attachments a),
+ 'thread',(SELECT jsonb_agg(to_jsonb(m) ORDER BY message_id) FROM task_thread_messages m))::text`).Scan(&state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := snapshot()
+	broken := append([]migration(nil), schemaMigrations...)
+	broken[index].sql += "\nSELECT 1 / 0;"
+	if err := migrate(ctx, pool, broken); err == nil {
+		t.Fatal("faulted migration succeeded")
+	}
+	var rolledBack bool
+	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NOT NULL AND (SELECT count(*)=2 FROM task_steps) AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=124)`).Scan(&rolledBack)
+	if err != nil || !rolledBack || snapshot() != before {
+		t.Fatalf("migration did not roll back: %t %v", rolledBack, err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
+		t.Fatal(err)
+	}
+	var upgraded bool
+	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NULL AND (SELECT checksum=$1 FROM schema_migrations WHERE version=124) AND (SELECT max(version)=124 FROM schema_migrations)`, schemaMigrations[index].checksum()).Scan(&upgraded)
+	if err != nil || !upgraded || snapshot() != before {
+		t.Fatalf("upgrade changed retained state or ledger: %t %v", upgraded, err)
+	}
+	var ledgerBefore, ledgerAfter string
+	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledgerBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledgerAfter); err != nil || ledgerBefore != ledgerAfter || snapshot() != before {
+		t.Fatalf("restart changed retained state or ledger: %v", err)
+	}
+}
+
+func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T) {
+	ctx := context.Background()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:29]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	project := queryProject(t, database, 1)
+	// Seed against the actual pre-030 schema; the current writer requires later
+	// lifecycle columns and is not a valid historical migration fixture.
+	taskID := queryID(10)
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status) VALUES($1,$2,'Task','Description','in_progress')`, taskID, project.ID)
+	var before, after string
+	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	end := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 124 })
+	if end < 1 {
+		t.Fatal("migration 124 missing")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:end]); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&after); err != nil || before != after {
+		t.Fatalf("existing task changed: %v", err)
+	}
+	assertHistoricalTasksHaveNoCancellationTime(t, database)
+	seedHistoricalStep := func(id string, position int64) {
+		mustQueryExec(t, database, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'Coding','## Result','done','2026-11-03T10:11:12.123456Z','2026-11-03T11:12:13.654321Z')`, taskID, id, position)
+	}
+	seedHistoricalStep("00abcdef", 0)
+	for _, sql := range []string{
+		`INSERT INTO task_steps SELECT task_id,'00ABCDEF',1,title,description,status,created_at,updated_at FROM task_steps`,
+		`INSERT INTO task_steps SELECT task_id,'00000001',-1,title,description,status,created_at,updated_at FROM task_steps`,
+		`INSERT INTO task_steps SELECT task_id,'00000001',1,title,description,'review',created_at,updated_at FROM task_steps`,
+		`INSERT INTO task_steps SELECT task_id,id,1,title,description,status,created_at,updated_at FROM task_steps`,
+		`INSERT INTO task_steps SELECT task_id,'00000001',position,title,description,status,created_at,updated_at FROM task_steps`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err == nil {
+			t.Fatalf("constraint accepted: %s", sql)
+		}
+	}
+	seedHistoricalStep("00000001", 1)
+	// The unique position constraint is deferred so a single transaction can
+	// exchange dense positions without a temporary sentinel.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `UPDATE task_steps SET position=1-position WHERE task_id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -114,11 +114,11 @@ describe("Worker future configuration persistence", () => {
     expect(second.manager.readCleanupPolicy()).toBeNull();
     expect(second.manager.current().retainedArchiveSessions).toBe(false);
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(11);
+    expect(migrated.schemaVersion).toBe(13);
     expect(migrated.authority.desiredJson).toBe(source.authority.desiredJson);
     expect(migrated.authority.pendingApplication).toBe(true);
     await second.manager.receive(receiveWorkerDesired(target.json.replace('"revision":"1"', '"revision":"2"')), "0"); await second.manager.settle();
-    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "2" });
+    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "2", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(second.manager.current().effective.archiveSessions).toBe(false);
   });
 
@@ -131,7 +131,7 @@ describe("Worker future configuration persistence", () => {
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(11);
+    expect(migrated.schemaVersion).toBe(13);
     expect(migrated.authority.applicationRevision).toBe("1");
     expect(migrated.authority.desiredJson).toBe(source.authority.desiredJson);
     expect(migrated.authority.pendingApplication).toBe(true);
@@ -145,13 +145,13 @@ describe("Worker future configuration persistence", () => {
     const corrected = receiveWorkerDesired(initial.json.replace('"revision":"1"', '"revision":"3"').replace('"value":{', '"value":{"enableSudoCleanup":true,'));
     await second.manager.receive(corrected, "0");
     await second.manager.settle();
-    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "3" });
+    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "3", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     await second.manager.stop();
     const offline = await fixture({ file: first.file });
-    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "3" });
+    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "3", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     await offline.manager.receive(receiveWorkerDesired(corrected.json.replace('"revision":"3"', '"revision":"4"').replace('"enableSudoCleanup":true', '"enableSudoCleanup":false')), "0");
     await offline.manager.settle();
-    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, revision: "4" });
+    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, sudoRevision: "4", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
   });
 
   it("does not publish or overwrite schema 6 when migration persistence fails", async () => {
@@ -199,15 +199,15 @@ describe("Worker future configuration persistence", () => {
     } });
     const initial = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"enableSudoCleanup":true,'));
     await first.manager.receive(initial, "0"); await first.manager.settle();
-    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
+    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "1", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     blockScalar = true;
     try {
       await first.manager.receive(receiveWorkerDesired(initial.json.replace('"revision":"1"', '"revision":"2"').replace('"enableSudoCleanup":true', '"enableSudoCleanup":false')), "0");
       await entered.promise;
-      expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
+      expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "1", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     } finally { release.resolve(); }
     await first.manager.settle();
-    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, revision: "2" });
+    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, sudoRevision: "2", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
   });
 
   it("retains the hidden archive projection across restart without inventing its value", async () => {

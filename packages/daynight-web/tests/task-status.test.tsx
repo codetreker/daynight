@@ -14,6 +14,7 @@ import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessio
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: { render: (slots: { parent: null; children: null }) => React.ReactNode }) => render({ parent: null, children: null }) }));
 
 vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
@@ -321,7 +322,7 @@ describe('status in shared production task details', () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     await mount();
     await openGraph();
-    const inspected = await screen.findByRole('button', { name: 'Task 2, To do, No Goal' });
+    const inspected = await screen.findByRole('button', { name: 'Task 2, To do' });
     fireEvent.click(inspected);
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
     const inspection = () => [...document.querySelectorAll<HTMLElement>('.task-node,.task-dependency-edge')].map((node) => [node.closest<HTMLElement>('.react-flow__node')?.dataset.id ?? node.dataset.id, node.dataset.inspection]);

@@ -14,7 +14,7 @@ import (
 
 type projectGoalLifecycleStore struct{ appLifecycleTestStore }
 
-func (s projectGoalLifecycleStore) WriteProject(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
+func (s projectGoalLifecycleStore) WriteProjectTransfer(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
 	s.f.writeCalls++
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > projectLifecycleTimeout {
 		s.f.t.Fatal("missing lifecycle deadline")
@@ -99,9 +99,6 @@ func TestProjectLifecycleCoordinatesGoalRemoval(t *testing.T) {
 						success = result.ProjectID != ""
 					}
 					wantCalls := []string{}
-					if !app && operation == "transfer" {
-						wantCalls = append(wantCalls, "lock")
-					}
 					switch scenario {
 					case "active claim":
 						var fault *model.Fault
@@ -140,6 +137,11 @@ func TestProjectLifecycleCoordinatesGoalRemoval(t *testing.T) {
 					}
 					if !reflect.DeepEqual(append([]string{}, f.goalCalls...), wantCalls) {
 						t.Fatalf("goal calls %v want %v", f.goalCalls, wantCalls)
+					}
+					for _, deleting := range f.goalDeleting {
+						if deleting != (operation == "delete") {
+							t.Fatalf("wrong deletion intent %v for %s", deleting, operation)
+						}
 					}
 					if (scenario == "unconfirmed" || scenario == "failure" || scenario == "active claim") && len(f.retirementCalls) != 0 {
 						t.Fatalf("refusal caused App effects %v", f.retirementCalls)

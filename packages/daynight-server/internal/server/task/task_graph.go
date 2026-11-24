@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -11,7 +12,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
+func TaskGraphResponse(graph model.TaskGraph, relations ...bool) api.TaskGraph {
+	enabled := len(relations) != 0 && relations[0]
 	response := api.TaskGraph{
 		Project:    projecthttp.ProjectResponse(graph.Project),
 		ObservedAt: graph.ObservedAt.UTC(),
@@ -22,8 +24,9 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 		Tasks: make([]api.GraphTask, 0, len(graph.Tasks)),
 	}
 	for _, task := range graph.Tasks {
+		parentID, parentTaskID := taskprotocol.ParentRelation(task.ParentID, task.ParentType, enabled)
 		response.Tasks = append(response.Tasks, api.GraphTask{
-			ID: task.ID, Type: string(task.Type), ParentID: task.ParentID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status),
+			ID: task.ID, Type: string(task.Type), ParentID: parentID, ParentTaskID: parentTaskID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status),
 			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo,
 			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
 			StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt), CancelledAt: timestampResponse(task.CancelledAt),
@@ -34,6 +37,7 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 
 func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -71,5 +75,14 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 	}
 	logger.InfoContext(request.Context(), "task graph read", "type", "resource", "component", "task_graph", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "node_count", len(graph.Tasks), "edge_count", edgeCount)
-	httpx.WriteJSON(w, request, logger, http.StatusOK, TaskGraphResponse(graph))
+	response := TaskGraphResponse(graph, taskParentView(request))
+	if h.taskOnly {
+		w.Header().Set("Daynight-Projection", "task-only-v1")
+		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
+			api.TaskGraph
+			Project taskOnlyProject `json:"project"`
+		}{response, taskOnlyProject{ID: graph.Project.ID}})
+		return
+	}
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }

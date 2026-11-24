@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
@@ -21,6 +22,9 @@ func (s *Service) Catalog(ctx context.Context, principal model.Principal) (any, 
 			if errors.Is(err, model.ErrNotFound) {
 				return model.Unauthenticated(err)
 			}
+			return err
+		}
+		if err := requireScope(ctx, scope, principal, scopepolicy.WebhookRead); err != nil {
 			return err
 		}
 		policy, err := scope.WebhookDAO().Policy(ctx, 1)

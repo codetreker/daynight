@@ -1,6 +1,6 @@
 import { ApiError, authRequestsPaused } from "../../api/client";
 import {
-  decodeWebhookJson, getWebhookOperation, isWebhookIssuedAt, parseWebhookEventType, parseWebhookOwner, submitWebhookMutation, webhookVersion,
+  decodeWebhookJson, getWebhookOperation, isWebhookClientKey, isWebhookIssuedAt, parseWebhookEventType, parseWebhookOwner, submitWebhookMutation, webhookVersion,
   type WebhookAdmission, type WebhookConfigurationInput, type WebhookMutationResult, type WebhookOperationKind, type WebhookOwner, type WebhookReceipt,
 } from "../../api/webhooks";
 import { canonicalId, record } from "../../api/validation";
@@ -124,11 +124,12 @@ const inputBody = (input: WebhookIntentInput): Record<string, unknown> => {
   if (!kindChoices.includes(input.kind)) return invalid();
   const body = record(input.body);
   const create = input.kind === "endpoint.create", rotate = input.kind === "signing-secret.rotate", remove = input.kind === "endpoint.delete" || input.kind === "delivery.redeliver";
-  const allowed = rotate ? ["mode"] : remove ? [] : ["name", "enabled", "destination", "subscriptions", ...(create ? [] : ["confirmProjectIds"])];
+  const allowed = rotate ? ["mode"] : remove ? [] : ["name", "enabled", "destination", "subscriptions", ...(create ? ["clientKey"] : ["confirmProjectIds"])];
   if (Object.keys(body).some(field => !allowed.includes(field)) || create && ["name", "enabled", "destination", "subscriptions"].some(field => !Object.hasOwn(body, field)) || input.kind === "endpoint.patch" && Object.keys(body).length === 0) return invalid();
   if (rotate && body.mode !== "overlap" && body.mode !== "immediate") return invalid();
   if (Object.hasOwn(body, "name") && (typeof body.name !== "string" || !body.name.isWellFormed())) return invalid();
   if (Object.hasOwn(body, "enabled") && typeof body.enabled !== "boolean") return invalid();
+  if (Object.hasOwn(body, "clientKey") && !isWebhookClientKey(body.clientKey)) return invalid();
   if (Object.hasOwn(body, "destination")) {
     const destination = record(body.destination), configuration = record(destination.configuration);
     if (Object.keys(destination).length !== 3 || !Object.hasOwn(destination, "kind") || !Object.hasOwn(destination, "adapterVersion") || Object.keys(configuration).length !== 1 || typeof configuration.url !== "string" || !configuration.url.isWellFormed()) return invalid();
@@ -281,7 +282,9 @@ export class WebhookIntentController {
       return this.#publish({ ...this.#state, phase: "confirmed", result, error: result.currentError ?? null });
     } catch (error) {
       if (this.#state.phase === "confirmed") return this.#publish({ ...this.#state, error });
-      const definite = !dispatched || error instanceof ApiError && error.kind === "server" && error.status !== null && error.status < 500;
+      // The service returns `webhooks_unavailable` only from inside the write transaction it then rolls back; a rollback
+      // that cannot be confirmed is reported as `write_outcome_unknown` instead, so this 503 is a definite refusal.
+      const definite = !dispatched || error instanceof ApiError && error.kind === "server" && (error.status !== null && error.status < 500 || error.code === "webhooks_unavailable");
       if (definite) { this.#body = null; this.#persist(null); }
       this.#publish({ ...this.#state, phase: definite ? "rejected" : "unknown", error });
       if (!definite && !signal.aborted && !authRequestsPaused()) return this.#observe(signal);

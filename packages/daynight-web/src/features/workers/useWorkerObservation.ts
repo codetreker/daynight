@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from '../projects/repository-changes';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -148,6 +149,7 @@ export const useWorkerObservation = <T extends { readonly observedAt: string }>(
       cancel();
       setState(initialState(scope, resource));
     };
+    const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === scope.userId) recheck(); });
     const unsubscribe = scope.subscribeProjection(event => {
       if (event.accessRestored) {
         ++generation; controller?.abort(); controller = null;
@@ -190,7 +192,7 @@ export const useWorkerObservation = <T extends { readonly observedAt: string }>(
       if (ticking !== null) clearInterval(ticking);
       document.removeEventListener('visibilitychange', visibility);
       scope.signal.removeEventListener('abort', invalidate);
-      unsubscribe();
+      unsubscribe(); unsubscribeRepository();
       refreshAction.current = () => {};
     };
   }, [scope, resource, readEnabled, load, missingIsUnavailable, withdraw, filterDenied, advanceOnError, retainSnapshot]);

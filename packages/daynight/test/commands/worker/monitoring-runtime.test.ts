@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
+  closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), persist: vi.fn(), configuration: vi.fn() }));
@@ -50,7 +50,7 @@ vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebEx
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({ closeInput: () => {} }) }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
-vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
+vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const remoteUrl = "https://git.example/team/repo.git";
@@ -619,7 +619,6 @@ describe("worker runtime monitoring isolation", () => {
     await eventuallyWithoutAdvancingTime(() => { expect(mocks.coordinator).toHaveBeenCalledOnce(); expect(writeMonitoring).toHaveBeenCalledOnce(); });
     f.signal.abort();
     await eventuallyWithoutAdvancingTime(() => expect(shutdown).toHaveBeenCalledOnce());
-    await vi.advanceTimersByTimeAsync(30_000);
     await eventuallyWithoutAdvancingTime(() => expect(writes).toContain("stopping"));
     expect(order).not.toContain("shutdown-complete");
     stopping.resolve(); await running;

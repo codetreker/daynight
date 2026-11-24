@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,9 @@ func TestHTTPConfigurationLifecycle(t *testing.T) {
 	t.Run("configuration_byte_boundaries", func(t *testing.T) {
 		testHTTPConfigurationByteBoundaries(t, fixture.forCase(t))
 	})
+	t.Run("client_key_uniqueness", func(t *testing.T) {
+		testHTTPClientKeyUniqueness(t, fixture.forCase(t))
+	})
 }
 
 // A01 exercises actual cookie authentication, HTTP parsing/response, service and
@@ -172,7 +176,7 @@ func testHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T, f *httpFixture) {
 	mustStatus(t, status, 200, b)
 	catalog := jsonBody(t, b)
 	items := catalog["items"].([]any)
-	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 	if len(items) != len(keys) {
 		t.Fatalf("catalog items: %s", b)
 	}
@@ -381,5 +385,136 @@ func TestHTTPCatalogFailsWhenPolicyQueryFails(t *testing.T) {
 	result := jsonBody(t, body)
 	if result["error"].(map[string]any)["code"] != "dependency_unavailable" || result["items"] != nil || strings.Contains(string(body), "webhook_policies") {
 		t.Fatalf("policy query failure returned an invalid response: %s", body)
+	}
+}
+
+type rawResponse struct {
+	status int
+	body   []byte
+	err    error
+}
+
+// rawRequest is safe in goroutines; it reports failures instead of stopping the test.
+func (f *httpFixture) rawRequest(actor httpActor, method, path, body string) rawResponse {
+	r, err := http.NewRequestWithContext(f.ctx, method, f.server.URL+path, strings.NewReader(body))
+	if err != nil {
+		return rawResponse{err: err}
+	}
+	r.AddCookie(&http.Cookie{Name: "daynight_session", Value: actor.cookie})
+	r.Header.Set("Origin", testOrigin)
+	r.Header.Set("Content-Type", "application/json")
+	resp, err := f.server.Client().Do(r)
+	if err != nil {
+		return rawResponse{err: err}
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return rawResponse{status: resp.StatusCode, body: b, err: err}
+}
+
+// Concurrent same-key creates admit one live endpoint per owner. Personal owners
+// race on the unique index; Team owners serialize on the Team source lock.
+func testHTTPClientKeyUniqueness(t *testing.T, f *httpFixture) {
+	t.Helper()
+	admin := f.actor(t)
+	team := uuid.NewString()
+	if _, err := f.db.Pool.Exec(f.ctx, `INSERT INTO teams (id,name) VALUES ($1,'keyed')`, team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(f.ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, team, admin.id); err != nil {
+		t.Fatal(err)
+	}
+	const key = "assistant-task-inbox:4f1c"
+	for _, base := range []string{"/api/v1/me/webhooks", "/api/v1/teams/" + team + "/webhooks"} {
+		const writers = 6
+		bodies := make([]map[string]any, writers)
+		results := make([]rawResponse, writers)
+		var wait sync.WaitGroup
+		for i := range writers {
+			bodies[i] = createFields(admin, fmt.Sprintf("Keyed %d", i), "https://receiver.example/keyed")
+			bodies[i]["clientKey"] = key
+			wire := encoded(t, bodies[i])
+			wait.Go(func() { results[i] = f.rawRequest(admin, "POST", base, wire) })
+		}
+		wait.Wait()
+		winner, winnerIndex := "", -1
+		for i, result := range results {
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if result.status == http.StatusCreated {
+				if winner != "" {
+					t.Fatalf("%s admitted two live endpoints for one key", base)
+				}
+				endpoint := jsonBody(t, result.body)["endpoint"].(map[string]any)
+				if endpoint["clientKey"] != key {
+					t.Fatalf("created endpoint lost its key: %s", result.body)
+				}
+				winner, winnerIndex = endpoint["id"].(string), i
+			}
+		}
+		if winner == "" {
+			t.Fatalf("%s admitted no create: %+v", base, results)
+		}
+		for i, result := range results {
+			if i == winnerIndex {
+				continue
+			}
+			mustStatus(t, result.status, http.StatusConflict, result.body)
+			failure := jsonBody(t, result.body)["error"].(map[string]any)
+			details, _ := failure["details"].(map[string]any)
+			if failure["code"] != "endpoint_exists" || details["endpointId"] != winner || details["configVersion"] != "1" {
+				t.Fatalf("refusal: %s", result.body)
+			}
+		}
+		owner := admin.id
+		if strings.Contains(base, "/teams/") {
+			owner = team
+		}
+		var endpoints, receipts int
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1 AND client_key=$2),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1)`, owner, key).Scan(&endpoints, &receipts); err != nil || endpoints != 1 || receipts != 1 {
+			t.Fatalf("refusals left effects: endpoints=%d receipts=%d err=%v", endpoints, receipts, err)
+		}
+		// The original operation replays; reusing its ID with another key conflicts.
+		status, _, b := f.request(t, admin, "POST", base, encoded(t, bodies[winnerIndex]))
+		mustStatus(t, status, http.StatusOK, b)
+		changed := bodies[winnerIndex]
+		changed["clientKey"] = key + ":other"
+		status, _, b = f.request(t, admin, "POST", base, encoded(t, changed))
+		mustStatus(t, status, http.StatusConflict, b)
+		if code := jsonBody(t, b)["error"].(map[string]any)["code"]; code != "operation_conflict" {
+			t.Fatalf("changed key under one operation: %s", b)
+		}
+		unkeyed := createFields(admin, "Unkeyed", "https://receiver.example/keyed")
+		status, _, b = f.request(t, admin, "POST", base, encoded(t, unkeyed))
+		mustStatus(t, status, http.StatusCreated, b)
+		if value, ok := jsonBody(t, b)["endpoint"].(map[string]any)["clientKey"]; !ok || value != nil {
+			t.Fatalf("unkeyed endpoint view: %s", b)
+		}
+		status, _, b = f.request(t, admin, "GET", base+"?clientKey="+key, "")
+		mustStatus(t, status, http.StatusOK, b)
+		items := jsonBody(t, b)["items"].([]any)
+		if len(items) != 1 || items[0].(map[string]any)["id"] != winner || items[0].(map[string]any)["clientKey"] != key {
+			t.Fatalf("client key filter: %s", b)
+		}
+		status, _, b = f.request(t, admin, "GET", base+"?clientKey=has%20space", "")
+		mustStatus(t, status, http.StatusBadRequest, b)
+		patch := operationFields(admin)
+		patch["ifVersion"] = "1"
+		patch["clientKey"] = "replacement"
+		status, _, b = f.request(t, admin, "PATCH", base+"/"+winner, encoded(t, patch))
+		mustStatus(t, status, http.StatusBadRequest, b)
+		remove := operationFields(admin)
+		remove["ifVersion"] = "1"
+		status, _, b = f.request(t, admin, "DELETE", base+"/"+winner, encoded(t, remove))
+		mustStatus(t, status, http.StatusOK, b)
+		var retained *string
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT client_key FROM webhook_endpoints WHERE id=$1`, winner).Scan(&retained); err != nil || retained != nil {
+			t.Fatalf("tombstone retained key %v: %v", retained, err)
+		}
+		again := createFields(admin, "Again", "https://receiver.example/keyed")
+		again["clientKey"] = key
+		status, _, b = f.request(t, admin, "POST", base, encoded(t, again))
+		mustStatus(t, status, http.StatusCreated, b)
 	}
 }

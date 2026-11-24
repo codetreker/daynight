@@ -52,6 +52,7 @@ func TestFixedDiagnosticContract(t *testing.T) {
 	// This table is an independent wire oracle shared by failure and delivery fields.
 	cases := []struct{ code, cause string }{
 		{"cancelled", "The operation was cancelled."}, {"timeout", "The operation timed out."},
+		{"archive-quota-exceeded", "Session archive capacity was exceeded (quota_exceeded)."},
 		{"authentication-required", "Authentication is required."}, {"limit-exceeded", "An operation limit was exceeded."},
 		{"rate-limited", "The operation was rate limited."}, {"permission-denied", "Permission was denied."},
 		{"not-found-or-inaccessible", "A required resource was not found or is inaccessible."}, {"not-found", "A required resource was not found."},

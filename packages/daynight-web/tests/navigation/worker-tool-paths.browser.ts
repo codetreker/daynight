@@ -5,7 +5,7 @@ import { deferredRead, installTools, observedConfiguration, openToolConfiguratio
 
 const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
 const refreshConfiguration = (page: Page) => configuration(page).getByRole('button', { name: /^(刷新|Refresh)$/, exact: true });
-const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具路径/ });
+const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具启动路径/ });
 const field = (page: Page, tool = 'codex') => page.locator(`#config-toolPaths-${tool}`);
 const facts = (page: Page, tool = 'codex', context = 'web') => configuration(page).locator(`.worker-tool-path-details[data-tool="${tool}"] .worker-tool-context[data-context="${context}"]`);
 const save = (page: Page) => page.locator('.config-save-bar').getByRole('button', { name: '保存配置', exact: true });
@@ -25,7 +25,7 @@ for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) 
     await page.goto(`/workers/${targetWorker}`);
     await page.locator('[data-worker-tab="system"]:visible').click();
     const shortcut = page.locator('.worker-tool-path-shortcut');
-    await expect(shortcut).toHaveText(locale === 'zh-CN' ? '工具路径' : 'Tool paths');
+    await expect(shortcut).toHaveText(locale === 'zh-CN' ? '工具启动路径' : 'Tool launch paths');
     await shortcut.focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
     await expect(shortcut).toBeFocused(); await noOverflow(page);
     const focusStyle = await shortcut.evaluate(element => {

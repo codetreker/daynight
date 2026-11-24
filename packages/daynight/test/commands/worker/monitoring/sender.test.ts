@@ -14,6 +14,24 @@ const flush = async (): Promise<void> => { for (let n = 0; n < 8; n++) await Pro
 afterEach(() => vi.useRealTimers());
 
 describe("worker monitoring sender", () => {
+  it("coalesces triggers during a write and captures current state immediately after it joins", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let lifecycle: DirectObservation["lifecycle"] = "running";
+    const write = vi.fn().mockImplementationOnce(async () => { await gate; return receipt; }).mockResolvedValue(receipt);
+    const sender = createMonitoringSender({ capture: () => snapshot(lifecycle), write, deliverySuccess: vi.fn(), deliveryFailure: vi.fn(), emit: vi.fn() });
+    sender.trigger(); sender.trigger(); await flush();
+    expect(write).toHaveBeenCalledTimes(1);
+    lifecycle = "stopping"; release(); await flush();
+    expect(write.mock.calls.map(args => args[0].lifecycle)).toEqual(["running", "stopping"]);
+    await vi.advanceTimersByTimeAsync(29_999); expect(write).toHaveBeenCalledTimes(2);
+    sender.trigger(); await flush(); expect(write).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1); expect(write).toHaveBeenCalledTimes(3);
+    lifecycle = "stopped"; await sender.finish(); sender.trigger();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(write).toHaveBeenCalledTimes(4); expect(write.mock.calls[3]![0].lifecycle).toBe("stopped");
+  });
   it("starts immediately, keeps one request in flight and captures current state after completion", async () => {
     vi.useFakeTimers();
     let release!: () => void;

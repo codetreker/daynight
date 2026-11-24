@@ -60,6 +60,12 @@ code 或 state。账户变化触发重新读取，后台检查不应卸载稳定
 family 与 access 凭据保持一致。grant 的已记录使用时间独立于 access/refresh 轮换；账户列表的
 v1、v2 投影与发布恢复约束由[身份认证架构](daynight-auth.md#主站-session-与-pat)拥有。
 持久预算限制公开入口，统一有界维护清理过期记录。
+
+显式 scoped 授权构造提供 v2 浏览器读取和决定入口；批准集合在原决定事务中
+保存，并在原换码事务中成为 grant 的独立业务策略。公开 OAuth scope 保持
+`daynight:mcp`，refresh 保留 grant 当前策略。v2 的目录修订、非空选择、
+旧页面续接和装配边界由[内部 Scope 合同](credential-scope-internal.md#mcp-应用授权准备入口)
+拥有；生产路由使用该 scoped 授权构造，并与新版 Web 一起启用。
 授权和凭据响应禁止缓存，授权页面不发送 referrer。注册、token 和 revoke 的公开 CORS
 不授予业务权限。
 

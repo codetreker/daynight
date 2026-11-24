@@ -196,10 +196,37 @@ func TestWebhookRotationReceiptRetainsResultAfterKeyAndEndpointRemoval(t *testin
 }
 
 func TestWebhookDatabaseFailures(t *testing.T) {
+	s := testutil.OpenStore(t, postgres.Open)
+	readFixture := func(t *testing.T, ctx context.Context) string {
+		t.Helper()
+		var policy string
+		var empty, removed bool
+		err := s.Pool.QueryRow(ctx, `SELECT to_jsonb(p)::text,
+ NOT EXISTS(SELECT FROM webhook_endpoints) AND NOT EXISTS(SELECT FROM webhook_signing_keys),
+ to_regprocedure('reject_key()') IS NULL AND NOT EXISTS(
+ SELECT FROM pg_trigger WHERE tgrelid='webhook_signing_keys'::regclass AND tgname='reject_key')
+ FROM webhook_policies p WHERE version=1`).Scan(&policy, &empty, &removed)
+		if err != nil || !empty || !removed {
+			t.Fatalf("Webhook fault fixture: empty=%t trigger removed=%t error=%v", empty, removed, err)
+		}
+		return policy
+	}
+	originalPolicy := readFixture(t, t.Context())
 	for _, kind := range []string{"missing endpoint", "endpoint read", "key read", "key insert", "key delete", "missing policy"} {
-		t.Run(kind, func(t *testing.T) {
-			s := testutil.OpenStore(t, postgres.Open)
-			ctx := context.Background()
+		if !t.Run(kind, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(t.Context(), 15*time.Second)
+			defer stop()
+			var restore func(context.Context)
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if restore != nil {
+					restore(cleanup)
+				}
+				if got := readFixture(t, cleanup); got != originalPolicy {
+					t.Fatal("restored Webhook policy differs from the original row")
+				}
+			})
 			owner, endpoint, key, _ := managementRecords(t)
 			var operation func(store.WebhookWriteScope) error
 			switch kind {
@@ -209,10 +236,10 @@ func TestWebhookDatabaseFailures(t *testing.T) {
 					return err
 				}
 			case "endpoint read":
-				testutil.MustExec(t, s.Pool, `DROP TABLE webhook_endpoints`)
+				restore = testutil.HideRelation(t, ctx, s.Pool, "webhook_endpoints")
 				operation = func(sc store.WebhookWriteScope) error { _, err := sc.WebhookWriter().Endpoints(ctx, owner); return err }
 			case "key read", "key delete":
-				testutil.MustExec(t, s.Pool, `DROP TABLE webhook_signing_keys`)
+				restore = testutil.HideRelation(t, ctx, s.Pool, "webhook_signing_keys")
 				if kind == "key read" {
 					operation = func(sc store.WebhookWriteScope) error {
 						_, err := sc.WebhookWriter().SigningKeys(ctx, endpoint.ID)
@@ -223,9 +250,23 @@ func TestWebhookDatabaseFailures(t *testing.T) {
 				}
 			case "key insert":
 				testutil.MustExec(t, s.Pool, `CREATE FUNCTION reject_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1902', MESSAGE='key storage failure'; END $$; CREATE TRIGGER reject_key BEFORE INSERT ON webhook_signing_keys FOR EACH ROW EXECUTE FUNCTION reject_key()`)
+				restore = func(cleanup context.Context) {
+					if _, err := s.Pool.Exec(cleanup, `DROP TRIGGER reject_key ON webhook_signing_keys; DROP FUNCTION reject_key()`); err != nil {
+						t.Fatal(err)
+					}
+				}
 				operation = func(sc store.WebhookWriteScope) error { return sc.WebhookWriter().PutSigningKey(ctx, key) }
 			case "missing policy":
-				testutil.MustExec(t, s.Pool, `DELETE FROM webhook_policies WHERE version=1`)
+				tag, err := s.Pool.Exec(ctx, `DELETE FROM webhook_policies WHERE version=1`)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("remove fixture policy: %v %v", tag, err)
+				}
+				restore = func(cleanup context.Context) {
+					tag, err := s.Pool.Exec(cleanup, `INSERT INTO webhook_policies SELECT * FROM jsonb_populate_record(NULL::webhook_policies,$1::jsonb)`, originalPolicy)
+					if err != nil || tag.RowsAffected() != 1 {
+						t.Fatalf("restore fixture policy: %v %v", tag, err)
+					}
+				}
 				operation = func(sc store.WebhookWriteScope) error { _, err := sc.WebhookWriter().Policy(ctx, 1); return err }
 			}
 			completion, err := s.WriteWebhook(ctx, owner, uuid.NewString(), operation)
@@ -239,10 +280,16 @@ func TestWebhookDatabaseFailures(t *testing.T) {
 				return
 			}
 			failed, code := store.DatabaseErrorFacts(err)
-			if !failed || (kind == "key insert" && code != "P1902") {
+			want := "42P01"
+			if kind == "key insert" {
+				want = "P1902"
+			}
+			if !failed || code != want {
 				t.Fatalf("database failure cause lost: %v %q %v", failed, code, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 

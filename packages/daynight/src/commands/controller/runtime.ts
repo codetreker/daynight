@@ -26,22 +26,22 @@ import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
 import { readLaunchToolSelection } from "./launch-tool-selection.js";
-import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
-import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
+import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { openControllerLifecycleStore, readRecoverableInitialInput, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
-import { createControllerRelay } from "./relay.js";
+import { createControllerRelay, waitForImageHistory } from "./relay.js";
 import { createUsageRuntime } from "./usage/runtime.js";
 import { loadServerConfiguration } from "../../config/server.js";
 import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
-import { NativeRpcError } from "./providers/native-rpc.js";
+import { NativeRpcError, NativeDispatchRejectedError } from "./providers/native-rpc.js";
 import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
 import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
 import { nativeInputPublicationFailure } from "./media/native-publication.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
-import { assertImageHistoryAvailable, syncControllerImageHistory } from "./media/history-sync.js";
+import { assertImageHistoryAvailable, createImageHistoryRetryBudget, syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
 type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string; storageStateDirectory?: string };
@@ -137,7 +137,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   let accountingFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
+  let historyConnectionAbort = new AbortController();
   let historyWork: Promise<void> | null = null;
+  const historyCalls = new Set<Promise<void>>();
   let historyTimer: NodeJS.Timeout | null = null;
   let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
@@ -189,14 +191,18 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (["initial", "send_message", "worker_input", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) accountingBoundary(() => journal.assertInputCapacity());
       journal.markDispatching(operation.operationId); nativeEvent(publishState);
       if (accountingFailure !== undefined) throw accountingFailure;
-      try { const result = await invoke(); const saved = journal.recordOperation(operation.operationId, "confirmed", result); nativeEvent(publishState); return saved; }
-      catch (error) {
+      let saved: ControllerOperation;
+      try {
+        const result = await invoke();
+        saved = journal.recordOperation(operation.operationId, "confirmed", result);
+      } catch (error) {
         if (accountingFailure !== undefined) throw accountingFailure;
         if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
         const observed = journal.getOperation(operation.operationId);
-        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "worker_input", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) { nativeEvent(publishState); return observed; }
-        const saved = journal.recordOperation(operation.operationId, error instanceof NativeRpcError ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error)); nativeEvent(publishState); return saved;
+        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "worker_input", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) saved = observed;
+        else saved = journal.recordOperation(operation.operationId, (error instanceof NativeRpcError || error instanceof NativeDispatchRejectedError) ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error));
       }
+      nativeEvent(publishState); return saved;
     })();
     active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(fail); return execute;
   };
@@ -208,14 +214,16 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
-  const usage = ticket.provider !== "claude" ? createUsageRuntime({
+  // Bot and legacy Test tickets share testExecutionId. Only the standalone
+  // launcher can establish a Test's metering scope without guessing its origin.
+  const usage = ticket.testExecutionId !== undefined && ticket.usageScope !== "standalone_test" ? null : createUsageRuntime({
     provider: ticket.provider,
     serverOrigin: ticket.serverOrigin, store: journal.usage, generation: ticket.executionGeneration,
     identity: { sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId },
     connection: () => { const fence = relay?.currentFence(), nativeSessionId = journal.getSnapshot().nativeSessionId; return fence && nativeSessionId ? { connectionEpoch: fence.connectionEpoch, nativeSessionId } : null; },
     readParentToken: async () => { const config = await loadServerConfiguration(resolveConfigurationPaths(options.homeDirectory)); if (config.serverUrl !== ticket.serverOrigin || !config.serverToken) throw new Error("Original usage parent credential is unavailable."); return config.serverToken; },
     onDiagnostic: diagnostic,
-  }) : null;
+  });
   own(async () => { await usage?.close(); });
   function stopForAccountingFailure(error: unknown): void {
     accountingFailure ??= error;
@@ -232,9 +240,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   }
   const assertNativeDispatch = (): void => {
     if (accountingFailure !== undefined) throw accountingFailure;
-    if (stopping) throw new Error("Controller stopped before native dispatch.");
+    if (stopping) throw new NativeDispatchRejectedError("Controller stopped before native dispatch.");
   };
-  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: () => synchronizeImageHistory(true), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(), currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId, provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
@@ -243,13 +251,14 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     nativeReadPolicy: () => nativeReadPolicy,
     acquireExternalPolicy: externalImages.acquire,
     onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onNativeReceipt: (request, receipt) => accountingBoundary(() => journal.applyNativeImageReceipt(request, receipt)),
     onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
   });
   const stopMarkdownCaptures = own(() => markdownCaptures.stop());
   const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
   const stopMarkdownTimeline = own(() => markdownTimeline.stop());
   relay = createControllerRelay(ticket, journal, {
-    onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
+    onConnection: connected => { synchronized = connected; if (!connected) { historyConnectionAbort.abort(new Error("Controller history connection changed.")); historyConnectionAbort = new AbortController(); markdownCaptures.invalidate(); } if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: error => {
       if (!isOutboxFailure(error)) { diagnostic(error); return; }
       stopForAccountingFailure(error);
@@ -257,6 +266,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     readState,
     onAcknowledged: () => {
       provider?.acknowledgeImageOccurrences?.();
+      if (relay.currentOnlineMode() === "relay") return;
       if (historyTimer) clearTimeout(historyTimer);
       historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(error)); }, 250);
     },
@@ -300,8 +310,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
           const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, input); }); relay.receipt(result);
         } catch (error) {
           if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
-          if (journal.getOperation(command.operationId)?.state === "accepted") relay.receipt(journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized."));
-          else throw error;
+          if (journal.getOperation(command.operationId)?.state === "accepted") {
+            const saved = journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized.");
+            relay.receipt(saved);
+          } else throw error;
         } finally { lease?.close(); }
       });
     },
@@ -318,11 +330,18 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   own(async () => {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     historyAbort.abort(new Error("Controller history synchronization stopped."));
-    await historyWork;
+    await Promise.allSettled([...historyCalls]);
   });
-  async function synchronizeImageHistory(forCapture = false): Promise<void> {
+  function synchronizeImageHistory(forCapture = false): Promise<void> {
+    const call = runImageHistorySynchronization(forCapture);
+    historyCalls.add(call);
+    void call.finally(() => historyCalls.delete(call)).catch(() => {});
+    return call;
+  }
+  async function runImageHistorySynchronization(forCapture: boolean): Promise<void> {
     let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (relay?.currentOnlineMode() === "relay") return;
     if (stopping || !relay?.connected()) {
       if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
       return;
@@ -331,6 +350,13 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (forCapture) throw new ImageCapturePrerequisiteError({ code: "component_unsupported", message: "Complete image history synchronization is unavailable." });
       return;
     }
+    const fence = relay.currentFence();
+    if (!fence) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    const roundSignal = AbortSignal.any([historyAbort.signal, historyConnectionAbort.signal]);
+    const checkConnection = () => {
+      roundSignal.throwIfAborted();
+      if (stopping || !relay.connected() || JSON.stringify(relay.currentFence()) !== JSON.stringify(fence)) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    };
     if (forCapture) {
       try { assertImageHistoryAvailable(journal); }
       catch (error) {
@@ -340,18 +366,17 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         throw error;
       }
       await relay.flush();
-      if (stopping || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image capture history connection changed before synchronization.");
+      checkConnection();
       requiredSourceThrough = journal.getLastSourceSequence();
     }
     const previous = historyWork;
+    const retryBudget = createImageHistoryRetryBudget();
     const work = (async () => {
       if (previous) await previous;
-      if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
       for (;;) {
-        if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
-        const fence = relay.currentFence();
-        if (!fence || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
-        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal, ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        checkConnection();
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: roundSignal, retryBudget, onRetry: event => diagnostic(JSON.stringify({ operation: "image_history_retry", ...event })), ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        checkConnection();
         if (!forCapture || journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())) return;
         // Native events can advance the acknowledged source while an older
         // frozen body uploads. Submit requires the complete current ledger.
@@ -400,6 +425,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
       await stopMarkdownCaptures();
       await closeProvider();
+      await Promise.allSettled([...active.values()]);
       await usage?.close();
       await stopMarkdownTimeline();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
@@ -417,7 +443,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       await stopMarkdownCaptures().catch(fail);
       await stopMarkdownTimeline().catch(fail);
       historyAbort.abort(new Error("Controller history synchronization stopped."));
-      await historyWork?.catch(error => diagnostic(error));
+      await Promise.allSettled([...historyCalls]);
       try { await closeRelay(); } catch (error) { fail(error); }
       try { await stopMedia(); } catch (error) { fail(error); }
       for (const socket of sockets) socket.destroy();
@@ -474,23 +500,25 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const kind = initial ? "initial" : "worker_input";
     const payload = initial ? { text: prompt } : { content: [{ type: "text", text: prompt }], expectedTurnId: null, origin: "daynight" };
     const hash = controllerPayloadHash({ kind, payload });
-    const existing = journal.getOperation(operationId);
-    if (existing) {
-      if (existing.kind !== kind || existing.executionGeneration !== ticket.executionGeneration || existing.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
-      const running = active.get(operationId);
-      return running ? running.then(operation => ({ kind: "operation", operation })) : Promise.resolve({ kind: "operation", operation: existing });
-    }
+    const recoveringInitial = initial && BigInt(ticket.executionGeneration) > 1n;
     const pending = pendingWorkerInput.get(operationId);
     if (pending) {
       if (pending.hash !== hash) throw new Error("The operation ID has different content.");
       return pending.promise;
     }
+    const existing = journal.getOperation(operationId);
+    if (existing) {
+      if (existing.kind !== kind || existing.payloadHash !== hash || (!recoveringInitial && existing.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+      const running = active.get(operationId);
+      if (running) return running.then(operation => ({ kind: "operation", operation }));
+      if (!recoveringInitial || existing.state !== "accepted") return Promise.resolve({ kind: "operation", operation: existing });
+    }
     if (pendingWorkerInput.size >= 32) throw new Error("Controller IPC action capacity is unavailable.");
     const promise = queueNative("send_message", async (): Promise<WorkerInputResult> => {
       const nowExisting = journal.getOperation(operationId);
       if (nowExisting) {
-        if (nowExisting.kind !== kind || nowExisting.executionGeneration !== ticket.executionGeneration || nowExisting.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
-        return { kind: "operation", operation: nowExisting };
+        if (nowExisting.kind !== kind || nowExisting.payloadHash !== hash || (!recoveringInitial && nowExisting.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+        if (!recoveringInitial || nowExisting.state !== "accepted") return { kind: "operation", operation: nowExisting };
       }
       let waiting = workerReady(deadline, initial);
       if (waiting) return waiting;
@@ -500,7 +528,18 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       waiting = workerReady(deadline, initial);
       if (waiting) return waiting;
       if (taskResult) return { kind: "waiting", reason: taskResult };
-      const prepared = accountingBoundary(() => journal.prepareOperation({ operationId, kind, payload }));
+      let previousTicket: ControllerLaunchTicket | undefined;
+      if (recoveringInitial) {
+        const evidence = await readRecoverableInitialInput(path.join(directory, "journal.sqlite"), ticket, options.homeDirectory, deadline, options.storageStateDirectory);
+        previousTicket = evidence.previousTicket;
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        const currentTask = await checkWorkerTask(ticket, options.homeDirectory, deadline);
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        if (currentTask) return { kind: "waiting", reason: currentTask };
+      }
+      const prepared = accountingBoundary(() => recoveringInitial ? journal.prepareRecoveredInitial(previousTicket!) : journal.prepareOperation({ operationId, kind, payload }));
       return { kind: "operation", operation: await dispatch(prepared, () => provider!.send(textNativeInput(prompt), operationId, null)) };
     });
     pendingWorkerInput.set(operationId, { hash, promise });
@@ -601,7 +640,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
               if (operation === null) return;
             }
           }
-          socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
+          socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const, recoveredInitialInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
         } catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
       })().catch(fail);
     });
@@ -693,6 +732,8 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
+      stageNativeImageCapture: (request, signal) => markdownCaptures.stageNative(request, signal),
+      recoverNativeImageCapture: request => markdownCaptures.recoverNative(request),
       imageRuntime: {
         publishNativeInputAssociation: request => {
           const result = accountingBoundary(() => journal.publishNativeInputAssociation(request));

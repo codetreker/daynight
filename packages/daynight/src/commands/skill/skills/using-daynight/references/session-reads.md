@@ -7,7 +7,9 @@ or resume Agents, take control, change claims or alter Task state.
 ## Observations
 
 Goals have Session registration `not_applicable`; this is a complete observation,
-not a partial failure.
+not a partial failure. Missing `session:read` on an implicit Task observation
+produces a permission notice and a successful Task query; other partial
+observations retain their failure status.
 
 Ordinary `task list`, `task show` and `task graph` include a versioned `session`,
 not history. Identify it by owning Project, Task and platform `sessionId`, never

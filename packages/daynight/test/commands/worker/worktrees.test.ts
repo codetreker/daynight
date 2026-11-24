@@ -1,18 +1,35 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { cpSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { RepositoryGitError, runRepositoryGit } from "../../../src/repository/git.js";
 import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSettlement, type OwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
+import type { WorkerCleanupPolicy } from "../../../src/commands/worker/worktrees.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
+import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
+import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as files from "../../../src/platform/files.js";
+import { skipWithoutSymbolicLinks } from "../../helpers/symlink-support.js";
+
+// Only the selected removal is replaced; every other directory removal runs the
+// real implementation.
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir), lstat: vi.fn(actual.lstat) };
+});
+
+vi.mock("node:timers/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -56,6 +73,14 @@ type RefFormat = "files" | "reftable";
 let seedRoot: string | undefined;
 const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
+const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const actualTimers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+const busyError = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+// Each cleanup member carries its own committed revision; a fixture names the
+// one it exercises and leaves the other member unapplied.
+const cleanupPolicy = (applied: Partial<WorkerCleanupPolicy>): WorkerCleanupPolicy =>
+  ({ enableSudoCleanup: false, sudoRevision: null, enableWindowsProcessCleanup: false, windowsProcessRevision: null, ...applied });
+
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
 const pendingReservations = new Set<Promise<unknown>>();
@@ -68,10 +93,7 @@ const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.e
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
 const operation = (): Operation => { const result = createOperation(); operations.push(result); return result; };
 const manager = (root: string, options: Partial<Parameters<typeof createWorkerGitManager>[0]> = {}) => {
-  const raw = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), prepareFormat: async (_project, repo, op) => {
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-      sources: { listSchedules: () => [], listWebTasks: () => [] } });
-  }, ...options });
+  const raw = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), ...options });
   const prepared = new Map<string, string>();
   const pathKey = (project: WorkerProject) => path.normalize(project.localPath);
   const bindingKey = (project: WorkerProject) => JSON.stringify([project.projectId, project.repoUrl]);
@@ -144,20 +166,25 @@ const fixture = async (refFormat: RefFormat = "files") => {
   return { ...f, bare };
 };
 type RepositoryFixture = Awaited<ReturnType<typeof repositoryFixture>>;
-// Existing-worktree cases start with native registration and a published manifest.
 const addRegisteredFixtureWorktree = (f: RepositoryFixture, commonDirectory: string, owner: ResourceOwner): WorktreeBinding => {
   const branch = `daynight/${owner.taskId}`;
   const worktreePath = path.join(f.repository, ".worktrees", "daynight", owner.worktreeId);
   git(f.repository, ["-c", `core.hooksPath=${path.join(f.root, "fixture-hooks")}`, "worktree", "add", "-b", branch, "--", worktreePath, "HEAD"]);
-  createWorktreeManifestStore(commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
   return { repositoryPath: f.repository, commonDirectory, worktreePath, branch };
 };
 const prepareCleanupFixture = async (f: RepositoryFixture, adapter: ReturnType<typeof manager>): Promise<WorktreeBinding> => {
   const { commonDirectory } = await adapter.prepareRepository(f.project, operation());
   return addRegisteredFixtureWorktree(f, commonDirectory, f.owner);
 };
-const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
-const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
+// Git expands Windows drive aliases. Translate only that drive's physical root;
+// resolving a junction or symlink within cwd must not remap unrelated paths.
+const fixtureGitPath = (cwd: string, value: string): string => {
+  const root = path.parse(cwd).root, observed = path.normalize(value);
+  const relative = path.relative(realpathSync.native(root), observed);
+  return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? observed : path.resolve(root, relative);
+};
+const administrativeDirectory = (cwd: string): string => fixtureGitPath(cwd, git(cwd, ["rev-parse", "--absolute-git-dir"]));
+const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => fixtureGitPath(cwd, field.slice(9)));
 const privateBases = (cwd: string): string => git(cwd, ["for-each-ref", "--format=%(refname)", "refs/daynight/worker-bases/"]);
 const commitForOrigin = (repository: string, bare: string, branch: string, message: string): string => {
   const commit = git(repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message]);
@@ -175,6 +202,9 @@ afterAll(async () => {
 });
 afterEach(async () => {
   controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
+  vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
+  vi.mocked(readdir).mockImplementation(actualFs.readdir);
+  vi.mocked(lstat).mockImplementation(actualFs.lstat);
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -201,13 +231,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     }
   });
 
-  it("rejects mismatches on either manifest ownership key", async () => {
+  it("requires the original task branch and expected worktree path", async () => {
     const f = await repositoryFixture("files"), adapter = manager(f.root);
     const binding = await prepareCleanupFixture(f, adapter);
     const other = changedClaim(f.owner);
-    for (const owner of [{ ...f.owner, worktreeId: other.worktreeId }, { ...f.owner, claimId: other.claimId }]) {
-      await expect(adapter.verifyWorktree(f.project, owner, operation())).rejects.toThrow("belongs to another original resource");
-    }
+    await expect(adapter.verifyWorktree(f.project, { ...f.owner, worktreeId: other.worktreeId }, operation())).rejects.toThrow("original task worktree is missing");
+    await expect(adapter.verifyWorktree(f.project, { ...f.owner, taskId: other.worktreeId }, operation())).rejects.toThrow("original task branch");
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
@@ -258,14 +287,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
-    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    expect(await adapter.findWorktree(f.project, f.owner, operation())).toBeNull();
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     const binding = await prepareCleanupFixture(f, adapter);
     await writeFile(path.join(binding.worktreePath, "tracked.txt"), "retained dirty work\n");
     expect(await adapter.findWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("retained dirty work\n");
-    await expect(adapter.findWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
+    expect(await adapter.findWorktree(f.project, changedClaim(f.owner), operation())).toBeNull();
   });
 
   it("does not report a removed original when Git moved its branch registration", async () => {
@@ -295,10 +324,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it("recognizes a verified successor in a different worktree directory", async () => {
-    const f = await fixture(), adapter = manager(f.root);
-    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const original = await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
-    await adapter.retireWorktreeManifest(f.project, f.owner, operation());
     const successor = changedClaim(f.owner);
     const next = await adapter.prepareWorktree(f.project, successor, operation());
     expect(next.worktreePath).not.toBe(original.worktreePath);
@@ -308,20 +336,15 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(worktreePaths(f.repository)).toContain(path.normalize(next.worktreePath));
   });
 
-  it("does not accept an unrelated manifest as proof of the successor", async () => {
-    const f = await fixture(), adapter = manager(f.root);
-    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+  it("does not treat a task branch registered outside the managed namespace as a successor", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const original = await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
-    await adapter.retireWorktreeManifest(f.project, f.owner, operation());
-    const successor = changedClaim(f.owner);
-    const next = await adapter.prepareWorktree(f.project, successor, operation());
-    const manifests = createWorktreeManifestStore(original.commonDirectory);
-    const current = manifests.read(successor.worktreeId)!;
-    manifests.remove(current);
-    manifests.publish({ ...current, projectId: "88888888-8888-4888-8888-888888888888" });
+    const next = path.join(f.root, "manual");
+    git(f.repository, ["worktree", "add", next, original.branch]);
     expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, original.worktreePath, operation())).toBe(false);
-    expect(await readFile(path.join(next.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    expect(worktreePaths(f.repository)).toContain(path.normalize(next.worktreePath));
+    expect(await readFile(path.join(next, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
   });
 
   it("inspects linked metadata from the repository cwd with its original absolute context and operation budget", async () => {
@@ -379,7 +402,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     await adapter.prepareRepository(f.project, operation());
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId); await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep");
-    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching Git registration");
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep");
   });
 
@@ -388,16 +411,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
   });
 
-  it("can inspect managed worktrees belonging to another Project in the same repository", async () => {
-    const f = await repositoryFixture("files"); const adapter = manager(f.root);
-    const foreignProject = { ...f.project, projectId: "99999999-9999-4999-8999-999999999999" };
-    const foreignOwner = { ...f.owner, projectId: foreignProject.projectId };
-    const binding = await prepareCleanupFixture({ ...f, project: foreignProject, owner: foreignOwner }, adapter);
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
-    expect(await adapter.listWorktrees(f.project, operation(), false, true)).toEqual([{ owner: foreignOwner, binding }]);
-  });
 
-  it("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
+  it.skipIf(skipWithoutSymbolicLinks)("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     const absent = { ...f.project, localPath: path.join(f.root, "missing", "repo") };
     await expect(adapter.listWorktrees(absent, operation())).rejects.toThrow("missing");
@@ -422,12 +437,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
     it("discovers claim resources from Git alone, including registrations whose leaf disappeared", async () => {
       const { f, adapter, first, otherOwner, second, unrelated } = prepared;
-      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: f.owner.taskId, binding: first }, { taskId: otherOwner.taskId, binding: second }]);
       await rm(first.worktreePath, { recursive: true });
-      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: f.owner.taskId, binding: first }, { taskId: otherOwner.taskId, binding: second }]);
       expect(await adapter.findWorktree(f.project, f.owner, operation())).toEqual(first);
       await adapter.removeWorktree(f.project, f.owner, operation());
-      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: otherOwner, binding: second }]);
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: otherOwner.taskId, binding: second }]);
       expect(await readFile(path.join(unrelated, "tracked.txt"), "utf8")).toBe("original\n");
     });
   });
@@ -439,18 +454,17 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep\n");
     const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", worktreeId: "99999999-9999-4999-8999-999999999999" };
     const healthy = addRegisteredFixtureWorktree(f, commonDirectory, healthyOwner);
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthy }]);
-    expect(errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error))).toContain("manifest is missing");
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: healthyOwner.taskId, binding: healthy }]);
+    expect(await adapter.removeWorktree(f.project, f.owner, {})).toEqual({ kind: "absent", effectErrors: [] });
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep\n");
   });
 
-  it("settles published empty reservations without inferring an absent manifest", async () => {
+  it("settles empty reservations using the exact worktree directory", async () => {
     const f = await repositoryFixture("files"), adapter = manager(f.root);
-    const repository = await adapter.prepareRepository(f.project, operation());
-    expect(errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error))).toContain("manifest is missing");
+    await adapter.prepareRepository(f.project, operation());
+    expect(await adapter.removeWorktree(f.project, f.owner, {})).toEqual({ kind: "absent", effectErrors: [] });
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await mkdir(target, { recursive: true });
-    createWorktreeManifestStore(repository.commonDirectory).publish({ schemaVersion: 1, ...f.owner, directoryName: f.owner.worktreeId });
     expect(await adapter.findWorktree(f.project, f.owner, operation())).not.toBeNull();
     await adapter.removeWorktree(f.project, f.owner, operation());
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
@@ -462,20 +476,161 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await adapter.prepareRepository(f.project, operation());
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await mkdir(target, { recursive: true });
-    await adapter.removeUnpublishedReservation(f.project, f.owner, operation());
+    await adapter.removeUnregisteredReservation(f.project, f.owner, operation());
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(target); await writeFile(path.join(target, "foreign"), "keep\n");
-    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow("not empty");
+    await expect(adapter.removeUnregisteredReservation(f.project, f.owner, operation())).rejects.toThrow("not empty");
     expect(await readFile(path.join(target, "foreign"), "utf8")).toBe("keep\n");
   });
 
-  it("rejects symlink parents when cleaning a reservation by task identity", async () => {
+  it("completes reservation cleanup once a transient holder releases it", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) === owned && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(entry, options);
+    });
+    await adapter.removeUnregisteredReservation(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates the processes holding a persistently busy reservation and completes cleanup", async () => {
+    const f = await repositoryFixture("files");
+    const stopped: string[] = [];
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 915, image: "node.exe", directory: target, birth: 915n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [915] }; },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      // A reservation is held exactly as a registered worktree is; only
+      // termination releases it.
+      if (stopped.length === 0) throw busyError();
+      return actualFs.rmdir(entry, options);
+    });
+    await adapter.removeUnregisteredReservation(f.project, f.owner, operation());
+    expect(stopped).toEqual([owned]);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "win32")("names the terminated holders when the reservation stays behind after its removal", async () => {
+    const f = await repositoryFixture("files");
+    let stopped = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stopped = true;
+        const holder = { pid: 917, image: "node.exe", directory: target, birth: 917n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [917] };
+      },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      if (!stopped) throw busyError();
+      // The removal reports success and leaves the directory, so the attempt
+      // fails in its postcondition rather than in the recovery. The holder is
+      // gone either way, which is what the diagnostic has to say.
+    });
+    const error = await adapter.removeUnregisteredReservation(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("removal is incomplete");
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (917).");
+  });
+
+  it.skipIf(process.platform !== "win32")("retains a busy reservation and terminates nothing when the target is not applied", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: false, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async () => { stops++; return { observed: [], terminated: [] }; },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      throw busyError();
+    });
+    await expect(adapter.removeUnregisteredReservation(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(stops).toBe(0);
+    expect((await lstat(target)).isDirectory()).toBe(true);
+  });
+
+  it("rejects a reservation replaced during the busy backoff instead of removing its replacement", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    // Prepared outside the reservation so it keeps its own inode; recreating the
+    // same name in place can reuse the inode just freed and leave identity equal.
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      await actualFs.rmdir(target);
+      await actualFs.rename(replacement, target);
+      throw busyError();
+    });
+    await expect(adapter.removeUnregisteredReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it("rejects a reservation replaced during the registration scan of a busy retry", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the retry's first identity check still passes and the
+      // swap lands inside its registration scan.
+      registrationBoundary.afterRead = () => {
+        if (swapped) return;
+        swapped = true;
+        rmdirSync(target);
+        renameSync(replacement, target);
+      };
+      throw busyError();
+    });
+    await expect(adapter.removeUnregisteredReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(swapped).toBe(true);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it.skipIf(skipWithoutSymbolicLinks)("rejects symlink parents when cleaning a reservation by task identity", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     const outside = path.join(f.root, "outside");
     await mkdir(path.join(outside, ids.taskId), { recursive: true });
     await mkdir(path.join(f.repository, ".worktrees"));
     await symlink(outside, path.join(f.repository, ".worktrees", "daynight"));
-    await expect(adapter.removeEmptyReservation(f.project, ids.taskId, operation())).rejects.toThrow("ordinary directory");
+    await expect(adapter.removeUnregisteredReservation(f.project, f.owner, operation())).rejects.toThrow("ordinary directory");
     expect((await lstat(path.join(outside, ids.taskId))).isDirectory()).toBe(true);
   });
 
@@ -494,13 +649,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const owner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", worktreeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
       const binding = addRegisteredWorktree(owner);
-      const admin = administrativeDirectory(binding.worktreePath), markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${owner.worktreeId}.json`), marker = await readFile(markerPath);
+      const admin = administrativeDirectory(binding.worktreePath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const pointer = path.join(administrativeDirectory(manual), "gitdir");
       const target = kind === "component-case" ? path.join(path.dirname(binding.worktreePath), owner.worktreeId.toUpperCase(), ".git") : path.join(binding.worktreePath, ".GIT");
       await writeFile(pointer, `${target}\n`);
-      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       if (kind === "file") {
         for (const name of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, name), { recursive: true });
       } else await rm(binding.worktreePath, { recursive: true });
@@ -513,14 +667,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
       await expect(adapter.verifyWorktree(f.project, owner, operation())).rejects.toThrow();
       await expect(adapter.removeWorktree(f.project, owner, operation())).rejects.toThrow();
-      expect(await readFile(markerPath)).toEqual(marker);
       expect(await readFile(pointer, "utf8")).toBe(`${target}\n`);
     });
 
     it.each(["absolute", "relative", "missing-parent"])("retains raw traversal in manual registration pointers: %s", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
-      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const admin = administrativeDirectory(manual), pointer = path.join(admin, "gitdir");
@@ -542,7 +694,6 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         expect(path.resolve(admin, raw)).not.toBe(await realpath(absoluteRaw));
       }
       await writeFile(pointer, `${raw}\n`);
-      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       const scan = await adapter.scanWorktrees(f.project, operation());
       expect(scan.unknown.length).toBeGreaterThan(0);
       expect(scan.quarantined).toEqual([]);
@@ -550,12 +701,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
       await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
       await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      expect(await readFile(markerPath)).toEqual(marker);
       expect(await readFile(pointer, "utf8")).toBe(`${raw}\n`);
       expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it.each(["forward", "common", "reverse"])("keeps physical cross-repository %s pointers unknown", async kind => {
+    it.each(["forward", "common", "reverse"])("retains resources with physical cross-repository %s pointers", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath), foreign = path.join(f.root, "foreign");
@@ -577,9 +727,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       // POSIX traverses the alias into the foreign repository. Win32 collapses
       // it into the original path; neither interpretation proves a safe pointer.
       const scan = await adapter.scanWorktrees(f.project, operation());
-      expect(scan.unknown.length).toBeGreaterThan(0);
+      expect(scan.validated).toEqual([]);
       expect(scan.quarantined).toEqual([]);
-      await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+      // A forward pointer proven outside the namespace supplies no managed registration.
+      if (kind === "forward" && process.platform !== "win32") expect(scan.unknown).toEqual([]);
+      else expect(scan.unknown.length).toBeGreaterThan(0);
       await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
       await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
       expect(await readFile(metadata, "utf8")).toBe(contents);
@@ -600,7 +752,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       await writeFile(pointer, `gitdir: ${relative(binding.worktreePath, admin)}\n`);
       expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
       if (state === "missing-leaf") await rm(binding.worktreePath, { recursive: true });
-      expect(await adapter.scanWorktrees(f.project, operation())).toEqual({ enumerationComplete: true, validated: [{ owner: f.owner, binding }], quarantined: [], unknown: [] });
+      expect(await adapter.scanWorktrees(f.project, operation())).toEqual({ enumerationComplete: true, validated: [{ taskId: f.owner.taskId, binding }], quarantined: [], unknown: [] });
       if (state === "present") await expect(adapter.verifyWorktree(f.project, f.owner, operation())).resolves.toEqual(binding);
       else await expect(adapter.findWorktree(f.project, f.owner, operation())).resolves.toEqual(binding);
       await adapter.removeWorktree(f.project, f.owner, operation());
@@ -610,7 +762,6 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     it.each(["case-alias", "hardlink"])("reconciles file-object registration aliases: %s", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
-      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const original = path.join(binding.worktreePath, ".git");
       const target = kind === "case-alias" ? path.join(binding.worktreePath, ".GIT") : path.join(f.root, "linked.git");
       if (kind === "hardlink") await link(original, target);
@@ -628,14 +779,13 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const pointer = path.join(administrativeDirectory(manual), "gitdir");
       await writeFile(pointer, `${target}\n`);
-      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       const scan = await adapter.scanWorktrees(f.project, operation());
       if (duplicate) {
         expect(scan.unknown.length).toBeGreaterThan(0);
         expect(scan.quarantined).toEqual([]);
       } else {
         expect(scan.unknown).toEqual([]);
-        expect(scan.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
+        expect(scan.validated).toEqual([{ taskId: f.owner.taskId, binding }]);
       }
       git(binding.worktreePath, ["checkout", binding.branch]);
       if (duplicate) {
@@ -643,20 +793,19 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
         await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
       } else {
-        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: f.owner.taskId, binding }]);
         await expect(adapter.verifyWorktree(f.project, f.owner, operation())).resolves.toEqual(binding);
       }
-      expect(await readFile(markerPath)).toEqual(marker);
       expect(await readFile(pointer, "utf8")).toBe(`${target}\n`);
       expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
       expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it.each(["duplicate", "duplicate-missing", "duplicate-final-symlink", "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
+    // Only the final-symlink alias needs a symbolic link of its own; the other
+    // kinds reach the same code through a junction, which needs no privilege.
+    it.each(["duplicate", "duplicate-missing", ...(skipWithoutSymbolicLinks ? [] : ["duplicate-final-symlink"]), "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
-      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
-      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const admin = administrativeDirectory(manual), pointer = path.join(admin, "gitdir"), alias = path.join(f.root, "alias");
@@ -673,9 +822,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const result = await adapter.scanWorktrees(f.project, operation());
       if (kind.startsWith("unrelated")) {
         expect(result.unknown).toEqual([]);
-        expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
+        expect(result.validated).toEqual([{ taskId: f.owner.taskId, binding }]);
         git(binding.worktreePath, ["checkout", binding.branch]);
-        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ taskId: f.owner.taskId, binding }]);
       } else {
         expect(result.unknown.length).toBeGreaterThan(0);
         expect(result.quarantined).toEqual([]);
@@ -684,7 +833,6 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
       }
       expect(await readFile(pointer, "utf8")).toBe(`${target}\n`);
-      expect(await readFile(markerPath)).toEqual(marker);
       if (kind === "duplicate-final-symlink") expect((await lstat(target)).isSymbolicLink()).toBe(true);
       if (kind !== "duplicate-missing") expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
       if (kind !== "unrelated-missing") expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
@@ -695,15 +843,16 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const broken = addRegisteredWorktree(f.owner);
       const owner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
       const healthy = addRegisteredWorktree(owner);
-      git(broken.worktreePath, ["checkout", "-b", "changed-branch"]);
+      const pointer = path.join(broken.worktreePath, ".git"), original = await readFile(pointer);
+      await rm(pointer);
       const result = await adapter.scanWorktrees(f.project, operation());
       expect(result.enumerationComplete).toBe(true);
       expect(result.unknown).toEqual([]);
-      expect(result.validated).toEqual([{ owner, binding: healthy }]);
-      expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
-      await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("original task branch");
+      expect(result.validated).toEqual([{ taskId: owner.taskId, binding: healthy }]);
+      expect(result.quarantined).toEqual([{ taskId: f.owner.taskId, binding: broken, error: expect.objectContaining({ message: expect.stringMatching(/Git pointer is missing/) }) }]);
+      await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("Git pointer is missing");
       await expect(adapter.verifyWorktree(f.project, owner, operation())).resolves.toEqual(healthy);
-      git(broken.worktreePath, ["checkout", broken.branch]);
+      await writeFile(pointer, original);
       expect((await adapter.scanWorktrees(f.project, operation())).quarantined).toEqual([]);
     });
 
@@ -716,26 +865,31 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       if (kind === "marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{");
       if (kind === "unknown-marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{}");
       if (kind === "commondir") { await rm(path.join(admin, "commondir")); await mkdir(path.join(admin, "commondir")); }
-      if (kind === "pointer") await writeFile(path.join(admin, "gitdir"), path.join(f.root, "foreign", ".git"));
+      if (kind === "pointer") {
+        const pointer = path.join(binding.worktreePath, ".git");
+        // Git marks this file hidden on Windows, where opening it with truncation fails.
+        await rm(pointer);
+        await writeFile(pointer, "invalid reverse pointer\n");
+      }
       if (kind === "duplicate") cpSync(admin, `${admin}-duplicate`, { recursive: true });
       if (kind === "unreadable") { await rm(path.join(admin, "gitdir")); await mkdir(path.join(admin, "gitdir")); }
       const result = await adapter.scanWorktrees(f.project, operation());
       if (kind === "marker" || kind === "unknown-marker") {
         expect(result.unknown).toEqual([]);
-        expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ message: expect.stringMatching(/Legacy Worker lock/) }) }]);
+        expect(result.quarantined).toEqual([{ taskId: f.owner.taskId, binding, error: expect.objectContaining({ message: expect.stringMatching(/external Git lock/) }) }]);
       } else {
         expect(result.unknown.length).toBeGreaterThan(0);
         expect(result.quarantined).toEqual([]);
       }
       if (kind !== "unreadable") {
-        expect(result.validated).toEqual([{ owner: siblingOwner, binding: sibling }]);
+        expect(result.validated).toEqual([{ taskId: siblingOwner.taskId, binding: sibling }]);
         await expect(adapter.verifyWorktree(f.project, siblingOwner, operation())).resolves.toEqual(sibling);
       }
       await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
       expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it.each(["symlink", "file"])("keeps a registration replaced by a %s unknown without reading through it", async kind => {
+    it.each([...(skipWithoutSymbolicLinks ? [] : ["symlink"]), "file"])("keeps a registration replaced by a %s unknown without reading through it", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath), retained = path.join(f.root, "retained-admin");
@@ -750,7 +904,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(retained, "gitdir"), "utf8")).toBe(marker);
     });
 
-    it.each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
+    it.skipIf(skipWithoutSymbolicLinks).each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
@@ -792,20 +946,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
   });
 
-  it("limits discovered resources to the requested project's static ownership", async () => {
-    const f = await repositoryFixture("files"); const adapter = manager(f.root);
-    const otherProject = { ...f.project, projectId: "88888888-8888-4888-8888-888888888888" };
-    const otherOwner = { ...f.owner, projectId: otherProject.projectId };
-    const binding = await prepareCleanupFixture({ ...f, project: otherProject, owner: otherOwner }, adapter);
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
-    expect(await adapter.listWorktrees(otherProject, operation())).toEqual([{ owner: otherOwner, binding }]);
-  });
 
   it("validates an existing root and keeps dirty repository work", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     await writeFile(path.join(f.repository, "tracked.txt"), "uncommitted\n"); await writeFile(path.join(f.repository, "untracked.txt"), "retained\n");
     const actual = await adapter.prepareRepository(f.project, operation());
-    expect(actual.root).toBe(f.repository); expect(actual.commonDirectory).toBe(path.join(f.repository, ".git"));
+    expect(actual.root).toBe(f.repository); expect(actual.commonDirectory).toBe(await realpath(path.join(f.repository, ".git")));
     expect(git(f.repository, ["status", "--porcelain"])).toContain(" M tracked.txt");
     expect(await readFile(path.join(f.repository, "untracked.txt"), "utf8")).toBe("retained\n");
   });
@@ -871,8 +1017,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(binding.worktreePath).toBe(path.join(f.repository, ".worktrees", "daynight", ids.worktreeId));
     expect(binding.branch).toBe(`daynight/${ids.taskId}`);
     expect(git(binding.worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${binding.branch}`);
-    const manifest = createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId);
-    expect(manifest).toEqual({ schemaVersion: 1, ...f.owner, directoryName: ids.worktreeId });
+    await expect(lstat(path.join(f.repository, ".git", "daynight", "worktrees"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(path.join(administrativeDirectory(binding.worktreePath), "locked"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
   });
@@ -1088,7 +1233,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(); const adapter = manager(f.root);
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await expect(adapter.prepareWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("already checked out");
-    expect(errorText(await adapter.removeWorktree(f.project, changedClaim(f.owner), {}).catch(error => error))).toContain("manifest is missing");
+    expect(await adapter.removeWorktree(f.project, changedClaim(f.owner), {})).toEqual({ kind: "absent", effectErrors: [] });
     await expect(adapter.verifyWorktree({ ...f.project, projectId: "88888888-8888-4888-8888-888888888888" }, f.owner, operation())).rejects.toThrow("does not belong to this project");
     await adapter.removeWorktree(f.project, f.owner, operation()); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep\n");
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching Git registration");
@@ -1149,16 +1294,475 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const binding = await prepareCleanupFixture(f, adapter);
     const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
-    expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
     expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
+  it("completes cleanup when the task worktree root is transiently busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) === root && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates the processes holding a persistently busy worktree and completes cleanup", async () => {
+    const f = await repositoryFixture("files");
+    const stopped: string[] = [];
+    let attempts = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 4242, image: "node.exe", directory: target, birth: 4242n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [4242] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      // Busy through every backoff, so only termination can unblock removal.
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      attempts++;
+      if (stopped.length === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(stopped).toEqual([root]);
+    expect(attempts).toBe(7);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("refuses to remove when ownership changes while the holders are being terminated", async () => {
+    const f = await repositoryFixture("files");
+    const administrativeHead = path.join(f.repository, ".git", "worktrees", ids.worktreeId, "HEAD");
+    let stops = 0, removals = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stops++;
+        // Termination is asynchronous; the worktree this cleanup proved it
+        // owns stops being its own while the processes are going away.
+        writeFileSync(administrativeHead, "ref: refs/heads/foreign\n");
+        const holder = { pid: 916, image: "node.exe", directory: target, birth: 916n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [916] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      removals++;
+      if (stops === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(stops).toBe(1);
+    expect(errorText(error)).toContain("original task branch");
+    // The retry must not have removed anything after the proof became invalid.
+    // Both the admission that follows termination and the removal sequence's
+    // own verifier enforce this, so the case holds the behavior rather than
+    // any single guard.
+    expect((await lstat(root)).isDirectory()).toBe(true);
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates no holder when the busy root is replaced during the metadata read", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 914, image: "node.exe", directory: target, birth: 914n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [914] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    let attempts = 0, armed = false, swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      // Armed only once the busy retries are exhausted, so the swap lands in
+      // the asynchronous reads of the admission that precedes termination,
+      // after its first identity check has already passed.
+      if (++attempts >= 6) armed = true;
+      throw busyError();
+    });
+    vi.mocked(readdir).mockImplementation((async (entry: Parameters<typeof actualFs.readdir>[0], options: Parameters<typeof actualFs.readdir>[1]) => {
+      const result = await actualFs.readdir(entry, options);
+      if (armed && !swapped && path.normalize(String(entry)) === root) {
+        swapped = true;
+        rmdirSync(root);
+        renameSync(replacement, root);
+      }
+      return result;
+    }) as typeof actualFs.readdir);
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(swapped).toBe(true);
+    expect(errorText(error)).toContain("changed during cleanup");
+    // The replacement is unrelated to this worktree, so nothing in it may be
+    // terminated even though it satisfies every check taken before the reads.
+    expect(stops).toBe(0);
+  });
+
+  it.skipIf(process.platform !== "win32")("retains a busy worktree and its registration when the target is not applied", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: false, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async () => { stops++; return { observed: [], terminated: [] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(stops).toBe(0);
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it.skipIf(process.platform !== "win32")("retains the original busy error when the worktree stays busy after termination", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // Nothing the inventory can act on, whatever is holding the directory:
+      // the retry meets the same obstacle and the original error stands.
+      stopHoldingProcesses: async () => ({ observed: [], terminated: [] }),
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("EBUSY");
+    expect(errorText(error)).toContain("configuration revision 7");
+    expect(errorText(error)).toContain("No holder was terminated.");
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it.skipIf(process.platform !== "win32")("reports each termination as it happens, including when the cleanup then succeeds", async () => {
+    const f = await repositoryFixture("files");
+    // The gap the failure diagnostics cannot cover: a recovery that works
+    // ends processes the Worker may never have started and reports nothing,
+    // because there is no failure to carry the record.
+    const reported: unknown[] = [];
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      reportHolderTerminated: event => { reported.push(event); },
+      stopHoldingProcesses: async (target, _operation, options) => {
+        // A holder usually sits in a descendant rather than the target itself,
+        // so the directory it held and the directory it blocked are different
+        // facts and the report has to carry both.
+        const holder = { pid: 804, image: "node.exe", directory: path.join(target, "packages", "app"), birth: 804n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [804] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (reported.length === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: path.join(binding.worktreePath, "packages", "app"), birth: 804n } }]);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("completes the cleanup when reporting a termination fails", async () => {
+    const f = await repositoryFixture("files");
+    let stopped = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // A diagnostic that cannot be written must not turn a recovered worktree
+      // into a failed cleanup, and must not be recorded as a holder that could
+      // not be terminated. The diagnostics sink reports its own unavailability.
+      reportHolderTerminated: () => { throw new Error("diagnostic sink unavailable"); },
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stopped = true;
+        const holder = { pid: 805, image: "node.exe", directory: target, birth: 805n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [805] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!stopped) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("reports a nested reservation's terminations with the attempt that reached it", async () => {
+    const f = await repositoryFixture("files");
+    const controller = new AbortController();
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const holder = { pid: 903, image: "node.exe", directory: target, birth: 903n };
+        options?.onTerminated?.(holder);
+        controller.abort(new Error("cleanup cancelled"));
+        return { observed: [holder], terminated: [903] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = await realpath(administrativeDirectory(binding.worktreePath));
+    // Without its Git registration the directory is an unregistered
+    // reservation, so the removal reaches it through the nested path rather
+    // than the main one. The record is the attempt's, not that step's.
+    await rm(admin, { recursive: true, force: true });
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (903).");
+  });
+
+  it.skipIf(process.platform !== "win32")("names the terminated holders when cancellation ends the attempt instead of the removal", async () => {
+    const f = await repositoryFixture("files");
+    const controller = new AbortController();
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const holder = { pid: 801, image: "node.exe", directory: target, birth: 801n };
+        // Reported before the cancellation, which is the whole point: the
+        // process is gone and this attempt will never return a result.
+        options?.onTerminated?.(holder);
+        controller.abort(new Error("cleanup cancelled"));
+        return { observed: [holder], terminated: [801] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (801).");
+    expect(errorText(error)).toContain("cancel");
+  });
+
+  it.skipIf(process.platform !== "win32")("names the terminated holders when the attempt fails after the removal succeeded", async () => {
+    const f = await repositoryFixture("files");
+    const administrativeHead = path.join(f.repository, ".git", "worktrees", ids.worktreeId, "HEAD");
+    let stopped = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stopped = true;
+        const holder = { pid: 802, image: "node.exe", directory: target, birth: 802n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [802] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!stopped) throw busyError();
+      const result = await actualFs.rmdir(target, options);
+      // The removal itself succeeded. Everything that fails from here on does
+      // so with the holder already terminated, which the local recovery scope
+      // can no longer report.
+      writeFileSync(administrativeHead, "ref: refs/heads/foreign\n");
+      return result;
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(stopped).toBe(true);
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (802).");
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("counts every terminated holder while naming a bounded number of them", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // An agent can leave behind more processes than belong in an error
+      // message, so the list is bounded while the count stays the real one.
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const observed = Array.from({ length: 11 }, (_entry, index) => ({ pid: 600 + index, image: "node.exe", directory: target, birth: BigInt(600 + index) }));
+        for (const holder of observed) options?.onTerminated?.(holder);
+        return { observed, terminated: observed.map(holder => holder.pid) };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("Terminated 11 holder process trees:");
+    expect(errorText(error)).toContain("node.exe (607), and 3 more.");
+    // The ninth onwards are counted, not named.
+    expect(errorText(error)).not.toContain("node.exe (608)");
+  });
+
+  it.skipIf(process.platform !== "win32")("names the terminated holders when the worktree stays busy after termination", async () => {
+    const f = await repositoryFixture("files");
+    let rounds = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // One holder kept an open file as well as its working directory, so the
+      // tree stays busy after its working directory holders are gone.
+      stopHoldingProcesses: async (target, _operation, options) => {
+        rounds++;
+        const observed = [{ pid: 701, image: "node.exe", directory: target, birth: 701n }, { pid: 702, image: "pwsh.exe", directory: target, birth: 702n }, { pid: 703, image: "git.exe", directory: target, birth: 703n }];
+        for (const holder of [observed[0]!, observed[2]!]) options?.onTerminated?.(holder);
+        return { observed, terminated: [701, 703] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("EBUSY");
+    // The termination cannot be undone, so the failure is the only record of
+    // it the operator receives. Holders that survived are not claimed as ended.
+    expect(errorText(error)).toContain("Terminated 2 holder process trees: node.exe (701), git.exe (703).");
+    // One round per attempt. Terminating again because the tree is still busy
+    // would let anything that restarts a holder turn this into a kill loop.
+    expect(rounds).toBe(1);
+    expect(errorText(error)).not.toContain("pwsh.exe");
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it("rejects a worktree root replaced during the metadata read of a busy retry", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    let attempts = 0;
+    let armed = false;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the swap lands inside the retry's metadata read
+      // rather than before its identity checks have run.
+      armed = true;
+      throw busyError();
+    });
+    vi.mocked(readdir).mockImplementation((async (entry: Parameters<typeof actualFs.readdir>[0], options: Parameters<typeof actualFs.readdir>[1]) => {
+      const result = await actualFs.readdir(entry, options);
+      if (armed && !swapped && path.normalize(String(entry)) === root) {
+        swapped = true;
+        rmdirSync(root);
+        renameSync(replacement, root);
+      }
+      return result;
+    }) as typeof actualFs.readdir);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("changed during cleanup");
+    expect(swapped).toBe(true);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(root, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it("retains the task worktree root and its registration when it stays busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const original = await actualFs.lstat(root, { bigint: true });
+    const busy = busyError();
+    const delays = [20, 40, 80, 160, 320];
+    type RetryTimer = ReturnType<typeof captureSynchronousDeadline<Promise<unknown>>>;
+    const waiting = delays.map(() => Promise.withResolvers<RetryTimer>());
+    let attempts = 0, captured = 0, armed = false;
+    let timer: RetryTimer | undefined;
+    const proofs: string[] = [];
+    const proofsBeforeRetries: string[][] = [];
+    vi.mocked(lstat).mockImplementation((async (target, options) => {
+      const result = await actualFs.lstat(target, options);
+      if (attempts > 0 && path.normalize(String(target)) === root && options?.bigint) proofs.push(`${result.dev}:${result.ino}`);
+      return result;
+    }) as typeof actualFs.lstat);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (attempts > 0) proofsBeforeRetries.push(proofs.splice(0));
+      attempts++;
+      armed = true;
+      throw busy;
+    });
+    vi.mocked(delay).mockImplementation(<T>(milliseconds?: number, value?: T, options?: Parameters<typeof delay>[2]) => {
+      if (!armed) return actualTimers.setTimeout(milliseconds, value, options);
+      armed = false;
+      const notification = waiting[captured++];
+      if (notification === undefined) throw new Error("Unexpected extra busy retry delay.");
+      // Only a delay reached from the selected root's synthetic EBUSY is controlled.
+      timer = captureSynchronousDeadline(() => new Promise<T | undefined>(resolve => setTimeout(resolve, milliseconds, value)));
+      timer.markReady();
+      notification.resolve(timer);
+      return timer.result as Promise<T>;
+    });
+    const op = operation();
+    const removal = adapter.removeWorktree(f.project, f.owner, op).then(() => undefined, (error: unknown) => error);
+    const watchdog = Promise.withResolvers<never>();
+    const watchdogTimer = setTimeout(() => watchdog.reject(new Error("Busy retry delay was not observed.")), 10_000);
+    try {
+      for (const [index, milliseconds] of delays.entries()) {
+        const observed = await Promise.race([
+          waiting[index]!.promise,
+          removal.then(error => { throw new Error("Worktree removal ended before its busy retry delay.", { cause: error }); }),
+          watchdog.promise,
+        ]);
+        expect(attempts).toBe(index + 1);
+        expect(observed.count).toBe(1);
+        expect(observed.requested).toBe(milliseconds);
+        try { await observed.expire(); }
+        finally { observed.restore(); timer = undefined; }
+      }
+      expect(await removal).toBe(busy);
+      expect(attempts).toBe(6);
+      expect(captured).toBe(delays.length);
+      expect(proofsBeforeRetries).toHaveLength(5);
+      for (const identities of proofsBeforeRetries) {
+        expect(identities.length).toBeGreaterThanOrEqual(2);
+        expect(identities.every(identity => identity === `${original.dev}:${original.ino}`)).toBe(true);
+      }
+      const retained = await actualFs.lstat(root, { bigint: true });
+      expect([retained.dev, retained.ino]).toEqual([original.dev, original.ino]);
+      expect(worktreePaths(f.repository)).toContain(root);
+    } finally {
+      vi.mocked(delay).mockImplementation(actualTimers.setTimeout);
+      clearTimeout(watchdogTimer);
+      op.dispose();
+      try { if (timer !== undefined) await timer.expire(); }
+      finally { timer?.restore(); }
+      await removal;
+    }
+  });
+
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {
     const f = await repositoryFixture("files"); let enabled = true, calls = 0;
     const denied = Object.assign(new Error("denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: enabled, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: enabled, sudoRevision: "42" })),
       removeDirectory: async () => { enabled = false; throw denied; },
       runShellRemoval: async (root, target) => { calls++; expect(root).toBe(f.repository); await rm(target, { recursive: true }); },
     });
@@ -1170,7 +1774,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32")("preserves both permission and actual shell errors", async () => {
     const f = await repositoryFixture("files"); const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { throw new Error("sudo denied"); },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1181,7 +1785,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it("does not elevate an ordinary I/O failure", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const io = Object.assign(new Error("filesystem I/O failed"), { code: "EIO" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw io; }, runShellRemoval: async () => { calls++; },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1192,7 +1796,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform !== "win32")("never invokes sudo on Windows even when enabled", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { calls++; },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1203,7 +1807,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains registration and both errors when privileged removal is partial", async () => {
     const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { await rm(path.join(target, "tracked.txt")); throw new Error("partial shell removal"); },
     });
@@ -1216,7 +1820,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains an unattributable nonempty leaf after partial privileged removal", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { calls++; await rm(path.join(target, ".git")); throw new Error("privileged partial removal"); },
     });
@@ -1236,7 +1840,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains the permission error when Git registration removal fails", async () => {
     const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async (_root, target) => { await rm(target, { recursive: true }); },
       startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
         if (args.includes("worktree") && args.includes("remove")) throw new Error("registration failure");
@@ -1251,9 +1855,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("removes a real root-owned directory through noninteractive sudo and clears Git registration", async () => {
-    const f = await fixture();
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "17" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "17" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     const owned = path.join(binding.worktreePath, "root-owned");
     execFileSync("sudo", ["-n", "mkdir", owned], { timeout: 10000 });
     execFileSync("sudo", ["-n", "chmod", "700", owned], { timeout: 10000 });
@@ -1270,8 +1874,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rechecks registration when the original Git pointer is inaccessible", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     execFileSync("sudo", ["-n", "chown", "0", binding.worktreePath], { timeout: 10000 });
     execFileSync("sudo", ["-n", "chmod", "700", binding.worktreePath], { timeout: 10000 });
     try {
@@ -1281,8 +1885,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["absolute", "relative"])("cleans an inaccessible owned worktree beside an unrelated stale registration with a %s pointer", async format => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     const stale = path.join(f.root, "stale worktree");
     git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
     if (format === "relative") {
@@ -1303,9 +1907,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["dangling", "missing-parent-traversal", "case-alias", "trailing-slash", "inaccessible-parent", "symlink-name", "hardlink-name"])("retains an inaccessible target when an unrelated registration has %s ambiguity", async kind => {
-    const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); let calls = 0;
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
+    const binding = await prepareCleanupFixture(f, adapter);
     const stale = path.join(f.root, "stale worktree");
     git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
     const admin = administrativeDirectory(stale), gitdir = path.join(admin, "gitdir"), original = await readFile(gitdir, "utf8");
@@ -1346,9 +1950,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rejects an inaccessible registration with an unprovable symlink traversal", async () => {
-    const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); let calls = 0;
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
+    const binding = await prepareCleanupFixture(f, adapter);
     const admin = administrativeDirectory(binding.worktreePath), gitdir = path.join(admin, "gitdir"), original = await readFile(gitdir, "utf8");
     const parent = path.dirname(binding.worktreePath), alias = path.join(parent, "outside-alias"), outside = path.join(f.root, "outside");
     await mkdir(outside); await mkdir(path.join(f.root, path.basename(binding.worktreePath))); await symlink(outside, alias);
@@ -1365,9 +1969,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rejects an inaccessible worktree with a physically different common directory", async () => {
-    const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); let calls = 0;
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
+    const binding = await prepareCleanupFixture(f, adapter);
     const admin = administrativeDirectory(binding.worktreePath), common = path.join(admin, "commondir"), original = await readFile(common, "utf8");
     const outside = path.join(f.root, "outside"), alias = path.join(f.repository, "alias");
     await mkdir(outside); await mkdir(path.join(f.root, ".git")); await symlink(outside, alias);
@@ -1384,8 +1988,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("accepts a verified relative Git pointer when the worktree is inaccessible", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     const admin = administrativeDirectory(binding.worktreePath), gitdir = path.join(admin, "gitdir");
     await writeFile(gitdir, `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`);
     execFileSync("sudo", ["-n", "chown", "0", binding.worktreePath], { timeout: 10000 });
@@ -1397,8 +2001,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rechecks the empty leaf when its parent denies final removal", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "21" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "21" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     const parent = path.dirname(binding.worktreePath); await chmod(parent, 0o555);
     try {
       await adapter.removeWorktree(f.project, f.owner, {});
@@ -1407,8 +2011,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("retries an already empty worktree when its parent denies removal", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "22" }) });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "22" })) });
+    const binding = await prepareCleanupFixture(f, adapter);
     for (const name of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, name), { recursive: true, force: true });
     const parent = path.dirname(binding.worktreePath); await chmod(parent, 0o555);
     try {
@@ -1430,7 +2034,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const input = JSON.parse(process.argv[1]);
       process.env.PATH = input.fake + ':' + process.env.PATH;
       const op = createOperation();
-      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), prepareFormat: async () => {}, readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: '18' }) });
+      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), readCleanupPolicy: () => ({ enableSudoCleanup: true, sudoRevision: '18', enableWindowsProcessCleanup: false, windowsProcessRevision: null }) });
       try {
         await manager.prepareRepository(input.project, op);
         const binding = await manager.prepareWorktree(input.project, input.owner, op);
@@ -1450,7 +2054,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("keeps the task gate through cancellation until the real sudo child exits", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "19" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "19" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const owned = path.join(binding.worktreePath, "root-owned");
     const shim = path.join(f.root, "commands"), ready = path.join(f.root, "sudo-ready"), release = path.join(f.root, "sudo-release");
@@ -1695,7 +2299,7 @@ exec "$@"
     try {
       // A real unprivileged filesystem failure distinguishes this regression from a mocked rm error.
       await expect(rm(cache, { recursive: true })).rejects.toMatchObject({ code: "EACCES" });
-      expect(errorText(await adapter.removeWorktree(f.project, changedClaim(f.owner), {}).catch(error => error))).toContain("manifest is missing");
+      expect(await adapter.removeWorktree(f.project, changedClaim(f.owner), {})).toEqual({ kind: "absent", effectErrors: [] });
       expect((await lstat(nested)).mode & 0o777).toBe(0o555);
       await adapter.removeWorktree(f.project, f.owner, operation());
       await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -1710,6 +2314,154 @@ exec "$@"
         catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
       }
     }
+  });
+
+  it.skipIf(process.platform !== "win32")("recovers a pointerless empty worktree after an earlier termination attempt failed", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0, allowed = false, terminated = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stops++;
+        // The first attempt fails after the pointer is already unlinked, so
+        // every later attempt arrives through the pointerless-empty branch.
+        if (!allowed) throw new Error("holder inventory interrupted");
+        terminated = true;
+        const holder = { pid: 909, image: "node.exe", directory: target, birth: 909n };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [909] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!terminated) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    const first = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(first)).toContain("EBUSY");
+    expect(errorText(first)).toContain("holder inventory interrupted");
+    expect(stops).toBe(1);
+    // The interrupted attempt left the worktree registered, empty and without
+    // its Git pointer; a later attempt must still reach the recovery.
+    expect(await readFile(path.join(root, ".git"), "utf8").catch(() => null)).toBeNull();
+    expect(worktreePaths(f.repository)).toContain(root);
+    allowed = true;
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(stops).toBe(2);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32").each(["branch", "registration"] as const)("terminates no holder when the pointerless worktree loses its %s during the busy backoff", async kind => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 911, image: "node.exe", directory: target, birth: 911n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [911] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = administrativeDirectory(binding.worktreePath);
+    const administrativeHead = path.join(admin, "HEAD");
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let broken = false;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!broken) {
+        broken = true;
+        // The evidence the first attempt proved stops being true before the
+        // recovery decides whose processes to terminate.
+        if (kind === "branch") writeFileSync(administrativeHead, "ref: refs/heads/foreign\n");
+        else writeFileSync(path.join(admin, "gitdir"), "C:\\elsewhere\\.git\n");
+      }
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(errorText(error)).toContain(kind === "branch" ? "original task branch" : "metadata gitdir changed");
+    expect(stops).toBe(0);
+    expect((await lstat(root)).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates no holder when the registration is retargeted while the evidence is captured", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 913, image: "node.exe", directory: target, birth: 913n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [913] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = administrativeDirectory(binding.worktreePath);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let retargeted = false;
+    const pointer = path.normalize(path.join(root, ".git"));
+    vi.mocked(lstat).mockImplementation((async (target: Parameters<typeof actualFs.lstat>[0], options: Parameters<typeof actualFs.lstat>[1]) => {
+      // The branch tests the absent pointer directly after the inspection that
+      // resolved the registration, and the evidence is captured right after.
+      // Retargeting here is the window a baseline taken from disk would miss.
+      if (!retargeted && path.normalize(String(target)) === pointer) {
+        retargeted = true;
+        writeFileSync(path.join(admin, "gitdir"), "C:\\elsewhere\\.git\n");
+      }
+      return actualFs.lstat(target, options);
+    }) as typeof actualFs.lstat);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(retargeted).toBe(true);
+    expect(errorText(error)).toContain("while its ownership evidence was captured");
+    expect(stops).toBe(0);
+    expect((await lstat(root)).isDirectory()).toBe(true);
+  });
+
+  it("retains a pointerless empty worktree that is locked during the busy backoff", async () => {
+    const f = await repositoryFixture("files"); const adapter = manager(f.root); const binding = await prepareCleanupFixture(f, adapter);
+    // Captured while the pointer still resolves, then emptied to reach the
+    // recovery branch for a registered worktree whose pointer is already gone.
+    const admin = administrativeDirectory(binding.worktreePath);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Only the first attempt is busy, and the lock appears during its
+      // backoff: a retry that did not revalidate would remove the directory.
+      if (attempts > 1) return actualFs.rmdir(entry, options);
+      writeFileSync(path.join(admin, "locked"), "human");
+      throw busyError();
+    });
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect((await lstat(root)).isDirectory()).toBe(true);
+  });
+
+  it("retains worktree contents that are locked during the busy backoff of an entry removal", async () => {
+    const f = await repositoryFixture("files");
+    let attempts = 0;
+    let admin = "";
+    const adapter = manager(f.root, {
+      removeDirectory: async (target, options) => {
+        if (admin === "") return actualFs.rm(target, options);
+        attempts++;
+        // Only the first entry removal is busy, and the lock appears during
+        // its backoff: a retry admitted on local identity alone would delete
+        // the entry and go on clearing the worktree.
+        if (attempts > 1) return actualFs.rm(target, options);
+        writeFileSync(path.join(admin, "locked"), "human");
+        throw busyError();
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    admin = administrativeDirectory(binding.worktreePath);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
   });
 
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {
@@ -1727,7 +2479,7 @@ exec "$@"
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(interrupted); await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive inode reuse\n");
     const second = manager(f.root); expect(errorText(await second.removeWorktree(f.project, f.owner, {}).catch(error => error))).toContain("Git pointer is missing");
-    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
+    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
     await rm(binding.worktreePath, { recursive: true }); await second.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
@@ -1804,7 +2556,8 @@ exec "$@"
     await rm(pointer); await writeFile(pointer, original);
     git(binding.worktreePath, ["checkout", "-b", "other-task"]);
     await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch");
-    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error))).toContain("original task branch");
+    await adapter.removeWorktree(f.project, f.owner, { originalCwd: binding.worktreePath });
     expect(git(f.repository, ["show-ref", "--verify", "refs/heads/other-task"])).toContain("other-task");
   });
 
@@ -1893,6 +2646,47 @@ exec "$@"
     } finally { release.resolve(); await preparation; await adapter.dispose(); }
   });
 
+  it("unblocks the original mutation and manager disposal when inventory confirms its Git closure", async () => {
+    const f = await fixture(), journalDirectory = path.join(f.root, "journal");
+    const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity: {
+      serverOrigin: "https://daynight.example", userId: ids.taskId, workerId: ids.workerId,
+    } });
+    const replace = files.replaceFileAtomically;
+    let rejectStop = true, fetches = 0;
+    const replacement = vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("original Git stop save failed");
+      return replace(file, text, ...rest);
+    });
+    const reported = Promise.withResolvers<void>(), settled = vi.fn();
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("fetch")) return startOwnedRepositoryGit(cwd, args, op, options);
+        fetches++;
+        return withOwnedCommandLifecycle(journal.sink("1"), () => startOwnedRepositoryGit(cwd, args, op, options));
+      },
+      reportPending: () => reported.resolve(), reportSettled: settled,
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).catch(error => error);
+    try {
+      await Promise.race([reported.promise, preparation.then(error => { throw error; })]);
+      await expect(withinExecutionDeadline(preparation, Date.now() + 50)).rejects.toThrow();
+      const closing = adapter.dispose();
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      expect(await withinExecutionDeadline(preparation, Date.now() + 1000)).toMatchObject({ code: "repository_git_cleanup_pending" });
+      await withinExecutionDeadline(closing, Date.now() + 1000);
+      expect(settled).toHaveBeenCalledOnce(); expect(fetches).toBe(1);
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+      await journal.assertClosed();
+    } finally {
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      await withinExecutionDeadline(preparation, Date.now() + 1000);
+      await withinExecutionDeadline(adapter.dispose(), Date.now() + 1000);
+      replacement.mockRestore();
+    }
+  }, 30_000);
+
   it("joins pending mutations and retains command, cleanup and reporting errors on disposal", async () => {
     const f = await fixture();
     const original = new Error("original command failure"), late = new Error("late cleanup failure"), reporting = new Error("pending report failed"), settledReporting = new Error("settled report failed");
@@ -1938,6 +2732,40 @@ exec "$@"
     await adapter.dispose(); expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
   });
 
+  it("rechecks disposal after a timed out original Git handle closes late", async () => {
+    const f = await fixture();
+    const pendingError = new RepositoryGitCleanupPendingError([], new Error("Original Git command is awaiting close."));
+    const settlement = Promise.withResolvers<GitSettlement>(), reported = Promise.withResolvers<void>();
+    const requestStop = vi.fn();
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => args.includes("fetch")
+        ? { outcome: Promise.resolve({ kind: "cleanup-pending", error: pendingError }), joined: settlement.promise, requestStop }
+        : startOwnedRepositoryGit(cwd, args, op, options),
+      reportPending: () => { reported.resolve(); },
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).catch(error => error);
+    try {
+      await reported.promise;
+      // All native fixture preparation has joined. Only the controlled original
+      // handle remains, so advancing this clock cannot bypass a real process.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const first = adapter.dispose().catch(error => error);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await first).toMatchObject({ message: expect.stringContaining("original Git responsibilities are retained") });
+      expect(requestStop).toHaveBeenCalledOnce();
+      expect((await readdir(path.join(f.root, "temporary"))).filter(name => name.startsWith("git-hooks-"))).toHaveLength(1);
+      settlement.resolve({ kind: "local-closed", cleanupErrors: [] });
+      expect(await preparation).toBe(pendingError);
+      await expect(adapter.dispose()).resolves.toBeUndefined();
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+      await expect(adapter.prepareRepository(f.project, operation())).rejects.toThrow("closing");
+    } finally {
+      vi.useRealTimers();
+      settlement.resolve({ kind: "local-closed", cleanupErrors: [] });
+      await preparation; await adapter.dispose();
+    }
+  });
+
   it("returns the configured repository spelling while validating physical Git identities", async () => {
     const f = await fixture(); const adapter = manager(f.root); const project = { ...f.project, localPath: `${f.repository}${path.sep}.` };
     const binding = await adapter.prepareWorktree(project, f.owner, operation()); expect(binding.repositoryPath).toBe(project.localPath);
@@ -1964,8 +2792,9 @@ exec "$@"
   it("retains execution checks and permits terminal cleanup for detached reftable HEAD", async () => {
     const f = await fixture("reftable"), adapter = manager(f.root), binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     git(binding.worktreePath, ["checkout", "--detach", "HEAD"]);
-    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
-    await adapter.removeWorktree(f.project, f.owner, operation());
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch");
+    await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toThrow("cleanup");
+    await adapter.removeWorktree(f.project, f.owner, { originalCwd: binding.worktreePath });
     await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

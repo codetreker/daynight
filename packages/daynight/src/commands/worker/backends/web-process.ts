@@ -13,7 +13,7 @@ import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
-import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
+import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "./controller-process.js";
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import { matchesLaunchConfiguration, readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
@@ -149,8 +149,18 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         await launchControllerProcess({
           homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, signal,
           env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
+          retainBirthCleanup: cleanup => {
+            if (options.jobLeases === undefined) throw new Error("Controller launch has no ownership registry.");
+            return options.jobLeases.retainBirthCleanup(ticket.launchId, cleanup);
+          },
           onSubmitting: () => { assertConfigurationAdmission(canAdmitNewExecution); submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
-          onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
+          onSpawned: (proof, ownership) => {
+            task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now());
+            if (ownership !== undefined) {
+              if (options.jobLeases === undefined) throw new Error("Controller launch has no Job ownership registry.");
+              options.jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
+            }
+          },
           onObserved: async snapshot => {
             if (process.platform === "win32") {
               const proof = current(task).webExecution!.controllerProcess;
@@ -189,6 +199,9 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
           try { grantObserver?.checked(task); } catch { /* Optional monitoring cannot alter renewal. */ }
         }
         if (!needsRefresh) return;
+        if (ticket.schemaVersion === 2 && task.webExecution!.launchSubmission !== "not-submitted") {
+          await observeControllerProcess(ticket, signal);
+        }
         signal.throwIfAborted();
         started = true;
         try { onStarting?.(); } catch { /* Optional monitoring cannot alter renewal. */ }

@@ -34,7 +34,10 @@ process.stdin.on("data", async chunk => {
     const receipt = await readGateReceipt(runDirectory, gateId);
     if (closing || receipt.state !== "released" || receipt.leader.pid !== process.pid || await inspectProcessEvidence(receipt.leader) !== "running") throw new Error("Gate authorization is unavailable.");
     if (closing) throw new Error("Gate authorization was withdrawn.");
-    child = spawn(process.execPath, [path.join(import.meta.dirname, "gated-target.mjs"), command, ...args], { stdio: ["pipe", "inherit", "inherit"], env: process.env, cwd: process.cwd() });
+    child = spawn(process.execPath, [path.join(import.meta.dirname, "gated-target.mjs"), command, ...args], { stdio: ["pipe", "inherit", "inherit", "ipc"], env: process.env, cwd: process.cwd() });
+    child.on("message", message => {
+      if (process.connected) process.send(message);
+    });
     child.stdin.on("error", finish);
     child.once("error", () => { settled = true; process.exitCode = 1; process.stdin.destroy(); });
     child.once("exit", code => { settled = true; process.exitCode = code ?? 1; process.stdin.destroy(); void waitForGroup().catch(() => { process.exitCode = 1; }); });

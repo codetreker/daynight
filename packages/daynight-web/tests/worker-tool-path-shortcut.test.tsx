@@ -22,6 +22,7 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
     if (init.method !== undefined && init.method !== 'GET' && !url.endsWith('/monitoring/query')) writes.push(`${init.method} ${url}`);
     if (url.startsWith('/api/v1/projects?')) return workerResponse({ items: [], nextCursor: null });
+    if (url.endsWith('/review-participation')) return workerResponse(init.method === 'PUT' ? { enabled: true, version: '2' } : { enabled: false, version: '1' });
     if (url.endsWith('/configuration')) {
       if (url.includes(target) && delayed) { requested = true; await gate.promise; }
       const { toolPathsSupported: _tools, controlModeSupported: _mode, ...resource } = supported ? toolPathConfiguration() : configurationResource();
@@ -44,15 +45,15 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
     act(() => { browserNavigation().navigate(`/workers/${id}`); rendered.rerender(view(id, active)); }); await flush();
   } };
 };
-const shortcut = () => screen.getByRole('button', { name: 'Tool paths' });
-const summary = () => screen.getByText('Tool paths', { selector: 'summary' });
+const shortcut = () => screen.getByRole('button', { name: 'Tool launch paths' });
+const summary = () => screen.getByText('Tool launch paths', { selector: 'summary' });
 
 describe('Worker software tool path shortcut', () => {
   it('waits for the first configuration read, then opens the actual fields', async () => {
     const state = await mount({ delayed: true });
     fireEvent.click(shortcut()); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true');
-    expect(state.requested()).toBe(true); expect(screen.queryByText('Tool paths', { selector: 'summary' })).toBeNull();
+    expect(state.requested()).toBe(true); expect(screen.queryByText('Tool launch paths', { selector: 'summary' })).toBeNull();
     await state.resolve();
     expect(summary().closest('details')).toHaveAttribute('open');
     expect(screen.getByRole('textbox', { name: 'Codex' })).toBeVisible();
@@ -106,6 +107,20 @@ describe('Worker software tool path shortcut', () => {
     expect(summary().closest('details')).not.toHaveAttribute('open');
     await state.setActive(true); expect(summary().closest('details')).not.toHaveAttribute('open');
     expect(state.writes).toEqual([]);
+  });
+
+  it('pauses review participation on an inactive retained Worker without affecting configuration', async () => {
+    const state = await mount(); fireEvent.click(shortcut()); await flush();
+    const control = screen.getByRole('switch', { name: 'Participate in PR review' });
+    expect(control).toHaveAttribute('aria-disabled', 'false');
+    await state.setActive(false);
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(control); await flush(); expect(state.writes).toEqual([]);
+    expect(summary().closest('details')).toBeInTheDocument();
+    await state.setActive(true); expect(control).toHaveAttribute('aria-disabled', 'false');
+    fireEvent.click(control); await flush();
+    expect(control).toHaveAttribute('aria-checked', 'true');
+    expect(state.writes).toEqual([`PUT /api/v1/me/workers/${target}/review-participation`]);
   });
 
   it('cancels delayed navigation when the user chooses another tab', async () => {

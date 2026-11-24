@@ -1,0 +1,7 @@
+.browser-session-row { grid-template-columns: minmax(110px, 1.2fr) repeat(3, minmax(100px, 1fr)) auto; gap: 12px; overflow-wrap: anywhere; }
+.browser-session-row .browser-session-time { color: var(--muted); font-size: var(--text-sm); }
+.browser-session-time > span, .browser-session-time > time { display: block; }
+.browser-session-time .credential-last-use, .browser-session-time .last-use-empty { margin: 0; }
+.browser-session-current { color: #4d4db3; font-weight: 600; }
+@media (max-width: 980px) { .browser-session-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } .browser-session-row > :first-child { grid-column: 1 / 3; } .browser-session-row > .actions { grid-column: 3; grid-row: 1; justify-self: end; } }
+@media (max-width: 600px) { .browser-session-row { display: grid; gap: 9px; } .browser-session-row .button { min-height: 44px; } }

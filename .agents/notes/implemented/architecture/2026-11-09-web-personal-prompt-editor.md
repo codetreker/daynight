@@ -13,7 +13,10 @@ personal text.
 ## Decision
 
 The three entry points use one prompt resource API, edit state machine and
-editor. Each draft retains its account, baseline revision and raw text; a save
+editor. Each holds separate development Worker and Reviewer controllers, keyed
+by purpose as well as identity and scope. Switching purposes retains both drafts
+and associates delayed receipts with their original resource. Reviewer text is
+limited by its raw UTF-8 byte count and the editor exposes that count. Each draft retains its account, baseline revision and raw text; a save
 freezes these facts and its edit generation before admission. Responses are
 accepted monotonically, and later input remains separate from the submission.
 An uncertain write is reconciled by reading current facts without replaying it
@@ -56,6 +59,7 @@ busy state unresolved even when the network outcome is already known.
 ## Consequences
 
 All three entry points share concurrency and identity behavior while retaining
-independent resource lifetimes. Page owners and explicit conflict choices add
+independent resource lifetimes. Aggregated navigation and owner retention protect
+both purposes, while each continues to save and clear independently. Page owners and explicit conflict choices add
 state and navigation coordination. A successful save confirms server state, not
 that every Worker has received or applied the value.

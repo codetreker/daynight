@@ -361,7 +361,7 @@ func testThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T, database *p
 func testThreadCredentialKindsAndExpiry(t *testing.T, database *postgres.Store) {
 	_, principal, session := testutil.AuthRecords(t, database)
 	ctx := context.Background()
-	pat := model.PersonalAccessToken{ID: testutil.QueryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: testutil.QueryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
 	pat.UserID = principal.UserID
 	if _, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, pat) }); err != nil {
 		t.Fatal(err)

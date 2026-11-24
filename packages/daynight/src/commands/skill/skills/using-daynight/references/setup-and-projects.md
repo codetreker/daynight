@@ -10,7 +10,6 @@ requires [write safety](write-safety.md).
 | Project | Work associated with a Git repository. |
 | Task | One Project's ordinary work item (`type=task`) with status, metadata, dependencies, properties and materials. |
 | Goal | A typed objective resource (`type=goal`, `parentId=null`) owning shared outcomes and overall progress; its ordinary direct child Tasks track contributing work. |
-| Step | Ordered Task-owned record. |
 | Thread | Persistent Task discussion. |
 | Session | Execution and its observed activity. |
 | Attachment | Separate file. |
@@ -20,8 +19,7 @@ requires [write safety](write-safety.md).
 specifications, architecture, breakdowns, conclusions and progress, regardless of
 which Session or child Task produces them.
 
-Project/Task IDs are complete UUIDs. Step IDs are exactly eight hex characters:
-case-insensitive input, lowercase output, significant leading zeros. Replace
+Project/Task IDs are complete UUIDs. Replace
 command placeholders with actual IDs/values.
 
 ## Setup
@@ -70,6 +68,35 @@ unknown write outcome is not automatically replayed. An invalid default fails
 without falling back, while explicit selection bypasses it.
 
 Retain the returned ID; read back the Project to verify repository and name.
+
+## Project repository changes
+
+```bash
+daynight project set-repository --project <project-id> --repo <url>
+daynight project set-repository --project <project-id> --repo <url> --confirm --allow-unverified-switch --json
+```
+
+An effective Project admin can select the explicit Project, including outside
+Git, or resolve it from the current repository. The stderr preview identifies
+the Project, old and new addresses, classification and effects. Unchanged or
+confirmed same-repository addresses preserve the GitHub App connection and Worker
+selections. A switch disconnects the Project's GitHub App repository connection
+and removes the Project from Worker cloud configurations selected in the
+transaction's snapshot. Worker application is asynchronous and may stop existing
+executions. Local clones, origins and worktrees remain; reconnect GitHub and
+manage local Worker configuration as needed after a switch.
+
+Interactive use prompts for confirmation; `--confirm` supplies it. An unverified
+identity also needs an explicit choice to treat it as a switch, by prompt or
+`--allow-unverified-switch`. Noninteractive use requires `--confirm`, and an
+unverified identity also requires `--allow-unverified-switch`. Cancellation sends
+no change. The request retains the preview's exact versions and classification
+evidence. For a stale preview, rerun the command to preview and confirm again.
+A same-Team repository occupancy conflict refuses the change.
+Only a validated receipt confirms the write; an unknown outcome requires
+[read-only observation](write-safety.md#uncertain-results), not automatic replay.
+`--json` prints only the receipt on stdout. Repository changes require a supporting
+service; older services retain the existing Project and Task commands.
 
 ## Project tag catalog
 

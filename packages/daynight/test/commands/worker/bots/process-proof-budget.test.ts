@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const fixture = vi.hoisted(() => ({ execute: vi.fn(), native: vi.fn(), inspect: vi.fn(), job: vi.fn() }));
+const fixture = vi.hoisted(() => ({ execute: vi.fn(), read: vi.fn(), native: vi.fn(), inspect: vi.fn(), job: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: fixture.execute }));
+vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), readFile: fixture.read }));
 vi.mock("../../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: fixture.native, inspectWindowsProcessProof: fixture.inspect }));
 vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createOwnedControllerJob: fixture.job, inspectControllerJobLease: vi.fn() }));
 import { captureControllerProcessProof, captureProcessProof, inspectProcessProof } from "../../../../src/commands/controller/process-proof.js";
@@ -9,6 +10,7 @@ import { captureControllerProcessProof, captureProcessProof, inspectProcessProof
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const setPlatform = (value: string) => Object.defineProperty(process, "platform", { ...platform, value });
 const birth = "2026-11-05T00:00:00.0000000Z", command = "controlled process";
+const bootId = "876b21c9-30d7-48c0-a2ab-287291e903a7";
 const proof = (pid: number) => ({ pid, parentPid: 1, processGroupId: null, startedAt: birth, commandHash: createHash("sha256").update(command).digest("hex") });
 const delayedWindowsQuery = (durationMs: number) => {
   const failure = new Error("Controlled native observation exceeded its budget.");
@@ -23,6 +25,11 @@ beforeEach(() => {
   fixture.job.mockResolvedValue("Local\\Daynight-controlled");
   fixture.native.mockImplementation(async pid => proof(pid));
   fixture.inspect.mockReset().mockResolvedValue("running");
+  fixture.read.mockImplementation(async (file: string) => {
+    if (file === "/proc/sys/kernel/random/boot_id") return `${bootId}\n`;
+    if (file === "/proc/42/stat") return `42 (controlled process) ${["S", 1, 42, ...Array(16).fill(0), "26140755", 0, 0].join(" ")}\n`;
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
   fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Ss Thu Nov 5 00:00:00 2026 ${command}\n`));
 });
 afterEach(() => {
@@ -41,6 +48,10 @@ describe("process ownership capture budgets", () => {
     } else {
       expect(fixture.execute.mock.calls[0]?.[2]).toMatchObject({ timeout }); expect(fixture.native).not.toHaveBeenCalled();
     }
+    if (target === "linux") {
+      expect(captured.startedAt).toBe(`linux:v1:${bootId}:26140755`);
+      expect(fixture.read).toHaveBeenCalledTimes(4);
+    } else expect(fixture.read).not.toHaveBeenCalled();
   });
 
   it("captures Windows ownership with PowerShell/CIM unavailable", async () => {

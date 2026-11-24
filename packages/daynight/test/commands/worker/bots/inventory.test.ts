@@ -42,13 +42,15 @@ describe("Bot inventory reconciliation", () => {
     store.observe(owner, bot(4), 1);
     const before = store.list(owner);
     const failure = new Error("Unavailable");
-    const failedList = createBotInventory({ owner, store, remote: { owner, list: async () => { throw failure; }, read: async () => null } });
-    await expect(failedList.reconcile(signal())).rejects.toBe(failure);
+    const failures: string[] = [];
+    const failedList = createBotInventory({ owner, store, now: () => 1, onError: message => { failures.push(message); }, remote: { owner, list: async () => { throw failure; }, read: async () => bot(4) } });
+    await expect(failedList.reconcile(signal())).resolves.toEqual({ observed: [id(4)], missing: [] });
+    expect(failures).toEqual(["Unavailable"]);
     expect(store.list(owner)).toEqual(before);
-    const failedDetail = createBotInventory({ owner, store, remote: { owner, list: async () => [bot(3)], read: async () => { throw failure; } } });
-    await expect(failedDetail.reconcile(signal())).rejects.toBe(failure);
-    expect(store.list(owner)).toEqual(before);
-    expect(store.get(owner, id(3))).toBeNull();
+    const failedDetail = createBotInventory({ owner, store, onError: message => { failures.push(message); }, remote: { owner, list: async () => [bot(3)], read: async () => { throw failure; } } });
+    await expect(failedDetail.reconcile(signal())).resolves.toEqual({ observed: [id(3)], missing: [] });
+    expect(store.get(owner, id(4))).toEqual(before[0]);
+    expect(store.get(owner, id(3))?.observed).toEqual(bot(3));
   });
 
   it("records a confirmed missing identity without releasing its local records", async () => {

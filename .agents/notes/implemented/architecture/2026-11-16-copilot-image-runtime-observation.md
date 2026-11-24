@@ -2,6 +2,11 @@
 
 Status: implemented
 
+[Default image send](2026-11-24-default-session-image-send.md) changes ordinary Codex and Copilot
+admission. The decision below records the original exact-qualification
+policy and its evidence. Runtime observations and applicable tighter
+limits still inform current capabilities.
+
 ## Problem
 
 An exact image qualification cannot match a running native process when its
@@ -50,7 +55,7 @@ unchanged declaration must not create a different qualification identity.
 The endpoint digest identifies the native-declared visible route configuration.
 It does not prove the final HTTP destination, a hidden backend deployment, model
 weights or an internal image-processing algorithm. Observation alone does not
-grant qualification; the production registry remains empty until the exact
+grant qualification; the production registry has no Copilot row until the exact
 combination has its required input, receipt, history and product evidence.
 
 ## Alternatives

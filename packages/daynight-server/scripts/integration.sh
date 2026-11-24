@@ -124,6 +124,7 @@ if [[ "$decoder_source_before" != "$(decoder_source_fingerprint)" || "$decoder_h
 fi
 export DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR="$run_root/image-validator"
 export DAYNIGHT_INTEGRATION_NODE_PATH="$(node -p 'process.execPath')"
+export DAYNIGHT_INTEGRATION_CLI_PATH="$repository_root/packages/daynight/dist/main.js"
 
 fingerprint() {
   DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'

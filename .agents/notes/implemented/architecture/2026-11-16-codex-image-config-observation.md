@@ -2,6 +2,11 @@
 
 Status: implemented
 
+[Default image send](2026-11-24-default-session-image-send.md) changes ordinary Codex and Copilot
+admission. The decision below records the original exact-qualification
+policy and its evidence. Runtime observations and applicable tighter
+limits still inform current capabilities.
+
 ## Problem
 
 A model-provider name does not identify its configured endpoint. Codex reports
@@ -33,7 +38,7 @@ Resume remains unknown until the original thread binding has independent evidenc
 The native executable digest belongs to the verified direct Windows launch
 artifact and its child process. An interpreter or fallback cannot borrow that
 digest. Protocol compatibility remains version- and platform-specific, separate
-from the empty production qualification registry and its required receipt,
+from the production qualification registry and its required receipt,
 history, input-boundary and product evidence.
 
 Runtime generations revoke stale asynchronous reads and image grants. Optional

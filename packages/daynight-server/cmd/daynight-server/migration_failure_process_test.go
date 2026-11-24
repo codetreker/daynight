@@ -46,12 +46,16 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 					t.Error(err)
 				}
 			}()
+			var unknownVersion int64
 			if scenario == "unknown history" {
 				initial := startPersistenceProcess(t, values)
 				if err := initial.stop(); err != nil {
 					t.Fatalf("initial process stop: %v", err)
 				}
-				if _, err := observer.Exec(ctx, "INSERT INTO schema_migrations(version,checksum) VALUES (99,repeat('0',64))"); err != nil {
+				// The unknown version follows the applied ledger so that adding
+				// migrations never turns it into a known version.
+				if err := observer.QueryRow(ctx, `INSERT INTO schema_migrations(version,checksum)
+					SELECT max(version)+1,repeat('0',64) FROM schema_migrations RETURNING version`).Scan(&unknownVersion); err != nil {
 					t.Fatal(err)
 				}
 			} else if scenario == "migration SQL failure" {
@@ -105,8 +109,19 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 			if err := scanner.Err(); err != nil || !startup || listening {
 				t.Fatalf("migration failure diagnostic/startup phase: startup=%t listening=%t error=%v", startup, listening, err)
 			}
+			// PostgreSQL removes a backend from pg_stat_activity only after the
+			// backend observes its client's disconnect, so an exited process may
+			// still be listed briefly.
 			var connections int
-			if err := observer.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1", application).Scan(&connections); err != nil || connections != 0 {
+			connectionsCleared := func() error {
+				wait, done := context.WithTimeout(ctx, 5*time.Second)
+				defer done()
+				return grantWait(wait, func() (bool, error) {
+					err := observer.QueryRow(wait, "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1", application).Scan(&connections)
+					return err == nil && connections == 0, err
+				})
+			}
+			if err := connectionsCleared(); err != nil {
 				t.Fatalf("failed process retained database connections: %d %v", connections, err)
 			}
 			listener, err := net.Listen("tcp", values["DAYNIGHT_LISTEN_ADDR"])
@@ -117,7 +132,7 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "unknown history" {
-				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version=99")
+				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version=$1", unknownVersion)
 			} else if scenario == "migration SQL failure" {
 				var versions []int64
 				if err := observer.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1}) {
@@ -141,7 +156,7 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 			if err := recovered.stop(); err != nil {
 				t.Fatalf("recovered service did not stop cleanly: %v", err)
 			}
-			if err := observer.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1", application).Scan(&connections); err != nil || connections != 0 {
+			if err := connectionsCleared(); err != nil {
 				t.Fatalf("recovered process retained database connections: %d %v", connections, err)
 			}
 		})

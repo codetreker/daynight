@@ -21,7 +21,6 @@ Versions are positive signed-int64 decimal strings, `"1"` through `"922337203685
 | Mutation | Decision version source |
 | --- | --- |
 | Task metadata, status, properties or versioned deletion | Complete Task observation |
-| Step | Parent Task version from the Steps read |
 | Team rename/delete | Team version |
 | Member role/removal | Selected user's membership version, not Team version |
 | Project transfer with cleanup confirmation | `ownership.version` and `targetTeam.version` from `project_transfer_preview`, supplied unchanged as `ifVersion` and `ifTargetVersion`; [Concepts](daynight://manuals/concepts.md) owns the required user confirmation |
@@ -51,7 +50,7 @@ The result envelope follows [Overview](daynight://manuals/overview.md). These fi
 | `unknown` | Completion is unestablished. Retain original context and inspect facts; never automatically replay. |
 | Missing classification/unusable response | Preserve definite protocol/operation facts and uncertainty; do not infer rollback. |
 
-For example, `isError: true`, `error.writeOutcome: "confirmed"` and `error.phase: "output"` describe a committed write whose output failed. An affected Step add must be verified in the original collection, not replaced with another add.
+For example, `isError: true`, `error.writeOutcome: "confirmed"` and `error.phase: "output"` describe a committed write whose output failed. Verify an affected Task mutation by reading the original Task and preserve its confirmed receipt.
 
 A definite rejection before business execution establishes no business write for that attempt. Cancellation, timeout, lost/malformed output, disconnection and generic server failures alone establish no rollback. Rendering or cleanup failure cannot undo confirmation. Access may change before verification; retain the receipt separately from verification failure.
 

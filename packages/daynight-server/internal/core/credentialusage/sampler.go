@@ -61,6 +61,10 @@ type Failure struct {
 	Code     Code
 	Cause    Cause
 	SQLState string
+	// RecoverableLockConflict confirms a pure NOWAIT conflict after rollback,
+	// without cancellation, timeout or cleanup failure. Only retained retries
+	// may omit its diagnostic; abandoning the observation still reports it.
+	RecoverableLockConflict bool
 }
 
 // Snapshot is an instantaneous view of bounded state, not a persistence receipt.
@@ -229,8 +233,9 @@ func (s *Sampler) TakeDue() Batch {
 }
 
 // Complete confirms a batch once. Failures are retained as bounded diagnostics;
-// each candidate has at most three attempts and retries wait at least one second.
-// A newer event received during a failed attempt gets its own attempt budget.
+// known uncommitted candidates have at most three attempts, spaced one second
+// apart. Unknown outcomes are abandoned without replay. A newer event received
+// during a failed attempt gets its own attempt budget.
 func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -239,6 +244,9 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 		return ErrUnknownBatch
 	}
 	if outcome < Committed || outcome > Unknown {
+		return ErrInvalidFault
+	}
+	if failure.RecoverableLockConflict && (outcome != NotCommitted || failure.Code != CodeWriteFailed || failure.Cause != CauseDatabase || failure.SQLState != "55P03") {
 		return ErrInvalidFault
 	}
 	if outcome != Committed {
@@ -276,10 +284,23 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 		if f.PendingAge < 0 {
 			f.PendingAge = 0
 		}
-		s.addFault(e, cloneFault(f))
+		willRetry := outcome == NotCommitted && old.attempts < MaxAttempts
+		if !failure.RecoverableLockConflict || !willRetry {
+			s.addFault(e, cloneFault(f))
+		}
 		e.failNotBefore = now.Add(RetryInterval)
+		if outcome == Unknown {
+			// The old snapshot may already have committed; never schedule it again.
+			e.exhausted = true
+			s.abandoned++
+			if e.pending != nil {
+				e.pending.retryNotBefore = e.failNotBefore
+				e.pending.due = e.failNotBefore
+			}
+			continue
+		}
 		if e.pending == nil {
-			if old.attempts >= MaxAttempts {
+			if !willRetry {
 				e.exhausted = true
 				s.abandoned++
 				continue
@@ -289,7 +310,7 @@ func (s *Sampler) Complete(id uint64, outcome Outcome, failure Failure) error {
 			if old.born.Before(e.pending.born) {
 				e.pending.born = old.born
 			}
-			if old.attempts >= MaxAttempts {
+			if !willRetry {
 				e.exhausted = true
 				s.abandoned++
 			}

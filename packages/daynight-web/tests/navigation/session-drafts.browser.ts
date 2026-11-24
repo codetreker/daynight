@@ -51,8 +51,9 @@ test('clears the real client send gate after observing acceptance of a lost imag
   await expect.poll(() => api.observations.queries.length).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.operationId)).toBe(operationId);
   expect(api.observations.commands).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   api.setQuery('provider_accepted');
-  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   expect(await page.evaluate(id => window.sessionDraftClient.client.snapshot().state.operations.get(id)?.state, operationId)).toBe('provider_accepted');
   api.setDispatch('confirmed'); await page.getByRole('textbox').fill('next message'); await page.locator('input[type=file]').setInputFiles(file('Second.png'));
@@ -104,7 +105,8 @@ test('keeps a lost native command durable across reload and preserves later edit
   expect(refused).not.toBeNull(); expect(api.observations.commands).toHaveLength(1);
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('keep later command edits');
   await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
-  api.setQuery('confirmed'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('confirmed'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   await expect(page.getByRole('textbox')).toHaveValue('keep later command edits');
   await page.reload(); await expect(page.getByRole('textbox')).toBeEditable(); await expect(page.getByRole('textbox')).toHaveValue('keep later command edits');
@@ -161,7 +163,7 @@ test('cancels a durably prepared native command after its catalog changes withou
   await info.attach('durable-native-command-prepared-cancel', { body: JSON.stringify({ boundary: `${boundary} A barrier delays entry to the production claim transaction after native IDB freeze commits; closing the page precedes any command dispatch.`, prepared, cancelled, unavailableRevision, unavailable, availableRevision, observations: api.observations }), contentType: 'application/json' });
 });
 
-test('moves an earlier null-target successor explicitly after acceptance while reclaiming only unreferenced originals', async ({ page, context }, info) => {
+for (const order of ['automatic-first', 'explicit-first'] as const) test(`moves an earlier null-target successor explicitly after acceptance while reclaiming only unreferenced originals (${order})`, async ({ page, context }, info) => {
   const api = await installDraftAPI(context, { expectedNativeSessionId: null }, { testSession: true }); api.setDispatch('lost'); api.setQuery('404');
   const first = file('First-submitted.png'), later = [file('Later-A.png', pngImage(5, 3)), file('Later-B.png', pngImage(7, 4))];
   await page.goto('/tests/navigation/session-drafts-client-fixture.html?test-session'); await expect(page.getByRole('textbox')).toBeEditable();
@@ -180,11 +182,64 @@ test('moves an earlier null-target successor explicitly after acceptance while r
   expect(successor.editable?.items.map(item => item.label)).toEqual(later.map(item => item.name));
   const before = await page.evaluate(() => window.sessionDraftClient.storage.inventory());
   expect(before.owners.find(owner => owner.ownerKey === original.owner.ownerKey)?.allocatedBytes).toBe(first.buffer.length + later.reduce((sum, item) => sum + item.buffer.length, 0));
-  api.changeTarget('native-established'); await expect(page.getByRole('textbox')).toHaveValue('');
-  await expect(page.getByText('Earlier message', { exact: true })).toBeVisible();
-  await expect(page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true })).toBeEnabled();
-  api.setQuery('confirmed'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
-  await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible();
+  // SessionView marks its explicit receipt check before the real fetch. Capture
+  // that marker at dispatch so a concurrent automatic query keeps its own result.
+  await page.evaluate(() => {
+    const client = window.sessionDraftClient.client, fetch = window.fetch;
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const id = url.pathname.includes('/operations/') ? url.pathname.split('/').at(-1) : undefined;
+      if (!id) return fetch(input, init);
+      const view = client.snapshot(), draft = client.imageDrafts.getSnapshot();
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set('X-Draft-Query-Source', view.checking.has(id) ? 'explicit' : 'automatic');
+      headers.set('X-Draft-Query-Target', view.state.snapshot?.identity.nativeSessionId ?? '');
+      headers.set('X-Draft-Query-Loading', String(draft.loading));
+      return fetch(input, { ...init, headers });
+    };
+  });
+  await expect.poll(() => api.controlledQueries.every(query => query.settled)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().checking)).toBe(false);
+  const beforeTargetQueries = api.controlledQueries.length;
+  api.planQuery(operationId, 'automatic', '404', true, { target: 'native-established', loading: true });
+  try {
+    api.changeTarget('native-established');
+    const findAutomatic = () => api.controlledQueries.slice(beforeTargetQueries).find(query => query.source === 'automatic' && query.context?.nativeSessionId === 'native-established' && query.context.loading);
+    await expect.poll(() => !!findAutomatic()).toBe(true);
+    const automatic = findAutomatic()!;
+    await expect.poll(() => automatic.context).toMatchObject({ nativeSessionId: 'native-established', loading: true });
+    expect(automatic).toMatchObject({ operationId, source: 'automatic', state: '404', settled: false });
+    await expect(page.getByRole('textbox')).toHaveValue('');
+    await expect(page.getByText('Earlier message', { exact: true })).toBeVisible();
+    if (order === 'automatic-first') {
+      automatic.release();
+      await expect.poll(() => automatic.settled).toBe(true);
+      await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().loading)).toBe(false);
+      const recovery = await page.evaluate(id => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.find(entry => entry.ref.operationId === id), operationId);
+      expect(recovery).toMatchObject({ ref: { ownerKey: original.owner.ownerKey, operationId }, state: 'unknown', canCheck: true });
+    }
+    expect(await page.evaluate(() => window.sessionDraftClient.client.snapshot().state.snapshot?.identity.nativeSessionId)).toBe('native-established');
+    const check = page.getByRole('button', { name: 'Check original operation', exact: true });
+    await expect(check).toBeEnabled();
+    const beforeClickQueries = api.controlledQueries.length;
+    api.planQuery(operationId, 'explicit', 'confirmed', true);
+    await check.click();
+    await expect.poll(() => api.controlledQueries.slice(beforeClickQueries).some(query => query.source === 'explicit')).toBe(true);
+    const explicit = api.controlledQueries.slice(beforeClickQueries).find(query => query.source === 'explicit')!;
+    await expect.poll(() => explicit.context).toMatchObject({ nativeSessionId: 'native-established' });
+    expect(explicit).toMatchObject({ operationId, source: 'explicit', state: 'confirmed', settled: false });
+    expect(explicit.sequence).toBeGreaterThan(automatic.sequence);
+    explicit.release();
+    await expect.poll(() => explicit.settled).toBe(true);
+    await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible();
+    if (order === 'explicit-first') {
+      expect(automatic.settled).toBe(false);
+      automatic.release();
+      await expect.poll(() => automatic.settled).toBe(true);
+      await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().loading)).toBe(false);
+      await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible();
+    }
+  } finally { await api.cleanup(); }
   await expect.poll(() => page.evaluate(async () => (await window.sessionDraftClient.storage.inventory()).blobs.length)).toBe(2);
   const accepted = await page.evaluate(() => window.sessionDraftClient.storage.inventory());
   expect(accepted.blobs.some(blob => blob.blobId === original.editable!.items[0]!.blobId)).toBe(false);
@@ -220,7 +275,7 @@ test('moves an earlier null-target successor explicitly after acceptance while r
   expect(sent.operationId).not.toBe(operationId); expect(sent.payload.content.filter(part => part.type === 'image').map(part => part.imageId)).toEqual(moved.editable!.items.map(item => item.imageId));
   expect(sent.payload.content[0]).toEqual({ type: 'text', text: 'successor text and ordered originals' });
   expect(await page.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
-  await info.attach('detached-null-target-successor-move', { body: JSON.stringify({ boundary, original, successor, before, accepted, moved, movedInventory, observations: api.observations }), contentType: 'application/json' });
+  await info.attach('detached-null-target-successor-move', { body: JSON.stringify({ boundary, order, original, successor, before, accepted, moved, movedInventory, observations: api.observations, queries: api.controlledQueries.map(({ sequence, operationId, source, state, settled, context, failure }) => ({ sequence, operationId, source, state, settled, context, failure })) }), contentType: 'application/json' });
 });
 
 test('keeps a rejected earlier native draft discoverable after choosing it and moves it only on confirmation', async ({ page, context }, info) => {
@@ -235,8 +290,8 @@ test('keeps a rejected earlier native draft discoverable after choosing it and m
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('discard this later draft'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
   api.changeTarget('native-after-refusal'); await expect(page.getByRole('textbox')).toHaveValue('');
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentOwner && entry.canCheck))).toBe(true);
-  await expect(page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true })).toBeEnabled();
-  api.setQuery('rejected'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('rejected'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await page.getByRole('button', { name: 'Restore failed draft and discard later edits', exact: true }).click();
   await page.getByRole('group', { name: 'Confirm', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible(); await expect(page.getByRole('textbox')).toHaveValue('');
@@ -273,7 +328,8 @@ test('preserves image drafts and unknown submissions through the actual Session 
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
   const frozen = await page.evaluate(() => window.sessionDraftClient.storage.read()), operationId = api.observations.commands[0]!.operationId;
   await page.getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click(); await expect(root).toHaveAttribute('data-session-fullscreen', 'true');
-  await expect(page.locator('.session-draft-attachments')).toContainText('Awaiting the original message result');
+  await expect(page.locator('.session-receipts')).toContainText('Delivery outcome is unknown');
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Exit Session fullscreen', exact: true }).click(); await expect(root).not.toHaveAttribute('data-session-fullscreen');
   const retained = await page.evaluate(() => window.sessionDraftClient.storage.read());
   expect(retained?.submission?.operationId).toBe(operationId); expect(retained?.submission?.state).toBe('unknown'); expect(retained?.frozen).toEqual(frozen?.frozen);
@@ -298,8 +354,9 @@ test('resolves an earlier native target failure without replacing the current ta
   await expect(page.getByRole('textbox')).toHaveValue('');
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentOwner && entry.currentExecution))).toBe(true);
   await page.getByRole('textbox').fill('new target retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   api.setQuery('rejected');
-  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   const keep = page.getByRole('button', { name: 'Keep later edits and discard failed draft', exact: true }); await expect(keep).toBeVisible();
   const choices = await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries);
   expect(choices[0]).toMatchObject({ currentOwner: false, state: 'rejected', frozen: { text: 'original submitted text' }, successor: { text: 'old target later edits' } });
@@ -672,7 +729,8 @@ test('migrates a legacy unknown operation without replay and retains its success
   expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.submission).toMatchObject({ operationId, state: 'unknown', command: null });
   expect(api.observations.queries.every(id => id === operationId)).toBe(true); expect(api.observations.commands).toEqual([]);
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('legacy successor retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
-  api.setQuery('provider_accepted'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('provider_accepted'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   await expect(page.getByRole('textbox')).toHaveValue('legacy successor retained'); expect(api.observations.commands).toEqual([]);
   expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.editable?.text).toBe('legacy successor retained');

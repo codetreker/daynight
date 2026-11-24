@@ -27,6 +27,13 @@ after reload. It also checks the default gray, edits and filters associations,
 and checks renamed and deleted catalog entries across clients. Module and store
 tests retain the error, concurrency and capacity matrices.
 
+The credential-scope journey uses the same isolated runtime to obtain device
+PATs and OAuth grants through their public flows. It exercises independent
+credential edits and the resulting REST and MCP operations, including refresh,
+against the same persisted tasks. The targeted refusal demonstrates that an
+edited credential is effective across assembled entry points; detailed refusal
+and concurrency matrices remain with their owning layers.
+
 Every run owns an internal database network, a private ingress bridge, a
 PostgreSQL instance and data volume, an ephemeral Redis monitoring store, an application container, private
 credentials and storage. Public addresses are
@@ -62,10 +69,15 @@ Preparation and execution steps are individually bounded; their declared
 maxima include cleanup and upload and remain below the job limit. Recovery
 preserves the original scenario and cleanup receipt instead of turning an
 interrupted run green. Artifact uploads include only results and logs.
-The Playwright process has a seven-minute bound within the existing journey
-step. The previous five-minute process limit expired on CI during the expanded
-sequential authentication journey, before the per-test deadline; the larger
-bound preserves the complete assertions and independent recovery deadline while
+The Playwright process has a ten-minute bound within the existing journey
+step. The original five-minute process limit expired on CI during the expanded
+sequential authentication journey, before the per-test deadline, and was raised
+to seven minutes. The assistant inbox journey then added up to two Worker
+assistant-task minute-loop waits (takeover and delivery), raising it to ten
+minutes. The Worker fixture's per-run process limit rose from three to seven
+minutes for the same reason: the restarted run hosts the inbox Bot after the
+patrol, and delivery can land on the minute-loop tick where a three-minute limit
+would stop the Worker. Each larger bound preserves the complete assertions and independent recovery deadline while
 leaving less normal cleanup time within the journey step at the process limit.
 The Redis container has no published port or persistent volume and is included
 in the exact owner-checked cleanup and absence proof. Existing receipts without

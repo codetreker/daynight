@@ -1,4 +1,4 @@
--- Schema snapshot version: 93
+-- Schema snapshot version: 126
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -19,7 +19,23 @@ CREATE TABLE "assistant_task_appendix" (
     "state" "text" NOT NULL,
     "version" bigint NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "scope_project_ids" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "scope_event_types" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "scope_item_categories" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "success_count" bigint DEFAULT 0 NOT NULL,
+    "failure_count" bigint DEFAULT 0 NOT NULL,
+    "last_validated_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_appendix_validations" (
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "appendix_id" "uuid" NOT NULL,
+    "outcome_record_id" "uuid" NOT NULL,
+    "outcome" "text" NOT NULL,
+    "validator_bot_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL
 );
 
 CREATE TABLE "assistant_task_claim_operations" (
@@ -51,7 +67,36 @@ CREATE TABLE "assistant_task_events" (
     "seen_at" timestamp with time zone,
     "ack_operation_id" "uuid",
     "ack_fingerprint" "text",
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "settled_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_inbox_receipts" (
+    "inbox_id" "uuid" NOT NULL,
+    "idempotency_key" "text" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "body_sha256" "text" NOT NULL,
+    "event_id" "uuid",
+    "suppressed" boolean NOT NULL,
+    "target_bot_id" "uuid" NOT NULL,
+    "subject_task_id" "uuid",
+    "received_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_inboxes" (
+    "inbox_id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "state" "text" NOT NULL,
+    "token_digest" "text",
+    "overlap_token_digest" "text",
+    "overlap_until" timestamp with time zone,
+    "suppressed_count" bigint NOT NULL,
+    "version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "rotated_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_inquiries" (
@@ -71,6 +116,16 @@ CREATE TABLE "assistant_task_inquiries" (
     "answered_at" timestamp with time zone
 );
 
+CREATE TABLE "assistant_task_item_closures" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "item_id" "uuid" NOT NULL,
+    "episode" bigint NOT NULL,
+    "opened_at" timestamp with time zone,
+    "closed_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "assistant_task_items" (
     "id" "uuid" NOT NULL,
     "owner_user_id" "uuid" NOT NULL,
@@ -84,7 +139,9 @@ CREATE TABLE "assistant_task_items" (
     "app_state" "jsonb" NOT NULL,
     "version" bigint NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "opened_at" timestamp with time zone,
+    "closed_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_manual_versions" (
@@ -127,7 +184,9 @@ CREATE TABLE "assistant_task_records" (
     "kind" "text" NOT NULL,
     "text" "text" NOT NULL,
     "refs" "jsonb" NOT NULL,
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "outcome" "text",
+    "action_record_id" "uuid"
 );
 
 CREATE TABLE "assistant_tasks" (
@@ -154,7 +213,8 @@ CREATE TABLE "assistant_tasks" (
     "record_last_created_at" timestamp with time zone,
     "record_last_id" "uuid",
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "last_retrospective_at" timestamp with time zone
 );
 
 CREATE TABLE "bot_configuration_preferences" (
@@ -192,6 +252,24 @@ CREATE TABLE "bot_model_preferences" (
     CONSTRAINT "bot_model_preferences_creation_order_check" CHECK (("creation_order" > 0)),
     CONSTRAINT "bot_model_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
     CONSTRAINT "bot_model_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"])))
+);
+
+CREATE TABLE "bot_recovery" (
+    "bot_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "service_origin" "text" NOT NULL,
+    "machine_id" "text" NOT NULL,
+    "machine_name" "text" NOT NULL,
+    "identity_hash" "bytea" NOT NULL,
+    "hosting_generation" bigint NOT NULL
+);
+
+CREATE TABLE "bot_recovery_operations" (
+    "bot_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "request_hash" "bytea" NOT NULL,
+    "receipt" "jsonb" NOT NULL
 );
 
 CREATE TABLE "bot_worker_preferences" (
@@ -254,6 +332,7 @@ CREATE TABLE "device_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "next_poll_at" timestamp with time zone NOT NULL,
     "poll_interval_seconds" integer NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "device_authorizations_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "device_authorizations_check1" CHECK ((("status" = 'pending'::"text") = ("user_id" IS NULL))),
     CONSTRAINT "device_authorizations_device_code_hash_check" CHECK (("octet_length"("device_code_hash") = 32)),
@@ -371,6 +450,7 @@ CREATE TABLE "oauth_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "code_expires_at" timestamp with time zone,
     "retain_until" timestamp with time zone NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "oauth_authorizations_binding_hash_check" CHECK (("octet_length"("binding_hash") = 32)),
     CONSTRAINT "oauth_authorizations_code_hash_check" CHECK ((("code_hash" IS NULL) OR ("octet_length"("code_hash") = 32))),
     CONSTRAINT "oauth_authorizations_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'denied'::"text", 'consumed'::"text", 'expired'::"text"])))
@@ -404,6 +484,9 @@ CREATE TABLE "oauth_grants" (
     "expires_at" timestamp with time zone NOT NULL,
     "revoked_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
+    "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "oauth_grants_client_id_check" CHECK (("length"("client_id") > 0)),
     CONSTRAINT "oauth_grants_lifetime_check" CHECK ((("expires_at" > "created_at") AND ((("scope" = 'daynight:api'::"text") AND ("client_id" = 'societas-bot'::"text")) OR ("expires_at" <= ("created_at" + '720:00:00'::interval))))),
     CONSTRAINT "oauth_grants_resource_check" CHECK (("length"("resource") > 0)),
@@ -431,6 +514,9 @@ CREATE TABLE "personal_access_tokens" (
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
+    "description" "text",
+    "business_scopes" "text"[] NOT NULL,
+    "scope_version" bigint NOT NULL,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
@@ -544,7 +630,8 @@ CREATE TABLE "project_github" (
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
     "credential_version" bigint,
-    "legacy_repository_id" bigint
+    "legacy_repository_id" bigint,
+    "repository_default_branch" "text"
 );
 
 CREATE TABLE "project_github_coverage" (
@@ -556,12 +643,6 @@ CREATE TABLE "project_github_coverage" (
     CONSTRAINT "project_github_coverage_started_at_check" CHECK (("started_at" = "date_trunc"('second'::"text", "started_at")))
 );
 
-CREATE TABLE "project_github_repositories" (
-    "project_id" "uuid" NOT NULL,
-    "repository_id" bigint NOT NULL,
-    "full_name" "text" NOT NULL
-);
-
 CREATE TABLE "project_github_pending_prs" (
     "project_id" "uuid" NOT NULL,
     "number" bigint NOT NULL,
@@ -570,6 +651,12 @@ CREATE TABLE "project_github_pending_prs" (
     "delivery_id" "text" NOT NULL,
     "received_at" timestamp with time zone NOT NULL,
     "next_attempt_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "project_github_repositories" (
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "full_name" "text" NOT NULL
 );
 
 CREATE SEQUENCE "project_grant_versions"
@@ -612,6 +699,15 @@ CREATE TABLE "project_ownership" (
     "version" bigint DEFAULT 1 NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
+);
+
+CREATE TABLE "project_pr_review_assignments" (
+    "user_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "github_pr_id" bigint NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "assigned_at" timestamp with time zone NOT NULL
 );
 
 CREATE TABLE "project_pull_requests" (
@@ -664,6 +760,7 @@ CREATE TABLE "projects" (
     "deleted_at" timestamp with time zone,
     "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "repository_identity" "text" COLLATE "pg_catalog"."C",
+    "repository_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -712,7 +809,10 @@ CREATE TABLE "session_archive_files" (
     "byte_length" bigint NOT NULL,
     "accepted_offset" bigint NOT NULL,
     "state" "text" NOT NULL,
-    "object_path" "text" NOT NULL
+    "object_path" "text" NOT NULL,
+    "upload_version" integer DEFAULT 1 NOT NULL,
+    "successor_file_id" "uuid",
+    "terminal_error" "jsonb"
 );
 
 CREATE TABLE "session_archive_migrations" (
@@ -906,6 +1006,9 @@ CREATE TABLE "sessions" (
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
     "preview_token_hash" "bytea",
+    "last_used_at" timestamp with time zone,
+    "browser" "text",
+    "os" "text",
     CONSTRAINT "sessions_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "sessions_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
 );
@@ -958,6 +1061,7 @@ CREATE TABLE "tasks" (
     "cancelled_at" timestamp with time zone,
     "type" "text" DEFAULT 'task'::"text" NOT NULL,
     "parent_id" "uuid",
+    "ancestor_deleted_at" timestamp with time zone,
     CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
     CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
     CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
@@ -985,11 +1089,7 @@ CREATE VIEW "task_resource_rows" AS
     "t"."parent_id",
     "p"."type" AS "parent_type",
     "p"."deleted_at" AS "parent_deleted_at",
-    COALESCE("t"."deleted_at",
-        CASE
-            WHEN (("t"."type" = 'task'::"text") AND ("p"."type" = 'goal'::"text")) THEN "p"."deleted_at"
-            ELSE NULL::timestamp with time zone
-        END) AS "effective_deleted_at"
+    COALESCE("t"."deleted_at", "t"."ancestor_deleted_at") AS "effective_deleted_at"
    FROM ("tasks" "t"
      LEFT JOIN "tasks" "p" ON ((("p"."project_id" = "t"."project_id") AND ("p"."id" = "t"."parent_id"))));
 
@@ -1025,24 +1125,13 @@ CREATE TABLE "task_sessions" (
     "backend" "text" DEFAULT 'web'::"text" NOT NULL,
     "terminal_state" "jsonb",
     "bot_id" "uuid",
+    "history_content_policy" "text",
+    "online_mode" "text",
     CONSTRAINT "session_backend_content" CHECK (((("backend" = 'web'::"text") AND ("snapshot" IS NOT NULL) AND ("terminal_state" IS NULL)) OR (("backend" = 'herdr'::"text") AND ("scope" = 'task'::"text") AND ("snapshot" IS NULL) AND ("terminal_state" IS NOT NULL)))),
     CONSTRAINT "session_bot_scope" CHECK ((("bot_id" IS NULL) OR (("scope" = 'test'::"text") AND ("backend" = 'web'::"text")))),
     CONSTRAINT "session_scope_binding" CHECK (((("scope" = 'task'::"text") AND ("project_id" IS NOT NULL) AND ("task_id" IS NOT NULL) AND ("claim_id" IS NOT NULL) AND ("test_execution_id" IS NULL)) OR (("scope" = 'test'::"text") AND ("project_id" IS NULL) AND ("task_id" IS NULL) AND ("claim_id" IS NULL) AND ("test_execution_id" IS NOT NULL)))),
-    CONSTRAINT "task_sessions_backend_check" CHECK (("backend" = ANY (ARRAY['web'::"text", 'herdr'::"text"])))
-);
-
-CREATE TABLE "task_steps" (
-    "task_id" "uuid" NOT NULL,
-    "id" "text" NOT NULL COLLATE "pg_catalog"."C",
-    "position" bigint NOT NULL,
-    "title" "text" NOT NULL,
-    "description" "text" NOT NULL,
-    "status" "text" NOT NULL,
-    "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL,
-    CONSTRAINT "task_steps_id_check" CHECK (("id" ~ '^[0-9a-f]{8}$'::"text")),
-    CONSTRAINT "task_steps_position_check" CHECK (("position" >= 0)),
-    CONSTRAINT "task_steps_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'skipped'::"text"])))
+    CONSTRAINT "task_sessions_backend_check" CHECK (("backend" = ANY (ARRAY['web'::"text", 'herdr'::"text"]))),
+    CONSTRAINT "task_sessions_history_content_policy_check" CHECK (("history_content_policy" = ANY (ARRAY['legacy'::"text", 'task_body'::"text"])))
 );
 
 CREATE TABLE "task_tags" (
@@ -1400,6 +1489,7 @@ CREATE TABLE "webhook_endpoints" (
     "created_at" timestamp with time zone NOT NULL,
     "updated_at" timestamp with time zone NOT NULL,
     "deleted_at" timestamp with time zone,
+    "client_key" "text",
     CONSTRAINT "webhook_endpoints_check" CHECK (((("deleted_at" IS NULL) AND ("name" IS NOT NULL) AND (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)) AND ("destination_kind" = 'http'::"text") AND ("adapter_version" = 1) AND ("configuration_schema_version" = 1) AND ("destination_origin" IS NOT NULL) AND ("destination_configuration" IS NOT NULL) AND (("octet_length"("destination_configuration") >= 1) AND ("octet_length"("destination_configuration") <= 262144)) AND ("active_key_id" IS NOT NULL) AND ("destination_kind" IS NOT NULL) AND ("adapter_version" IS NOT NULL) AND ("configuration_schema_version" IS NOT NULL)) OR (("deleted_at" IS NOT NULL) AND (NOT "enabled") AND ("name" IS NULL) AND ("destination_kind" IS NULL) AND ("adapter_version" IS NULL) AND ("configuration_schema_version" IS NULL) AND ("destination_origin" IS NULL) AND ("destination_configuration" IS NULL) AND ("active_key_id" IS NULL)))),
     CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
     CONSTRAINT "webhook_endpoints_created_at_check" CHECK ("isfinite"("created_at")),
@@ -1430,6 +1520,9 @@ CREATE TABLE "webhook_events" (
     "fact_sha256" "bytea" NOT NULL,
     "original_fact_bytes" integer NOT NULL,
     "fact_removed_at" timestamp with time zone,
+    "actor_kind" "text",
+    "actor_user_id" "uuid",
+    "actor_bot_id" "uuid",
     CONSTRAINT "webhook_events_check" CHECK (("source" = ('urn:daynight:project:'::"text" || ("project_id")::"text"))),
     CONSTRAINT "webhook_events_check1" CHECK (((("event_type" = 'task.thread_posted'::"text") AND ("task_version" IS NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NOT NULL) AND ("subject" = ((('tasks/'::"text" || ("task_id")::"text") || '/thread/'::"text") || ("message_id")::"text"))) OR (("event_type" = 'task.step_updated'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND (("step_id" >= 0) AND ("step_id" <= '4294967295'::bigint)) AND ("step_id" IS NOT NULL) AND ("message_id" IS NULL) AND ("subject" = (('tasks/'::"text" || ("task_id")::"text") || '/steps'::"text"))) OR (("event_type" = 'task.deleted'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NOT NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))) OR (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text"])) AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))))),
     CONSTRAINT "webhook_events_check2" CHECK (((("fact_bytes" IS NOT NULL) AND ("fact_removed_at" IS NULL) AND ("octet_length"("fact_bytes") = "original_fact_bytes") AND ("sha256"("fact_bytes") = "fact_sha256")) OR (("fact_bytes" IS NULL) AND ("fact_removed_at" IS NOT NULL)))),
@@ -1578,6 +1671,8 @@ CREATE TABLE "workers" (
     "archive_sessions" boolean DEFAULT true NOT NULL,
     "alias_value" "text",
     "alias_version" bigint DEFAULT 1 NOT NULL,
+    "review_enabled" boolean DEFAULT false NOT NULL,
+    "review_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "worker_configuration_complete" CHECK (((("configuration_revision" IS NULL) AND ("configuration_updated_at" IS NULL) AND ("desired_configuration" IS NULL)) OR (("configuration_revision" IS NOT NULL) AND ("configuration_updated_at" IS NOT NULL) AND ("desired_configuration" IS NOT NULL) AND ("jsonb_typeof"("desired_configuration") = 'object'::"text")))),
     CONSTRAINT "worker_configuration_observation_object" CHECK ((("configuration_observation" IS NULL) OR ("jsonb_typeof"("configuration_observation") = 'object'::"text"))),
     CONSTRAINT "worker_configuration_observation_revision_nonnegative" CHECK (("configuration_observation_revision" >= 0)),
@@ -1589,14 +1684,26 @@ CREATE TABLE "workers" (
 ALTER TABLE ONLY "assistant_task_appendix"
     ADD CONSTRAINT "assistant_task_appendix_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_appendix_validations"
+    ADD CONSTRAINT "assistant_task_appendix_validations_pkey" PRIMARY KEY ("appendix_id", "outcome_record_id");
+
 ALTER TABLE ONLY "assistant_task_claim_operations"
     ADD CONSTRAINT "assistant_task_claim_operations_pkey" PRIMARY KEY ("owner_user_id", "task_id", "operation_id");
 
 ALTER TABLE ONLY "assistant_task_events"
     ADD CONSTRAINT "assistant_task_events_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_inbox_receipts"
+    ADD CONSTRAINT "assistant_task_inbox_receipts_pkey" PRIMARY KEY ("inbox_id", "idempotency_key");
+
+ALTER TABLE ONLY "assistant_task_inboxes"
+    ADD CONSTRAINT "assistant_task_inboxes_pkey" PRIMARY KEY ("inbox_id");
+
 ALTER TABLE ONLY "assistant_task_inquiries"
     ADD CONSTRAINT "assistant_task_inquiries_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_item_closures"
+    ADD CONSTRAINT "assistant_task_item_closures_pkey" PRIMARY KEY ("id");
 
 ALTER TABLE ONLY "assistant_task_items"
     ADD CONSTRAINT "assistant_task_items_pkey" PRIMARY KEY ("id");
@@ -1621,6 +1728,12 @@ ALTER TABLE ONLY "bot_effort_preferences"
 
 ALTER TABLE ONLY "bot_model_preferences"
     ADD CONSTRAINT "bot_model_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider");
+
+ALTER TABLE ONLY "bot_recovery_operations"
+    ADD CONSTRAINT "bot_recovery_operations_pkey" PRIMARY KEY ("bot_id", "operation_id");
+
+ALTER TABLE ONLY "bot_recovery"
+    ADD CONSTRAINT "bot_recovery_pkey" PRIMARY KEY ("bot_id");
 
 ALTER TABLE ONLY "bot_worker_preferences"
     ADD CONSTRAINT "bot_worker_preferences_pkey" PRIMARY KEY ("user_id");
@@ -1727,14 +1840,14 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "project_github_coverage"
     ADD CONSTRAINT "project_github_coverage_pkey" PRIMARY KEY ("project_id", "repository_id", "started_at");
 
-ALTER TABLE ONLY "project_github_repositories"
-    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
-
 ALTER TABLE ONLY "project_github_pending_prs"
     ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
 
 ALTER TABLE ONLY "project_github"
     ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_github_repositories"
+    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
 
 ALTER TABLE ONLY "project_grants"
     ADD CONSTRAINT "project_grants_pkey" PRIMARY KEY ("project_id", "user_id");
@@ -1747,6 +1860,9 @@ ALTER TABLE ONLY "project_invitations"
 
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_pr_review_assignments"
+    ADD CONSTRAINT "project_pr_review_assignments_pkey" PRIMARY KEY ("user_id", "project_id", "repository_id", "github_pr_id");
 
 ALTER TABLE ONLY "project_pull_requests"
     ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "repository_id", "number");
@@ -1874,12 +1990,6 @@ ALTER TABLE ONLY "task_sessions"
 ALTER TABLE ONLY "task_sessions"
     ADD CONSTRAINT "task_sessions_project_id_task_id_claim_id_key" UNIQUE ("project_id", "task_id", "claim_id");
 
-ALTER TABLE ONLY "task_steps"
-    ADD CONSTRAINT "task_steps_pkey" PRIMARY KEY ("task_id", "id");
-
-ALTER TABLE ONLY "task_steps"
-    ADD CONSTRAINT "task_steps_task_id_position_key" UNIQUE ("task_id", "position") DEFERRABLE INITIALLY DEFERRED;
-
 ALTER TABLE ONLY "task_tags"
     ADD CONSTRAINT "task_tags_pkey" PRIMARY KEY ("project_id", "task_id", "tag_id");
 
@@ -1972,13 +2082,25 @@ ALTER TABLE ONLY "workers"
 
 CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "btree" ("task_id", "created_at", "id");
 
+CREATE INDEX "assistant_task_appendix_validations_task" ON "assistant_task_appendix_validations" USING "btree" ("task_id");
+
+CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", "settled_at") WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
+
 CREATE INDEX "assistant_task_events_page" ON "assistant_task_events" USING "btree" ("task_id", "created_at", "id");
 
 CREATE INDEX "assistant_task_events_target_state" ON "assistant_task_events" USING "btree" ("target_bot_id", "state");
 
+CREATE INDEX "assistant_task_inbox_receipts_expiry" ON "assistant_task_inbox_receipts" USING "btree" ("task_id", "expires_at");
+
+CREATE INDEX "assistant_task_inbox_receipts_wake" ON "assistant_task_inbox_receipts" USING "btree" ("target_bot_id", "subject_task_id", "received_at");
+
+CREATE UNIQUE INDEX "assistant_task_inboxes_live" ON "assistant_task_inboxes" USING "btree" ("task_id") WHERE ("state" = 'enabled'::"text");
+
 CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING "btree" ("task_id", "created_at", "id");
 
 CREATE INDEX "assistant_task_inquiries_state_deadline" ON "assistant_task_inquiries" USING "btree" ("state", "deadline");
+
+CREATE INDEX "assistant_task_item_closures_task_closed" ON "assistant_task_item_closures" USING "btree" ("task_id", "closed_at");
 
 CREATE UNIQUE INDEX "assistant_task_items_open_key" ON "assistant_task_items" USING "btree" ("task_id", "key") WHERE ("state" = 'open'::"text");
 
@@ -1995,6 +2117,8 @@ CREATE INDEX "assistant_tasks_holder" ON "assistant_tasks" USING "btree" ("holde
 CREATE UNIQUE INDEX "assistant_tasks_owner_application" ON "assistant_tasks" USING "btree" ("owner_user_id", "application") WHERE (("application" <> ''::"text") AND ("state" <> 'deleted'::"text"));
 
 CREATE INDEX "assistant_tasks_owner_page" ON "assistant_tasks" USING "btree" ("owner_user_id", "created_at", "id");
+
+CREATE INDEX "bot_recovery_operation_tokens" ON "bot_recovery_operations" USING "btree" ("bot_id", (("receipt" ->> 'controllerTokenHash'::"text")));
 
 CREATE INDEX "bots_owner_list" ON "bots" USING "btree" ("owner_user_id", "created_at", "id") WHERE ("deletion" IS NULL);
 
@@ -2080,7 +2204,11 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
+CREATE INDEX "project_pr_review_assignments_worker_cursor" ON "project_pr_review_assignments" USING "btree" ("user_id", "worker_id", "project_id", "repository_id", "github_pr_id");
+
 CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+
+CREATE INDEX "project_pull_requests_open_github_id" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "github_id") INCLUDE ("number") WHERE ("state" = 'open'::"text");
 
 CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 
@@ -2108,7 +2236,23 @@ CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 
 CREATE UNIQUE INDEX "sessions_preview_token_hash" ON "sessions" USING "btree" ("preview_token_hash") WHERE ("preview_token_hash" IS NOT NULL);
 
+CREATE INDEX "sessions_user_created_id" ON "sessions" USING "btree" ("user_id", "created_at" DESC, "id" DESC);
+
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
+
+CREATE INDEX "task_properties_worker_active_claim_idx" ON "task_properties" USING "btree" (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'userId'::"text")) COLLATE "C", ((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'workerId'::"text")) COLLATE "C", "task_id") WHERE (("name" = 'worker'::"text") AND (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'state'::"text") COLLATE "C") = 'active'::"text"));
 
 CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_id", "task_id", "created_at" DESC, "id" DESC) WHERE ("scope" = 'task'::"text");
 
@@ -2196,6 +2340,8 @@ CREATE INDEX "webhook_endpoint_waits_owner" ON "webhook_endpoint_waits" USING "b
 
 CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
+CREATE UNIQUE INDEX "webhook_endpoints_live_client_key_idx" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "client_key") WHERE (("deleted_at" IS NULL) AND ("client_key" IS NOT NULL));
+
 CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "webhook_events_occurred" ON "webhook_events" USING "btree" ("occurred_at", "id");
@@ -2215,6 +2361,8 @@ CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "b
 CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
+
+CREATE INDEX "workers_review_participants" ON "workers" USING "btree" ("user_id", "worker_id") WHERE "review_enabled";
 
 CREATE TRIGGER "webhook_policy_no_update" BEFORE UPDATE ON "webhook_policies" FOR EACH ROW EXECUTE FUNCTION "webhook_policy_no_update"();
 

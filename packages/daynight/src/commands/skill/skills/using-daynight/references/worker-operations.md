@@ -60,7 +60,7 @@ single quotes for backslash paths. Native arguments keep their existing settings
 
 The first tool-path-capable cloud exchange imports each unadopted local choice;
 an explicit choice already saved in the cloud wins. Afterwards use **My Workers →
-the intended Worker → Configuration → Tool paths**. Expand the section, edit a
+the intended Worker → Configuration → Tool launch paths**. Expand the section, edit a
 path and use the panel's normal Save or Cancel action. **Restore automatic** is
 explicit: clearing the input is not a reset. Cloud automatic discovery does not
 reactivate an old local path. Editing local YAML after adoption does not replace
@@ -83,8 +83,13 @@ There is no `daynight config` or `daynight worker config` command for this edit.
 An explicit path selects that installation and never silently falls back to
 `PATH` or the bundled runtime. Version/capability checks and execution use the
 same verified selection. Web Copilot still uses Daynight's SDK and requires a
-compatible external runtime. An unused automatic tool can remain unchecked;
-that does not establish failure of unrelated tools or Provider availability.
+compatible external runtime. After adopting the cloud target, the Worker checks
+both configured tool choices within bounded operations, even when current work
+does not use one of them. Successful checks are reused; failed checks retain their
+actual errors during retry backoff. A failure does not establish failure of
+unrelated tools or Provider availability. Overall configuration success still
+requires current applied evidence for both editable tools. These checks do not
+start a task or replace demand-based Provider capability discovery.
 
 Native executables, symlinks, supported Node entries and recognized npm shims
 are resolved on the Worker. npm shim text is inspected, not run as shell code;
@@ -166,10 +171,12 @@ conditions; neither is a tool-path reset.
 
 ### Retained resource recovery
 
-A retained Git marker does not identify the Worker or prove that its original
-execution stopped. Current monitoring preserves its occupied slot and reports
-the claim and Project-relative worktree. Do not delete its database, raise the
-concurrency limit or use `worker retry` to hide the reservation.
+A Git registration under `.worktrees/daynight/` on the task's
+`daynight/<task-id>` branch can block new acquisition of that task. Inspect
+`git worktree list --porcelain` in the mapped repository for the registered
+path and branch. Old worktree manifest files have no effect on acquisition.
+Worker monitoring uses execution evidence to determine the original claim
+and whether it still occupies an execution slot.
 
 For an original completed Web execution whose full journals remain available,
 stop the corresponding `worker run`, then preview recovery under its original
@@ -182,18 +189,18 @@ daynight worker resources recover <task-id> --project <project-id> --claim-id <c
 
 The second command rechecks the exact service, authenticated owner, Worker,
 terminal claim, worktree binding, original native stop and ready archive receipt
-before removing the worktree without force and retiring its manifest. It preserves
-the branch and execution journals. Optional `--worktree-id` adds an exact identity
+before removing the worktree without force. It preserves the branch and
+execution journals. Optional `--worktree-id` adds an exact identity
 check; omission reads the original journal and still verifies the unique Git
 binding. Modified, untracked or ignored files, index flags that hide changes and
 commits with no observed remote
 reference block removal; preserve those files and commits before making a new
-decision. Unknown removal results require inspecting the original worktree and
-manifest before another attempt.
+decision. Unknown removal results require inspecting the original checkout and Git
+registration before another attempt.
 
 Missing journals, a successor claim or another Worker never authorize adoption.
 Restore the original Worker and Controller journals from backup; a completed Task,
-missing process or Git marker cannot replace them. Unfinished Web executions use
+missing process or Git registration cannot replace them. Unfinished Web executions use
 normal Worker reconciliation after their original evidence is restored. Successful
 observation clears repaired monitoring failures; recovery does not create a new execution.
 

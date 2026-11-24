@@ -365,9 +365,14 @@ test("closing native Codex rejects an unresolved response without waiting for it
 });
 
 
-test.each([{ unattended: false, resume: false }, { unattended: true, resume: false }, { unattended: true, resume: true }])("Codex full access only changes new Worker sessions: %j", async ({ unattended, resume }) => {
+test.each([
+  { unattended: false, resume: false },
+  { unattended: false, resume: true },
+  { unattended: true, resume: false },
+  { unattended: true, resume: true },
+])("Codex applies full access to Worker sessions on start and resume: %j", async ({ unattended, resume }) => {
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resume ? "native-thread" : null, unattended,
-    env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended && !resume ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+    env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   await provider.close();
 });
 
@@ -406,11 +411,11 @@ test.each(["inProgress", "completed"])("Codex historical Markdown waits for the 
   finally { await provider.close(); }
 });
 
-test.each([null, "native-thread"])("Codex registers connected usage capability for the original thread (resume=%s)", async resumeNativeSessionId => {
+test.each([null, "native-thread"])("Codex registers connected usage capability and reports the missing rollout (resume=%s)", async resumeNativeSessionId => {
   const ready = vi.fn(), observe = vi.fn(), gap = vi.fn();
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId,
     env: { ...process.env, CODEX_TEST_INITIALIZED: JSON.stringify({ userAgent: "daynight/0.169.0 (Windows 11; x86_64)" }) },
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {}, usageRuntime: { ready, observe, gap } });
-  try { expect(ready).toHaveBeenCalledExactlyOnceWith({ nativeSessionId: "native-thread", providerVersion: "0.169.0" }); expect(observe).not.toHaveBeenCalled(); expect(gap).not.toHaveBeenCalled(); }
+  try { expect(ready).toHaveBeenCalledExactlyOnceWith({ nativeSessionId: "native-thread", providerVersion: "0.169.0" }); expect(observe).not.toHaveBeenCalled(); expect(gap).toHaveBeenCalledExactlyOnceWith("native_recovery_gap"); }
   finally { await provider.close(); }
 });

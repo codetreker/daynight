@@ -197,7 +197,7 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 
 任何其他表项仅由明确的对应操作事实构造；若捕获点没有可靠证据，则不选择它。
 
-恢复仅在实际观测该失败对应操作恢复成功时记录。`lastRecovery.explanation` 精确为 `The operation recovered.`，`explanationTruncated=false`；保留其真实 component、operationId、scope 和 observedAt。失败消失、心跳或监控上报成功本身不证明其他操作恢复。归属未确认的遗留资源在持续观测和重启后仍作为 claim scope 当前异常上报，关联原 task/claim 与可用工作区路径；不能因任务已完成而消退。仅在完整归属核验成功或证实安全回收时退休对应故障。Web 明示原 claim、容量分解与恢复指引；在原机器停止 Worker 后可用 `daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id>` 核验原执行记录；默认仅预检，通过后须另以 `--confirm` 显式确认回收。缺失记录须从已核验的备份恢复，不能从 Git 标记合成。恢复入口的证据要求由 Worker 恢复合同拥有。证据不足须保留资源，命令和监控均不得伪造停止或归档证明。
+恢复仅在实际观测该失败对应操作恢复成功时记录。`lastRecovery.explanation` 精确为 `The operation recovered.`，`explanationTruncated=false`；保留其真实 component、operationId、scope 和 observedAt。失败消失、心跳或监控上报成功本身不证明其他操作恢复。原执行身份未知的 Git 注册在持续观测和重启后仍作为 project scope 异常上报。已关联原执行的 claim scope 异常可包含原 task/claim 与工作区路径。任务已完成不表示资源已消失。仅在完整归属核验成功或证实安全回收时退休对应故障。Web 呈现容量分解，完整监控交换合同仍保留异常中的原 claim 与路径。在原机器停止 Worker 后可用 `daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id>` 核验原执行记录；默认仅预检，通过后须另以 `--confirm` 显式确认回收。缺失记录须从已核验的备份恢复，不能从 Git 注册合成。恢复入口的证据要求由 Worker 恢复合同拥有。证据不足须保留资源，命令和监控均不得伪造停止或归档证明。
 
 可用详情来自 component、phase、固定分类、关联、实际观测时间、次数、retryState 和 nextAttemptAt；需要原始故障详情时查看本机诊断。这样有意牺牲远端自由文本细节，以避免将未知敏感内容当作安全信息。
 

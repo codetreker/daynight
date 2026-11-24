@@ -59,6 +59,7 @@ func ReadAssignees(ctx context.Context, reader AssigneeReader, projectID string,
 type SyncReader interface {
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error)
 	TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 	TaskAssignees(context.Context, string) ([]model.TaskAssigneeFact, error)
 }
@@ -74,6 +75,23 @@ func ReadSync(ctx context.Context, reader SyncReader, clock SnapshotClock, proje
 	result.Tasks, err = reader.TaskSyncTasks(ctx, projectID, lower, projection.TitlePreviewCharacters)
 	if err != nil {
 		return model.TaskSync{}, nil, err
+	}
+	var goalIDs []string
+	for _, task := range result.Tasks {
+		if task.Type == model.TaskTypeGoal {
+			goalIDs = append(goalIDs, task.ID)
+		}
+	}
+	if len(goalIDs) != 0 {
+		prerequisites, err := reader.TaskSyncGoalDependsOn(ctx, projectID, goalIDs)
+		if err != nil {
+			return model.TaskSync{}, nil, err
+		}
+		for i := range result.Tasks {
+			if result.Tasks[i].Type == model.TaskTypeGoal {
+				result.Tasks[i].DependsOn = prerequisites[result.Tasks[i].ID]
+			}
+		}
 	}
 	result.DependencyStates, err = reader.TaskSyncDependencyStates(ctx, projectID, lower)
 	if err != nil {

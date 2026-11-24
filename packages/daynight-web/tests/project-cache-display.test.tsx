@@ -256,6 +256,33 @@ it("does not resurrect a revoked cached generation from its late successful sync
   expect(result.current.snapshot).toBeNull(); expect(cache.getAuthorizedProject(projectId)).toBeNull();
 });
 
+it.each(['receipt', '410'] as const)('withdraws every old graph presentation immediately after a peer subtree %s while recovery fails', async evidence => {
+  const cache = scope();
+  const late = deferred<TaskSync>();
+  const recovery = deferred<TaskSync>();
+  vi.mocked(getTaskSync)
+    .mockImplementationOnce(async () => taskSyncReadFixture(taskSyncFromGraph(graph(), { versionForTask: () => 1n })))
+    .mockImplementationOnce(async () => taskSyncReadFixture(await late.promise))
+    .mockImplementationOnce(async () => taskSyncReadFixture(await recovery.promise));
+  const view = mount(cache);
+  await waitFor(() => expect(view.result.current.snapshot?.revision).toBeGreaterThan(0));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
+  const peer = scope();
+  await peer.beginSync(projectId, peer.signal);
+  act(() => {
+    if (evidence === 'receipt') peer.retireTaskHistory(projectId, taskSyncEpoch(projectId));
+    else peer.fenceTaskHistory(projectId, null);
+  });
+  await waitFor(() => expect(view.result.current).toMatchObject({ snapshot: null, displaySnapshot: null, syncedSnapshot: null }));
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
+  await act(async () => late.resolve(sync(graph())));
+  expect(view.result.current.displaySnapshot).toBeNull();
+  const failure = new ApiError('network');
+  await act(async () => recovery.reject(failure));
+  await waitFor(() => expect(view.result.current).toMatchObject({ status: 'error', error: failure, snapshot: null, displaySnapshot: null, syncedSnapshot: null }));
+});
+
 it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden after %s withdrawal until this scope successfully syncs", async (withdrawal) => {
   await seed(); const cache = scope(); const peer = scope(); const initial = deferred<TaskSync>();
   const intervals = vi.spyOn(globalThis, "setInterval");

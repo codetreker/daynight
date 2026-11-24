@@ -36,6 +36,20 @@ it("stores only intrinsic complete content and exact bigint, without advancing t
   expect(materializeDetail(saved.detail, { ...scope.getAuthorizedProject(projectId)!.index.nodes.get(detail.id)!, ready: false, blockedBy: [taskId(2)] })).toMatchObject({ ready: false, blockedBy: [taskId(2)] });
 });
 
+it("admits and rereads Goal details without replacing synchronized acceptance edges", async () => {
+  const detail = body(1, { type: "goal", ready: false });
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const ticket = await scope.beginSync(projectId, signal());
+  const sync = taskSyncFromGraph(graphFixture([detail]), { versionForTask: () => detail.version, propertiesForTask: () => detail.properties });
+  await scope.applySync(ticket, { ...sync, tasks: sync.tasks.map((task) => ({ ...task, dependsOn: [taskId(2)] })) }, signal());
+  const current = await scope.beginSync(projectId, signal());
+  expect(await saveDetail(scope, current, detail, signal())).toMatchObject({ kind: "matching", detail: { dependsOn: [] } });
+  expect(await readCachedDetail(scope, current, detail.id, signal())).toMatchObject({ dependsOn: [] });
+  expect(scope.getAuthorizedProject(projectId)!.summaries.get(detail.id)?.dependsOn).toEqual([taskId(2)]);
+  await expect(saveDetail(scope, current, { ...detail, title: "Contradictory" }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(current.maxUpdatedAt);
+});
+
 it("does not rewrite matching repeated content and touches LRU only on an explicit cached read", async () => {
   const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
   vi.spyOn(Date, "now").mockReturnValue(100); await saveDetail(scope, ticket, detail, signal());
@@ -183,4 +197,13 @@ it("checks same-version detail properties against complete summaries while accep
   await expect(saveDetail(scope, ticket, { ...detail, properties: {} }, signal())).rejects.toMatchObject({ kind: "protocol" });
   expect(await record()).toEqual(saved);
   expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
+});
+
+it('uses fresh Parent evidence without trusting shared cached detail fields', async () => {
+  const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await saveDetail(scope, ticket, detail, signal());
+  const incoming = { ...detail, parentTaskId: taskId(2) };
+  await expect(saveDetail(scope, ticket, incoming, signal())).resolves.toMatchObject({ kind: 'matching', detail: { parentTaskId: taskId(2) } });
+  expect(await readCachedDetail(scope, ticket, detail.id, signal())).not.toHaveProperty('parentTaskId');
+  expect((await record())!.detail).not.toHaveProperty('parentTaskId');
 });

@@ -60,9 +60,10 @@ func (g *realCompetitionGate) WriteProjectDirectMember(ctx context.Context, id s
 }
 
 func TestRealTeamAndProjectDirectMemberCompetition(t *testing.T) {
+	_, database, _, _ := projectService(t)
 	for _, teamFirst := range []bool{true, false} {
-		t.Run(map[bool]string{true: "team_first", false: "project_first"}[teamFirst], func(t *testing.T) {
-			f := newMembershipFixture(t)
+		if !t.Run(map[bool]string{true: "team_first", false: "project_first"}[teamFirst], func(t *testing.T) {
+			f := membershipFixtureWithStore(t, database)
 			owner, target := f.user(t), f.user(t)
 			team := newTestTeam(t, teamservice.NewTeams(f.database), owner, "Real team contention")
 			project, err := f.projects.Create(t.Context(), owner, core.CreateProject{ExpectedUserID: owner.UserID, Name: "Real team contention", RepoURL: "https://example.test/" + uuid.NewString(), TeamID: &team.ID})
@@ -132,14 +133,17 @@ func TestRealTeamAndProjectDirectMemberCompetition(t *testing.T) {
 			if err != nil || len(members) != 2 {
 				t.Fatalf("team members=%+v %v", members, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func TestRealTransferAndProjectDirectMemberCompetition(t *testing.T) {
+	_, database, _, _ := projectService(t)
 	for _, transferFirst := range []bool{true, false} {
-		t.Run(map[bool]string{true: "transfer_first", false: "project_first"}[transferFirst], func(t *testing.T) {
-			f := newMembershipFixture(t)
+		if !t.Run(map[bool]string{true: "transfer_first", false: "project_first"}[transferFirst], func(t *testing.T) {
+			f := membershipFixtureWithStore(t, database)
 			owner, destinationOwner, target := f.user(t), f.user(t), f.user(t)
 			project := f.project(t, owner, "Real transfer contention")
 			destination := newTestTeam(t, teamservice.NewTeams(f.database), destinationOwner, "Destination")
@@ -218,7 +222,9 @@ func TestRealTransferAndProjectDirectMemberCompetition(t *testing.T) {
 					t.Fatalf("grant changed across transfer: %+v %+v", got, direct.value.Participant.DirectGrant)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 

@@ -15,7 +15,7 @@ vi.mock("node:timers/promises", async importOriginal => {
   } };
 });
 const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn(), prepareStorage: vi.fn(), selectTool: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), usage: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn(), prepareStorage: vi.fn(), selectTool: vi.fn() }));
 vi.mock("../../../src/commands/controller/independent-tool-selection.js", () => ({ selectIndependentToolLaunch: f.selectTool }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
@@ -25,6 +25,7 @@ vi.mock("../../../src/commands/controller/process-proof.js", async original => (
 vi.mock("../../../src/commands/controller/launch-observation.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/launch-observation.js")>(), ControllerBootstrapReplacedError: errors.ControllerBootstrapReplacedError, isControllerJournalIoFailure: f.journalIo, stopControllerBootstrap: f.bootstrap, reconcileSubmittedControllerLaunch: f.reconcile }));
 vi.mock("../../../src/commands/controller/windows-job.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/windows-job.js")>(), acquireControllerJobLease: f.acquireJob, releaseControllerJobLease: f.releaseJob }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
+vi.mock("../../../src/commands/controller/usage/stopped.js", () => ({ replayStoppedControllerUsage: f.usage }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/storage-preparation.js")>(), prepareControllerStorage: f.prepareStorage }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -110,6 +111,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.acquireJob.mockReset().mockResolvedValue({}); f.releaseJob.mockReset();
   f.journalIo.mockReturnValue(false);
   f.archive.mockResolvedValue({ state: "ready" });
+  f.usage.mockReset().mockResolvedValue({ pending: 0, retryable: false });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
     if (action.kind === "observe") { if (prompt === null) process.emit("SIGINT", "SIGINT"); return { snapshot: { lifecycle: "ready", nativeSessionId: null } }; }
@@ -157,6 +159,7 @@ test.each([false, true])("writes the selected recipe into the new ticket without
   expect(await readLaunchToolSelection(v.home, ticket)).toEqual(launch);
   expect(f.selectTool).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", homeDirectory: v.home, cwd: v.home, environment: process.env, ...(resume ? { resumeTicket: prior } : {}) }));
   expect(ticket.resumeNativeSessionId).toBe(resume ? id : null);
+  expect(ticket.usageScope).toBe("standalone_test");
   expect(f.request.mock.calls.some(([, action]) => action.kind === "submit_initial")).toBe(false);
   expect(prior.configuration.model).toBe("old-model");
 });
@@ -592,6 +595,8 @@ test("history upload failure reports stopped execution and a native-free retry c
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
   expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
   expect(f.archive).toHaveBeenCalledOnce();
+  expect(f.usage).toHaveBeenCalledOnce();
+  expect(f.usage.mock.invocationCallOrder[0]).toBeLessThan(f.archive.mock.invocationCallOrder[0]!);
   expect(v.err.join("")).toContain("Native execution stopped; session history upload is pending");
   expect(v.err.join("")).toContain(`daynight controller codex archive ${id}`);
   expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
@@ -599,6 +604,49 @@ test("history upload failure reports stopped execution and a native-free retry c
   const call = f.archive.mock.calls[0]![0];
   expect(call.serverToken).toBe("private-token");
   expect(call.signal).toBeUndefined();
+});
+test.each(["pending", "failure"])("usage %s retains a native-free retry without blocking history", async kind => {
+  const v = await setup(null);
+  if (kind === "pending") f.usage.mockResolvedValueOnce({ pending: 1, retryable: true });
+  else f.usage.mockRejectedValueOnce(new Error("usage offline"));
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.archive).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+  expect(f.usage.mock.calls[0]![0]).toMatchObject({ serverToken: "private-token", ticket: { sessionId: id } });
+  expect(v.err.join("")).toContain("usage upload is pending");
+  expect(v.err.join("")).toContain(`daynight controller codex archive ${id}`);
+  expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
+});
+
+test("SQLite usage failure remains visible while history still archives", async () => {
+  const v = await setup(null), failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "inspect" });
+  f.usage.mockRejectedValueOnce(failure);
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toBe(failure);
+  expect(f.archive).toHaveBeenCalledOnce();
+  expect(v.err.join("")).toContain("usage upload is pending");
+});
+
+test("unreplayable usage reports a limitation while shutdown and archive retry succeed", async () => {
+  const v = await setup(null);
+  f.usage.mockResolvedValue({ pending: 1, retryable: false });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(v.err.join("")).toContain("cannot be replayed with the retained grant");
+  expect(v.err.join("")).not.toContain("usage upload is pending");
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  await expect(retryIndependentArchive({ provider: "codex", sessionId: id }, v.context)).resolves.toBeUndefined();
+  expect(v.err.join("")).toContain("Original journal retained; history archival continues");
+  expect(v.out.join("")).toContain("Test Session history archived");
+  expect(f.archive).toHaveBeenCalledTimes(2); expect(f.spawn).toHaveBeenCalledOnce();
+});
+
+test("archive retry keeps a retryable usage batch pending after history succeeds", async () => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
+  f.usage.mockResolvedValueOnce({ pending: 1, retryable: true });
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  await expect(retryIndependentArchive({ provider: "codex", sessionId: id }, v.context)).rejects.toThrow("usage upload remains pending");
+  expect(f.archive).toHaveBeenCalledTimes(2); expect(f.spawn).toHaveBeenCalledOnce();
 });
 test.each(["direct", "aggregate"] as const)("%s SQLite archive failure stays visible after Ctrl+C without invalidating proven stop or lease release", async wrapper => {
   const v = await setup(null);
@@ -627,6 +675,7 @@ test("unconfirmed server stop never publishes completed content", async () => {
   const v = await setup(null, true);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
   expect(f.archive).not.toHaveBeenCalled();
+  expect(f.usage).toHaveBeenCalledOnce();
   expect(v.err.join("")).toContain(`daynight controller codex archive ${id}`);
 });
 
@@ -641,8 +690,24 @@ test("archive-only retry reuses saved stop proof without starting a process or r
   await retryIndependentArchive({ provider: "codex", sessionId: id }, v.context);
   expect(f.spawn).toHaveBeenCalledOnce();
   expect(f.archive).toHaveBeenCalledTimes(2);
+  expect(f.usage).toHaveBeenCalledTimes(2);
+  expect(f.usage.mock.calls[1]![0]).toMatchObject(f.usage.mock.calls[0]![0]);
   expect(v.requests.filter(request => request.url.endsWith("/stop")).map(request => request.body)).toEqual([oldProof, oldProof]);
   expect(v.out.join("")).toContain(`Test Session history archived: https://daynight.example/test-sessions/${id}`);
+});
+
+test.each([false, true])("archive retry retains usage failure while attempting history (history failure %s)", async historyFailure => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
+  const usage = new Error("usage offline"), history = new Error("history offline");
+  f.usage.mockRejectedValueOnce(usage);
+  if (historyFailure) f.archive.mockRejectedValueOnce(history);
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  const result = await retryIndependentArchive({ provider: "codex", sessionId: id }, v.context).catch(error => error);
+  if (historyFailure) { expect(result).toBeInstanceOf(AggregateError); expect(result.errors).toEqual([usage, history]); }
+  else expect(result).toBe(usage);
+  expect(f.archive).toHaveBeenCalledTimes(2); expect(f.spawn).toHaveBeenCalledOnce();
 });
 
 test("publishes pending history only after native stop and before closing the server session", async () => {

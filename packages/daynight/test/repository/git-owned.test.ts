@@ -7,6 +7,8 @@ import { createOperation } from "../../src/api/operation.js";
 import type { Operation } from "../../src/api/operation.js";
 import { RepositoryGitError } from "../../src/repository/git.js";
 import { startOwnedRepositoryGit } from "../../src/repository/git-owned.js";
+import { withinExecutionDeadline } from "../../src/commands/worker/execution-scope.js";
+import { withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../src/commands/worker/owned-command-lifecycle.js";
 
 const helpers = vi.hoisted(() => ({ children: [] as ChildProcess[], gitChildren: [] as ChildProcess[], replacement: undefined as string | undefined, gitReplacement: undefined as string | undefined }));
 vi.mock("node:child_process", async (importOriginal) => {
@@ -96,6 +98,27 @@ it("returns normal results only after local closure and preserves nonzero exit p
   const allowed = startOwnedRepositoryGit(root, ["config", "--get", "fixture.missing"], operation(), { allowExitOne: true });
   expect(await allowed.outcome).toMatchObject({ kind: "success", result: { exitCode: 1 } });
 });
+
+it("reconciles the original retained Git command while its owner is still running", async () => {
+  const root = await repository(), events: OwnedCommandLifecycleEvent[] = [];
+  let rejectStop = true;
+  const command = withOwnedCommandLifecycle(async event => {
+    if (event.stage === "stopped" && rejectStop) {
+      rejectStop = false;
+      throw new Error("The original stop receipt could not be saved.");
+    }
+    events.push(event);
+  }, () => startOwnedRepositoryGit(root, ["version"], operation()));
+  try {
+    expect(await command.outcome).toMatchObject({ kind: "cleanup-pending" });
+    expect(await withinExecutionDeadline(command.joined, Date.now() + 10_000)).toEqual({ kind: "local-closed", cleanupErrors: [] });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "unknown", "stopped"]);
+    expect(new Set(events.map(event => event.resourceId)).size).toBe(1);
+  } finally {
+    command.requestStop();
+    await withinExecutionDeadline(command.joined, Date.now() + 10_000);
+  }
+}, 25_000);
 
 it("retains actual spawn failures through joined closure", async () => {
   const root = await repository();

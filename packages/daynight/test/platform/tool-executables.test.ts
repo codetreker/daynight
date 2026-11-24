@@ -68,7 +68,9 @@ describe("resolved tool commands", () => {
     const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, workerNode: node, environment: { PATH: pathNode } }, operation());
     const command = toolCommand(launch, []);
     expect(JSON.parse((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout).node).toBe(await realpath(node));
-    await rm(node);
+    // Executable removal can still report EBUSY after execFile has joined close.
+    await removeFixtureRoot(node);
+    await expect(stat(node)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(verifyToolLaunch(launch, operation())).rejects.toMatchObject({ tool: "codex", context: "web", stage: "verify", code: "tool_identity_changed" });
   });
 

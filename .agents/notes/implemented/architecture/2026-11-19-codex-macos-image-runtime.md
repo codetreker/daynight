@@ -2,6 +2,11 @@
 
 Status: implemented
 
+[Default image send](2026-11-24-default-session-image-send.md) changes ordinary Codex and Copilot
+admission. The decision below records the original exact-qualification
+policy and its evidence. Runtime observations and applicable tighter
+limits still inform current capabilities.
+
 ## Problem
 
 Image input requires an exact qualified runtime combination, and the Codex
@@ -17,6 +22,11 @@ A qualification row also binds the native executable sha256. The Codex Provider
 derived that digest only on Windows, from a verified direct `.exe` entry, so a
 macOS runtime always reported an unknown executable identity and still could
 not match any row even after protocol recognition.
+
+Once identity is observable, the production registry still has to say which
+exact combinations are admitted and with which limits. A row that is broader
+than its evidence would admit inputs nobody has seen the native runtime and
+model consume correctly.
 
 ## Decision
 
@@ -46,6 +56,28 @@ the history admission described in the
 With no matching row, a recognized 0.170.0 Session reports `capability_unknown`
 instead of `profile_disabled`; images stay closed and text input is unaffected.
 
+The production
+[registry](../../../../packages/daynight/src/commands/controller/providers/image-qualification.ts)
+contains one row per evidenced model: Codex 0.170.0 on `darwin`/`arm64`, the
+native binary digest `9248cfee…abd6`, `sdkVersion` null, the declared
+`copilot_gateway` route digest `63f0adb3…b8bc14`, and model `gpt-6-astra` or
+`gpt-6.2-astra`. Each row grants `send` only; `steer` stays false because no
+same-turn steer receipt was collected. Its limits are the largest values the
+native evidence actually delivered and the model answered correctly: PNG, JPEG
+and WebP; eight images per message; 16384 pixels wide or high; 33554432 pixels;
+one frame; and per-model byte limits of 10461350 / 20904114
+(`gpt-6-astra`) and 10442582 / 20883253 (`gpt-6.2-astra`) for one image and a
+whole message. `evidenceId` names the native evidence package attached to the
+owning Daynight task and `evidenceSha256` pins its bytes; the package records
+the probe, generator, grader, raw results and identity readback. That package
+is native app-server evidence only: it fixes identity, limits and the steer
+decision but is not product-chain acceptance. The acceptance specification
+still requires product evidence for the same combination (upload, native
+delivery, model answer, history, preview, download, archive and reading the
+original after the Controller stops); that evidence lives in the combination's
+acceptance report rather than in the row, and the rows ship only after it
+passes.
+
 ## Alternatives
 
 **Accept a version range such as `>=0.167.0`.** Codex changes its app-server
@@ -63,6 +95,21 @@ would bind qualification to a file that is not the running program. Interpreter
 launches were also excluded, because the Node script's digest says nothing
 about the native binary it later spawns from its own package.
 
+**Qualify the model family or any backend for this binary.** Both models
+share the route digest, but the evidence is per model and the route digest only
+covers declared configuration. A model-agnostic row would admit models whose
+image handling was never observed.
+
+**Publish `IMAGE_LIMITS` or catalog limits instead of evidenced values.** The
+byte limits observed are slightly below the product limits; publishing the
+product values would claim sizes no sample covered. The difference is a few
+tens of kilobytes, so the evidenced values cost users almost nothing. Frames
+stay at one because no animated sample was sent.
+
+**Enable steer alongside send.** No evidence shows that an image submitted
+into an active turn is received in that same turn without implicit queueing,
+so steer remains closed until such a receipt exists.
+
 ## Consequences
 
 Each future Codex release needs its own explicit compatibility entry and fresh
@@ -77,5 +124,15 @@ verification as `tool_identity_changed`. The digest is taken after
 `verifyToolLaunch` and before spawn, so a replacement in that short window is
 not detected; this is the same bounded check already accepted for Windows.
 
+The two rows close whenever any identity field changes. A Codex self-update
+to another version returns Sessions to `profile_disabled`; a rebuilt or
+reinstalled 0.170.0 binary, another platform or architecture, a changed
+declared route or another model returns them to `capability_unknown`. Each
+case needs fresh evidence and a new row. JPEG and WebP were sampled only at
+small sizes; the rows still express one limit set per model.
+
 The [declared configuration observation](2026-11-16-codex-image-config-observation.md)
-and its new-thread-only scope are unchanged.
+and its new-thread-only scope are unchanged, so resumed threads establish no
+observation and stay `capability_unknown`. Copilot keeps no production row: on
+macOS its Web Sessions run through a materialized runtime whose identity the
+current design keeps unknown.

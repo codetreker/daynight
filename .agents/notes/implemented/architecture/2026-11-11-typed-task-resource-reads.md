@@ -18,7 +18,9 @@ physical rows. Ordinary dependency invariants use retained physical Task rows
 and edges, while newly added dependency targets must be visible.
 
 List and search select a type and optional Parent scope. Their cursors bind both;
-search context identifies the actual visible parent Goal. Full Goal pages derive
+default search context identifies the actual visible parent Goal. The
+[Task-parent projection decision](2026-11-23-task-parent-read-projection.md) adds
+explicit ordinary-parent views and distinct cursor-bound direct-parent filters. Full Goal pages derive
 progress for selected IDs in one grouped query within their read snapshot.
 Summary and sync projections omit it. The [server design](../../../../docs/design/daynight-server.md)
 and [search design](../../../../docs/design/daynight-task-search.md) own the
@@ -36,9 +38,9 @@ remain physically retained.
 
 ## Consequences
 
-Visible reads agree on deletion without rewriting child rows or versions, and
+Visible reads agree on deletion while preserving child business versions, and
 progress is derived from the same snapshot as its Goal. The view adds a parent
 join to resource reads; dependency decisions deliberately retain a separate
 physical path. Independent material and Session operations use the
 [resource lifecycle lock plan](2026-11-11-parent-resource-lifecycle.md) for
-their physical rows. Parent mutation uses the Project write scope and validates the target Goal.
+their physical rows. The [subtree visibility decision](2026-11-23-task-subtree-visibility.md) replaces immediate-Parent deletion derivation with a persisted inherited marker and target-row resource locking. Parent mutation uses the Project write scope and validates the target Goal.

@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { afterEach, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -34,7 +36,7 @@ test.each([
   for (let i = 0; i < 2; i++) {
     const reopened = new Database(file, { readonly: true });
     try {
-      expect(reopened.pragma("user_version", { simple: true })).toBe(15);
+      expect(reopened.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
       const row = reopened.prepare("SELECT value FROM image_runtime_state WHERE key='native_index_reservation'").get() as { value: string } | undefined;
       if (expected === null) expect(row).toBeUndefined();
       else if (typeof expected === "string") expect(row?.value).toBe(expected);

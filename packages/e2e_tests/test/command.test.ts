@@ -15,7 +15,8 @@ const active = async (pid: number): Promise<boolean> => {
     const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    // A process reaped between opening and reading its stat file reports ESRCH.
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH')) return false;
     throw error;
   }
 };
@@ -94,11 +95,13 @@ test('explicit stop is idempotent and resolves the observed process exit', async
 
 test('output retention is bounded while complete output is streamed', async () => {
   let streamedBytes = 0;
-  const result = await runCommand(process.execPath, ['-e', "process.stdout.write('x'.repeat(2*1024*1024));"], {
+  const command = startCommand(process.execPath, ['-e', "process.stdout.write('x'.repeat(2*1024*1024));"], {
     ...options(), onOutput: (_channel, chunk) => { streamedBytes += Buffer.byteLength(chunk); },
   });
+  const result = await command.finished;
   assert.equal(streamedBytes, 2 * 1024 * 1024);
   assert.equal(Buffer.byteLength(result.stdout), 1024 * 1024);
+  assert.deepEqual(command.diagnostics().truncated, { stdout: true, stderr: false });
 });
 
 test('an already aborted signal fails before starting a process', () => {

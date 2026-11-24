@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
@@ -346,5 +347,31 @@ func TestTaskAssigneesFailuresNeverReturnPartialProfiles(t *testing.T) {
 		if !errors.Is(err, storage) || errors.As(err, &fault) || !reflect.DeepEqual(result, model.TaskAssignees{}) {
 			t.Fatalf("storage failure became partial success or refusal: %#v %v", result, err)
 		}
+	}
+}
+
+func TestScopedTaskAssigneesRequireTaskRead(t *testing.T) {
+	for _, id := range []scopepolicy.ScopeID{"project:read", "task:read"} {
+		t.Run(string(id), func(t *testing.T) {
+			f := newTaskReadFixture(t)
+			f.principal.Kind = model.PATCredential
+			app := f.assignees(taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil)), nil)
+			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{id}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := model.CredentialAuthorization{Principal: f.principal, Profile: model.ScopedPATProfile, Policy: &policy}
+			result, err := taskservice.NewScopedTasks(app, a).Assignees(f.ctx, f.principal, f.project.ID, taskservice.TaskAssigneesRequest{})
+			if id == "task:read" {
+				if err != nil || len(result.Items) != 1 {
+					t.Fatalf("task reader: %+v %v", result, err)
+				}
+				return
+			}
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Code != "insufficient_scope" {
+				t.Fatalf("missing Task permission: %+v %v", result, err)
+			}
+		})
 	}
 }

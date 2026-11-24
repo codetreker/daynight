@@ -709,7 +709,7 @@ it('publishes the trusted self-removal result outside the hidden members section
     throw new Error(`Unexpected request ${url}`);
   }));
   const content = (active: boolean) => <ProjectAccessBoundary projectId={projectId}>
-    <div hidden={!active} inert={!active}><MembersPanel projectId={projectId} projectName="Private project name" user={user} onRemoved={removed} active={active} onRoute resultHost={resultHost} presentationGeneration={active ? 0 : 1} /></div>
+    <div hidden={!active} inert={!active}><MembersPanel projectId={projectId} user={user} onRemoved={removed} active={active} onRoute resultHost={resultHost} presentationGeneration={active ? 0 : 1} /></div>
   </ProjectAccessBoundary>;
   const view = renderWithLocale(content(true), { locale: 'en', taskCache: { scope } });
   try {
@@ -724,7 +724,6 @@ it('publishes the trusted self-removal result outside the hidden members section
     expect(scope.isProjectSuspended(projectId)).toBe(true);
     expect(await within(resultHost).findByText('Direct grant for Alice removed.')).toBeVisible();
     expect(within(resultHost).getByRole('button', { name: 'Return to projects' })).toBeVisible();
-    expect(screen.queryByText('Private project name · Manage collaborators and invitations')).toBeNull();
     expect(screen.queryByText(oldEmail)).toBeNull();
     expect(removed).not.toHaveBeenCalled();
     fireEvent.click(within(resultHost).getByRole('button', { name: 'Return to projects' }));

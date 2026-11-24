@@ -30,7 +30,7 @@ legacy content; the schema number alone does not. Expiration tombstones are
 never revived, and migration replay does not renew the grace period.
 
 Reclamation starts only after confirmed expiration commit. It acquires the
-original owner's archive residency permit and joins each exact media lease
+original owner's exclusive archive permit and joins each exact media lease
 gate outside database transactions. A busy permit leaves the durable intent for
 the next pass. [Redis storage gates](2026-11-19-redis-storage-gates.md) cancel
 protected cleanup on lease loss. File removal verifies the held permits. The typed archive namespace includes staging and legacy files;
@@ -75,4 +75,5 @@ recalculation. This avoids starvation behind unfinished chains but makes sweep
 latency proportional to the retained directory size. The existing per-owner
 archive permit can postpone cleanup while another Session of that owner is
 reading; this trades reclamation latency for reuse of the established
-cross-instance I/O protection.
+cross-instance I/O protection. The [owner permit decision](2026-11-21-session-archive-owner-permits.md)
+describes exclusion with multiple concurrent Session operations.

@@ -8,6 +8,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/prompt"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -17,12 +19,34 @@ type database interface {
 }
 type versionDecision func(model.PromptResource, int64, string) (int64, bool, error)
 type Prompts struct {
+	current       func(context.Context, any, model.Principal, bool) (model.CredentialAuthorization, error)
 	store         database
 	decideVersion versionDecision
 }
 
 func New(db database) *Prompts { return &Prompts{store: db, decideVersion: core.Next} }
-func invalid() error           { return &model.Fault{Code: "invalid_input", Message: "Prompt input is invalid."} }
+func NewScoped(db database, current func(context.Context, any, model.Principal, bool) (model.CredentialAuthorization, error)) (*Prompts, error) {
+	if current == nil {
+		return nil, errors.New("prompt credential policy is required")
+	}
+	p := New(db)
+	p.current = current
+	return p, nil
+}
+func (p *Prompts) admit(ctx context.Context, tx any, a model.CredentialAuthorization, write bool, operations ...scopepolicy.Operation) error {
+	if p.current != nil {
+		current, err := p.current(ctx, tx, a.Principal, write)
+		if err != nil {
+			return err
+		}
+		if current.Principal != a.Principal || current.Profile != a.Profile {
+			return model.Unauthenticated(nil)
+		}
+		a = current
+	}
+	return scopeadmission.Require(a, operations...)
+}
+func invalid() error { return &model.Fault{Code: "invalid_input", Message: "Prompt input is invalid."} }
 func notFound(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
 		return &model.Fault{Code: "not_found", Message: "Prompt resource was not found.", Cause: err}
@@ -45,14 +69,14 @@ func normalize(principal model.Principal, scope model.PromptScope, id string) (s
 	}
 	return canonical, nil
 }
-func read(ctx context.Context, dao store.PromptReader, user string, scope model.PromptScope, id string) (model.PromptResource, error) {
-	m, err := dao.PromptMetadata(ctx, user, scope, id)
+func read(ctx context.Context, dao store.PromptReader, purpose model.PromptPurpose, user string, scope model.PromptScope, id string) (model.PromptResource, error) {
+	m, err := dao.PromptMetadata(ctx, purpose, user, scope, id)
 	if err != nil {
 		return model.PromptResource{}, err
 	}
 	value := model.PromptResource{Scope: scope, ScopeID: id, Revision: strconv.FormatInt(m.Revision, 10), UpdatedAt: m.UpdatedAt}
 	if m.Revision != 0 {
-		value.Text, err = dao.PromptText(ctx, user, scope, id)
+		value.Text, err = dao.PromptText(ctx, purpose, user, scope, id)
 		if err == nil {
 			err = storedTextError(value.Text)
 		}
@@ -71,6 +95,32 @@ func authorizeRead(ctx context.Context, snapshot store.PromptSnapshot, principal
 	}
 }
 func (p *Prompts) Get(ctx context.Context, principal model.Principal, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return p.get(ctx, model.PromptPurposeWorker, principal, scope, id, nil)
+}
+
+func (p *Prompts) GetReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return p.get(ctx, model.PromptPurposeReviewer, principal, scope, id, nil)
+}
+
+// GetAuthorized preserves resource visibility before checking the credential policy.
+func (p *Prompts) GetAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return p.getAuthorized(ctx, model.PromptPurposeWorker, authorization, scope, id)
+}
+
+func (p *Prompts) GetReviewerAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return p.getAuthorized(ctx, model.PromptPurposeReviewer, authorization, scope, id)
+}
+
+func (p *Prompts) getAuthorized(ctx context.Context, purpose model.PromptPurpose, authorization model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
+	if err := authorization.Validate(); err != nil {
+		return model.PromptResource{}, err
+	}
+	return p.get(ctx, purpose, authorization.Principal, scope, id, func(tx any) error {
+		return p.admit(ctx, tx, authorization, false, scopepolicy.PromptRead)
+	})
+}
+
+func (p *Prompts) get(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id string, admit func(any) error) (model.PromptResource, error) {
 	id, err := normalize(principal, scope, id)
 	if err != nil {
 		return model.PromptResource{}, err
@@ -80,13 +130,44 @@ func (p *Prompts) Get(ctx context.Context, principal model.Principal, scope mode
 		if err := authorizeRead(ctx, snapshot, principal, scope, id); err != nil {
 			return err
 		}
+		if admit != nil {
+			if err := admit(snapshot); err != nil {
+				return err
+			}
+		}
 		var err error
-		value, err = read(ctx, snapshot, principal.UserID, scope, id)
+		value, err = read(ctx, snapshot, purpose, principal.UserID, scope, id)
 		return err
 	})
 	return value, err
 }
 func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	return p.put(ctx, model.PromptPurposeWorker, principal, scope, id, expectedUserID, revision, text, nil)
+}
+
+func (p *Prompts) PutReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	return p.put(ctx, model.PromptPurposeReviewer, principal, scope, id, expectedUserID, revision, text, nil)
+}
+
+// PutAuthorized checks policy before accessing or modifying the prompt.
+func (p *Prompts) PutAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	return p.putAuthorized(ctx, model.PromptPurposeWorker, authorization, scope, id, expectedUserID, revision, text)
+}
+
+func (p *Prompts) PutReviewerAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	return p.putAuthorized(ctx, model.PromptPurposeReviewer, authorization, scope, id, expectedUserID, revision, text)
+}
+
+func (p *Prompts) putAuthorized(ctx context.Context, purpose model.PromptPurpose, authorization model.CredentialAuthorization, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	if err := authorization.Validate(); err != nil {
+		return model.PromptResource{}, err
+	}
+	return p.put(ctx, purpose, authorization.Principal, scope, id, expectedUserID, revision, text, func(tx any) error {
+		return p.admit(ctx, tx, authorization, true, scopepolicy.PromptWrite, scopepolicy.PromptRead)
+	})
+}
+
+func (p *Prompts) put(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string, admit func(any) error) (model.PromptResource, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.PromptResource{}, err
 	}
@@ -108,6 +189,9 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 	if err = core.ValidateText(text); err != nil {
 		return model.PromptResource{}, err
 	}
+	if purpose == model.PromptPurposeReviewer && len(text) > 32*1024 {
+		return model.PromptResource{}, invalid()
+	}
 	var result model.PromptResource
 	completion, err := p.store.WritePrompt(ctx, func(tx store.PromptWriteScope) error {
 		switch scope {
@@ -120,7 +204,12 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 				return notFound(err)
 			}
 		}
-		current, err := tx.PromptResource(ctx, principal.UserID, scope, id)
+		if admit != nil {
+			if err := admit(tx); err != nil {
+				return err
+			}
+		}
+		current, err := tx.PromptResource(ctx, purpose, principal.UserID, scope, id)
 		if err != nil {
 			return err
 		}
@@ -136,9 +225,9 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 			return nil
 		}
 		if expected == 0 {
-			result, err = tx.CreatePrompt(ctx, principal.UserID, scope, id, text)
+			result, err = tx.CreatePrompt(ctx, purpose, principal.UserID, scope, id, text)
 		} else {
-			result, err = tx.UpdatePrompt(ctx, principal.UserID, scope, id, next, expected, text)
+			result, err = tx.UpdatePrompt(ctx, purpose, principal.UserID, scope, id, next, expected, text)
 		}
 		return err
 	})
@@ -212,7 +301,7 @@ func Batch(ctx context.Context, reader store.PromptSnapshotReader, principal mod
 				}
 				return err
 			}
-			m, err := snapshot.PromptMetadata(ctx, principal.UserID, key.Scope, id)
+			m, err := snapshot.PromptMetadata(ctx, model.PromptPurposeWorker, principal.UserID, key.Scope, id)
 			if err != nil {
 				return err
 			}
@@ -223,7 +312,7 @@ func Batch(ctx context.Context, reader store.PromptSnapshotReader, principal mod
 			}
 			value := model.PromptResource{Scope: key.Scope, ScopeID: id, Revision: revision, UpdatedAt: m.UpdatedAt}
 			if m.Revision != 0 {
-				value.Text, err = snapshot.PromptText(ctx, principal.UserID, key.Scope, id)
+				value.Text, err = snapshot.PromptText(ctx, model.PromptPurposeWorker, principal.UserID, key.Scope, id)
 				if err != nil {
 					return err
 				}

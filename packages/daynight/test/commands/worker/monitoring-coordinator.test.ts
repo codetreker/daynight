@@ -26,7 +26,7 @@ const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []) } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });
   const claim = vi.fn();
@@ -34,7 +34,7 @@ const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
   const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in monitoring fixture."); };
   const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unexpectedBackendCall };
-  const coordinator = createWorkerCoordinator({ store, webStore, webBackend, git, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
+  const coordinator = createWorkerCoordinator({ store, webStore, webBackend, git, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, platformTaskMode: "all", emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
   return { coordinator, monitor, ownInventory, candidates, claim, clock: (value: number) => { clock = value; } };
 };
 
@@ -75,7 +75,7 @@ describe("coordinator monitoring", () => {
     const pending = f.coordinator.tick();
     try {
       await entered;
-      f.coordinator.updateConfiguration({ repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 2, preferPlatformSpecificTasks: false });
+      f.coordinator.updateConfiguration({ repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 2, platformTaskMode: "all" });
       release(); await pending;
       const current = f.monitor.capture();
       expect(current.scheduler).toMatchObject({ coverage: "partial", lastOutcome: "completed", lastSuccessfulAt: first.scheduler.lastSuccessfulAt });

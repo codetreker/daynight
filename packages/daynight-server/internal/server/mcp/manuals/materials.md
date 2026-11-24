@@ -15,7 +15,6 @@ A Goal independently owns its description, properties, Thread and attachments. I
 | Brief problem, outcome, scope, constraints, inputs, deliverables and acceptance, with detailed references | Task/Goal description plus actual readable referenced material |
 | Full requirements, solutions, detailed designs, implementation instructions, research, acceptance evidence, images and prototypes | Owning Task/Goal attachments |
 | Durable participant questions, proposals and replies | Immutable Thread |
-| Ordered durable objective, completion conditions, result and material references | Step, according to project rules |
 | Commands, tools, debugging chronology, temporary todos, worktrees, runtime logs, claim and waiting context | Session or actual runtime platform |
 | Execution and delivery authority | Actual user/project authorization context, not reconstructed Task content |
 
@@ -29,7 +28,7 @@ Keep descriptions brief and link detailed attachments rather than duplicate thei
 
 Unexplained links, previous-chat references and cycles of empty documents leave inputs missing. Required implementation approaches belong in durable material for another executor. Do not invent architecture, acceptance thresholds or future prerequisite outputs to fill gaps. The target project's workflow determines required documents and discussion/delivery gates; material ownership adds no universal pipeline.
 
-Classify by purpose: a migration plan may be a formal deliverable; the Session's command schedule for producing it is operating context. Steps can reference overall requirements/results. Threads preserve discussion; accepted conclusions also belong in the effective requirement/design/result owner.
+Classify by purpose: a migration plan may be a formal deliverable; the Session's command schedule for producing it is operating context. Threads preserve discussion; accepted conclusions also belong in the effective requirement/design/result owner.
 
 ## Maintain coherent content
 

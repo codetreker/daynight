@@ -21,6 +21,7 @@ type configServiceStub struct {
 	facts                                                        store.GitHubAppConfigFacts
 	writeFacts                                                   *store.GitHubAppConfigFacts
 	reads, writes, updates, fences, stops, relations, tombstones int
+	accessCalls, factsCalls                                      int
 	outcome                                                      store.TransactionOutcome
 	readErr, writeErr                                            error
 	scopeErr                                                     error
@@ -54,6 +55,7 @@ func (s *configServiceStub) WriteGitHubAppConfig(ctx context.Context, id string,
 	return store.Completion{Outcome: s.outcome}, err
 }
 func (s *configServiceStub) Facts(ctx context.Context, actor string) (store.GitHubAppConfigFacts, error) {
+	s.factsCalls++
 	if actor == "" {
 		panic("missing actor")
 	}

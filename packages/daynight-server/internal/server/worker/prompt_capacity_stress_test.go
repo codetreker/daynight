@@ -49,7 +49,7 @@ func TestProtocol2MaximumEscapedReceipt(t *testing.T) {
 		projectArgs[i] = nativeValue
 	}
 	projectArgs[len(projectArgs)-1] = strings.Repeat("<", 2500)
-	config := model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 1000, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: args}, Projects: []model.WorkerProjectConfiguration{{ProjectID: "22222222-2222-4222-8222-222222222222", NativeOverrides: map[string]json.RawMessage{"args": encodeInput(projectArgs)}}}}
+	config := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 1, PollIntervalMs: 1000, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: args}, Projects: []model.WorkerProjectConfiguration{{ProjectID: "22222222-2222-4222-8222-222222222222", NativeOverrides: map[string]json.RawMessage{"args": encodeInput(projectArgs)}}}}
 	encodeInput(map[string]any{"revision": "1", "value": model.WorkerConfigurationWire(config)})
 	configBody := encodeInput(model.WorkerConfigurationWire(config))
 	config, err := workercore.ParseWorkerConfiguration(configBody)

@@ -196,7 +196,8 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	}) {
 		return
 	}
-	sessionDirectImageFlow(t, f)
+	sessionDirectImageFlow(t, f, false)
+	sessionDirectImageFlow(t, f, true)
 	sessionSyncReopenedFlow(t, f, project, claimed, registered.SessionID, claimID)
 }
 

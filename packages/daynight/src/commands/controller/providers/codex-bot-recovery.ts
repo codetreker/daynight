@@ -22,6 +22,17 @@ const ownedFile = (name: unknown, prefix: string): name is string => typeof name
 const absent = (error: unknown) => object(error).code === "ENOENT";
 const maxLineBytes = 32 * 1024 * 1024;
 const rolloutTypes = new Set(["session_meta", "event_msg", "response_item", "turn_context", "compacted", "world_state", "token_usage_record"]);
+const cellWait = (item: Record<string, unknown>): boolean => {
+  // The verified legacy rollout spells the code-mode tool "wait". Other
+  // namespaces and call formats do not inherit this argument-based exception.
+  if (item.type !== "function_call" || item.name !== "wait" || typeof item.arguments !== "string") return false;
+  let args: Record<string, unknown>;
+  try { args = object(JSON.parse(item.arguments)); } catch { return false; }
+  return typeof args.cell_id === "string" && args.cell_id.trim().length > 0
+    && Object.keys(args).every(key => ["cell_id", "yield_time_ms", "max_tokens", "terminate"].includes(key))
+    && ["yield_time_ms", "max_tokens"].every(key => !Object.hasOwn(args, key) || Number.isSafeInteger(args[key]) && (args[key] as number) >= 0)
+    && (!Object.hasOwn(args, "terminate") || typeof args.terminate === "boolean");
+};
 /** This recovery profile owns one legacy rollout, not another thread or external media. */
 const validateDependencies = (entry: Record<string, unknown>): void => {
   if (!rolloutTypes.has(String(entry.type))) throw invalid("Codex rollout uses an unsupported native record type.");
@@ -39,7 +50,7 @@ const validateDependencies = (entry: Record<string, unknown>): void => {
   };
   const response = (value: unknown) => {
     const item = object(value);
-    if (["function_call", "custom_tool_call", "tool_call"].includes(String(item.type)) && typeof item.name === "string" && /(?:^|[.:])(?:spawn_agent|send_input|wait|close_agent|resume_agent)$/.test(item.name)) {
+    if (["function_call", "custom_tool_call", "tool_call"].includes(String(item.type)) && typeof item.name === "string" && /(?:^|[.:])(?:spawn_agent|send_input|wait|close_agent|resume_agent)$/.test(item.name) && !cellWait(item)) {
       throw invalid("Codex recovery has an unsupported dependency on another native thread.");
     }
     if (item.type === "message" && Array.isArray(item.content)) for (const part of item.content) media(part);

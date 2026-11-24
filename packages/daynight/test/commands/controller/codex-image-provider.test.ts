@@ -72,7 +72,11 @@ test("fresh configuration restores the original image qualification but never ad
   const provider = await openCodexProvider(f.options);
   try {
     const before = f.states.at(-1)!.images!; expect(before.send).toBe("supported");
-    await writeFile(route, "https://another.example"); await provider.refreshControls!(); expect(f.states.at(-1)!.images!.send).toBe("unknown");
+    const granted = f.input([await f.image()]);
+    await writeFile(route, "https://another.example"); await provider.refreshControls!();
+    expect(f.states.at(-1)!.images!.send).toBe("supported");
+    expect(imageQualificationFingerprint(f.states.at(-1)!.images)).toBeNull();
+    await expect(provider.send(granted.value, granted.operationId, null)).rejects.toThrow("changed before dispatch");
     await writeFile(route, "https://example.test"); await provider.refreshControls!();
     expect(f.states.at(-1)!.images!.send).toBe("supported");
     expect(imageQualificationFingerprint(f.states.at(-1)!.images)).toBe(imageQualificationFingerprint(before));
@@ -96,17 +100,31 @@ test("configuration observation errors preserve ordinary text and never emit raw
   await writeFile(route, "error"); f.options.env = { ...f.options.env, CODEX_IMAGES_ROUTE_FILE: route }; f.options.onDiagnostic = line => diagnostics.push(line);
   const provider = await openCodexProvider(f.options);
   try {
-    expect(f.states.at(-1)!.images!.send).toBe("unknown");
+    expect(f.states.at(-1)!.images!.send).toBe("supported");
+    expect(imageQualificationFingerprint(f.states.at(-1)!.images)).toBeNull();
     await expect(provider.send({ content: [{ type: "text", text: "ordinary text" }] }, randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
     expect(JSON.stringify({ states: f.states, diagnostics })).not.toContain("secret-config-canary");
   } finally { await provider.close(); await f.cleanup(); }
 });
 
-test("resumed threads cannot acquire image identity from current global configuration", async () => {
-  const f = await fixture(); f.options.resumeNativeSessionId = "images-thread";
+test.each([false, true])("Codex without exact qualification sends images in a real protocol turn (resumed=%s)", async resumed => {
+  const f = await fixture();
+  f.options.env = { ...f.options.env, CODEX_IMAGES_COMPATIBLE: "1" };
+  if (resumed) f.options.resumeNativeSessionId = "images-thread";
   const provider = await openCodexProvider(f.options);
-  try { expect(f.states.at(-1)!.images!.send).toBe("unknown"); await provider.refreshControls!(); expect(f.states.at(-1)!.images!.send).toBe("unknown"); }
-  finally { await provider.close(); await f.cleanup(); }
+  try {
+    expect(f.states.at(-1)?.images).toMatchObject({ send: "supported", steer: "unknown" });
+    expect(imageQualificationFingerprint(f.states.at(-1)?.images)).toBeNull();
+    const first = await f.image(), second = await f.image();
+    const input = f.input([{ type: "text", text: "Two images" }, first, second]);
+    await expect(provider.send(input.value, input.operationId, null)).resolves.toEqual({ disposition: "started", turnId: "image-turn" });
+    const dispatches = (await f.requests()).filter(row => ["turn/start", "turn/steer"].includes(row.method));
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].params).toMatchObject({ clientUserMessageId: input.operationId, input: [
+      { type: "text", text: "Two images", text_elements: [] }, { type: "localImage", path: first.localPath }, { type: "localImage", path: second.localPath },
+    ] });
+    expect(f.observations).toContainEqual(expect.objectContaining({ operationId: input.operationId, nativeMessageId: input.operationId }));
+  } finally { await provider.close(); await f.cleanup(); }
 });
 
 test("a settings event during asynchronous read-authority preparation rejects the final native write", async () => {
@@ -116,7 +134,7 @@ test("a settings event during asynchronous read-authority preparation rejects th
     const input = f.input([await f.image()]);
     authorityPolicy.beforeInput = async () => {
       f.child()!.stdin!.write(JSON.stringify({ method: "fixture/settings", params: { model: "other-model" } }) + "\n");
-      await vi.waitFor(() => expect(f.states.at(-1)?.images?.send).toBe("unknown"));
+      await vi.waitFor(() => expect(f.states.at(-1)?.images?.modelId).toBe("other-model"));
     };
     await expect(provider.send(input.value, input.operationId, null)).rejects.toThrow("configuration changed");
     expect((await f.requests()).filter(row => ["turn/start", "turn/steer"].includes(row.method))).toHaveLength(0);
@@ -197,7 +215,9 @@ test("a failed second image makes zero native input calls and a text-only model 
   for (const mode of ["normal", "no-modality"]) {
     const f = await fixture(mode), provider = await openCodexProvider(f.options);
     try {
-      const first = await f.image(), second = { ...await f.image(), localPath: join(f.root, "missing.png") }, input = f.input([first, second]);
+      const first = await f.image();
+      const input = mode === "no-modality" ? f.input([first]) : f.input([first, { ...await f.image(), localPath: join(f.root, "missing.png") }]);
+      if (mode === "no-modality") expect(f.states.at(-1)?.images).toMatchObject({ send: "unsupported", reasonCode: "model_unsupported" });
       await expect(provider.send(input.value, input.operationId, null)).rejects.toBeInstanceOf(NativeRpcError);
       expect((await f.requests()).filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
       expect(f.observations).toEqual([]);
@@ -215,6 +235,23 @@ test("paginated native image history uses one item per page and preserves each o
     expect(f.state.get("codex:history:images-thread:history-turn")).toEqual({ cursor: null, complete: true });
     expect(JSON.stringify(f.entries)).not.toContain(png.toString("base64")); expect(JSON.stringify(f.entries)).not.toContain("private-native-file");
   } finally { await provider.close(); await f.cleanup(); }
+});
+
+test("resumed native image history retains its media while read authority is enabled", async () => {
+  const f = await fixture("normal", [{ id: "generated", type: "mcpToolCall", tool: "draw", status: "completed", result: { content: [{ type: "image", mimeType: "image/png", data: png.toString("base64") }] } }]);
+  f.options.onNativeReadPolicy = () => {};
+  const stage = vi.mocked(f.options.stageImageCapture!);
+  stage.mockImplementation(async input => {
+    expect(await readFile(input.inputPath)).toEqual(png);
+    return { mediaType: "image/png", byteLength: input.byteLength, sha256: input.sha256, width: 1, height: 1, frameCount: 1 };
+  });
+  let provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;
+  try {
+    provider = await openCodexProvider(f.options);
+    await vi.waitFor(() => expect(f.captures).toHaveLength(1));
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(f.captures[0]?.nativeSource?.nativeMessageId).toBe("generated");
+  } finally { await provider?.close(); await f.cleanup(); }
 });
 
 test("a repeated native history cursor fails the same connection without starting input", async () => {

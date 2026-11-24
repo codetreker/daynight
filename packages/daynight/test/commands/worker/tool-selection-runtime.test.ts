@@ -4,6 +4,120 @@ import { expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerToolSelectionRuntime } from "../../../src/commands/worker/tool-selection-runtime.js";
 
+test("adopted settings get bounded checks independently of provider demand", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "configured-")), receipt = path.join(root, "checks");
+  const codex = path.join(root, process.platform === "win32" ? "codex.cjs" : "codex");
+  await writeFile(codex, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(receipt)},'checked\\n');console.log(process.argv.includes('--version')?'codex-cli 1.0.0':'app-server --stdio');\n`);
+  await chmod(codex, 0o755);
+  const choices = { codex: { kind: "auto" as const }, copilot: { kind: "path" as const, path: path.join(root, "missing-copilot") } };
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: { PATH: root, PATHEXT: ".CJS" }, readActiveSelections: () => [], localToolPaths: choices });
+  const signal = new AbortController().signal, prepare = vi.spyOn(runtime.manager, "prepare");
+  const now = Date.now; let elapsed = 0; const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+  try {
+    expect(await runtime.checkConfiguredTools(signal)).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();
+    runtime.setTargets({ source: "cloud", revision: "1", choices });
+    const first = runtime.checkConfiguredTools(signal);
+    expect(await runtime.checkConfiguredTools(signal)).toBe(false);
+    expect(await first).toBe(true);
+    expect(runtime.manager.snapshot().entries).toEqual([
+      expect.objectContaining({ tool: "codex", state: "applied", actual: expect.objectContaining({ version: "1.0.0", executablePath: codex }) }),
+      expect.objectContaining({ tool: "copilot", state: "error", error: expect.objectContaining({ code: "not_found" }) }),
+    ]);
+    const originalChecks = await readFile(receipt, "utf8");
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(await runtime.checkConfiguredTools(signal)).toBe(false);
+    elapsed += 60_001;
+    expect(await runtime.checkConfiguredTools(signal)).toBe(true);
+    expect(prepare.mock.calls.slice(2).map(([tool]) => tool)).toEqual(["copilot"]);
+    expect(await readFile(receipt, "utf8")).toBe(originalChecks);
+    runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: null } });
+    expect(await runtime.checkConfiguredTools(signal)).toBe(true);
+    expect(prepare.mock.calls.slice(3).map(([tool]) => tool)).toEqual(["codex"]);
+    expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "codex")).toMatchObject({ state: "error", error: { code: "not_found" } });
+    runtime.setTargets({ source: "cloud", revision: "3", choices: { codex: { kind: "path", path: codex }, copilot: null } });
+    expect(await runtime.checkConfiguredTools(signal)).toBe(true);
+    expect(runtime.manager.currentSelection("codex", "web")?.entryPath).toBe(codex);
+    runtime.setTargets(null);
+    expect(await runtime.checkConfiguredTools(signal)).toBe(false);
+  } finally { clock.mockRestore(); prepare.mockRestore(); try { await runtime.close(); } finally { await rm(root, { recursive: true, force: true }); } }
+}, 30_000);
+
+test("slow failed settings checks retain a full retry interval after settling", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "configured-backoff-"));
+  const choices = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } };
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [], localToolPaths: choices });
+  const prepare = vi.spyOn(runtime.manager, "prepare").mockImplementation((_tool, _context, operation) => new Promise((_resolve, reject) => {
+    operation.signal.addEventListener("abort", () => reject(operation.signal.reason), { once: true });
+  }));
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    runtime.setTargets({ source: "cloud", revision: "1", choices: { ...choices, codex: null } });
+    const signal = new AbortController().signal;
+    const first = runtime.checkConfiguredTools(signal);
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect(await first).toBe(true);
+    expect(prepare.mock.calls[0]![2].signal.reason).toMatchObject({ kind: "deadline" });
+    const immediate = runtime.checkConfiguredTools(signal);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(await immediate).toBe(false);
+    runtime.setTargets({ source: "cloud", revision: "2", choices: { ...choices, codex: null } });
+    await vi.advanceTimersByTimeAsync(59_999);
+    const beforeDeadline = runtime.checkConfiguredTools(signal);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(await beforeDeadline).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const retried = runtime.checkConfiguredTools(signal);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    await runtime.close(); expect(await retried).toBe(true);
+  } finally { await runtime.close(); prepare.mockRestore(); vi.useRealTimers(); await rm(root, { recursive: true, force: true }); }
+});
+
+test.each(["changed", "withdrawn", "unadopted"] as const)("settling a %s target check does not delay the next adopted choice", async change => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "configured-invalidate-"));
+  const choices = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } };
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [], localToolPaths: choices });
+  const prepare = vi.spyOn(runtime.manager, "prepare").mockResolvedValue(undefined).mockImplementationOnce((_tool, _context, operation) => new Promise((_resolve, reject) => {
+    operation.signal.addEventListener("abort", () => reject(operation.signal.reason), { once: true });
+  }));
+  try {
+    runtime.setTargets({ source: "cloud", revision: "1", choices: { ...choices, codex: null } });
+    const signal = new AbortController().signal, first = runtime.checkConfiguredTools(signal);
+    if (change === "withdrawn") runtime.setTargets(null);
+    else if (change === "unadopted") runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: null, copilot: null } });
+    runtime.setTargets({ source: "cloud", revision: "3", choices: { codex: null, copilot: change === "changed" ? { kind: "path", path: path.join(root, "copilot") } : choices.copilot } });
+    expect(await first).toBe(true);
+    expect(await runtime.checkConfiguredTools(signal)).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(2);
+  } finally { await runtime.close(); prepare.mockRestore(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("settings check cancellation follows changed choices and shutdown", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "configured-cancel-"));
+  const choices = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } };
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [], localToolPaths: choices });
+  const aborted: string[] = [];
+  const prepare = vi.spyOn(runtime.manager, "prepare").mockImplementation((tool, _context, operation) => new Promise(resolve => {
+    operation.signal.addEventListener("abort", () => { aborted.push(tool); resolve(); }, { once: true });
+  }));
+  try {
+    runtime.setTargets({ source: "cloud", revision: "1", choices });
+    const first = runtime.checkConfiguredTools(new AbortController().signal);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    runtime.setTargets({ source: "cloud", revision: "2", choices });
+    expect(aborted).toEqual([]);
+    runtime.setTargets({ source: "cloud", revision: "3", choices: { codex: null, copilot: choices.copilot } });
+    expect(aborted).toEqual(["codex"]);
+    await runtime.close(); await first;
+    expect(aborted).toEqual(["codex", "copilot"]);
+    expect(await runtime.checkConfiguredTools(new AbortController().signal)).toBe(false);
+  } finally { prepare.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("runtime freezes inspected facts and host snapshots do no process work", async () => {
   const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "run-")), receipt = path.join(root, "receipt");

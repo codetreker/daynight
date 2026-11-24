@@ -8,6 +8,18 @@ export const string = (value: unknown): string => typeof value === "string" ? va
 export class NativeRpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); }
 }
+/** Positive evidence that the Controller stopped before native dispatch. */
+export class NativeDispatchRejectedError extends Error {
+  readonly errorClass = "native_dispatch_rejected";
+}
+/** A later nested refusal cannot undo a native method that was already invoked. */
+export const retainDispatchedOutcome = async <T>(invoke: () => T | Promise<T>): Promise<T> => {
+  try { return await invoke(); }
+  catch (error) {
+    if (error instanceof NativeDispatchRejectedError) throw new Error("Native operation was already dispatched before a nested admission refusal; its result is unknown.", { cause: error });
+    throw error;
+  }
+};
 export class NativeRpcTimeoutError extends Error {
   override readonly name = "NativeRpcTimeoutError";
   constructor(readonly method: string) { super(`Native ${method} response timed out; result is unknown.`); }

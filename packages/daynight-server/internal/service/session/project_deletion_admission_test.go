@@ -25,7 +25,7 @@ func TestDeletedProjectSessionAdmissionReturnsNotFound(t *testing.T) {
 	_, err = f.service.ArchiveStatus(ctx, f.owner, f.project, f.task, v.SessionID)
 	requireServiceError(t, err, "not_found")
 	// Corrupt retained Task properties must not override the deleted Project gate.
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_properties SET value='not-json' WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_properties SET value='{"claimId":1}' WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.service.Current(ctx, f.owner, f.project, f.task)

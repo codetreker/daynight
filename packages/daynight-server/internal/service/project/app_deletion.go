@@ -58,7 +58,7 @@ func (s *AppProjects) DeleteWithInput(ctx context.Context, p model.Principal, id
 		if active {
 			return &model.Fault{Code: "active_worker_claims", Message: "Project has active Worker claims."}
 		}
-		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, true); err != nil {
 			return err
 		}
 		connection := scope.GitHubDAO()

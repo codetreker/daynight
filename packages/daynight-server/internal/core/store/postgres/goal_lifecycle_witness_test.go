@@ -3,10 +3,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -47,7 +50,12 @@ type goalLifecycleFixture struct {
 
 func newGoalLifecycleFixture(t *testing.T, upStatus, downStatus model.TaskStatus) goalLifecycleFixture {
 	t.Helper()
-	db, principal, _, upProject := membershipFixture(t)
+	return seedGoalLifecycleFixture(t, isolatedStore(t), upStatus, downStatus)
+}
+
+func seedGoalLifecycleFixture(t *testing.T, db *Store, upStatus, downStatus model.TaskStatus) goalLifecycleFixture {
+	t.Helper()
+	principal, _, upProject := testutil.ProjectMembershipFixture(t, db)
 	downProject, err := testutil.CreatePrivateProject(t.Context(), db, principal, uuid.NewString(), "Downstream", "https://example.test/goal-downstream")
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +131,10 @@ func TestGoalCompletionAndReopenSerializeAcrossProjects(t *testing.T) {
 			if downFirst {
 				firstProject, firstID, firstStatus, secondProject, secondID, secondStatus = secondProject, secondID, secondStatus, firstProject, firstID, firstStatus
 			}
+			var otherProject, otherGoal string
+			if downFirst {
+				otherProject, otherGoal = seedIndependentTeamGoal(t, ctx, f)
+			}
 			firstDone := make(chan error, 1)
 			go func() {
 				_, err := firstService.SetStatus(ctx, f.principal, firstProject, firstID, taskcore.SetTaskStatus{Version: 1, Status: firstStatus})
@@ -135,6 +147,14 @@ func TestGoalCompletionAndReopenSerializeAcrossProjects(t *testing.T) {
 				secondDone <- err
 			}()
 			waitGoalAdvisoryWait(t, ctx, f.db)
+			if downFirst {
+				independent, stop := context.WithTimeout(ctx, 2*time.Second)
+				defer stop()
+				got, err := secondService.SetStatus(independent, f.principal, otherProject, otherGoal, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
+				if err != nil || got.Status != model.TaskDone {
+					t.Fatalf("independent Team blocked: %+v %v", got, err)
+				}
+			}
 			close(barrier.release)
 			if err := testutil.ReceiveQueryResult(t, ctx, firstDone); err != nil {
 				t.Fatalf("first operation: %v", err)
@@ -158,10 +178,8 @@ func TestGoalCompletionAndReopenSerializeAcrossProjects(t *testing.T) {
 	}
 }
 
-func TestGoalDifferentTeamsDoNotShareGraphLock(t *testing.T) {
-	f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
+func seedIndependentTeamGoal(t *testing.T, ctx context.Context, f goalLifecycleFixture) (string, string) {
+	t.Helper()
 	team, err := testutil.CreateTeam(ctx, f.db, f.principal.UserID, uuid.NewString(), "Independent Team")
 	if err != nil {
 		t.Fatal(err)
@@ -172,30 +190,7 @@ func TestGoalDifferentTeamsDoNotShareGraphLock(t *testing.T) {
 	}
 	otherGoal := uuid.NewString()
 	mustQueryExec(t, f.db, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'goal','independent','todo')`, otherGoal, other.ID)
-	barrier := &goalCommitBarrier{Store: f.db, prepared: make(chan struct{}), release: make(chan struct{})}
-	defer func() {
-		select {
-		case <-barrier.release:
-		default:
-			close(barrier.release)
-		}
-	}()
-	first := make(chan error, 1)
-	go func() {
-		_, err := taskservice.NewTasks(barrier).SetStatus(ctx, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
-		first <- err
-	}()
-	awaitGoalBarrier(t, ctx, barrier.prepared, first)
-	independent, stop := context.WithTimeout(ctx, 2*time.Second)
-	defer stop()
-	got, err := taskservice.NewTasks(f.db).SetStatus(independent, f.principal, other.ID, otherGoal, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
-	if err != nil || got.Status != model.TaskDone {
-		t.Fatalf("independent Team blocked: %+v %v", got, err)
-	}
-	close(barrier.release)
-	if err := testutil.ReceiveQueryResult(t, ctx, first); err != nil {
-		t.Fatal(err)
-	}
+	return other.ID, otherGoal
 }
 
 func TestGoalDeleteProtectsIncomingAndRetainsRevision(t *testing.T) {
@@ -223,6 +218,7 @@ func TestGoalDeleteProtectsIncomingAndRetainsRevision(t *testing.T) {
 }
 
 func TestGoalTeamLockTimeoutReleasesProjectAndConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -255,15 +251,16 @@ func TestGoalTeamLockTimeoutReleasesProjectAndConnection(t *testing.T) {
 	awaitGoalBarrier(t, ctx, acquired, stopped)
 	tasks := taskservice.NewTasks(f.db)
 	result := make(chan error, 1)
-	started := time.Now()
+	waiting, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
 	go func() {
-		_, err := tasks.SetStatus(ctx, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
+		_, err := tasks.SetStatus(waiting, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
 		result <- err
 	}()
-	waitGoalAdvisoryWait(t, ctx, f.db)
+	waitGoalAdvisoryWait(t, waiting, f.db)
 	err := testutil.ReceiveQueryResult(t, ctx, result)
-	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || time.Since(started) < 4*time.Second || time.Since(started) > 8*time.Second {
-		t.Fatalf("Goal did not actively time out under held Team lock: elapsed=%v caller=%v error=%v", time.Since(started), ctx.Err(), err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(waiting.Err(), context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("Goal did not time out under held Team lock: wait=%v caller=%v error=%v", waiting.Err(), ctx.Err(), err)
 	}
 	if got := snapshotTask(t, f.db, f.downProject.ID, f.down); got.Status != model.TaskTodo || got.Version != 1 {
 		t.Fatalf("timed-out Goal changed: %+v", got)
@@ -373,13 +370,16 @@ func TestGoalLifecycleRechecksAuthorizationAfterTeamLockWait(t *testing.T) {
 // service can begin its write. The snapshot itself keeps the caller's context.
 type goalPoolAdmissionBarrier struct {
 	*Store
-	ready           chan struct{}
-	held            *pgxpool.Conn
-	snapshotContext context.Context
+	t            *testing.T
+	caller       context.Context
+	held         *pgxpool.Conn
+	preflightEnd time.Time
 }
 
 func (s *goalPoolAdmissionBarrier) ReadSnapshot(ctx context.Context, work func(store.SnapshotScope) error) error {
-	s.snapshotContext = ctx
+	if ctx != s.caller {
+		s.t.Fatal("type preflight did not retain caller context")
+	}
 	if err := s.Store.ReadSnapshot(ctx, work); err != nil {
 		return err
 	}
@@ -388,14 +388,28 @@ func (s *goalPoolAdmissionBarrier) ReadSnapshot(ctx context.Context, work func(s
 		return err
 	}
 	s.held = conn
-	close(s.ready)
+	s.preflightEnd = time.Now()
 	return nil
 }
 
+func (s *goalPoolAdmissionBarrier) WriteProject(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+	deadline, ok := ctx.Deadline()
+	const goalBudget = 5 * time.Second
+	if s.held == nil || !ok || deadline.Before(s.preflightEnd.Add(goalBudget)) || deadline.After(time.Now().Add(goalBudget)) {
+		s.t.Fatalf("Goal write did not get its branch deadline after type preflight: deadline=%v, preflight ended=%v", deadline, s.preflightEnd)
+	}
+	// Verify the service's actual deadline above and let pgx wait on a shorter
+	// child deadline so this test does not spend the full production budget.
+	waiting, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	return s.Store.WriteProject(waiting, id, work)
+}
+
 func TestGoalWritePoolWaitHasBranchDeadline(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)
 	for _, operation := range []string{"status", "delete"} {
-		t.Run(operation, func(t *testing.T) {
-			f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)
+		if !t.Run(operation, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
 			config := f.db.Pool.Config()
@@ -405,34 +419,21 @@ func TestGoalWritePoolWaitHasBranchDeadline(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(pool.Close)
-			barrier := &goalPoolAdmissionBarrier{Store: &Store{Pool: pool}, ready: make(chan struct{})}
-			result := make(chan error, 1)
-			go func() {
-				tasks := taskservice.NewTasks(barrier)
-				if operation == "delete" {
-					result <- tasks.Delete(ctx, f.principal, f.downProject.ID, f.down, taskcore.DeleteTask{Version: 1})
-					return
+			barrier := &goalPoolAdmissionBarrier{Store: &Store{Pool: pool}, t: t, caller: ctx}
+			t.Cleanup(func() {
+				if barrier.held != nil {
+					barrier.held.Release()
 				}
-				_, err := tasks.SetStatus(ctx, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
-				result <- err
-			}()
-			select {
-			case <-barrier.ready:
-			case err := <-result:
-				t.Fatalf("preflight did not complete before write: %v", err)
-			case <-ctx.Done():
-				t.Fatal("preflight did not complete")
-			}
-			defer barrier.held.Release()
-			if barrier.snapshotContext != ctx {
-				t.Fatal("type preflight did not retain caller context")
-			}
-			started := time.Now()
+			})
 			beforeCanceled := pool.Stat().CanceledAcquireCount()
-			err = testutil.ReceiveQueryResult(t, ctx, result)
-			elapsed := time.Since(started)
-			if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || elapsed < 4*time.Second || elapsed > 8*time.Second {
-				t.Fatalf("write did not time out while waiting for pool: elapsed=%v caller=%v error=%v", elapsed, ctx.Err(), err)
+			tasks := taskservice.NewTasks(barrier)
+			if operation == "delete" {
+				err = tasks.Delete(ctx, f.principal, f.downProject.ID, f.down, taskcore.DeleteTask{Version: 1})
+			} else {
+				_, err = tasks.SetStatus(ctx, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone})
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				t.Fatalf("write did not time out while waiting for pool: caller=%v error=%v", ctx.Err(), err)
 			}
 			if stat := pool.Stat(); stat.CanceledAcquireCount() != beforeCanceled+1 || stat.AcquiredConns() != 1 {
 				t.Fatalf("pool did not cancel its blocked write acquisition: canceled=%d acquired=%d", stat.CanceledAcquireCount(), stat.AcquiredConns())
@@ -442,7 +443,329 @@ func TestGoalWritePoolWaitHasBranchDeadline(t *testing.T) {
 				t.Fatalf("pool timeout changed Goal: %+v", goal)
 			}
 			barrier.held.Release()
+			barrier.held = nil
 			testutil.AssertPoolReusable(t, pool)
+		}) {
+			return
+		}
+	}
+}
+
+func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	project, goal, task := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if _, err := db.CreateProject(ctx, project, "Goal resources", "https://example.test/goal"); err != nil {
+		t.Fatal(err)
+	}
+	var user string
+	if err := db.Pool.QueryRow(ctx, `SELECT m.user_id::text FROM project_ownership o JOIN team_members m ON m.team_id=o.team_id WHERE o.project_id=$1`, project).Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, db.Pool, `INSERT INTO tasks(id,project_id,type,title,parent_id) VALUES($1,$3,'goal','Goal',NULL),($2,$3,'task','Child',$1)`, goal, task, project)
+	pat := uuid.NewString()
+	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'resource test',now())`, pat, user, make([]byte, 32))
+	principal := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: pat}
+
+	for _, kind := range []string{"thread", "attachment", "transfer", "transfer_lifecycle", "session", "session_registration", "steps"} {
+		t.Run(kind, func(t *testing.T) {
+			testutil.MustExec(t, db.Pool, `UPDATE tasks SET deleted_at=NULL,ancestor_deleted_at=NULL WHERE project_id=$1`, project)
+			acquired, release := make(chan struct{}), make(chan struct{})
+			run := func(wait bool) error {
+				admit := func(p store.TaskPresence, e error) error {
+					if e != nil {
+						return e
+					}
+					if !p.Found || p.DeletedAt != nil {
+						return model.ErrNotFound
+					}
+					if wait {
+						close(acquired)
+						select {
+						case <-release:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					}
+					return nil
+				}
+				switch kind {
+				case "session", "session_registration":
+					_, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+						var e error
+						if kind == "session_registration" {
+							_, e = scope.SessionDAO().LockTaskRegistration(ctx, project, task)
+						} else {
+							_, e = scope.SessionDAO().LockTask(ctx, project, task)
+						}
+						return admit(store.TaskPresence{Found: e == nil}, e)
+					})
+					return err
+				case "steps":
+					_, err := db.WriteProject(ctx, project, func(scope store.ProjectWriteScope) error {
+						header, e := scope.TaskDAO().TaskHeader(ctx, task)
+						return admit(store.TaskPresence{Found: e == nil, DeletedAt: header.DeletedAt}, e)
+					})
+					return err
+				case "thread":
+					_, err := db.WriteThread(ctx, func(scope store.ThreadScope) error {
+						p, e := scope.TaskDAO().LockTaskPresence(ctx, project, task)
+						if e = admit(p, e); e != nil {
+							return e
+						}
+						if _, e = scope.CredentialDAO().Credential(ctx, principal); e != nil {
+							return e
+						}
+						if _, e = scope.ProjectDAO().LockProjectAuthorization(ctx, principal, project); e != nil {
+							return e
+						}
+						head, e := scope.ThreadDAO().LockHead(ctx, task)
+						if e != nil {
+							return e
+						}
+						message, e := scope.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task, Author: model.ThreadAuthor{UserID: user}, Body: "resource write"})
+						if e != nil {
+							return e
+						}
+						if e = scope.ThreadDAO().PrepareTimestamp(ctx, &message, head); e != nil {
+							return e
+						}
+						return scope.ThreadDAO().AdvanceHead(ctx, task, message.Position())
+					})
+					return err
+				case "attachment":
+					_, err := db.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+						p, e := scope.LockTaskPresence(ctx, project, task)
+						if e = admit(p, e); e != nil {
+							return e
+						}
+						if _, e = scope.ProjectAuthorization(ctx, principal, project); e != nil {
+							return e
+						}
+						_, _, e = scope.AttachmentDAO().PutAttachment(ctx, model.Attachment{ProjectID: project, TaskID: task, Path: "resource.txt", ContentType: "text/plain", SizeBytes: 1})
+						return e
+					})
+					return err
+				default:
+					_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+						var e error
+						if kind == "transfer" {
+							e = d.Authorize(ctx, principal, "pat", pat, project, task)
+						} else {
+							e = d.LockProjectLifecycle(ctx, project, task)
+						}
+						if e != nil {
+							return e
+						}
+						if wait {
+							close(acquired)
+							select {
+							case <-release:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+						}
+						return nil
+					})
+					return err
+				}
+			}
+			result := make(chan error, 1)
+			go func() { result <- run(true) }()
+			select {
+			case <-acquired:
+			case err := <-result:
+				t.Fatalf("resource admission: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			deleted := make(chan error, 1)
+			go func() {
+				_, err := db.Pool.Exec(ctx, `WITH stamp AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=stamp.deleted_at FROM stamp WHERE id=$2`, goal, task)
+				deleted <- err
+			}()
+			testutil.WaitForQueryLock(t, db.Pool, `WITH stamp AS (UPDATE tasks SET deleted_at=statement_timestamp()`)
+			close(release)
+			if err := testutil.ReceiveQueryResult(t, ctx, result); err != nil {
+				t.Fatalf("resource commit: %v", err)
+			}
+			if err := testutil.ReceiveQueryResult(t, ctx, deleted); err != nil {
+				t.Fatalf("goal deletion: %v", err)
+			}
+			if err := run(false); !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("deleted parent admission: %v", err)
+			}
+			var count int
+			switch kind {
+			case "thread":
+				if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_thread_messages WHERE task_id=$1`, task).Scan(&count); err != nil || count != 1 {
+					t.Fatal(fmt.Errorf("thread count=%d: %w", count, err))
+				}
+			case "attachment":
+				if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_attachments WHERE task_id=$1 AND path='resource.txt'`, task).Scan(&count); err != nil || count != 1 {
+					t.Fatal(fmt.Errorf("attachment count=%d: %w", count, err))
+				}
+			}
 		})
+	}
+}
+
+func TestInheritedHiddenTaskRetainsArchiveFinalizationGate(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	project, task := uuid.NewString(), uuid.NewString()
+	if _, err := db.CreateProject(t.Context(), project, "Archive finalization", "https://example.test/archive"); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, db.Pool, `INSERT INTO tasks(id,project_id,type,title,status,ancestor_deleted_at) VALUES($1,$2,'task','Hidden','done',statement_timestamp())`, task, project)
+	completion, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+		state, deleted, e := scope.SessionDAO().LockArchiveTask(t.Context(), project, task)
+		if e != nil {
+			return e
+		}
+		if !deleted || !state.Deleted || state.Type != model.TaskTypeTask || state.Status != string(model.TaskDone) {
+			return fmt.Errorf("archive finalization facts: %+v deleted=%v", state, deleted)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("archive finalization gate: %+v %v", completion, err)
+	}
+}
+
+func TestProjectDeletionWaitsForGoalChildAttachment(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	project, goal, task := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if _, err := db.CreateProject(ctx, project, "Goal attachment", "https://example.test/goal"); err != nil {
+		t.Fatal(err)
+	}
+	var user string
+	if err := db.Pool.QueryRow(ctx, `SELECT m.user_id::text FROM project_ownership o JOIN team_members m ON m.team_id=o.team_id WHERE o.project_id=$1`, project).Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, db.Pool, `INSERT INTO tasks(id,project_id,type,title,parent_id) VALUES($1,$3,'goal','Goal',NULL),($2,$3,'task','Child',$1)`, goal, task, project)
+	principal := model.Principal{UserID: user}
+	acquired, release := make(chan struct{}), make(chan struct{})
+	write := func(wait bool, path string) error {
+		_, err := db.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+			p, e := scope.LockTaskPresence(ctx, project, task)
+			if e != nil {
+				return e
+			}
+			if !p.Found || p.DeletedAt != nil {
+				return model.ErrNotFound
+			}
+			if _, e = scope.ProjectAuthorization(ctx, principal, project); e != nil {
+				return e
+			}
+			if wait {
+				close(acquired)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			_, _, e = scope.AttachmentDAO().PutAttachment(ctx, model.Attachment{ProjectID: project, TaskID: task, Path: path, ContentType: "text/plain", SizeBytes: 1})
+			return e
+		})
+		return err
+	}
+	written := make(chan error, 1)
+	go func() { written <- write(true, "before.txt") }()
+	select {
+	case <-acquired:
+	case err := <-written:
+		t.Fatalf("resource admission: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	deleted := make(chan error, 1)
+	go func() {
+		_, err := db.WriteProjectDeletion(ctx, project, func(scope store.ProjectDeletionScope) error {
+			marked, e := scope.ProjectDAO().MarkDeleted(ctx)
+			if e == nil && !marked {
+				return errors.New("project was not marked deleted")
+			}
+			return e
+		})
+		deleted <- err
+	}()
+	testutil.WaitForQueryLock(t, db.Pool, `WITH goals AS (SELECT id FROM tasks WHERE project_id=`)
+	close(release)
+	if err := testutil.ReceiveQueryResult(t, ctx, written); err != nil {
+		t.Fatalf("attachment commit: %v", err)
+	}
+	if err := testutil.ReceiveQueryResult(t, ctx, deleted); err != nil {
+		t.Fatalf("project deletion: %v", err)
+	}
+	if err := write(false, "after.txt"); err == nil {
+		t.Fatal("deleted project accepted attachment")
+	}
+	var before, after int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE path='before.txt'),count(*) FILTER (WHERE path='after.txt') FROM task_attachments WHERE task_id=$1`, task).Scan(&before, &after); err != nil || before != 1 || after != 0 {
+		t.Fatalf("attachment counts before=%d after=%d err=%v", before, after, err)
+	}
+}
+
+func TestWorkerClaimWithGoalAndTaskEdges(t *testing.T) {
+	db, principal, _, project := membershipFixture(t)
+	ctx := t.Context()
+	goal, prerequisite := uuid.NewString(), uuid.NewString()
+	child, blocked, taskPrerequisite := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	edgeID := uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,title,status) VALUES
+ ($1,$3,'goal','Owner goal','todo'),($2,$3,'goal','Pending prerequisite','todo')`, goal, prerequisite, project.ID)
+	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,title,status,parent_id,assigned_to,allow_agents) VALUES
+ ($1,$4,'task','Ready child','todo',$5,$6,true),
+ ($2,$4,'task','Blocked child','todo',$5,$6,true),
+ ($3,$4,'task','Task prerequisite','todo',$5,$6,false)`, child, blocked, taskPrerequisite, project.ID, goal, principal.UserID)
+	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES
+ ($1,$2,$3,'goal',$4)`, project.ID, goal, prerequisite, edgeID)
+	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, blocked, taskPrerequisite)
+	workerID := uuid.NewString()
+	testutil.PutWorkerSnapshot(t, db, testutil.WorkerSnapshotFixture(principal.UserID, workerID, time.Now().UTC()))
+	tasks := taskservice.NewTasks(db)
+	beforeGoal := snapshotTask(t, db, project.ID, goal)
+	if len(beforeGoal.DependsOn) != 0 || len(beforeGoal.BlockedBy) != 0 || beforeGoal.Ready {
+		t.Fatalf("ordinary Goal projection exposed its Goal edge: %+v", beforeGoal)
+	}
+	ready, allowed := true, true
+	page, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}, AutomaticCandidate: true, CandidateWorkerID: &workerID, Ready: &ready, AllowAgents: &allowed, AssignedTo: &principal.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != child || !page.Items[0].Ready {
+		t.Fatalf("mixed edges changed Worker candidates: %+v", page)
+	}
+	candidate := page.Items[0]
+	blockedView := snapshotTask(t, db, project.ID, blocked)
+	if blockedView.Ready || !reflect.DeepEqual(blockedView.BlockedBy, []string{taskPrerequisite}) {
+		t.Fatalf("ordinary edge did not block candidate: %+v", blockedView)
+	}
+	descriptor := taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: workerID, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString()}
+	claimed, err := tasks.ClaimWorker(ctx, principal, project.ID, child, taskcore.ClaimWorker{Version: candidate.Version, WorkerDescriptor: descriptor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := snapshotTask(t, db, project.ID, child)
+	worker, err := taskproperty.Worker(after.Properties)
+	if err != nil || worker == nil || worker.ClaimID != descriptor.ClaimID || worker.WorkerID != descriptor.WorkerID || worker.State != model.WorkerActive || after.Status != model.TaskInProgress || after.Version != candidate.Version+1 || !reflect.DeepEqual(after, claimed) {
+		t.Fatalf("claim was not persisted: task=%+v worker=%+v error=%v", after, worker, err)
+	}
+	afterGoal := snapshotTask(t, db, project.ID, goal)
+	if afterGoal.Status != model.TaskInProgress || afterGoal.Version != beforeGoal.Version+1 || afterGoal.StartedAt == nil || len(afterGoal.DependsOn) != 0 {
+		t.Fatalf("claim did not start Goal while preserving ordinary projection: before=%+v after=%+v", beforeGoal, afterGoal)
+	}
+	var goalEdges, taskEdges int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE dependency_type='goal' AND task_id=$2 AND depends_on_task_id=$3 AND goal_edge_id=$6),
+ count(*) FILTER(WHERE dependency_type='task' AND task_id=$4 AND depends_on_task_id=$5 AND goal_edge_id IS NULL)
+ FROM task_dependencies WHERE project_id=$1`, project.ID, goal, prerequisite, blocked, taskPrerequisite, edgeID).Scan(&goalEdges, &taskEdges); err != nil || goalEdges != 1 || taskEdges != 1 {
+		t.Fatalf("claim changed existing edges: goal=%d task=%d error=%v", goalEdges, taskEdges, err)
 	}
 }

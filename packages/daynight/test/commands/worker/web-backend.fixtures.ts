@@ -31,7 +31,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
 
   const fixture=async(agent: "codex" | "claude" | "copilot" = "codex", recoveryLimit = 2)=>{
    vi.spyOn(storagePreparation, "prepareControllerStorage").mockReturnValue({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
-   vi.spyOn(jobLeases, "createControllerJobLeases").mockImplementation(() => ({ enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} }));
+   vi.spyOn(jobLeases, "createControllerJobLeases").mockImplementation(() => ({ enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} }));
    const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
    const store=openWebExecutionStore(storage === "memory" ? createMemoryDatabase() : path.join(home,"worker.sqlite"));stores.push(store);
    const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};
@@ -39,7 +39,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
    store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit,...(agent === "claude" ? {} : {toolLaunch:frozenToolLaunch(agent)})}, userId: randomUUID() }, 1);
    const binding={repositoryPath:home,commonDirectory:path.join(home,".git"),worktreePath:path.join(home,".worktrees","daynight",identity.worktreeId),branch:`daynight/${identity.taskId}`};
    await mkdir(binding.worktreePath,{recursive:true});
-   const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),resolveWorktreeBinding:vi.fn(async()=>binding),removeUnpublishedReservation:vi.fn(async()=>{}),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>({kind:"absent",effectErrors:[]})),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
+   const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),resolveWorktreeBinding:vi.fn(async()=>binding),removeUnregisteredReservation:vi.fn(async()=>{}),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>({kind:"absent",effectErrors:[]})),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
    return {home,store,identity,git};
   };
 
@@ -52,18 +52,24 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     task = f.store.updateWebExecution(task, { ticketPath: await launchTickets.writeLaunchTicket(f.home, ticket) }, 5);
     const snapshot: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: ticket.sessionId, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: task.resources.nativeSession?.sessionId ?? null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: task.webExecution!.controllerProcess, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(lifecycle, "readCompatibleControllerSnapshot").mockImplementation(file => {
+      const current = lifecycle.readControllerSnapshot(file);
+      if (current === null) throw new Error("The original controller snapshot is unavailable.");
+      return current;
+    });
     vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
       const current = lifecycle.readControllerSnapshot(input.journalFile);
       return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };
     });
     const stopped = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
     vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
     const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
     return { task, ticket, snapshot, saved, stopped, request };
   };
 
-  const orchestrationFixture = async () => {
-    const f = await fixture("codex", 3);
+  const orchestrationFixture = async (recoveryLimit = 3) => {
+    const f = await fixture("codex", recoveryLimit);
     let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
     task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
     const source = await cleanupSource(f, task);
@@ -95,6 +101,11 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     };
     vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(ticketFor(task));
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(lifecycle, "readCompatibleControllerSnapshot").mockImplementation(file => {
+      const current = lifecycle.readControllerSnapshot(file);
+      if (current === null) throw new Error("The original controller snapshot is unavailable.");
+      return current;
+    });
     vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
       const current = lifecycle.readControllerSnapshot(input.journalFile);
       return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };

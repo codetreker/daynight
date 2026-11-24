@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { getTaskUsageRecords, getTaskUsageSummaries, getUsageCapabilities, parseUsageSummary, usageMetricKeys } from '../src/api/usage';
-import { TaskNodeUsageSummary, TaskUsageSummary, UsageProjectProvider, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
+import { formatGraphTokens, TaskNodeUsageSummary, TaskUsageSummary, UsageProjectProvider, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
 import { TaskUsagePanel } from '../src/features/usage/TaskUsagePanel';
 import { TaskDetailPanels } from '../src/features/task-detail/TaskDetailPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -21,12 +21,29 @@ it('omits graph usage without a project context', () => {
   expect(view.container).toBeEmptyDOMElement();
 });
 
+it('does not subscribe or display cached readings when the graph host hides usage', async () => {
+  vi.useFakeTimers();
+  const fetch = vi.fn(async (url: string) => url.endsWith('capabilities') ? reply({ protocol: 'daynight.usage.v1' }) : reply({ items: [{ taskId: task, summary: summary() }] }));
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={false}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetch).not.toHaveBeenCalled();
+    view.rerender(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token ≥1,000T');
+    view.rerender(<UsageProjectProvider projectId={project} graphUsage={false}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>);
+    expect(view.container.querySelector('.task-node-usage')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
 it.each(['failure', 'unsupported', 'no_data', 'unknown'] as const)('omits graph usage during loading and for %s without a reading', async mode => {
   let release!: (response: Response) => void;
   const response = new Promise<Response>(resolve => { release = resolve; });
   const fetch = vi.fn(async (url: string) => url.endsWith('capabilities') ? (mode === 'unsupported' ? response : reply({ protocol: 'daynight.usage.v1' })) : response);
   vi.stubGlobal('fetch', fetch);
-  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /><TaskUsageSummary projectId={project} taskId={task} compact /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /><TaskUsageSummary projectId={project} taskId={task} compact /></UsageProjectProvider>, { locale: 'en', taskCache: true });
   await waitFor(() => expect(fetch).toHaveBeenCalled());
   expect(view.container.querySelector('.task-node-usage')).toBeNull();
   const data = summary(mode === 'no_data' ? 'no_data' : 'partial');
@@ -50,24 +67,35 @@ it('renders graph readings in priority order, retains them on transient failure 
     return reply({ items: [{ taskId: task, summary: data }] });
   });
   vi.stubGlobal('fetch', fetch);
-  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial'));
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 12.3K'));
   const refresh = async (next: typeof state) => {
     state = next;
     const calls = fetch.mock.calls.length;
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(calls + 2));
   };
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', 'Known Total: 12,345 · Partial');
   await refresh('failure');
-  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial');
+  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 12.3K');
   await refresh('revoked');
   await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toBeNull());
   await refresh('output');
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Output: 9,007,199,254,740,993 · Partial'));
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token ≥1,000T'));
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', 'Known Output: 9,007,199,254,740,993 · Partial');
   await refresh('zero');
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Input: 0 · Partial'));
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 0'));
   view.setLocale('zh-CN');
-  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('已知输入: 0 · 部分');
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', '已知输入: 0 · 部分');
+});
+
+it.each([
+  ['0', '0'], ['999', '999'], ['1000', '1K'], ['56780', '56.8K'],
+  ['999949', '999.9K'], ['999950', '1M'], ['1000000000', '1B'],
+  ['1000000000000', '1T'], ['999999999999999', '1,000T'],
+  ['1000000000000000', '≥1,000T'], ['999999999999999999999999999999', '≥1,000T'],
+])('abbreviates graph token integer %s as %s', (value, expected) => {
+  expect(formatGraphTokens(value)).toBe(expected);
 });
 
 it('preserves exact decimal strings and rejects unsafe number and leading-zero metrics', () => {
@@ -117,6 +145,27 @@ it('does not subscribe a retained inactive card until it becomes active', async 
   expect(fetch).not.toHaveBeenCalled();
   view.rerender(<TaskUsageSummary projectId={project} taskId={task} active />);
   await screen.findByText('9,007,199,254,740,993');
+});
+
+it('keeps the retained member usage panel separate from the shared summary cache', async () => {
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  let batches = 0;
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith('capabilities')) return reply({ protocol: 'daynight.usage.v1' });
+    if (url.endsWith('task-summaries')) return ++batches === 1 ? reply({ items: [{ taskId: task, summary: summary() }] }) : pending;
+    return reply({ items: [], nextCursor: null, snapshotToken: 'snapshot', observedAt: now });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<TaskUsageSummary projectId={project} taskId={task} compact />, { locale: 'en', taskCache: true });
+  await screen.findByText('9,007,199,254,740,993');
+  view.rerender(<><TaskUsageSummary projectId={project} taskId={task} compact /><TaskUsagePanel projectId={project} taskId={task} active isolated /></>);
+  await waitFor(() => expect(batches).toBe(2));
+  expect(view.container.querySelector('.usage-panel')).not.toHaveTextContent('9,007,199,254,740,993');
+  const next = summary(); next.metrics.outputTokens!.known = '42';
+  await act(async () => { release(reply({ items: [{ taskId: task, summary: next }] })); });
+  await waitFor(() => expect(view.container.querySelector('.usage-panel')).toHaveTextContent('42'));
+  expect(view.container.querySelector('.usage-summary-compact')).toHaveTextContent('9,007,199,254,740,993');
 });
 
 it('clears scheduled work and polling while hidden, then refreshes once on visibility recovery', async () => {

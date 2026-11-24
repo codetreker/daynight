@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { readFile, readdir } from 'node:fs/promises';
 import { runValidation } from './testdata/validation-fixture.mts';
 
-test('startup and shutdown runner owns only command coverage and the process recovery probe', async (t) => {
+test('startup and shutdown runner owns both command vet variants, command coverage and the process recovery probe', async (t) => {
   const { result, trace, fixture } = await runValidation(t, 'startup-shutdown', undefined);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(trace.includes('go-cov-capture.mts startup-shutdown '));
@@ -27,7 +27,10 @@ test('startup and shutdown runner owns only command coverage and the process rec
   assert.match(trace, /node scripts\/command-timeout.mts 240000 5000 env GOFLAGS=/);
   assert.match(trace, /node scripts\/command-timeout.mts 180000 5000 go install/);
   assert.ok(trace.includes(`node ${join(fixture, 'scripts/command-timeout.mts')} 720000 5000 env GOFLAGS=`));
-  assert.match(trace, /go vet \.\/cmd\/daynight-server .* -tags=startupshutdown/);
+  const vets = trace.split('\n').filter(line => line.startsWith('go vet '));
+  assert.equal(vets.length, 2);
+  assert.match(vets[0]!, /^go vet \.\/cmd\/daynight-server GOFLAGS=.* -tags= -race=true CWD=/);
+  assert.match(vets[1]!, /^go vet \.\/cmd\/daynight-server GOFLAGS=.* -tags= -race=true -tags=startupshutdown CWD=/);
   assert.match(trace, /go test -count=1 -timeout=3m -tags=webhooktest -run \^TestWebhookRunnerAbruptProcessRecovery\$ \.\/internal\/service\/webhook .* -race=true/);
   assert.doesNotMatch(trace, /go test .*\.\/testdata\/testauth|--tags=stress/);
   assert.ok(trace.includes(`node ${join(fixture, 'scripts/coverage.mts')} ${join(fixture, 'startup-shutdown-coverage.out')}`));
@@ -46,12 +49,16 @@ test('startup and shutdown runner applies the same local, main and PR race polic
     for (const line of trace.split('\n').filter(line => /^go (?:build|vet|test) /.test(line))) {
       assert.ok(line.includes(`-tags= -race=${race}`), line);
     }
+    const vets = trace.split('\n').filter(line => line.startsWith('go vet '));
+    assert.equal(vets[0]!.includes(' -p=4 '), 'GITHUB_EVENT_NAME' in extra && extra.GITHUB_EVENT_NAME === 'pull_request');
+    assert.doesNotMatch(vets[1]!, / -p=4 /);
   }
 });
 
-test('startup and shutdown runner propagates build, vet, recovery and coverage failures', async (t) => {
+test('startup and shutdown runner propagates ordinary vet, build, tagged vet, recovery and coverage failures', async (t) => {
   for (const [extra, expected] of [
-    [{ BUILD_EXIT: '21' }, 21], [{ VET_EXIT: '22' }, 22], [{ PROCESS_EXIT: '23' }, 23], [{ COV_EXIT: '24' }, 24],
+    [{ ORDINARY_VET_EXIT: '20' }, 20], [{ BUILD_EXIT: '21' }, 21], [{ TAGGED_VET_EXIT: '22' }, 22],
+    [{ PROCESS_EXIT: '23' }, 23], [{ COV_EXIT: '24' }, 24],
   ] as const) {
     const { result, trace } = await runValidation(t, 'startup-shutdown', undefined, extra);
     assert.equal(result.status, expected);

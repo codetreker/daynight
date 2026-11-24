@@ -156,7 +156,7 @@ func TestMaximumWorkerFieldsFitCompleteBudgets(t *testing.T) {
 		t.Fatalf("worker size=%d error=%v", n, err)
 	}
 
-	config := model.WorkerConfiguration{MaxConcurrent: workercore.MaxConcurrent, PollIntervalMs: workercore.MaxPollIntervalMs, RecoveryLimit: workercore.MaxRecoveryLimit, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: &nativeModel, Args: args}, Projects: []model.WorkerProjectConfiguration{}}
+	config := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskPrefer, MaxConcurrent: workercore.MaxConcurrent, PollIntervalMs: workercore.MaxPollIntervalMs, RecoveryLimit: workercore.MaxRecoveryLimit, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: &nativeModel, Args: args}, Projects: []model.WorkerProjectConfiguration{}}
 	config, err = workercore.NormalizeConfiguration(config)
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,14 @@ type Fault struct {
 	TaskIDs          []string
 	StepsLimit       *StepsLimitDetails
 	SearchExpression *SearchExpressionDetails
+	ExistingEndpoint *ExistingEndpointDetails
+}
+
+// ExistingEndpointDetails identifies the live webhook endpoint holding a
+// requested creation key, for callers allowed to read that owner's endpoints.
+type ExistingEndpointDetails struct {
+	ID            string
+	ConfigVersion int64
 }
 
 type SearchExpressionDetails struct {

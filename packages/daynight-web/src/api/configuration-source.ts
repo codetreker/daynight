@@ -82,6 +82,7 @@ export const configurationBaselinesCompatible = (baseline: ConfigurationBaseline
     controlMode: true,
     toolPaths: baseline.known.toolPaths !== undefined && observed.known.toolPaths !== undefined,
     archiveSessions: baseline.known.archiveSessions !== undefined && observed.known.archiveSessions !== undefined,
+    platformTaskMode: baseline.known.platformTaskMode !== undefined && observed.known.platformTaskMode !== undefined,
   });
 };
 
@@ -91,6 +92,11 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
   if (observed === null || baseline.revision !== observed.revision || !configurationBaselinesCompatible(baseline, observed)) return baseline;
   const original = sourceObject(baseline.valueSource), incoming = sourceObject(observed.valueSource);
   let known = baseline.known;
+  if (observed.known.platformTaskMode !== undefined && baseline.known.platformTaskMode === undefined) {
+    original.delete('preferPlatformSpecificTasks');
+    original.set('platformTaskMode', incoming.get('platformTaskMode')!);
+    known = { ...known, platformTaskMode: observed.known.platformTaskMode, preferPlatformSpecificTasks: observed.known.preferPlatformSpecificTasks };
+  }
   for (const key of ['agentControlMode', 'toolPaths', 'archiveSessions'] as const) {
     const source = incoming.get(key);
     if (!original.has(key) && source !== undefined && observed.known[key] !== undefined) {
@@ -117,7 +123,9 @@ export const unsupportedConfigurationFields = (source: string): readonly string[
 
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
-  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup'] as const) setKnown(root, key, known[key]);
+  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'enableWindowsProcessCleanup'] as const) setKnown(root, key, known[key]);
+  if (known.platformTaskMode === undefined) { root.delete('platformTaskMode'); setKnown(root, 'preferPlatformSpecificTasks', known.preferPlatformSpecificTasks); }
+  else { root.delete('preferPlatformSpecificTasks'); setKnown(root, 'platformTaskMode', known.platformTaskMode); }
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
   if (known.taskTagFilter !== undefined) {
     const source = root.get('taskTagFilter');
@@ -190,11 +198,15 @@ const equivalent = (left: string, right: string, projects = false, projectEntity
   if (/^-?\d/.test(left) && /^-?\d/.test(right)) return numberTuple(left) === numberTuple(right);
   return JSON.parse(left) === JSON.parse(right);
 };
-export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean; readonly archiveSessions?: boolean; readonly semanticTagFilter?: boolean }): boolean => {
+export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean; readonly archiveSessions?: boolean; readonly semanticTagFilter?: boolean; readonly platformTaskMode?: boolean }): boolean => {
   validateConfigurationSource(left); validateConfigurationSource(right);
   if (options !== undefined) {
     const project = (source: string): string => {
       const fields = sourceObject(source);
+      if (options.platformTaskMode === false) {
+        const mode = fields.get('platformTaskMode');
+        if (mode !== undefined) { fields.set('preferPlatformSpecificTasks', JSON.stringify(JSON.parse(mode) !== 'all')); fields.delete('platformTaskMode'); }
+      }
       if (options.controlMode === false) fields.delete('agentControlMode');
       if (options.toolPaths === false) fields.delete('toolPaths');
       if (options.archiveSessions === false) fields.delete('archiveSessions');

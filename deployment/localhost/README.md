@@ -25,9 +25,9 @@ Proxy access logs must omit code/state queries, Cookie headers and credentials.
 The bundled stream proxy does not produce HTTP request access logs. Startup
 validates configured origins without probing external DNS or certificates.
 Readiness probes connect to numeric loopback URLs with `Host: localhost`, so
-internal and published ports can differ. The local browser must resolve both
-bare and Task hostnames to the gateway. A local HTTP test does not prove the
-production DNS or TLS configuration.
+internal and published ports can differ. The local browser must resolve the main
+hostname, bare preview hostname and Task/Goal UUID preview subdomains to the
+gateway. A local HTTP test does not prove the production DNS or TLS configuration.
 
 ## Configure and start
 
@@ -92,9 +92,9 @@ callback URL in UniAuth before restarting. The example application values are
 placeholders; supply credentials for the intended
 UniAuth deployment.
 
-The template requires explicit same-site HTTPS public and preview origins. Provide
+Production requires explicit same-site HTTPS public and preview origins. Provide
 DNS and certificates for the main hostname, bare preview hostname and wildcard
-Task subdomains, and terminate TLS in a proxy that forwards their original Host to
+Task/Goal subdomains, and terminate TLS in a proxy that forwards their original Host to
 the single loopback business gateway. Register the exact public callback in
 UniAuth. Configure client trust for the issuing CA where necessary. Numeric
 loopback preview origins are for controlled HTTP fixtures and cannot provide
@@ -102,6 +102,28 @@ browser Task subdomains. `DAYNIGHT_ALLOW_LOOPBACK_HTTP` controls a separate UniA
 SDK rule: set it to `1` only when the UniAuth gateway itself uses HTTP on a literal
 loopback address; the template leaves it disabled.
 Neither setting disables authentication or project authorization.
+
+For explicit local HTTP testing, set these values in the private `.env`:
+
+```dotenv
+DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
+DAYNIGHT_PUBLIC_ORIGIN=http://app.daynight.localhost:8787
+DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787
+DAYNIGHT_UNIAUTH_CALLBACK_URL=http://app.daynight.localhost:8787/auth/callback
+```
+
+Register that exact callback URL in UniAuth and supply the application credentials
+above. Main and preview may share the proxy and port, but must use different
+hostnames. Both hostnames must be lowercase dotted DNS names, without a trailing
+dot; `localhost` alone is invalid for this pair. Different ports on the same DNS
+hostname do not isolate preview Cookies. The HTTP exception accepts local
+`.localhost` or `.test` names; keep it disabled in production.
+Ensure the main host, bare `preview.daynight.localhost` and
+`<task-or-goal-uuid>.preview.daynight.localhost` resolve to loopback through the
+browser's resolver or local wildcard DNS. Startup does not check resolution.
+Forward the original Host for all of them to the gateway; an explicit local HTTP
+setup needs no TLS termination. Numeric loopback origins on different ports
+remain controlled socket fixtures and cannot provide browser preview subdomains.
 
 `DAYNIGHT_TASK_SYNC_OVERLAP` defaults to `10s` in the template and Compose
 configuration. It sets the server's task-sync lookback window and must be a
@@ -178,9 +200,12 @@ All members can read/write tasks and set status; administrators additionally
 manage members and invitations. Existing projects need member records prepared
 manually. Status does not grant execution, deployment or delivery authority.
 
-To select a different host port, update `DAYNIGHT_PORT`,
-`DAYNIGHT_PUBLIC_ORIGIN` and `DAYNIGHT_UNIAUTH_CALLBACK_URL` together in `.env`,
-and update the callback registration in UniAuth. The equivalent Compose command,
+For direct access through the shared published port, change `DAYNIGHT_PORT`,
+`DAYNIGHT_PUBLIC_ORIGIN`, `DAYNIGHT_PREVIEW_ORIGIN` and
+`DAYNIGHT_UNIAUTH_CALLBACK_URL` together in `.env`, and register the updated exact
+callback in UniAuth. With an external proxy, the origins and callback describe
+its browser-visible ports; update its gateway upstream when the published port
+changes. The equivalent Compose command,
 and the remaining commands below, run from `deployment/localhost/` and load
 that directory's `.env`:
 
@@ -449,6 +474,43 @@ owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.
 
+## Offline local-to-Azure switch
+
+Stop and drain all application instances, maintenance executors and direct
+writers before taking the PostgreSQL/local-volume pair described above. Keep
+that original pair unchanged and restore its database into an isolated target.
+Use a dedicated Azure container and a separate scratch directory. The candidate
+binary must match the restored schema ledger; the offline command applies no DDL.
+
+Create the target root's `config/config.yml` with `database.url` pointing to that
+restored target and `storage.backend: azure-blob`, `storage.root` pointing to
+separate scratch, and the ordinary `storage.azure` settings documented in the
+[Server README](../../packages/daynight-server/README.md). Protect connection
+strings and logs as deployment configuration. Run the candidate binary with the
+original local volume mounted read-only:
+
+```bash
+daynight-server migrate-storage --root /isolated/target \
+  --source-storage-root /paired/source-storage 2> /isolated/migration-report.log
+```
+
+Keep all writers stopped until the entire command exits 0. The report identifies
+retained objects, source/target integrity, conflicts, unresolved publication and
+in-flight settlement by run and resource. An early object success does not prove
+the whole cut. Resolve differences against the same original pair and isolated
+target before rerunning. Equal verified Azure objects are reused; conflicts are
+preserved. Start one Azure Server only after successful migration, then check
+retained downloads, ordinary reuploads and restart behavior. The
+[migration design](../../docs/design/offline-storage-migration.md) owns the
+inventory, receipt and state-transition rules.
+
+To restore the pre-cut point, stop Azure writers, restore the untouched original
+PostgreSQL/local pair, configure `local`, and rotate affected project cache epochs
+before restarting as described above. This returns to the old backup time;
+subsequent writes and external effects require separate reconciliation. Paired
+backup after Azure begins accepting writes and automatic rollback have their own
+scope.
+
 ## Exposure
 
 The authenticated dashboard and API are published only on host `127.0.0.1`.
@@ -456,8 +518,8 @@ PostgreSQL and Redis have no published host port. The stack uses fixed
 development-only database credentials (`daynight` / `daynight-local`, database `daynight`). The
 gateway forwards TCP to the server's strict `127.0.0.1:8787` listener inside
 their shared container network namespace, preserving the server's HTTP handling.
-TLS termination for the configured public and preview origins belongs to the
-deployment's external proxy, which forwards original Host to that gateway.
+Production TLS termination for the configured public and preview origins belongs
+to the deployment's external proxy, which forwards original Host to that gateway.
 
 UniAuth login, Daynight browser sessions and personal access tokens use the
 [authentication requirements](../../docs/spec/daynight-auth.md) and

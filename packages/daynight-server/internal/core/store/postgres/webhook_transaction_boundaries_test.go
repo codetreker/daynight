@@ -6,8 +6,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +21,8 @@ import (
 	dbwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func webhookBoundaryCapture(owner wm.Owner, endpoint, project, task string) (store.WebhookCapturedEvent, store.WebhookCapturedDelivery) {
@@ -32,9 +39,8 @@ func webhookBoundaryCapture(owner wm.Owner, endpoint, project, task string) (sto
 	return event, delivery
 }
 
-func webhookBoundaryStore(t *testing.T) (*Store, wm.Owner, wm.Endpoint, wm.Operation, store.WebhookDelivery, store.WebhookAttempt) {
+func seedWebhookBoundary(t *testing.T, s *Store) (wm.Owner, wm.Endpoint, wm.Operation, store.WebhookDelivery, store.WebhookAttempt) {
 	t.Helper()
-	s := isolatedStore(t)
 	ctx := t.Context()
 	owner, endpoint, key, receipt := webhookStoredFixture(t)
 	completion, err := s.WriteWebhook(ctx, owner, receipt.ID, func(sc store.WebhookWriteScope) error {
@@ -71,12 +77,13 @@ func webhookBoundaryStore(t *testing.T) (*Store, wm.Owner, wm.Endpoint, wm.Opera
 	if err = tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return s, owner, endpoint, receipt, delivery, attempt
+	return owner, endpoint, receipt, delivery, attempt
 }
 
 func TestWebhookRedeliveryWritesRollBackWithReceipt(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, owner, endpoint, initial, original, attempt := webhookBoundaryStore(t)
+	s := isolatedStore(t)
+	owner, endpoint, initial, original, attempt := seedWebhookBoundary(t, s)
 	ctx := t.Context()
 	mustQueryExec(t, s, `CREATE FUNCTION reject_boundary_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1911',MESSAGE='receipt rejected'; END $$; CREATE TRIGGER reject_boundary_receipt BEFORE INSERT ON webhook_operations FOR EACH ROW EXECUTE FUNCTION reject_boundary_receipt()`)
 	receipt := initial
@@ -149,7 +156,8 @@ func TestWebhookRedeliveryWritesRollBackWithReceipt(t *testing.T) {
 
 func TestWebhookSubscriptionReplacementRollsBackWithBinding(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, owner, endpoint, initial, _, _ := webhookBoundaryStore(t)
+	s := isolatedStore(t)
+	owner, endpoint, initial, _, _ := seedWebhookBoundary(t, s)
 	ctx := t.Context()
 	subID, bindingID, project := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -251,7 +259,8 @@ func TestWebhookSourceAndCaptureShareRollback(t *testing.T) {
 
 func TestWebhookTransactionEntryCompletionAndReadback(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, _, _, _, original, _ := webhookBoundaryStore(t)
+	s := isolatedStore(t)
+	_, _, _, original, _ := seedWebhookBoundary(t, s)
 	ctx := t.Context()
 	cause := errors.New("callback refused transaction")
 	for _, entry := range []struct {
@@ -363,7 +372,8 @@ func TestWebhookTransactionProcessExitHelper(t *testing.T) {
 func TestWebhookTransactionSurvivesProcessExitAtCommitBoundary(t *testing.T) {
 	for _, mode := range []string{"before_commit", "after_commit"} {
 		t.Run(mode, func(t *testing.T) {
-			s, _, _, _, original, _ := webhookBoundaryStore(t)
+			s := isolatedStore(t)
+			_, _, _, original, _ := seedWebhookBoundary(t, s)
 			attemptID, token := uuid.NewString(), uuid.NewString()
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
@@ -470,14 +480,19 @@ func TestDeletedSourceAndCaptureRemainAtomicAtCommit(t *testing.T) {
 
 func TestWebhookTransactionEntryLostCommitReplyIsUnknown(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	base := isolatedStore(t)
 	for _, kind := range []string{"delivery", "retention"} {
 		t.Run(kind, func(t *testing.T) {
-			base, _, _, _, delivery, _ := webhookBoundaryStore(t)
+			_, _, _, delivery, _ := seedWebhookBoundary(t, base)
 			fault := &maintenanceReplyFault{command: "commit", reached: make(chan struct{})}
 			pool := maintenanceFaultPool(t, base, fault)
 			s := &Store{Pool: pool}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
+			var originalBackend int
+			if err := pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&originalBackend); err != nil {
+				t.Fatal(err)
+			}
 			var completion store.Completion
 			var err error
 			if kind == "delivery" {
@@ -508,11 +523,142 @@ func TestWebhookTransactionEntryLostCommitReplyIsUnknown(t *testing.T) {
 			if err = base.Pool.QueryRow(ctx, query, delivery.ID).Scan(&applied); err != nil || !applied {
 				t.Fatalf("independent committed state: %v %v", applied, err)
 			}
+			var replacement int
+			if err := pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&replacement); err != nil || replacement == originalBackend {
+				t.Fatalf("uncertain connection reused: old=%d new=%d err=%v", originalBackend, replacement, err)
+			}
 			if kind == "retention" {
 				if err = s.ObserveWebhookRetention(ctx, "delivery", delivery.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
 		})
+	}
+}
+
+type maintenanceReplyFault struct {
+	command  string
+	armed    atomic.Bool
+	observed atomic.Bool
+	once     sync.Once
+	reached  chan struct{}
+}
+
+func (f *maintenanceReplyFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.TraceQueryStartData) context.Context {
+	if strings.EqualFold(strings.TrimSpace(q.SQL), f.command) && !f.observed.Load() {
+		f.armed.Store(true)
+	}
+	return ctx
+}
+func (*maintenanceReplyFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type maintenanceFaultConn struct {
+	net.Conn
+	fault *maintenanceReplyFault
+}
+
+func (c *maintenanceFaultConn) Read(p []byte) (int, error) {
+	if !c.fault.armed.Load() {
+		return c.Conn.Read(p)
+	}
+	var observed []byte
+	for len(observed) < 4096 {
+		n, err := c.Conn.Read(p)
+		observed = append(observed, p[:n]...)
+		if bytes.Contains(observed, []byte(strings.ToUpper(c.fault.command)+"\x00")) {
+			c.fault.observed.Store(true)
+			c.fault.armed.Store(false)
+			c.fault.once.Do(func() { close(c.fault.reached) })
+			if c.fault.command == "commit" {
+				return 0, io.ErrUnexpectedEOF
+			}
+			// ROLLBACK really completed, but its acknowledgement never reaches
+			// the client. A subsequent read waits until its context expires.
+			return c.Conn.Read(p)
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	return 0, errors.New("missing transaction acknowledgement")
+}
+
+func maintenanceFaultPool(t *testing.T, base *Store, fault *maintenanceReplyFault) *pgxpool.Pool {
+	t.Helper()
+	config := base.Pool.Config().Copy()
+	config.MaxConns = 1
+	config.ConnConfig.Tracer = fault
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &maintenanceFaultConn{conn, fault}, nil
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+func TestWebhookMaintenanceRollbackDeadlineAndCancellation(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	base := isolatedStore(t)
+	mustQueryExec(t, base, `CREATE TABLE maintenance_rollback_probe(id integer)`)
+	for _, mode := range []string{"deadline", "cancel"} {
+		if !t.Run(mode, func(t *testing.T) {
+			fault := &maintenanceReplyFault{command: "rollback", reached: make(chan struct{})}
+			pool := maintenanceFaultPool(t, base, fault)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if mode == "cancel" {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			}
+			defer cancel()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid := tx.Conn().PgConn().PID()
+			cause := errors.New("forced maintenance operation failure")
+			if mode == "cancel" {
+				go func() {
+					select {
+					case <-fault.reached:
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
+			}
+			start := time.Now()
+			err = transactWebhookMaintenance(ctx, tx, func(tx pgx.Tx) error {
+				if _, e := tx.Exec(ctx, `INSERT INTO maintenance_rollback_probe VALUES(1)`); e != nil {
+					return e
+				}
+				return cause
+			})
+			elapsed := time.Since(start)
+			var result *store.TransactionError
+			if !errors.As(err, &result) || result.Outcome != store.TransactionUnknown || !result.CleanupFailed || result.CommitAttempted || !errors.Is(err, cause) || !fault.observed.Load() {
+				t.Fatalf("rollback result %#v: %v", result, err)
+			}
+			if elapsed > 1900*time.Millisecond {
+				t.Fatalf("rollback exceeded activation budget: %s", elapsed)
+			}
+			var count int
+			if err = base.Pool.QueryRow(context.Background(), `SELECT count(*) FROM maintenance_rollback_probe`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("independent observation %d: %v", count, err)
+			}
+			var replacement uint32
+			observe, stop := context.WithTimeout(context.Background(), 3*time.Second)
+			defer stop()
+			if err = pool.QueryRow(observe, `SELECT pg_backend_pid()`).Scan(&replacement); err != nil || replacement == pid {
+				t.Fatalf("uncertain connection reused: old=%d new=%d err=%v", pid, replacement, err)
+			}
+		}) {
+			return
+		}
 	}
 }

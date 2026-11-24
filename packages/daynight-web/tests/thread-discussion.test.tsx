@@ -2,9 +2,12 @@ import { useRef, type RefObject } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { CurrentAccountProvider } from '../src/app/CurrentAccountContext';
+import { browserNavigation } from '../src/app/navigation';
 import { parseRoute, taskDetailUrl } from '../src/app/router';
 import type { ThreadMessage } from '../src/features/task-thread/contract';
 import { TaskDiscussion } from '../src/features/task-thread/TaskDiscussion';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { ProjectDraftHost, TaskDraftBoundary } from '../src/features/task-detail/TaskDraftNavigation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
@@ -15,9 +18,9 @@ const projectId = id(100), taskId = id(200);
 const message = (value: number, body: string, extra: Partial<ThreadMessage> = {}): ThreadMessage => ({ id: id(value), author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false }, body, createdAt: `2026-11-03T08:${String(value).padStart(2, '0')}:00.123Z`, ...extra });
 const resource = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
 const page = (items: readonly ThreadMessage[], hasMoreBefore = false, hasMoreAfter = false) => resource({ items, hasMoreBefore, hasMoreAfter });
-const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false, parentUnavailable = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean; readonly parentUnavailable?: boolean }) => {
+const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false, parentUnavailable = false, preserveHistoryDraft = false, historyAdmitted = true, historyRevision = 0, trackDraft = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean; readonly parentUnavailable?: boolean; readonly preserveHistoryDraft?: boolean; readonly historyAdmitted?: boolean; readonly historyRevision?: number; readonly trackDraft?: boolean }) => {
   const owner = useRef<HTMLDivElement>(null);
-  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice', avatarUrl: null }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} /></div></CurrentAccountProvider>;
+  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice', avatarUrl: null }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} preserveHistoryDraft={preserveHistoryDraft} historyAdmitted={historyAdmitted} historyRevision={historyRevision} trackDraft={trackDraft} /></div></CurrentAccountProvider>;
 };
 const render = (ui = <Harness />) => renderWithLocale(ui, { locale: 'zh-CN', taskCache: true });
 
@@ -46,6 +49,78 @@ it('gates hidden reads and retains the same task draft across tabs', async () =>
   view.rerender(<Harness active={false} />); view.rerender(<Harness active />);
   await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
   expect(screen.getByRole('textbox', { name: '讨论消息' })).toHaveValue('  draft\n');
+});
+
+it('clears retired history and reply while preserving the draft, then clears everything on access loss', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const subscribe = scope.subscribe.bind(scope);
+  const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+  vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+  let release!: (response: Response) => void;
+  const fresh = new Promise<Response>(resolve => { release = resolve; });
+  const fetcher = vi.fn(async (_url: string) => fetcher.mock.calls.length === 1 ? page([message(1, 'Old message')]) : fresh);
+  vi.stubGlobal('fetch', fetcher);
+  try {
+    const view = renderWithLocale(<Harness preserveHistoryDraft />, { locale: 'zh-CN', taskCache: { scope } });
+    await screen.findByText('Old message');
+    fireEvent.click(screen.getByRole('button', { name: '回复 Alice' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my draft' } });
+    vi.spyOn(scope, 'getProjectRevision').mockReturnValue(3);
+    act(() => { for (const listener of listeners) listener({ projectId, historyChanged: true }); });
+    expect(screen.queryByText('Old message')).toBeNull();
+    expect(view.container.querySelector('.thread-reply-preview')).toBeNull();
+    expect(screen.getByRole('textbox')).toHaveValue('Keep my draft');
+    await act(async () => {}); expect(fetcher).toHaveBeenCalledTimes(1);
+    view.rerender(<Harness preserveHistoryDraft historyAdmitted={false} historyRevision={3} />);
+    await act(async () => {}); expect(fetcher).toHaveBeenCalledTimes(1);
+    view.rerender(<Harness preserveHistoryDraft historyAdmitted historyRevision={2} />);
+    await act(async () => {}); expect(fetcher).toHaveBeenCalledTimes(1);
+    view.rerender(<Harness preserveHistoryDraft historyAdmitted historyRevision={4} />);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(new URL(String(fetcher.mock.calls[1]![0]), location.origin).searchParams.has('afterId')).toBe(false);
+    await act(async () => { release(page([message(2, 'Fresh message')])); });
+    await screen.findByText('Fresh message');
+    expect(screen.getByRole('textbox')).toHaveValue('Keep my draft');
+    act(() => scope.suspendProject(projectId));
+    expect(screen.queryByText('Fresh message')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    view.unmount();
+  } finally { scope.dispose(); }
+});
+
+it('keeps ordinary discussion state when another project history changes', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const subscribe = scope.subscribe.bind(scope);
+  const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+  vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+  const fetcher = vi.fn(async () => page([message(1, 'Ordinary message')])); vi.stubGlobal('fetch', fetcher);
+  try {
+    const view = renderWithLocale(<Harness />, { locale: 'zh-CN', taskCache: { scope } });
+    await screen.findByText('Ordinary message');
+    fireEvent.click(screen.getByRole('button', { name: '回复 Alice' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Draft' } });
+    act(() => { for (const listener of listeners) listener({ projectId, historyChanged: true }); });
+    expect(view.container.querySelector('.thread-timeline')).toHaveTextContent('Ordinary message');
+    expect(view.container.querySelector('.thread-reply-preview')).not.toBeNull();
+    expect(screen.getByRole('textbox')).toHaveValue('Draft');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    view.unmount();
+  } finally { scope.dispose(); }
+});
+
+it('guards the retained discussion draft on leaving the Project detail', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => page([])));
+  const view = renderWithLocale(<ProjectDraftHost projectId={projectId} taskId={taskId} source="summary" summaryType="task" insideProjectGraph={false} graphWitness={null}><TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}><Harness preserveHistoryDraft trackDraft /></TaskDraftBoundary></ProjectDraftHost>, { locale: 'zh-CN', taskCache: true });
+  const navigation = browserNavigation(), leave = vi.fn();
+  try {
+    await screen.findByText('还没有讨论');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Protect this draft' } });
+    act(() => navigation.requestAction(leave));
+    expect(leave).not.toHaveBeenCalled(); expect(navigation.decision()).not.toBeNull();
+    act(() => navigation.cancel()); expect(screen.getByRole('textbox')).toHaveValue('Protect this draft');
+    act(() => navigation.requestAction(leave)); act(() => navigation.confirm());
+    expect(leave).toHaveBeenCalledOnce(); expect(screen.getByRole('textbox')).toHaveValue('');
+  } finally { view.unmount(); navigation.dispose(); }
 });
 
 it('uses historical provider snapshots and sends a raw human reply without claim context', async () => {

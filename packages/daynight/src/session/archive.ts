@@ -1,6 +1,7 @@
 import { parseSessionResource, parseTimelineEntry, sessionFence, type SessionFence, type SessionProvider, type SessionResource, type TimelineEntry } from "./protocol.js";
 import { decodeStrictSessionJson } from "./v2/values.js";
 import { parseImageError, verifyTimelineImageMetadata, type ImageError } from "./image-values.js";
+import { jsonPieces } from "./json-pieces.js";
 
 // Archives are inert display records, never native resume or command inputs.
 export const SESSION_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
@@ -21,7 +22,7 @@ export type SessionArchiveManifest = {
 };
 export type SessionArchiveTimeline = { readonly entries: readonly TimelineEntry[] };
 export type SessionArchivePreparation = { recordId: string; phase: "settling" | "sealed" | "failed"; resources: readonly SessionArchiveResourceReference[]; timelineRevision: string | null; error: ImageError | null; historyEpoch: string; sourceThrough: string };
-export type SessionArchiveFileReceipt = SessionArchiveFileReference & { state: "receiving" | "complete" | "failed"; acceptedOffset: string; error: ImageError | null };
+export type SessionArchiveFileReceipt = SessionArchiveFileReference & { state: "receiving" | "complete" | "failed"; acceptedOffset: string; error: ImageError | null; successorFileId?: string };
 export type SessionArchive = SessionFence & {
   readonly schemaVersion: 1;
   readonly controllerId: string;
@@ -61,9 +62,11 @@ export const parseSessionArchivePreparation = (value: unknown): SessionArchivePr
   return { recordId: uuid(data.recordId), phase: data.phase as SessionArchivePreparation["phase"], resources, timelineRevision: data.timelineRevision === null ? null : sequence(data.timelineRevision), error: data.error === null ? null : parseImageError(data.error), historyEpoch: data.historyEpoch, sourceThrough: zeroSequence(data.sourceThrough) };
 };
 export const parseSessionArchiveFileReceipt = (value: unknown): SessionArchiveFileReceipt => {
-  const data = exact(value, ["fileId", "state", "acceptedOffset", "byteLength", "sha256", "error"]), byteLength = zeroSequence(data.byteLength), acceptedOffset = zeroSequence(data.acceptedOffset);
+  const successor = !!value && typeof value === "object" && Object.hasOwn(value, "successorFileId");
+  const data = exact(value, ["fileId", "state", "acceptedOffset", "byteLength", "sha256", "error", ...(successor ? ["successorFileId"] : [])]), byteLength = zeroSequence(data.byteLength), acceptedOffset = zeroSequence(data.acceptedOffset);
   if (byteLength === "0" && data.sha256 !== "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || !["receiving", "complete", "failed"].includes(String(data.state)) || BigInt(byteLength) > BigInt(SESSION_ARCHIVE_HISTORY_MAX_BYTES) || BigInt(acceptedOffset) > BigInt(byteLength) || data.state === "complete" && acceptedOffset !== byteLength || (data.state === "failed") !== (data.error !== null)) return invalid();
-  return { fileId: uuid(data.fileId), state: data.state as SessionArchiveFileReceipt["state"], acceptedOffset, byteLength, sha256: hash(data.sha256), error: data.error === null ? null : parseImageError(data.error) };
+  if (successor && data.state !== "failed") return invalid();
+  return { fileId: uuid(data.fileId), state: data.state as SessionArchiveFileReceipt["state"], acceptedOffset, byteLength, sha256: hash(data.sha256), error: data.error === null ? null : parseImageError(data.error), ...(successor ? { successorFileId: uuid(data.successorFileId) } : {}) };
 };
 
 export const parseSessionArchiveStatus = (value: unknown): SessionArchiveStatus => {
@@ -115,7 +118,9 @@ export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManif
 
 export const parseSessionArchiveTimeline = (value: unknown): SessionArchiveTimeline => {
   const data = exact(value, ["entries"]);
-  if (!Array.isArray(data.entries) || data.entries.length > 100000 || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) return invalid();
+  if (!Array.isArray(data.entries) || data.entries.length > 100000) return invalid();
+  const encoder = new TextEncoder();
+  let encoded = 0; for (const piece of jsonPieces(data)) { encoded += encoder.encode(piece).byteLength; if (encoded > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) return invalid(); }
   const entries = data.entries.map(parseTimelineEntry), ids = new Set<string>(); let previous = 0n;
   for (const entry of entries) { if (ids.has(entry.entryId) || BigInt(entry.entrySeq) <= previous) return invalid(); ids.add(entry.entryId); previous = BigInt(entry.entrySeq); }
   return { entries };

@@ -22,14 +22,14 @@ vi.mock("node:fs/promises", () => ({ realpath: async (value: string) => value, s
 vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: () => "/fixture/bundled/copilot" }));
 vi.mock("../../../src/commands/worker/owned-command.js", async original => ({ ...await original<object>(), runOwnedCommand: (command: OwnedCommand, operation: Operation) => command.environment.DN_CONFIG_DIR === undefined ? mocks.ordinary(command, operation) : mocks.assistant(command, operation), spawnOwnedProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
 
-vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ workerSqliteMigrationEvent: () => undefined }));
+vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ workerSqliteMigrationReporter: () => () => undefined }));
 vi.mock("../../../src/commands/worker/bots/local-store.js", () => ({ openLocalBotStores: () => ({ store: { close: () => {} }, executions: { close: () => {} }, close: () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/process.js", () => ({ createBotProcess: () => ({ close: async () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/delete.js", () => ({ createBotDeletion: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/remote.js", () => ({ createBotRemote: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/session-api.js", () => ({ createBotSessionApi: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/assistant-task-session.js", () => ({ createAssistantTaskSessionTransport: () => ({ send: () => { throw new Error("Notification delivery is outside this telemetry fixture."); }, readOperation: () => { throw new Error("Notification recovery is outside this telemetry fixture."); } }) }));
-vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: () => ({ run: async () => {}, shutdown: async () => {} }) }));
+vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: () => ({ closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, shutdown: async () => {} }) }));
 
 // Only environment capture uses synthetic Windows semantics; all command and OS effects remain mocked.
 vi.mock("../../../src/commands/worker/codex-probe-owner.js", async original => {
@@ -182,11 +182,11 @@ describe("production Bot host Codex ownership", () => {
     vi.stubEnv("PATHEXT", searchEnvironment.PATHEXT);
     const paths = resolveWorkerPaths(path.resolve("fixture-home"));
     const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
-      owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},
+      owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" }, serverToken: "fixture-placeholder", emit: () => {},
       configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), canAdmitNewExecution: () => true, pollIntervalMs: () => 1000, recoveryLimit: () => 3 });
     hosts.push(host);
     return createWorkerTelemetryCollector({ paths, homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd,
-      machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: host });
+      machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "00000000-0000-4000-8000-000000000002", serverOrigin: "https://daynight.example", assistantHost: host });
   };
   const originalCleanup = async (terminationFailure = false) => {
     const actual = await vi.importActual<typeof OwnedCommandModule>("../../../src/commands/worker/owned-command.js");

@@ -6,9 +6,11 @@ import "time"
 type Owner struct{ Kind, ID string }
 
 type Endpoint struct {
-	ID                                      string
-	Owner                                   Owner
-	Name                                    string
+	ID    string
+	Owner Owner
+	Name  string
+	// ClientKey is the caller-chosen creation key; empty when absent and on tombstones.
+	ClientKey                               string
 	Enabled                                 bool
 	DeletedAt                               *time.Time
 	ConfigVersion, DestinationRevision      int64

@@ -13,27 +13,22 @@ import (
 )
 
 type Service struct {
-	database     store.UsageStore
-	writeEnabled bool
-	qualified    map[string]bool
-	cursorKey    []byte
+	database              store.UsageStore
+	writeEnabled          bool
+	qualified             map[string]bool
+	producerAuthorization ProducerAuthorization
 }
 type Options struct {
 	WriteEnabled      bool
 	QualifiedProfiles []string
-	CursorKey         []byte
 }
 
 func New(database store.UsageStore, options Options) (*Service, error) {
-	key := append([]byte{}, options.CursorKey...)
-	if len(key) != 32 {
-		return nil, configurationError("DAYNIGHT_USAGE_CURSOR_KEY", "must identify exactly 32 bytes of stable signing key material")
-	}
 	q, err := qualificationEntries(options.QualifiedProfiles)
 	if err != nil {
 		return nil, err
 	}
-	return &Service{database: database, writeEnabled: options.WriteEnabled, qualified: q, cursorKey: key}, nil
+	return &Service{database: database, writeEnabled: options.WriteEnabled, qualified: q}, nil
 }
 func (s *Service) qualify(p core.Profile, version string) core.Profile {
 	return core.Qualify(p, s.qualified[p.ID+"@"+version])
@@ -99,7 +94,7 @@ func authorizeTask(a store.UsageAuthorization) error {
 	}
 	return nil
 }
-func (s *Service) authority(ctx context.Context, scope store.UsageScope, session store.UsageSession, user, parent string, write bool) (store.UsageAuthorization, error) {
+func (s *Service) authority(ctx context.Context, scope store.UsageScope, session store.UsageSession, user, parent string, write bool, additionalParents ...string) (store.UsageAuthorization, error) {
 	dao := scope.UsageDAO()
 	var a store.UsageAuthorization
 	var err error
@@ -113,12 +108,17 @@ func (s *Service) authority(ctx context.Context, scope store.UsageScope, session
 			return a, err
 		}
 	}
-	valid, err := dao.ParentValid(ctx, parent, user, write)
-	if err != nil {
-		return a, err
-	}
-	if !valid {
-		return a, core.Fault("permission_revoked")
+	parents := append([]string{parent}, additionalParents...)
+	sort.Strings(parents)
+	parents = uniqueParents(parents)
+	for _, id := range parents {
+		valid, err := dao.ParentValid(ctx, id, user, write)
+		if err != nil {
+			return a, err
+		}
+		if !valid {
+			return a, core.Fault("permission_revoked")
+		}
 	}
 	if write {
 		if _, err = scope.SessionDAO().LockSession(ctx, session.ID); err != nil {
@@ -134,16 +134,28 @@ func (s *Service) authority(ctx context.Context, scope store.UsageScope, session
 			return a, err
 		}
 	}
-	valid, err = dao.ParentValid(ctx, parent, user, false)
-	if err != nil {
-		return a, err
-	}
-	if !valid {
-		return a, core.Fault("permission_revoked")
+	for _, id := range parents {
+		valid, err := dao.ParentValid(ctx, id, user, false)
+		if err != nil {
+			return a, err
+		}
+		if !valid {
+			return a, core.Fault("permission_revoked")
+		}
 	}
 	return a, nil
 }
-func readPermission(ctx context.Context, scope store.UsageScope, p model.Principal, session store.UsageSession, admin bool) (string, error) {
+
+func uniqueParents(sorted []string) []string {
+	unique := sorted[:0]
+	for _, id := range sorted {
+		if len(unique) == 0 || unique[len(unique)-1] != id {
+			unique = append(unique, id)
+		}
+	}
+	return unique
+}
+func (s *Service) readPermission(ctx context.Context, scope store.UsageScope, p model.Principal, session store.UsageSession, admin bool) (string, error) {
 	if session.BotID != nil {
 		return "", core.Fault("resource_unavailable")
 	}
@@ -158,6 +170,9 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 	if session.Scope == "test" {
 		if p.UserID != session.OwnerID {
 			return "", core.Fault("resource_unavailable")
+		}
+		if err = s.recheckUsageScope(ctx, scope, p, now); err != nil {
+			return "", err
 		}
 		return p.UserID, nil
 	}
@@ -174,6 +189,9 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 	}
 	if admin && p.UserID != session.OwnerID && a.Role != model.ProjectAdmin {
 		return "", core.Fault("resource_unavailable")
+	}
+	if err = s.recheckUsageScope(ctx, scope, p, now); err != nil {
+		return "", err
 	}
 	epoch, err := dao.PermissionEpoch(ctx, p.UserID, *session.ProjectID)
 	if err != nil {
@@ -197,11 +215,14 @@ func (s *Service) State(ctx context.Context, p model.Principal, id string) (mode
 		if err != nil {
 			return err
 		}
-		if _, err = readPermission(ctx, scope, p, session, true); err != nil {
+		if _, err = s.readPermission(ctx, scope, p, session, true); err != nil {
 			return err
 		}
 		now, err := scope.UsageDAO().Now(ctx)
 		if err != nil {
+			return err
+		}
+		if err = s.requireProducer(ctx, scope, p, now, false); err != nil {
 			return err
 		}
 		executions, err := scope.UsageDAO().Executions(ctx, store.UsageFilter{SessionID: r.SessionID, ObservedAt: now})

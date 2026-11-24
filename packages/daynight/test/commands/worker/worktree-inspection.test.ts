@@ -5,7 +5,6 @@ import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, rmdir, unlink, wri
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { maxOutputBytes } from "../../../src/repository/git-policy.js";
 
 const reader = vi.hoisted(() => ({
@@ -28,7 +27,6 @@ const git = (cwd: string, ...args: string[]): string => execFileSync("git", args
   cwd, encoding: "utf8", timeout: 10_000,
   env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))),
 }).trim();
-const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
 const fixture = async () => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-inspection");
   await mkdir(scratch, { recursive: true });
@@ -44,9 +42,7 @@ const fixture = async () => {
   git(repository, "remote", "add", "origin", url); git(repository, "config", `url.${remote}.insteadOf`, url);
   const project = { projectId: randomUUID(), repoUrl: url, localPath: repository };
   const owner = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
-  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "temp"), prepareFormat: async (_project, repo, operation) => {
-    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: emptySources });
-  } });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "temp") });
   return { root, repository, project, owner, adapter };
 };
 const context = (admin: string, leaf: string): string[] => [`--git-dir=${admin}`, `--work-tree=${leaf}`];

@@ -66,6 +66,19 @@ input+output，以及 profile 声明不相交的两类 cache 之和超过 input 
 | `copilot-event-1.0.11-v1` | `copilot-event-v1:<event.id>`，immutable 单事件 | output/reasoning 可知；input/cache/total 未知，原始分项单列；只能 partial |
 | `claude-message-input-0.3.247-v1` | `claude-message-input-v1:<message.id>`，root assistant 输入 | 三个输入分项齐全才计算规范 input，cache 为子集；output/reasoning/total 未知；只能 partial |
 | `codex-snapshot-unaccountable-v1` | 只登记 unsupported state | 不将累计或上下文快照变成 counted measurement |
+| `codex-response-0.169.0-v1` | `codex-response-v1:<thread/response 摘要>`，immutable 单响应 | input/output/total 为原生响应指标；正 cache read/reasoning 为子项，默认零值细项及 cache write 未知；只能 partial |
+
+Codex 响应 profile 仅适用于已核实的 `0.169.0`，不自动扩展到其他版本。
+来源摘要是 UTF-8 `JSON.stringify([threadId,responseId])` 的 SHA-256 小写十六进制，
+不截断长 response ID；`nativeCallId` 保存该摘要，`nativeTurnId` 保存原 turn ID。
+实时通知与原线程回执路径下的 `token_usage_record.usage` 使用相同来源键，
+不加算 turn/thread 累计，不从 context 快照差分。
+原生默认零值不能证明上游明确提供细项，因此零 cache read/reasoning 显示未知，
+正值可显示；cache write 保留原生指标但规范值未知。模型未由响应提供时保持 null。
+恢复只补报已经持久化 turn→原 state 归属的记录，未绑定历史不收费给新代次，
+并标记 attribution_unknown。原生落盘为 best-effort，未覆盖子 Agent，始终保留
+native_recovery_gap、subagent_scope_unknown、model_unknown，不能报告完整覆盖。
+旧 snapshot state 保留原口径，不能在同一代次自动升级为响应 profile。
 
 实际 runtime/SDK 未通过精确组合资格验证时为 `profile_unverified`，研究过字段不等于
 生产环境已验证。Provider JS number 不安全时不得转成看似精确的字符串。
@@ -197,12 +210,12 @@ ETag 基于可见完整投影，包含有效状态和权限/成员变化，排�
 
 records 使用 `kind=measurement|execution_state`，支持 stateId/model/provider/
 aggregationRole 精确过滤，limit 1..100，按 `(createdAt,id)` 升序 keyset。
-签名游标绑定身份、资源、过滤、权限、集合 revision 和最后键，15 分钟过期。
+游标记录身份、资源、过滤、权限、集合 revision 和最后键，首次签发后 15 分钟过期，续页不延长有效期。游标不提供防篡改保证，也不能扩大当前授权范围。
 每页同一 repeatable-read 快照中重新授权、验证集合 revision；新增、修正、删除、
 归属或权限变化返回 `reset_required`，不混合两个时点。页面包含 execution_state 时，
 还须绑定影响可见派生状态的事实，包括原父凭据、Task pause/allowAgents、
 generation 停止和 grant 自然到期；不能只比较 usage 行版本。
-过期为 `cursor_expired`。
+过期为 `cursor_expired`。格式非法或重复的 `cursor` 返回 `invalid_cursor`；旧格式游标在授权后返回 `reset_required`，客户端从第一页重读。
 
 ## Task 用量界面
 
@@ -214,7 +227,7 @@ generation 停止和 grant 自然到期；不能只比较 usage 行版本。
 加载中、服务不支持、无记录、上述指标全未知或无缓存读取失败时，普通 Task 行不渲染
 用量容器、专属空白、错误／重试控件或状态旁提示。后台刷新失败但读取层保留有数字的
 摘要时，行内继续仅显示已有摘要及其完整性状态；查询诊断和重试由用量页签提供。
-用量页签、图节点和 Chain／Goal 汇总保持各自的加载、未知与诊断展示。
+用量页签、提供用量的图节点和 Chain／Goal 汇总保持各自的加载、未知与诊断展示。
 
 普通 Task 的详情弹窗和独立详情页仅在「用量」页签展示用量；标题区不显示用量数字、
 提示、加载、错误、重试入口或其占位。保留用量页签及 `?tab=usage` 直接链接，
@@ -222,10 +235,10 @@ generation 停止和 grant 自然到期；不能只比较 usage 行版本。
 卡片的批量摘要独立于 Task 同步和缓存，最多一百项一批，不能每张卡片发一次请求，
 也不能依赖 Task.version 或 updatedAt 推断用量是否更新。
 
-Goal 和任务链依赖图的 Task 节点只在 total、output、input 至少一项有已知数字时
-显示紧凑用量，按此顺序选择读数，合法零也显示。加载、读取失败、不支持、无记录或
+Goal 整体图和 Goal 详情中嵌套的普通链图的 Task 节点只在 total、output、input
+至少一项有已知数字时显示紧凑用量，按此顺序选择读数，合法零也显示。加载、读取失败、不支持、无记录或
 仅有未知读数时，不渲染用量行及其提示，不预留专用空间；暂时刷新失败但仍保留已知
-摘要时继续显示该读数。节点原有尺寸和图布局保持不变。
+摘要时继续显示该读数。图卡以 `Token <短数值>` 使用十进制 K/M/B/T、最多一位小数并按精确整数四舍五入及进位；原值达到 10¹⁵ 时显示 `≥1,000T`。图内完整提示保留实际指标、精确整数及完整性；数值变化不改变图布局，读数行出现或消失时按[卡片尺寸](daynight-task-inspection.md#必须交付的行为)更新必要几何并保留阅读状态。项目任务列表打开的链图在普通和全屏模式均不显示节点用量，也不为节点订阅用量。
 
 简写仅用于摘要。明细以精确十进制整数显示 input、output、cache、reasoning 和 total；
 未知值明确显示未知，合法零仍为零。total 未知时可显示带指标名的已知小计，
@@ -253,8 +266,19 @@ Chain 双向沿普通依赖展开，external 不加入；Goal 仅当前直接普
 响应明确 `membershipPolicy:"current_members_excludes_deleted"`。最多 10,000 成员，
 超限 `aggregate_scope_too_large`，不得截断后报完整；缺失成员按 Task ID 分页，最多 100。
 
-图中的 Chain/Goal 用量入口和 Goal Detail 的用量页签消费同一个聚合接口，
+项目任务链展开后的标题行，在「查看任务详情」左侧提供「Token 用量」入口；筛选后或
+跨 Goal 的范围链在相同层级提供入口。两者均查询锚点所属的整条普通依赖连通链，
+不受列表筛选影响。弹窗沿用任务详情的遮罩、关闭入口和窄屏布局，标明项目与任务链，
+长内容在弹窗内滚动。关闭或按 Esc 后保留列表筛选、展开与滚动位置并将焦点恢复到
+入口；入口失效时焦点回到任务链标签。弹窗与任务详情均可用键盘操作。未完整成员可
+打开既有任务详情，导航仍受草稿保护。关闭子详情返回仍打开的用量弹窗；浏览器前进、
+后退与其他已接纳的外部导航遵循现有导航并清理临时用量层。锚点失效时清除用量，
+仍可访问的详情和草稿由既有流程保留；项目或账户变化不能保留旧范围私有数据。
+
+项目任务列表打开的普通及全屏链图不提供汇总入口。Goal 详情中嵌套的普通链图、
+Goal 整体图和 Goal Detail 用量页签保留现有入口。各入口消费同一个聚合接口，
 明确显示「当前成员 · 不含已删除任务」、统计时点、有已知用量的成员数、未知成员数
 及完整性分类，并可从缺失成员定位到任务。withKnownUsage 与完整性分类重叠，
 不能把其相加当作成员总数。查询失败允许重试，范围权限不足时不得拼接可见成员
-的本地统计作为替代；成员页失效保留已读内容，刷新后从第一页继续。
+的本地统计作为替代；成员页失效保留已读内容，刷新后从第一页继续。加载、无数据、
+服务不支持、范围不可用及临时读取失败分别呈现，临时失败可重试。

@@ -87,3 +87,72 @@ func (s *Execution) retireOnlineImageReferences(ctx context.Context, tx *operati
 	}
 	return nil
 }
+
+// pendingImageRetirements preserves both the last active checkpoint and the
+// stopped inventory until archive publication succeeds.
+func pendingImageRetirements(groups ...[]sp.ImageOccurrence) ([]sp.ImageOccurrence, error) {
+	var pending []sp.ImageOccurrence
+	seen := map[string]sp.ImageOccurrence{}
+	for _, group := range groups {
+		for _, position := range group {
+			if old, ok := seen[position.ImageID]; ok {
+				if !jsonEqual(encode(old), encode(position)) {
+					return nil, archiveConflict()
+				}
+				continue
+			}
+			seen[position.ImageID] = position
+			pending = append(pending, position)
+		}
+	}
+	return pending, nil
+}
+
+// The read lease may have been acquired after history was accepted. Check it
+// under the same lock as the ready receipt and ownership changes.
+func (s *Execution) retirePendingImages(ctx context.Context, tx *operationTx, r *record, positions []sp.ImageOccurrence, body []sp.Resource) error {
+	dao, err := resourceDAO(tx)
+	if err != nil {
+		return err
+	}
+	bodyIDs := map[string]bool{}
+	for _, resource := range body {
+		bodyIDs[resource.ResourceID] = true
+	}
+	online := map[string]bool{}
+	for _, position := range positions {
+		capture, e := dao.SessionCaptureByImage(ctx, r.Snapshot.SessionID, position.ImageID)
+		if errors.Is(e, model.ErrNotFound) {
+			continue
+		}
+		if e != nil {
+			return e
+		}
+		if !jsonEqual(encode(capture.Request.Occurrence), encode(position)) {
+			return archiveConflict()
+		}
+		if capture.Receipt.State == "reserved" || capture.Receipt.State == "copying" {
+			return fault("archive_incomplete", "An online image capture has not settled.")
+		}
+		if capture.Receipt.State == "committed" {
+			if capture.Receipt.ResourceID == nil {
+				return archiveConflict()
+			}
+			if !bodyIDs[*capture.Receipt.ResourceID] {
+				online[*capture.Receipt.ResourceID] = true
+			}
+		}
+	}
+	if len(online) > 0 {
+		leases, e := dao.ListSessionResourceLeases(ctx, r.Snapshot.SessionID)
+		if e != nil {
+			return e
+		}
+		for _, lease := range leases {
+			if lease.Kind == "read" && (lease.ResourceID == "" || online[lease.ResourceID]) {
+				return fault("resource_busy", "An online image reader is still running.")
+			}
+		}
+	}
+	return s.retireOnlineImageReferences(ctx, tx, r, positions, body)
+}
