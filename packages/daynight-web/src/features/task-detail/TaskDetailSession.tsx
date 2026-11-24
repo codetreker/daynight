@@ -1261,12 +1261,23 @@ export class TaskDetailSessions {
             return deleteTask(projectId, taskId, operation.version, operation.removeDepends, signal, admission);
           }, () => !submitted);
           if (response === null) return;
+          // A trusted deletion receipt withdraws history after same-account
+          // authentication resumes, even if a replacement history retired its
+          // detail ticket. Only target terminal state depends on that ticket.
+          while (authRequestsPaused()) {
+            const pauseRevision = authRequestsPauseRevision();
+            try { await abortableMutation(signal, this.scope.ready(signal)); }
+            catch (failure) {
+              signal.throwIfAborted();
+              if (isRetryableTaskCacheLifecycleChange(failure) &&
+                (authRequestsPaused() || pauseRevision !== authRequestsPauseRevision())) continue;
+              throw failure;
+            }
+            signal.throwIfAborted();
+          }
           publishDeletionReceipt();
           if (deletionReceiptPublished) return;
-          await runOutcome(requestTicket, null, () => {
-            this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, null);
-            publishDeletionReceipt();
-          }, undefined, true, async () => { publishDeletionReceipt(); });
+          await runOutcome(requestTicket, null, () => {});
           return;
         }
         const response = await this.runMutationStage(projectId, taskId, operation, signal, async () => {

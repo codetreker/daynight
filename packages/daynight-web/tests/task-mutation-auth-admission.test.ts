@@ -51,10 +51,17 @@ describe('task mutation admission across authentication pauses', () => {
   });
   it.each(['204', '410', 'network'] as const)('waits for authentication before reconciling a sent DELETE%s from another history', async (response) => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); writes.mock.calls[0]![5].onDispatch?.();
-    await replace(sessions, [restored]); const world = worlds.get(sessions)!; sessions.observe(project, task, world.node(project, task), true); const resume = pause();
+    await replace(sessions, [restored]); const world = worlds.get(sessions)!; const replacementEpoch = world.scope.getAuthorizedProject(project)!.manifest.epoch!;
+    sessions.observe(project, task, world.node(project, task), true); const resume = pause();
     if (response === '204') { writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve(); } else pending.reject(response === '410' ? new ApiError('server', 410, 'task_deleted') : new ApiError('network'));
     await flush(); expect(sessions.snapshot(project, task).mutation.phase).toBe(response === '204' ? 'confirmed' : response === '410' ? 'refused' : 'unknown'); expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
     reads.mockResolvedValue(restored); resume();
+    if (response === '204') {
+      await waitFor(() => expect(world.scope.canPreviewProject(project)).toBe(false));
+      await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('unknown'));
+      await admitTaskGraph(world.scope, graphFixture([restored]), { epoch: replacementEpoch, versionForTask: () => restored.version, propertiesForTask: () => restored.properties });
+      sessions.observe(project, task, world.node(project, task), true); sessions.reconcile(project, task);
+    }
     await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
     expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
   });

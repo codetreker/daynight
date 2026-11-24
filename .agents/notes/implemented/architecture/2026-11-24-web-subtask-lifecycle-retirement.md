@@ -38,8 +38,11 @@ after the reviewed Task history has been replaced. Marking that Task deleted
 still requires the original operation and read ticket to be current. The receipt
 proves a committed deletion, but cannot identify the replacement history's safe
 rows; the existing epoch fence therefore withdraws its unproven presentation and
-requires new reads. Authentication pauses retain the receipt for admission after
-the gate resumes; identity retirement rejects publication. Deleted detail state
+requires new reads. Authentication pauses retain the trusted receipt. Once the
+same-account gate resumes, project retirement runs independently before admission
+of the original Task outcome, even when its read ticket has expired during an
+epoch replacement. Summary and direct Task owners share this obligation; another
+pause retains the receipt, and identity retirement rejects publication. Deleted detail state
 survives its own retirement notification until a new authorized opening or summary
 establishes that the Task is present.
 

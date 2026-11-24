@@ -1,11 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { getTaskObservation, pauseAuthRequests } from '../src/api/client';
 import { waitForState as waitFor } from './helpers/waitForState';
-import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
+import { createTaskCacheScope, TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { projectTaskScope } from '../src/features/task-graph/scope';
-import { detailFixture } from './helpers/taskDetail';
-import { createTaskSessionWorld } from './helpers/taskSessions';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
+import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { fixtureTaskEpoch, TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
@@ -177,6 +177,64 @@ it.each(['same', 'new'] as const)('fences a newer observed epoch until a read af
     const retry = await scope.beginTaskRead(project, goal, 4, 4, scope.signal);
     expect(await scope.observeHistory(retry, observed, scope.signal)).toBe('current');
   }
+});
+
+it.each([false, true])('withdraws replacement summary history after a trusted paused DELETE with failed recovery and another pause=%s', async (anotherPause) => {
+  const nextEpoch = '40000000-0000-4000-8000-000000000002';
+  const parent = detailFixture(project, task);
+  const child = detailFixture(project, goal, { parentId: task, title: 'Deleted subtree' });
+  const fixture = createTaskSessionWorld(); const sessions = new TaskDetailSessions(fixture.scope);
+  sessions.subscribe(project, task, () => {}); sessions.subscribe(project, goal, () => {});
+  let finishDelete!: (value: Response) => void; let recoveryFails = false;
+  const pending = new Promise<Response>(resolve => { finishDelete = resolve; });
+  const fetcher = vi.fn((url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') return pending;
+    if (recoveryFails) return Promise.reject(new Error('Recovery offline'));
+    return Promise.resolve(response(url.endsWith(task) ? parent : child, fixtureTaskEpoch(project)));
+  });
+  let resume = () => {}; let resumeSecond = () => {}; let secondPaused = false;
+  try {
+    await fixture.sync([parent, child]);
+    vi.stubGlobal('fetch', fetcher);
+    sessions.observe(project, task, fixture.node(project, task)); sessions.observe(project, goal, fixture.node(project, goal));
+    sessions.load(project, task, 1); sessions.load(project, goal, 1);
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(parent));
+    await waitFor(() => expect(sessions.snapshot(project, goal).detail).toEqual(child));
+    sessions.deleteTask(project, task, parent.version, false);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'DELETE')).toHaveLength(1));
+    await admitTaskGraph(fixture.scope, graphFixture([parent, child]), { epoch: nextEpoch, versionForTask: () => parent.version });
+    sessions.observe(project, task, fixture.node(project, task), true); sessions.observe(project, goal, fixture.node(project, goal), true);
+    const replacement = fixture.scope.getAuthorizedProject(project)!;
+    expect(replacement.index.nodes.has(goal)).toBe(true);
+    const replacementFence = await fixture.scope.beginTaskRead(project, goal, 2, 2, fixture.scope.signal);
+    if (anotherPause) {
+      const ready = fixture.scope.ready.bind(fixture.scope);
+      vi.spyOn(fixture.scope, 'ready').mockImplementation(async signal => {
+        await ready(signal);
+        if (!secondPaused) {
+          secondPaused = true;
+          resumeSecond = pauseAuthRequests();
+          throw new TaskCacheLifecycleChanged();
+        }
+      });
+    }
+    resume = pauseAuthRequests(); recoveryFails = true;
+    finishDelete(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+    expect(fixture.scope.isTaskReadCurrent(replacementFence, true)).toBe(true);
+    expect(sessions.snapshot(project, task).status).not.toBe('deleted');
+    resume();
+    if (anotherPause) {
+      await waitFor(() => expect(secondPaused).toBe(true));
+      expect(fixture.scope.isTaskReadCurrent(replacementFence, true)).toBe(true);
+      resumeSecond();
+    }
+    await waitFor(() => expect(fixture.scope.canPreviewProject(project)).toBe(false));
+    expect(fixture.scope.getAuthorizedProject(project)).toBeNull();
+    expect(sessions.snapshot(project, goal).detail).toBeNull();
+    expect(sessions.snapshot(project, task).status).not.toBe('deleted');
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === 'DELETE')).toHaveLength(1);
+  } finally { resume(); resumeSecond(); sessions.dispose(); fixture.dispose(); }
 });
 
 it('retires old Goal history after an unknown deletion is observed as task_deleted without claiming write success', async () => {
