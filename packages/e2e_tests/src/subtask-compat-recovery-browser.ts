@@ -152,15 +152,17 @@ try {
       if ((await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project])) !== 'post124') throw new Error('Post-upgrade attachment readback mismatch.');
       await send({ type: 'written', task }); continue;
     }
-    if (operation !== 'verify') throw new Error('Unknown browser operation.');
-    await setPhase('cross-client-readback');
-    await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`);
-    await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
+    if (operation !== 'verify' && operation !== 'verify-cli') throw new Error('Unknown browser operation.');
+    await setPhase(operation === 'verify' ? 'cross-client-readback' : 'restored-cli-readback');
+    if (operation === 'verify') {
+      await page.goto(`${input.baseURL}/projects/${project}/tasks/${child}`);
+      await expect(page.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
+    }
     const current = JSON.parse(await cli(['task', 'show', child, '--project', project, '--json'])) as { id?: string; parentId?: string };
     if (current.id !== child || current.parentId !== goal) throw new Error('Cross-client Task readback mismatch.');
     if ((await cli(['task', 'attachment', 'read', child, 'recovery-proof.txt', '--project', project])) !== 'paired122') throw new Error('Cross-client attachment mismatch.');
-    await page.goto('about:blank');
-    await send({ type: 'verified', project, goal, child });
+    if (operation === 'verify') await page.goto('about:blank');
+    await send({ type: operation === 'verify' ? 'verified' : 'cli-verified', project, goal, child });
   }
   await context.close();
 } catch (error) {

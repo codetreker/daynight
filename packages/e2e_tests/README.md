@@ -364,3 +364,11 @@ replay or treating a temporarily absent resource as final absence.
 The framework does not touch an existing deployment or use its database. A
 passing local run establishes only the recorded source and scenarios; it does
 not establish hosted CI or live third-party authentication behavior.
+
+The explicit `test:recovery-registries` test compiles the production registry
+from full-history historical and candidate revisions in private clones. Set
+`RECOVERY_REGISTRY_BASELINE`, `RECOVERY_REGISTRY_CANDIDATE`, and
+`RECOVERY_REGISTRY_REPAIR` to complete commit IDs available locally. It compares
+the actual 099 frozen history and requires the old registry to be a strict
+candidate prefix and the repair registry to match. It does not run the recovery
+scenario or replace the isolated database evidence.

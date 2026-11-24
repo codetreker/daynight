@@ -141,13 +141,16 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
   const probeSHA256 = await hash(registryProbe);
   const sourceFingerprints = { candidate: candidateFingerprint, baseline: await sourceFingerprint(baseline, signal), repair: await sourceFingerprint(repair, signal) };
   const registries: Record<string, MigrationEntry[]> = {};
+  const probes: Record<string, { registry: 'legacy' | 'baseline'; sha256: string }> = {};
   for (const [name, source, revision] of [['baseline', baseline, ctx.baseline], ['candidate', candidate, ctx.candidate], ['repair', repair, ctx.repair.revision]] as const) {
-    registries[name] = await readRegisteredMigrations({ source, probe: registryProbe, overlayFile: path.join(runtime, `${name}-registry-overlay.json`), environment: env, command });
+    const observed = await readRegisteredMigrations({ source, probe: registryProbe, overlayFile: path.join(runtime, `${name}-registry-overlay.json`), environment: env, command });
+    registries[name] = observed.entries;
+    probes[name] = { registry: observed.registry, sha256: observed.probeSHA256 };
     if (await hash(registryProbe) !== probeSHA256 || await sourceFingerprint(source, signal) !== sourceFingerprints[name]) throw new Error('Migration registry source changed during observation.');
-    await ctx.evidence(`${name}Registry`, { revision, sourceFingerprint: sourceFingerprints[name], probeSHA256, entries: registries[name], sha256: migrationManifestHash(registries[name]!) });
+    await ctx.evidence(`${name}Registry`, { revision, sourceFingerprint: sourceFingerprints[name], probeSHA256, probe: probes[name], entries: registries[name], sha256: migrationManifestHash(registries[name]!) });
   }
   const baselineManifest = registries.baseline!, candidateManifest = registries.candidate!, repairManifest = registries.repair!;
-  const manifestEvidence = { baselineRevision: ctx.baseline, candidateRevision: ctx.candidate, repairRevision: ctx.repair.revision, sourceFingerprints, probeSHA256,
+  const manifestEvidence = { baselineRevision: ctx.baseline, candidateRevision: ctx.candidate, repairRevision: ctx.repair.revision, sourceFingerprints, probeSHA256, probes,
     baseline: baselineManifest, candidate: candidateManifest, repair: repairManifest,
     baselineSHA256: migrationManifestHash(baselineManifest), candidateSHA256: migrationManifestHash(candidateManifest), repairSHA256: migrationManifestHash(repairManifest) };
   try { requireMigrationPlan(baselineManifest, candidateManifest, repairManifest); }
@@ -452,8 +455,11 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     await psql(`UPDATE webhook_endpoints SET enabled=false WHERE id='${fixture.endpoint}'; UPDATE projects SET task_cache_epoch=gen_random_uuid()`);
     if (await psql(`SELECT task_cache_epoch::text <> '${epoch}' FROM projects WHERE id='${fixture.project}'`) !== 't') throw new Error('Restored cache epoch did not rotate.');
     if (await psql(`SELECT enabled FROM webhook_endpoints WHERE id='${fixture.endpoint}'`) !== 'f') throw new Error('Webhook reconciliation did not persist.');
-    await startServer(resources.old, 'server122'); await waitServer(resources.old); await tellBrowser('verify'); await nextEvent('verified'); await stopServer(resources.old);
-    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true });
+    await startServer(resources.old, 'server122'); await waitServer(resources.old);
+    await tellBrowser('verify-cli'); await nextEvent('cli-verified');
+    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, cliReadback: true, restoredBrowser: 'not-yet-verified' });
+    await tellBrowser('verify'); await nextEvent('verified'); await stopServer(resources.old);
+    await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, cliReadback: true, restoredBrowser: 'verified' });
     await tellBrowser('finish'); if ((await browser.finished).exitCode !== 0) throw new Error('Recovery browser did not stop cleanly.'); browserStopped = true;
     if (ctx.sharedCandidate && await hash(candidateBinary) !== ctx.sharedCandidate.sha256) throw new Error('Shared candidate digest changed during recovery.');
     return { fixture: { project: fixture.project, goal: fixture.goal, child: fixture.child, hiddenGoal: fixture.hiddenGoal, hiddenChild: fixture.hiddenChild },

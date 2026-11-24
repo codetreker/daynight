@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { classifyMigrationLedger, migrationManifestHash, parseMigrationManifest, requireMigrationPlan, type MigrationEntry } from '../src/subtask-compat-recovery-migrations.ts';
 
 const entry = (version: number, character = 'a'): MigrationEntry => ({ version, checksum: character.repeat(64) });
-const baseline = [entry(1), entry(3), entry(122)];
+const baseline = [entry(1), entry(99), entry(122)];
 const candidate = [...baseline, entry(123, 'b'), entry(124, 'c'), entry(125, 'd'), entry(126, 'e')];
 
 test('complete ordered registered checksums distinguish baseline, partial and candidate ledger', () => {
@@ -27,8 +27,9 @@ test('missing, extra and changed checksums cannot pass with the same maximum ver
 test('incompatible repair and baseline registries are rejected before use', () => {
   assert.throws(() => requireMigrationPlan(baseline, candidate, candidate.slice(0, -1)), /Repair migration registry/);
   assert.throws(() => requireMigrationPlan(baseline, candidate, [...candidate.slice(0, -1), entry(126, 'f')]), /Repair migration registry/);
-  assert.throws(() => requireMigrationPlan([entry(1), entry(3), entry(122, 'f')], candidate, candidate), /strict candidate prefix/);
+  assert.throws(() => requireMigrationPlan([entry(1), entry(99), entry(122, 'f')], candidate, candidate), /strict candidate prefix/);
   assert.throws(() => requireMigrationPlan(candidate, candidate, candidate), /strict candidate prefix/);
+  assert.throws(() => requireMigrationPlan([entry(1)], candidate, candidate), /does not reach version 99/);
 });
 
 test('partial and unsettled observations are recorded without becoming candidate success', async () => {
@@ -72,11 +73,11 @@ test('registry probe retains private source when command stop is unconfirmed', a
   try {
     await mkdir(path.join(module, 'scripts'), { recursive: true }); await mkdir(path.join(module, 'internal/core/store/postgres'), { recursive: true });
     await writeFile(path.join(module, 'scripts/unit-overlay.json'), '{"Replace":{}}');
-    const probe = path.join(directory, 'probe'); await writeFile(probe, 'package postgres');
+    const probe = path.join(directory, 'probe'); await writeFile(probe, 'package postgres\nfor _, migration := range schemaMigrations { migration.checksum() }');
     const { readRegisteredMigrations } = await import('../src/subtask-compat-recovery-manifest.ts');
     await assert.rejects(readRegisteredMigrations({ source: path.join(directory, 'source'), probe, overlayFile: path.join(directory, 'overlay.json'), environment: {},
       command: async () => { throw new Error('original command stop unconfirmed'); } }), /stop unconfirmed/);
-    assert.equal(await readFile(path.join(module, 'internal/core/store/postgres/zz_recovery_migration_manifest.go'), 'utf8'), 'package postgres');
+    assert.equal(await readFile(path.join(module, 'internal/core/store/postgres/zz_recovery_migration_manifest.go'), 'utf8'), 'package postgres\nfor _, migration := range schemaMigrations { migration.checksum() }');
     assert.equal((await readdir(path.join(module, '.tmp'))).length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

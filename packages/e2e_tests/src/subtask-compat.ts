@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { runCommand } from './command.ts';
 import { candidateHandoffHash, combinationCleanupConfirmed, compatibilityPlans, mixedCombinationPassed, recordStoppedSequence, recoveryCleanupConfirmed, recoveryPassed, repairArguments, runCombination, runCompatibilityPlans, workerCombinationPassed, type CombinationManifest, type CombinationResult, type RecoveryReceipt } from './subtask-compat-process.ts';
 import { verifyCandidateArtifact } from './subtask-compat-artifact.ts';
+import { registryProbeHash, type RegistryKind } from './subtask-compat-recovery-manifest.ts';
 import { revisionFingerprint } from './subtask-compat-source.ts';
 
 const invocationDirectory = process.env.INIT_CWD ?? process.cwd();
@@ -118,6 +119,14 @@ async function main(): Promise<void> {
     report.recovery = { status: 'not-run', reason: 'repair-source-unverified', category: error instanceof Error ? error.name : 'unknown' };
     report.status = 'failed'; await save(); throw error;
   }
+  const template = await readFile(path.join(runnerRepository, 'packages/e2e_tests/src/subtask-compat-recovery-manifest-probe.go.txt'), 'utf8');
+  const templateSHA256 = createHash('sha256').update(template).digest('hex');
+  const probeFor = async (revision: string): Promise<{ registry: RegistryKind; sha256: string }> => {
+    const found = await git(candidate, ['ls-tree', '--name-only', revision, '--', 'packages/daynight-server/internal/core/store/postgres/migration_ledger.go']);
+    const registry: RegistryKind = found ? 'baseline' : 'legacy';
+    return { registry, sha256: registryProbeHash(template, registry) };
+  };
+  const probes = { baseline: await probeFor(baselineSha), candidate: await probeFor(candidateSha), repair: await probeFor(repair.revision) };
   type CandidateCombination = CombinationResult & { manifestPath?: string | null; manifest?: CombinationManifest };
   const verifiedCandidate = async (): Promise<{ hash: string; manifestPath: string; sourceFingerprint: string; baselineFingerprint: string } | undefined> => {
     const combination = report.combinations.candidate as CandidateCombination | undefined;
@@ -193,7 +202,7 @@ async function main(): Promise<void> {
     else report.recovery.cleanupEvidence = 'unconfirmed';
     if (!cleanupConfirmed) unconfirmed = true;
     if (result?.interrupted) interrupted = true;
-    if (result === undefined || !recoveryPassed(result, recovery, candidateSha, baselineSha, candidateInput.hash, repair, { candidate: candidateInput.sourceFingerprint, baseline: candidateInput.baselineFingerprint, repair: repairFingerprint })) failed = true;
+    if (result === undefined || !recoveryPassed(result, recovery, candidateSha, baselineSha, candidateInput.hash, repair, { candidate: candidateInput.sourceFingerprint, baseline: candidateInput.baselineFingerprint, repair: repairFingerprint, templateSHA256, probes })) failed = true;
     }
   }
   if (!failed && !interrupted && !unconfirmed) {

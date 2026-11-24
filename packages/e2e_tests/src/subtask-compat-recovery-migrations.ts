@@ -25,12 +25,14 @@ export const migrationManifestHash = (manifest: MigrationEntry[]): string =>
 const same = (left: MigrationEntry, right: MigrationEntry): boolean => left.version === right.version && left.checksum === right.checksum;
 export const requireMigrationPlan = (baseline: MigrationEntry[], candidate: MigrationEntry[], repair: MigrationEntry[]): void => {
   baseline = parseMigrationManifest(baseline); candidate = parseMigrationManifest(candidate); repair = parseMigrationManifest(repair);
+  if (!baseline.some(entry => entry.version === 99)) throw new Error('Baseline migration registry does not reach version 99.');
   if (candidate.length <= baseline.length || !baseline.every((entry, index) => same(entry, candidate[index]!))) throw new Error('Baseline migration registry is not a strict candidate prefix.');
   if (repair.length !== candidate.length || !candidate.every((entry, index) => same(entry, repair[index]!))) throw new Error('Repair migration registry differs from candidate.');
 };
 
 export const classifyMigrationLedger = (observed: MigrationEntry[], baseline: MigrationEntry[], candidate: MigrationEntry[]): MigrationState => {
   observed = parseMigrationManifest(observed, true); baseline = parseMigrationManifest(baseline); candidate = parseMigrationManifest(candidate);
+  if (!baseline.some(entry => entry.version === 99)) throw new Error('Baseline migration registry does not reach version 99.');
   if (candidate.length <= baseline.length || !baseline.every((entry, index) => same(entry, candidate[index]!))) throw new Error('Baseline migration registry is not a strict candidate prefix.');
   if (observed.length < baseline.length || observed.length > candidate.length || !observed.every((entry, index) => same(entry, candidate[index]!))) return 'unexpected';
   if (observed.length === baseline.length) return 'baseline';
