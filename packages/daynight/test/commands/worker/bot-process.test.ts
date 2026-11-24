@@ -51,6 +51,44 @@ test("settles a persisted unreleased Bot after restart without replaying its tic
   expect(hasNeverStartedDeletionEvidence(prepared, f.executions.get(prepared))).toBe(true);
 });
 
+test("Bot deletion retries a transient unreleased receipt read failure without reporting missing evidence", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned({ kind: "linux-controller-launch", pid: 123, launchId: options.ticket.launchId });
+    await writeUnreleasedLaunch(f.home, options.ticket, 123); throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  const deleting = markDeleting(f), failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValueOnce(failure);
+  try {
+    await expect(f.process.withDeletion(deleting, signal, stop => stop())).rejects.toBe(failure);
+    expect(f.executions.get(f.current())?.unreleased).toMatchObject({ pid: 123 });
+    expect(f.release).not.toHaveBeenCalled();
+    const result = await f.process.withDeletion(deleting, signal, stop => stop());
+    expect(result).toMatchObject({ stopProof: { kind: "never_started" } });
+    expect(f.launch).toHaveBeenCalledOnce();
+  } finally { receipt.mockRestore(); }
+});
+
+test("Bot deletion retains a precheck deadline failure without reporting missing evidence", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned({ kind: "linux-controller-launch", pid: 123, launchId: options.ticket.launchId });
+    await writeUnreleasedLaunch(f.home, options.ticket, 123); throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  const ticket = await f.process.readTicket(f.current()), deleting = markDeleting(f);
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockImplementationOnce(async () => { time += 10_000; return ticket; });
+  try {
+    const error = await f.process.withDeletion(deleting, signal, stop => stop()).catch(error => error);
+    expect(error.message).toMatch(/cleanup exceeded its deadline/);
+    expect(error.message).not.toMatch(/execution_evidence_missing/);
+    expect(f.executions.get(f.current())?.unreleased).toBeUndefined(); expect(f.release).not.toHaveBeenCalled();
+    expect(await f.process.withDeletion(deleting, signal, stop => stop())).toMatchObject({ stopProof: { kind: "never_started" } });
+  } finally { readTicket.mockRestore(); clock.mockRestore(); }
+});
+
 test("rejects an unreleased receipt with a conflicting saved PID", async () => {
   const f = fixture(), signal = new AbortController().signal;
   f.launch.mockImplementationOnce(async options => {
@@ -1103,6 +1141,86 @@ const submittedLinuxBot = async () => {
   expect(f.prepareEnvironment).toHaveBeenCalledOnce();
   return { ...f, signal, manager, execution, saved, reconcileLaunch, stopBootstrap, stopProcesses, confirmStopped, request, recordStopped };
 };
+
+test.skipIf(process.platform !== "linux")("Bot deletion retains a receipt read EIO while stopping its original processes", async () => {
+  const f = await submittedLinuxBot(), deleting = markDeleting(f);
+  const failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  let completed = false;
+  try {
+    const error = await f.manager.withDeletion(deleting, f.signal, async stop => { await stop(); completed = true; }).catch(error => error);
+    expect(error).toBe(failure); expect(receipt).toHaveBeenCalledTimes(2);
+    expect(f.request).toHaveBeenCalledOnce(); expect(f.stopBootstrap).toHaveBeenCalledOnce(); expect(f.stopProcesses).toHaveBeenCalledOnce();
+    expect(completed).toBe(false); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("Bot deletion preserves a second ticket read EIO while stopping with its checked ticket", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), deleting = markDeleting(f);
+  const failure = Object.assign(new Error("second ticket EIO"), { code: "EIO" });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValueOnce(ticket).mockRejectedValueOnce(failure);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  let completed = false;
+  try {
+    const error = await f.manager.withDeletion(deleting, f.signal, async stop => { await stop(); completed = true; }).catch(error => error);
+    expect(error).toBe(failure); expect(readTicket).toHaveBeenCalledTimes(2);
+    expect(f.request).toHaveBeenCalledWith(ticket, expect.objectContaining({ kind: "stop" }), expect.anything());
+    expect(f.stopBootstrap).toHaveBeenCalledOnce(); expect(f.stopProcesses).toHaveBeenCalledOnce();
+    expect(completed).toBe(false); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { readTicket.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("Bot deletion refuses signals if a second ticket EIO is followed by an IPC identity conflict", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), deleting = markDeleting(f);
+  const failure = Object.assign(new Error("second ticket EIO"), { code: "EIO" });
+  const conflict = new ControllerIpcIdentityConflictError("IPC identity conflict");
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValueOnce(ticket).mockRejectedValueOnce(failure);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  f.reconcileLaunch.mockRejectedValueOnce(conflict);
+  try {
+    const error = await f.manager.withDeletion(deleting, f.signal, stop => stop()).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([failure, conflict]);
+    expect(f.request).not.toHaveBeenCalled(); expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { readTicket.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("Bot deletion refuses signals for an unreadable present receipt", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  await writeUnreleasedLaunch(f.home, ticket, 124);
+  const deleting = markDeleting(f), failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValue(failure);
+  let completed = false;
+  try {
+    const error = await f.manager.withDeletion(deleting, f.signal, async stop => { await stop(); completed = true; }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[1].message).toMatch(/exists but could not be read/);
+    expect(receipt).toHaveBeenCalledTimes(2); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(completed).toBe(false); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("Bot deletion uses retained proofs after persistent receipt and journal I/O failures", async () => {
+  const f = await submittedLinuxBot(), deleting = markDeleting(f);
+  const failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValue(failure);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const io = () => new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error("journal EIO"), { code: "EIO" }));
+  f.reconcileLaunch.mockRejectedValueOnce(io()).mockRejectedValueOnce(io());
+  let completed = false;
+  try {
+    const error = await f.manager.withDeletion(deleting, f.signal, async stop => { await stop(); completed = true; }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].errors).toEqual([failure, failure]);
+    expect(receipt).toHaveBeenCalledTimes(2); expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+    expect(completed).toBe(false); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); history.mockRestore(); }
+});
 
 test.skipIf(process.platform !== "linux")("receipt EIO is retained while authenticated stop and native cleanup complete", async () => {
   const f = await submittedLinuxBot(), failure = Object.assign(new Error("receipt read failed"), { code: "EIO" });

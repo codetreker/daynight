@@ -68,6 +68,11 @@ receipt or hides the original failure. A close error cannot replace a prior
 malformed or conflicting receipt error.
 Receipt reads and presence probes use the cleanup deadline. A timed-out
 observation retains responsibility; it does not cancel the underlying file call.
+Bot deletion routes submitted executions through the same receipt and stop path,
+then consumes the persisted unreleased or stopped proof for its original fence.
+If the ticket reread fails with pure I/O after a successful identity check, the
+checked ticket can authorize bounded cleanup; the reread error and resources
+remain retained, and later observed identity conflicts still prevent signaling.
 Once a receipt has been parsed, an I/O failure during synchronization or close
 keeps that evidence unconfirmed and cannot authorize the read-I/O fallback.
 

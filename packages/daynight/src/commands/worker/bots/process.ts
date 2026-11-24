@@ -508,7 +508,7 @@ export const createBotProcess = (options: {
     const prepared = environments.get(botId);
     if (prepared !== undefined) { await prepared.release(); environments.delete(botId); }
   };
-  const shutdown = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
+  const shutdown = async (input: BotRecord, signal: AbortSignal, onPrecheckStatus?: (complete: boolean) => void): Promise<void> => {
     const retained = options.store.get(input.owner, input.botId);
     if (retained === null) throw new Error("Bot shutdown lost its original inventory record.");
     // Migration required proven stop and fences every launch until takeover.
@@ -582,6 +582,7 @@ export const createBotProcess = (options: {
     };
     if (originalTicket !== undefined) {
       if (await checkUnreleased(originalTicket, AbortSignal.timeout(remaining()))) { await releaseEnvironment(record.botId); return; }
+      if (receiptReadFailure === undefined) onPrecheckStatus?.(true);
       let historical: ControllerSnapshot | null;
       try { historical = checkHistorical(originalTicket); }
       catch (error) { if (receiptReadFailure !== undefined) throw new AggregateError([receiptReadFailure, error], "Bot receipt and historical evidence failed.", { cause: receiptReadFailure }); throw error; }
@@ -610,11 +611,12 @@ export const createBotProcess = (options: {
       const ticket = await (async (): Promise<ControllerLaunchTicket> => {
         try { return await checkedTicket(record); }
         catch (error) {
+          onPrecheckStatus?.(false);
           // A newly observed ticket conflict must not authorize even a single-PID
           // stop from the previously saved record. Pure read I/O retains the
           // original checked identity for bounded cleanup.
           const ioFailure = isControllerEvidenceReadIoFailure(error);
-          if ((historicalReadFailure !== undefined || receiptReadFailure !== undefined) && originalTicket !== undefined) {
+          if (originalTicket !== undefined) {
             if (ioFailure) { ticketReadFailure = error; return originalTicket; }
             bootstrapStopBlocked = true; treeEvidenceBlocked = true;
           }
@@ -687,6 +689,7 @@ export const createBotProcess = (options: {
         if (historicalReadFailure !== undefined) throw historicalReadFailure;
         if (initialTicketReadFailure !== undefined) throw initialTicketReadFailure;
         if (receiptReadFailure !== undefined) throw receiptReadFailure;
+        if (ticketReadFailure !== undefined) throw ticketReadFailure;
         // Records stop through the journal's process verification + snapshot CAS;
         // operation receipts and pending user input remain in that same journal.
         stopped = await recordWithLease(record.intent!.journalPath, ticket, deadline);
@@ -704,7 +707,7 @@ export const createBotProcess = (options: {
       if (stopRequestFailure !== undefined && !failures.includes(stopRequestFailure.cause)) failures.push(stopRequestFailure.cause);
       if (!failures.includes(error)) failures.push(error);
       treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
-      if ((historicalReadFailure !== undefined || initialTicketReadFailure !== undefined || receiptReadFailure !== undefined) && treeEvidenceBlocked) bootstrapStopBlocked = true;
+      if ((historicalReadFailure !== undefined || initialTicketReadFailure !== undefined || receiptReadFailure !== undefined || ticketReadFailure !== undefined) && treeEvidenceBlocked) bootstrapStopBlocked = true;
       if (!bootstrapAttempted && !bootstrapCompleted && !leaseAttempted && cleanupTicket !== undefined) {
         try { leaseAttempted = true; await retainJob(cleanupTicket.launchId, execution.controllerProcess, deadline); } catch (leaseError) { failures.push(leaseError); }
       }
@@ -813,9 +816,19 @@ export const createBotProcess = (options: {
     const unsubmitted = execution.launchSubmission === "not-submitted";
     const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
       && execution.controllerProcess === null && execution.snapshot === null;
-    const unreleased = !unsubmitted && !rejected && await settleUnreleased(record, await checkedTicket(record), signal);
+    // Submitted executions use the same bounded observation and stop path as
+    // ordinary shutdown, including receipt I/O handling and identity checks.
+    if (!unsubmitted && !rejected) {
+      let precheckComplete = false;
+      try { await shutdown(record, signal, complete => { precheckComplete = complete; }); }
+      catch (cause) {
+        if (precheckComplete && !signal.aborted && !existsSync(intent.journalPath)) throw new BotExecutionEvidenceMissingError({ cause });
+        throw cause;
+      }
+      record = deletionRecord(input);
+    }
+    const unreleased = options.executions.get(record)?.unreleased !== undefined;
     if (unsubmitted || rejected || unreleased) {
-      if (unreleased) await releaseEnvironment(record.botId);
       // A prepared recovery may have advanced the remote fence even when its
       // grant response was lost. Never guess which generation owns deletion.
       if (intent.executionGeneration !== "1") throw new Error("Bot deletion server generation is unconfirmed after recovery preparation; original evidence is retained.");
@@ -825,12 +838,6 @@ export const createBotProcess = (options: {
         executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
         stopProof: { kind: "never_started", recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: new Date(now()).toISOString() } };
     }
-    try { await shutdown(record, signal); }
-    catch (cause) {
-      if (!signal.aborted && !existsSync(intent.journalPath)) throw new BotExecutionEvidenceMissingError({ cause });
-      throw cause;
-    }
-    record = deletionRecord(input);
     const stopped = options.executions.get(record)?.snapshot;
     if (stopped?.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.controllerProcess === null || intent.sessionId === null) {
       throw new Error("Bot deletion requires complete original writer stop evidence.");
