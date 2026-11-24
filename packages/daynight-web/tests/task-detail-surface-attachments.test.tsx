@@ -253,9 +253,11 @@ describe('full-detail attachment surface', () => {
     expect(screen.queryByText('Late old document')).toBeNull();
     const pending = deferred<Page>();
     vi.mocked(api.list).mockReturnValueOnce(pending.promise);
+    const inventoryReads = vi.mocked(api.list).mock.calls.length;
     view.rerender(page(api, 'next.txt', '00000000-0000-4000-8000-000000000002'));
     expect(screen.queryByText('Contents of next.txt')).toBeNull();
     expect(await (await readyPreview()).findByRole('status')).toHaveTextContent('正在加载附件');
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(inventoryReads + 1));
     const request = vi.mocked(api.list).mock.calls.at(-1)![3];
     view.unmount();
     expect(request.aborted).toBe(true);

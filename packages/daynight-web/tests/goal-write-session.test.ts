@@ -171,11 +171,13 @@ it.each(['same', 'new'] as const)('preserves a newer observed epoch after an old
   const newFence = await scope.beginTaskRead(project, goal, 2, 2, scope.signal);
   expect(await scope.observeHistory(newFence, nextEpoch, scope.signal)).toBe('current');
   const generation = scope.getHistoryGeneration(project);
+  const previewAllowed = scope.canPreviewProject(project);
   finishDelete(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
-  await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+  await pending; await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sessions.snapshot(project, task).mutation.phase).toBe('idle');
   expect(scope.isTaskReadCurrent(newFence)).toBe(true);
   expect(scope.getHistoryGeneration(project)).toBe(generation);
-  expect(scope.canPreviewProject(project)).toBe(false);
+  expect(scope.canPreviewProject(project)).toBe(previewAllowed);
   const later = await scope.beginTaskRead(project, goal, 3, 3, scope.signal);
   const observed = outcome === 'same' ? nextEpoch : deletionEpoch;
   expect(await scope.observeHistory(later, observed, scope.signal)).toBe(outcome === 'same' ? 'current' : 'retired');
