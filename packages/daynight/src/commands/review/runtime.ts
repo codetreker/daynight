@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { formatError } from "../../platform/diagnostics.js";
+import { sqliteMigrationFailureReporter } from "../../platform/sqlite-access.js";
 import { createCopilotRunner } from "./adapters/copilot.js";
 import { runCoordinator } from "./coordinator.js";
 import { createGitManager } from "./adapters/worktrees.js";
@@ -91,7 +92,9 @@ export const runForegroundReview = async (
     const skill = await dependencies.prepareSkill(options.packageDirectory, paths.cacheDirectory);
     signal.throwIfAborted();
     store = dependencies.openStore(paths.databaseFile, {
-      onMigration: event => { log({ level: event.kind === "failed" ? "error" : "info", phase: `sqlite-migration-${event.kind}`, message: JSON.stringify(event) }); },
+      onMigration: sqliteMigrationFailureReporter(event => {
+        log({ level: "error", phase: "sqlite-migration-failed", message: JSON.stringify(event) });
+      }),
     });
     const client = dependencies.createClient();
     const git = dependencies.createGit({ temporaryDirectory: paths.temporaryDirectory, client });

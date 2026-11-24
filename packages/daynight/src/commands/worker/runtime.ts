@@ -44,7 +44,7 @@ import { createMonitoringSender } from "./monitoring/sender.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
-import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticSinkEvent } from "./diagnostics.js";
+import { createWorkerDiagnostics, workerSqliteMigrationReporter, type WorkerDiagnosticSinkEvent } from "./diagnostics.js";
 import { createWorkerConfigurationDiagnostics } from "./configuration-diagnostics.js";
 import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
@@ -242,7 +242,7 @@ const nativeConfigurationApplication = (options: {
 };
 
 const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string; managementOnly?: boolean }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string | undefined, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
-  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
+  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: workerSqliteMigrationReporter(emit) });
   try {
     const api = createWorkerSessionApi(serverUrl, serverToken, { managementOnly: options.managementOnly ?? false });
     const jobLeases = createControllerJobLeases();

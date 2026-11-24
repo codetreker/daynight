@@ -38,6 +38,21 @@ const input = (name: string) => {
 const source: AssignmentSource = { snapshot: () => ({ kind: "disabled" }), subscribe: () => () => {}, capturePrompt: async () => { throw new Error("No review is assigned."); } };
 
 describe("foreground runtime ownership", () => {
+  it("logs only failed SQLite migration diagnostics", async () => {
+    const { configuration, paths } = input("migration-logging");
+    const log = vi.fn();
+    const deps = dependencies(async () => ({ safeToReleaseLock: true }));
+    await runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, log });
+    expect(log.mock.calls.map(([event]) => event.phase)).not.toContain("sqlite-migration-started");
+    expect(log.mock.calls.map(([event]) => event.phase)).not.toContain("sqlite-migration-completed");
+
+    const failure = new Error("Migration failed.");
+    const migration = { migrationId: "test-migration", database: "review", file: paths.databaseFile, kind: "failed", phase: "migrate", fromVersion: 1, toVersion: 2, durationMs: 1, outcome: "rolled-back" } as const;
+    deps.openStore = (_file, options) => { options?.onMigration?.(migration); throw failure; };
+    await expect(runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, log })).rejects.toMatchObject({ cause: failure });
+    expect(log).toHaveBeenCalledWith({ level: "error", phase: "sqlite-migration-failed", message: JSON.stringify(migration) });
+  });
+
   it("releases the original Reviewer after its initial read-only Git reservation reconciles through the real coordinator", async () => {
     const { configuration, paths } = input("worker-readonly-git"), controller = new AbortController();
     const repository = { host: "github.com", githubId: "42", owner: "o", name: "r" };
