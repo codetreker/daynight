@@ -27,6 +27,8 @@ export type DraftSendOptions = {
   readonly store: SessionDraftStore;
   readonly locks: LockManager | null;
   readonly isCurrent: () => boolean;
+  /** Owner identity may remain current while network admission is suspended. */
+  readonly isOwnerCurrent?: () => boolean;
   readonly admit: (snapshot: DraftSnapshot, prepared?: DraftSubmission) => string | null;
   readonly command: (snapshot: DraftSnapshot) => SessionCommand;
   readonly commandDraft?: DraftFreeze['commandDraft'];
@@ -78,20 +80,21 @@ export class DraftSender {
       }
       const claim = await o.store.claimDispatch(handle, submission.operationId);
       if (!claim) { this.live(); await this.check(handle, submission); return; }
-      if (!o.isCurrent()) {
+      const ownerCurrent = o.isOwnerCurrent ?? o.isCurrent;
+      if (!ownerCurrent()) {
         await o.store.refuseClaimed(handle, claim.authority);
         return;
       }
       const claimed = claim.submission;
       snapshot = await o.store.read(handle);
-      const claimedIssue = o.isCurrent() ? o.admit(snapshot, claimed) : null;
-      if (!o.isCurrent() || claimedIssue) {
+      const claimedIssue = ownerCurrent() ? o.admit(snapshot, claimed) : null;
+      if (!ownerCurrent() || claimedIssue) {
         // Only successful restoration proves refusal; a failed transaction keeps
         // the original dispatch responsibility and its storage error.
         const restored = await o.store.refuseClaimed(handle, claim.authority);
-        if (!o.isCurrent()) return;
+        if (!ownerCurrent()) return;
         await o.changed(restored);
-        if (o.isCurrent() && claimedIssue) throw new Error(claimedIssue);
+        if (ownerCurrent() && claimedIssue) throw new Error(claimedIssue);
         return;
       }
       let operation: SessionOperation;

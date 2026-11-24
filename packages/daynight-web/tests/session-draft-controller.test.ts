@@ -86,7 +86,7 @@ describe('durable Session image coordination', () => {
     const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original'); await controller.send();
     const original = f.commands[0]!;
     f.setContext({ ...f.context(), active: false });
-    await expect(controller.send()).rejects.toThrow('image_session_unavailable');
+    await expect(controller.send()).rejects.toThrow('image_target_changed');
     expect(f.query).not.toHaveBeenCalled(); expect(f.commands).toHaveLength(1);
     expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(original.operationId);
     f.setContext({ ...f.context(), active: true });

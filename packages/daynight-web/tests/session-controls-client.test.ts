@@ -66,7 +66,7 @@ it('keeps toolbar command execution independent from an unrelated durable text d
 it('resumes a prepared durable native command with its original IDs after reopening', async () => {
   const f = fixture(); await f.ready(); const durable = await durableDraft(f, '/compact');
   vi.spyOn(SessionDraftStore.prototype, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before dispatch claim'));
-  await f.client.executeCommand('native-compact', '', '4', '/compact');
+  await expect(f.client.executeCommand('native-compact', '', '4', '/compact')).rejects.toThrow('page ended before dispatch claim');
   const prepared = (await durable.store.readExisting(durable.identity))!.submission!; expect(prepared.state).toBe('prepared'); expect(f.api.command).not.toHaveBeenCalled();
   f.client.close(); await f.client.imageDrafts.close();
   const next = fixture(); await next.ready(); await durableDraft(next); expect(next.api.command).not.toHaveBeenCalled();
@@ -77,7 +77,7 @@ it('resumes a prepared durable native command with its original IDs after reopen
 it.each(['revision', 'availability'] as const)('allows safe cancellation of a prepared durable command after its catalog %s changes', async change => {
   const f = fixture(); await f.ready(); const durable = await durableDraft(f, '/compact');
   vi.spyOn(SessionDraftStore.prototype, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before dispatch claim'));
-  await f.client.executeCommand('native-compact', '', '4', '/compact');
+  await expect(f.client.executeCommand('native-compact', '', '4', '/compact')).rejects.toThrow('page ended before dispatch claim');
   const prepared = (await durable.store.readExisting(durable.identity))!.submission!; f.client.close(); await f.client.imageDrafts.close();
   const next = fixture(); Object.assign(next.s, { controls: { ...next.s.controls!, revision: change === 'revision' ? '5' : '4', commands: next.s.controls!.commands.map(command => ({ ...command, available: change !== 'availability' })) } });
   await next.ready(); await durableDraft(next);

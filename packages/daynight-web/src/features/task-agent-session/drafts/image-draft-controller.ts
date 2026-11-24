@@ -764,7 +764,7 @@ export class ImageDraftController {
     await this.prepareUploads(true, upload?.pendingAction?.kind === 'prepare' && !upload.receipt ? upload.uploadId : undefined);
   };
   private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand, attempt?: NonNullable<ImageDraftController['freezing']>): DraftSender {
-    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
+    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), isOwnerCurrent: () => this.current(epoch), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
       ...(nativeCommand ? { commandDraft: { text: nativeCommand.draftText, commandName: nativeCommand.commandName } } : {}),
       command: snapshot => {
         const c = this.context(), draft = snapshot.editable!;

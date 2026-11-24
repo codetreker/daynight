@@ -77,7 +77,7 @@ describe('task session transport lifecycle', () => {
       await f.client.imageDrafts.sync();
       expect(projected.length).toBeGreaterThan(0); expect(projected.every(text => text === '')).toBe(true);
       expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: true, text: '', items: [], rejectedCandidates: [], canSend: false, detachedDrafts: [{ draft: { text: 'Keep with the original image' } }] });
-      await f.client.send(f.client.snapshot().draft.text);
+      await expect(f.client.send(f.client.snapshot().draft.text)).rejects.toThrow('image_draft_empty');
       expect(f.api.command).not.toHaveBeenCalled();
       expect((await store.readExisting(identity))?.editable?.text).toBe('Keep with the original image');
       const reopened = fixture(null, userId, userId, next); await ready(reopened); reopened.client.setImageDraftAdmission(true, true); await reopened.client.imageDrafts.sync();
