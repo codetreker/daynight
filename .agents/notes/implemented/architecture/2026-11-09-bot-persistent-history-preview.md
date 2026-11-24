@@ -13,10 +13,9 @@ storage work without recovering historical permissions or live activity.
 ## Decision
 
 The [storage contract decision](2026-11-18-session-storage-contracts.md) defines
-an explicitly negotiated recent-window source. Its authoritative eviction
-boundary constrains future preview merging; the existing display-only authority,
-account isolation and smaller browser budgets below remain applicable. The
-window specification is not a claim that the runtime capability has shipped.
+an explicitly negotiated recent-window source. The browser probes that source
+after identifying the Bot Session and falls back on a confirmed unsupported
+response. Its authoritative eviction boundary constrains preview merging.
 
 The authenticated identity scope shares the existing bounded display store through
 a Bot coordinator. Only a real client's accepted, settled history supplies saved
@@ -89,6 +88,15 @@ cannot replace it with a shorter record. Real coverage permanently consumes seed
 rows, preventing them from reappearing after cursor-chain coverage resets. The
 bounded seed only shrinks; it does not accumulate cross-tab history updates.
 
+Window responses retain native preview fields in a version 2 display record,
+including the server revision, low watermark, browser eviction and truncation
+metadata. They are never decoded as complete timeline entries. The browser
+keeps its event, before-page and changes cursors independent. A completed
+changes scan updates existing stable rows and removes rows withdrawn from its
+range. A reset retires the obsolete cursor and applies a checked low watermark
+before loading the new tail. Only unseen rows above that watermark and below
+the accepted live tail may remain as inert cached previews.
+
 Preview resource access is explicitly disabled, including downloads. Historical
 interactions cannot regain submission controls. New commands continue through
 the independent [current-action admission](2026-11-09-bot-current-action-admission.md)
@@ -109,6 +117,11 @@ and cannot distinguish a valid empty page from an uninitialized shell.
 **Keep every visited pane connected.** This avoids some evictions but does not
 survive reload and increases connection and memory budgets. The existing three
 panes and six bounded persistent targets remain independent.
+
+**Use the event sequence as the window changes cursor.** The Controller can
+publish a checkpoint after the corresponding events have been acknowledged.
+An event checkpoint cannot prove that the window contains the associated
+revisions. Session observation polls for window changes using its own cursor.
 
 **Enable previews before connecting cleanup.** A cold deleted target or a queued
 write could recover private content. Cleanup is part of the same delivered data
@@ -140,5 +153,7 @@ Web Locks and localStorage remain browser-dependent. Storage failures degrade
 without breaking the live conversation; pagehide flushing is best effort, and a
 failed physical clear cannot establish disk erasure. Controlled browser evidence
 establishes frontend consumption and browser persistence, not native Provider or
-physical-device behavior. The codec remains responsible for entry/resource
-validation and the existing UTF-16 and count budgets.
+physical-device behavior. The codec validates both record formats and applies
+the existing UTF-16 and count budgets. Window snapshots also have UTF-8 byte
+budgets so multibyte previews can reach their storage limit before their
+UTF-16 limit.

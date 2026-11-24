@@ -3,13 +3,14 @@ import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, TimelineEntry } from '../src/api/types';
 import { sessionFence } from '../../daynight/src/session/protocol';
+import type { BotHistoryWindowEntry } from '../../daynight/src/session/bot-history-window';
 import { TaskSessionClient, type SessionViewState } from '../src/features/task-agent-session/client';
 import type { SessionApi } from '../src/api/sessions';
 import { SessionView } from '../src/features/task-agent-session/SessionView';
 import { SessionTimeline } from '../src/features/task-agent-session/SessionTimeline';
 import { emptySessionState } from '../src/features/task-agent-session/state';
 import { createLocaleRender } from './helpers/renderWithLocale';
-import { selectSessionHistoryRows, type SessionHistoryPreview } from '../src/features/task-agent-session/history-preview';
+import { selectSessionHistoryRows, selectSessionTimeline, type SessionHistoryPreview } from '../src/features/task-agent-session/history-preview';
 
 const render = createLocaleRender('en');
 const snapshot: SessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
@@ -26,6 +27,23 @@ function clientFixture() {
 const props = { active: true, canRespond: true, onRespond: vi.fn(), hasOlder: true, loadingOlder: false, onLoadOlder: async () => {}, onLoadResource: vi.fn(async () => new Blob()) };
 
 describe('read-only history preview handoff', () => {
+  it('keeps only uncovered window preview rows inside the confirmed floor', () => {
+    const row = (entrySeq: string, revision = '1'): BotHistoryWindowEntry => ({
+      kind: 'assistant_message', entryId: `entry-${entrySeq}`, entrySeq, revision, preview: 'Preview',
+      truncated: false, originalBytes: '7', previewBytes: '7', omissionReason: null, omittedEntryCount: 0, resourceIds: [], tool: null,
+    });
+    const cached: SessionHistoryPreview = { ...preview, entries: [], botHistoryWindow: {
+      windowRevision: '1', retainedFromSeq: '1', throughSeq: '5', earlierHistoryUnavailable: false,
+      entries: [row('1'), row('2'), row('3', '9'), row('4'), row('5')],
+    } };
+    const live = { windowRevision: '2', retainedFromSeq: '2', throughSeq: '5', earlierHistoryUnavailable: true, entries: [row('3'), row('4')] };
+    const read = selectSessionTimeline(state(), cached, true, null, live);
+    expect(read.rows.map(({ entry, preview }) => [entry.entrySeq, entry.revision, preview])).toEqual([['2', '1', true], ['3', '1', false], ['4', '1', false]]);
+    expect(read.earlierHistoryUnavailable).toBe(true);
+    expect(selectSessionTimeline(state(), cached, true, null, { ...live, localEviction: true }).rows.map(row => row.entry.entrySeq)).toEqual(['3', '4']);
+    expect(selectSessionTimeline(state(), cached, true, null, { ...live, retainedFromSeq: null, entries: [] }).rows).toEqual([]);
+    expect(selectSessionTimeline({ ...state(), snapshot: { ...snapshot, historyEpoch: 'other' } }, cached, false, null, null).rows).toEqual([]);
+  });
   it('keeps preview through current and replaces only verified page coverage with real revisions', () => {
     expect(selectSessionHistoryRows(state(), preview, false, null).map(row => row.entry)).toEqual(preview.entries);
     const live = message('2', 'Verified revision', '1');

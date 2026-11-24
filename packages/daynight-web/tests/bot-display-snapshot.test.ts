@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
   BOT_DISPLAY_SNAPSHOT_NAMESPACE, BotDisplaySnapshotStore,
-  decodeBotDisplayPreview, parseBotDisplayPreview, prepareBotDisplayPreview,
+  decodeBotDisplayPreview, parseBotDisplayPreview, prepareBotDisplayPreview, snapshotBytes,
   type BotDisplayPreview, type BotDisplaySnapshotLock, type BotDisplaySnapshotSave,
 } from '../src/features/bots/display-snapshot';
 import { parseTimelineEntry, type SessionResource, type TimelineEntry } from '../../daynight/src/session/protocol';
+import type { BotHistoryWindowEntry } from '../../daynight/src/session/bot-history-window';
 
 const id = (n: number) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const key = (owner: string) => BOT_DISPLAY_SNAPSHOT_NAMESPACE + owner;
@@ -21,6 +22,13 @@ function resource(n = 1): SessionResource {
 function preview(owner: string, bot = 1, overrides: Partial<BotDisplayPreview> = {}): BotDisplayPreview {
   const binding = { ownerUserId: owner, botId: id(bot), sessionId: id(100 + bot), testExecutionId: id(200 + bot) };
   return { schemaVersion: 1, ownerUserId: owner, botId: binding.botId, lastKnownBinding: binding, botName: `Bot ${bot}`, fence: { sessionId: binding.sessionId, testExecutionId: binding.testExecutionId, executionGeneration: '1' }, historyEpoch: 'history-1', lastEventSeq: '1', entries: [entry()], resources: [], savedAt: 1_000, ...overrides };
+}
+function windowEntry(n: number, preview = '正文🙂…'): BotHistoryWindowEntry {
+  const previewBytes = snapshotBytes(preview);
+  return { entryId: id(1_000 + n), entrySeq: String(n), revision: '1', kind: 'assistant_message', preview, previewBytes: String(previewBytes), originalBytes: String(previewBytes + 100), truncated: true, omissionReason: 'message_preview', omittedEntryCount: 0, resourceIds: [], tool: null };
+}
+function windowPreview(owner: string, entries: readonly BotHistoryWindowEntry[], bot = 1): BotDisplayPreview & { botHistoryWindow: NonNullable<BotDisplayPreview['botHistoryWindow']> } {
+  return { ...preview(owner, bot), schemaVersion: 2, historyEpoch: id(800), entries: [], resources: [], botHistoryWindow: { botHistoryWindowVersion: 1, windowRevision: '1', retainedFromSeq: entries[0]?.entrySeq ?? null, throughSeq: entries.at(-1)?.entrySeq ?? null, earlierHistoryUnavailable: false, entries } };
 }
 function sizedPreview(owner: string, bot: number, units: number): BotDisplayPreview {
   const shell = preview(owner, bot, { entries: [entry(1, '')] });
@@ -53,6 +61,47 @@ function storageFacade(): Storage {
 }
 
 describe('Bot display snapshot codec', () => {
+  it('reopens versioned window entries with their exact omission metadata and without legacy bodies', async () => {
+    const owner = crypto.randomUUID();
+    const body = windowEntry(1);
+    const output: BotHistoryWindowEntry = { ...windowEntry(2, '输出🙂…'), kind: 'tool_call', omissionReason: 'older_tool_entries', omittedEntryCount: 6, tool: { toolName: 'shell', command: 'pwd', cwd: null, status: 'completed', exitCode: 0 } };
+    const value = windowPreview(owner, [body, output]);
+    const target = store(owner);
+    expect(await save(target, value)).toBe('saved');
+    target.close();
+    const restored = await store(owner, { storage: storageFacade() }).read(owner, value.botId);
+    expect(restored).toEqual(value);
+    expect(restored!.entries).toEqual([]);
+    expect(restored!.botHistoryWindow!.entries[0]).not.toHaveProperty('content');
+    const { botHistoryWindow, ...withoutWindow } = value;
+    expect(decodeBotDisplayPreview(JSON.stringify(withoutWindow), owner, value.botId)).toBeNull();
+    expect(decodeBotDisplayPreview(JSON.stringify({ ...withoutWindow, schemaVersion: 1, botHistoryWindow }), owner, value.botId)).toBeNull();
+    const stale = { ...value, botHistoryWindow: { ...botHistoryWindow, retainedFromSeq: '2' } };
+    expect(decodeBotDisplayPreview(JSON.stringify(stale), owner, value.botId)).toBeNull();
+  });
+
+  it('marks a local gap when the count budget drops window items', () => {
+    const owner = crypto.randomUUID();
+    const entries = Array.from({ length: 151 }, (_, index) => windowEntry(index + 1));
+    const value = windowPreview(owner, entries);
+    const retained = prepareBotDisplayPreview({ ...value, readingAnchor: { entryId: entries[0]!.entryId, offset: 2, following: false } }, owner, value.botId)!;
+    expect(retained.botHistoryWindow).toEqual({ ...value.botHistoryWindow, earlierHistoryUnavailable: true, localEviction: true, entries: entries.slice(1) });
+    expect(retained.readingAnchor).toBeUndefined();
+    expect(parseBotDisplayPreview(retained, owner, value.botId)).toEqual(retained);
+  });
+
+  it('counts UTF-8 bytes even when window JSON fits the UTF-16 budget', () => {
+    const owner = crypto.randomUUID();
+    const entries = Array.from({ length: 29 }, (_, index) => windowEntry(index + 1, '中'.repeat(9_000) + '🙂'));
+    const value = windowPreview(owner, entries);
+    expect(JSON.stringify(value).length).toBeLessThan(750_000);
+    expect(snapshotBytes(JSON.stringify(value))).toBeGreaterThan(750_000);
+    const trimmed = prepareBotDisplayPreview(value, owner, value.botId)!;
+    expect(trimmed.botHistoryWindow!.earlierHistoryUnavailable).toBe(true);
+    expect(trimmed.botHistoryWindow!.entries).toEqual(entries.slice(-27));
+    expect(snapshotBytes(JSON.stringify(trimmed))).toBeLessThanOrEqual(750_000);
+  });
+
   it('retains Daynight notification origins when reopening persisted display history', async () => {
     const owner = crypto.randomUUID();
     const notification: TimelineEntry = { ...entry(), kind: 'user_message', origin: 'daynight', content: [{ type: 'text', text: 'Read the task manual.' }] };
@@ -217,6 +266,22 @@ describe('Bot display snapshot codec', () => {
 });
 
 describe('Bot display snapshot storage', () => {
+  it('rejects late legacy and lower-revision window writes after a peer advances the retained floor', async () => {
+    const owner = crypto.randomUUID(), target = store(owner), peer = store(owner, { storage: storageFacade() });
+    const legacy = preview(owner, 1, { historyEpoch: id(800) });
+    expect(await save(target, legacy)).toBe('saved');
+    const lease = (await target.observe(owner, legacy.botId))!;
+    const prior = windowPreview(owner, [windowEntry(1), windowEntry(2)]);
+    const updatedEntry = { ...windowEntry(2, '修订🙂…'), revision: '2' };
+    const advanced = { ...prior, botHistoryWindow: { ...prior.botHistoryWindow, windowRevision: '2', retainedFromSeq: '2', earlierHistoryUnavailable: true, entries: [updatedEntry] } };
+    expect(await save(peer, advanced)).toBe('saved');
+    const submit = (value: BotDisplayPreview) => target.save(lease, { source: 'verified-history', historyLoaded: true, preview: value });
+    expect(await submit({ ...legacy, lastEventSeq: '5' })).toBe('stale');
+    expect(await submit({ ...prior, lastEventSeq: '6' })).toBe('stale');
+    expect(await submit({ ...prior, botHistoryWindow: { ...prior.botHistoryWindow, windowRevision: '3' } })).toBe('stale');
+    expect(await target.read(owner, legacy.botId)).toEqual(advanced);
+  });
+
   it('skips unchanged saves without touching LRU, while preserving changes and lease fences', async () => {
     const owner = crypto.randomUUID(), target = store(owner), first = preview(owner), second = preview(owner, 2);
     expect(await save(target, first)).toBe('saved');

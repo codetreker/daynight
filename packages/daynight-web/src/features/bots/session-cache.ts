@@ -85,6 +85,8 @@ export class BotSessionCache {
     this.suspendActions();
     if (!this.isCurrent()) { this.invalidate(); return; }
     this.guards.caches.add(this);
+    const visibleKey = binding && binding.ownerUserId === this.options.userId && !this.isRevoked(binding.botId) && !this.isBlocked(binding.botId) ? botSessionKey(binding) : null;
+    for (const pane of this.panes) pane.client.setBotHistoryVisible(pane.key === visibleKey);
     if (!binding || binding.ownerUserId !== this.options.userId || this.isRevoked(binding.botId) || this.isBlocked(binding.botId)) return;
     const key = botSessionKey(binding);
     const actionAdmitted = actionBinding !== null && botSessionKey(actionBinding) === key;

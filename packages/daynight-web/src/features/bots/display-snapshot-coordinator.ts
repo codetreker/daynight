@@ -267,7 +267,12 @@ export class BotHistorySnapshotObserver {
       this.lease = lease;
       const bookmark = this.options.bookmark(), anchor = bookmark?.anchor;
       const readingAnchor = anchor && bookmark.historyEpoch === snapshot.historyEpoch ? { entryId: anchor.key, offset: Math.max(0, -anchor.top), following: bookmark.following } : undefined;
-      this.candidate = { lease, generation, source, preview: { schemaVersion: 1, ownerUserId: binding.ownerUserId, botId: binding.botId, lastKnownBinding: { ...binding }, botName: name, fence: sessionFence(current.state.snapshot), historyEpoch: current.state.snapshot.historyEpoch, lastEventSeq: current.state.lastEventSeq, entries: current.state.entries, resources: [...current.state.resources.values()], savedAt: Date.now(), ...(readingAnchor ? { readingAnchor } : {}) } };
+      const window = current.botHistoryWindow;
+      const history = window
+        ? { schemaVersion: 2 as const, entries: [], resources: [], botHistoryWindow: { ...window, botHistoryWindowVersion: 1 as const } }
+        : { schemaVersion: 1 as const, entries: current.state.entries, resources: [...current.state.resources.values()] };
+      const savedAt = this.lastAccepted?.source === source ? this.lastAccepted.preview.savedAt : Date.now();
+      this.candidate = { lease, generation, source, preview: { ...history, ownerUserId: binding.ownerUserId, botId: binding.botId, lastKnownBinding: { ...binding }, botName: name, fence: sessionFence(current.state.snapshot), historyEpoch: current.state.snapshot.historyEpoch, lastEventSeq: current.state.lastEventSeq, savedAt, ...(readingAnchor ? { readingAnchor } : {}) } };
       this.lastAccepted = this.candidate;
       if (this.timer === null) this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 2_000);
     };
@@ -284,7 +289,7 @@ export class BotHistorySnapshotObserver {
     const readingAnchor = anchor && bookmark.historyEpoch === history.historyEpoch ? { entryId: anchor.key, offset: Math.max(0, -anchor.top), following: bookmark.following } : undefined;
     this.saving.set(candidate.lease, (this.saving.get(candidate.lease) ?? 0) + 1);
     try {
-      const result = await this.options.owner.store.save(candidate.lease, { source: 'verified-history', historyLoaded: true, preview: { ...history, savedAt: Date.now(), ...(readingAnchor ? { readingAnchor } : {}) } });
+      const result = await this.options.owner.store.save(candidate.lease, { source: 'verified-history', historyLoaded: true, preview: { ...history, ...(readingAnchor ? { readingAnchor } : {}) } });
       if (result === 'stale') { this.lease = null; this.expiredSource = candidate.source; }
       return result;
     } finally {

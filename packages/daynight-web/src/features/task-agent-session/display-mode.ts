@@ -1,4 +1,5 @@
 import type { TimelineEntry } from '../../api/types';
+import type { BotHistoryWindowEntry } from '../../../../daynight/src/session/bot-history-window';
 import { legacySubagentActivity } from './legacy-subagent-activity';
 
 export type SessionDisplayMode = 'standard' | 'conversation';
@@ -9,17 +10,20 @@ const planTools = new Set([
   'enter_plan_mode', 'exit_plan_mode', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
 ]);
 
-function isConversationEntry(entry: TimelineEntry): boolean {
+function isConversationEntry(entry: TimelineEntry | BotHistoryWindowEntry): boolean {
   switch (entry.kind) {
     case 'user_message': case 'assistant_message': case 'todo': case 'interaction': return true;
     case 'error': return legacySubagentActivity(entry) === null;
-    case 'tool_call': return planTools.has(entry.name.slice(entry.name.lastIndexOf('.') + 1));
+    case 'tool_call': {
+      const name = 'preview' in entry ? entry.tool?.toolName : entry.name;
+      return name != null && planTools.has(name.slice(name.lastIndexOf('.') + 1));
+    }
     case 'reasoning': case 'compaction': return false;
   }
 }
 
 /** Selects existing entry references in order without changing entries or reading resources. */
-export function selectSessionDisplayEntries(entries: readonly TimelineEntry[], mode: SessionDisplayMode): readonly TimelineEntry[] {
+export function selectSessionDisplayEntries<T extends TimelineEntry | BotHistoryWindowEntry>(entries: readonly T[], mode: SessionDisplayMode): readonly T[] {
   return entries.filter(entry => mode === 'standard'
     ? entry.kind !== 'reasoning' || entry.text.trim().length > 0
     : isConversationEntry(entry));
