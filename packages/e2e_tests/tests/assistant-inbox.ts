@@ -18,7 +18,7 @@ const json = async <T>(args: string[]): Promise<T> => JSON.parse((await cli([...
  * it into the Bot's native Session; the controlled peer records that input.
  * Claiming and delivery follow the Worker's normal minute-loop cadence.
  */
-export const verifyAssistantInbox = async (input: { workerId: string; root: string; events(): Promise<PeerEvent[]>; registerBot(botId: string): Promise<void> }): Promise<void> => {
+export const verifyAssistantInbox = async (input: { workerId: string; root: string; events(): Promise<PeerEvent[]>; registerBot(botId: string): Promise<void>; verifyBotLaunch(botId: string): Promise<void> }): Promise<void> => {
   const cwd = path.join(input.root, "assistant");
   await mkdir(cwd);
   // Enable the inbox before any Bot exists: an auto-takeover claim saves the
@@ -39,6 +39,7 @@ export const verifyAssistantInbox = async (input: { workerId: string; root: stri
   await input.registerBot(botId);
   await cli(["bot", "create", "--name", "Inbox assistant", "--worker", input.workerId, "--agent", "codex", "--cwd", cwd, "--request-id", botId, "--json"]);
   await expect.poll(async () => (await json<Bot>(["bot", "show", botId])).startupResult.state, { timeout: 120_000, intervals: [1_000] }).toBe("ready");
+  await input.verifyBotLaunch(botId);
   await expect.poll(async () => {
     const task = await json<AssistantTask>(["assistant-task", "show", created.id]);
     return task.holderBotId === botId && task.claimState === "active";

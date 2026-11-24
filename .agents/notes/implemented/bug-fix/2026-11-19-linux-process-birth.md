@@ -20,10 +20,13 @@ NTP, suspend, manual adjustment or another mechanism changed the clock.
 ## Decision
 
 The adopted [Session requirements](../../../../docs/spec/task-sessions.md#linux-进程出生身份)
-require Linux boot identity and kernel starttime ticks as the birth identity.
+require Linux boot identity and kernel starttime ticks for the process proof.
 The [Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案)
 defines the versioned token, consistent sampling and persistence obligations.
-Controller capture, persistent readers and the extraction child share this format.
+Controller capture, persistent readers and the extraction child originally shared
+this format. The later [Controller launch identity decision](2026-11-24-linux-controller-launch-identity.md)
+uses a separate launch record for new Linux Controllers; legacy Controller and
+native Provider proofs retain this birth identity and its original checks.
 
 Birth identity remains separate from command, process group and execution
 ownership. Historical Linux proofs remain readable, but no current PID lookup

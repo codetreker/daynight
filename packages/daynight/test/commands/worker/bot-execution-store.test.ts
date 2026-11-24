@@ -12,6 +12,18 @@ const fixture = () => createBotExecutionFixture(() => createMemoryDatabase());
 afterEach(cleanupBotExecutions);
 
 describe("Bot execution evidence", () => {
+  it("round trips ticket-bound Linux Controller identities without changing native or legacy proofs", () => {
+    const f = fixture(); f.store.prepare(f.record);
+    const controller = { kind: "linux-controller-launch" as const, pid: 123, launchId: f.record.intent!.launchId };
+    f.store.update(f.record, { launchSubmission: "unknown", controllerProcess: controller });
+    const observed = { ...snapshot(f.record), controllerProcess: controller, nativeProcesses: [proof] };
+    f.store.update(f.record, { launchSubmission: "acknowledged", snapshot: observed });
+    expect(f.store.get(f.record)).toMatchObject({ controllerProcess: controller, snapshot: observed });
+    expect(() => f.store.update(f.record, { controllerProcess: { ...controller, launchId: id(90) } })).toThrow();
+    expect(() => f.store.update(f.record, { snapshot: { ...observed, nativeProcesses: [controller] } as unknown as ControllerSnapshot })).toThrow();
+    f.database.prepare("UPDATE bot_executions SET record=json_set(record, '$.controllerProcess.launchId', ?)").run(id(91));
+    expect(() => f.store.get(f.record)).toThrow(/launch identity/);
+  });
   it.each(["linux:v2:876b21c9-30d7-48c0-a2ab-287291e903a7:1", "linux:v1:invalid:1", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:18446744073709551616"])("rejects unsupported Linux birth evidence on admission and persisted reads (%s)", startedAt => {
     const f = fixture(); f.store.prepare(f.record);
     f.store.update(f.record, { launchSubmission: "unknown" });

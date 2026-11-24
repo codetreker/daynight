@@ -1,7 +1,7 @@
 import type { SessionStartupReport } from "../../../session/startup.js";
 import type { InitialInputState } from "../../../session/protocol.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import type { ProcessProof } from "../../controller/process-proof.js";
+import type { ControllerProcessProof, ProcessProof } from "../../controller/process-proof.js";
 import type { ClaimIdentity, ExecutionConfiguration, ResourceOwner, WorktreeBinding } from "../types.js";
 export type RecoveryState = { count: number; pauseReason: string | null; retryAuthorized: boolean; reasonCode?: "native_identity_missing" | "recovery_limit" | "recovery_blocked" };
 export type CleanupState = {
@@ -14,7 +14,7 @@ export type WebExecutionState = {
   executionId: string; registrationId: string; controllerId: string; controllerInstanceId: string; launchId: string;
   sessionId: string | null; executionGeneration: string; initialOperationId: string; initialPrompt: string | null;
   launchSubmission: "not-submitted" | "unknown" | "acknowledged";
-  controllerProcess: ProcessProof | null; nativeProcesses: readonly ProcessProof[];
+  controllerProcess: ControllerProcessProof | null; nativeProcesses: readonly ProcessProof[];
   restartAfterShutdown: boolean; cleanupOperationId: string | null; ticketPath: string | null; nativeHome: string | null;
   startupReport?: SessionStartupReport;
   summary: null; initialInputState: InitialInputState; activity: ControllerSnapshot["activity"];

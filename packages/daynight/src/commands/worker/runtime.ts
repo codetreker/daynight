@@ -2,7 +2,7 @@ import { reconcileReviewerHostFailure, runReviewerHost } from "./reviewer-host.j
 import { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 import { replayStoppedControllerUsage } from "../controller/usage/stopped.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
-import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
+import { readLaunchTicket, controllerExecutionDirectory, type ControllerLaunchTicket } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import { loadServerConfiguration } from "../../config/server.js";
@@ -253,11 +253,16 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
       return probeStoppedControllerArchive({ journalPath, ticket, signal });
     };
-    const usage = async (task: import("./backends/web-types.js").LocalTask, journalPath: string, signal: AbortSignal) => {
+    const usage = async (task: import("./backends/web-types.js").LocalTask, journalPath: string, signal: AbortSignal, precedingTicket?: ControllerLaunchTicket) => {
       if (!task.webExecution) throw new Error("Original Controller execution is missing.");
-      const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      const ticket = precedingTicket ?? await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      const generationMatches = precedingTicket === undefined
+        ? ticket.launchId === task.webExecution.launchId && ticket.executionGeneration === task.webExecution.executionGeneration && ticket.controllerInstanceId === task.webExecution.controllerInstanceId
+        : task.webExecution.launchSubmission === "unknown" && BigInt(ticket.executionGeneration) + 1n === BigInt(task.webExecution.executionGeneration)
+          && ticket.controllerInstanceId !== task.webExecution.controllerInstanceId && task.resources.nativeSession !== null;
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
-        || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
+        || !generationMatches || ticket.controllerId !== task.webExecution.controllerId || ticket.initialOperationId !== task.webExecution.initialOperationId
+        || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.worktreeId !== task.worktreeId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId || ticket.workerId !== workerId || ticket.userId !== userId) throw new Error("Usage replay does not identify the original execution.");
       return replayStoppedControllerUsage({ journalPath, ticket, serverToken, signal });
     };

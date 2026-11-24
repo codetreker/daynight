@@ -258,7 +258,7 @@ const recoveredInitial = async (prepared: boolean) => {
   const ticket = { ...f.source.ticket, launchId: execution.launchId, executionGeneration: execution.executionGeneration,
     controllerInstanceId: execution.controllerInstanceId, resumeNativeSessionId: nativeId };
   const ticketPath = await writeLaunchTicket(f.home, ticket);
-  const controllerProcess = { ...first.controllerProcess!, pid: 989, startedAt: "recovered",
+  const controllerProcess = { ...(first.controllerProcess! as processProof.ProcessProof), pid: 989, startedAt: "recovered",
     ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) };
   const nativeProcess = { ...controllerProcess, pid: 990, parentPid: controllerProcess.pid, startedAt: "native-recovered" };
   task = f.store.updateWebExecution(task, { ticketPath, launchSubmission: "acknowledged", controllerProcess, nativeProcesses: [nativeProcess] }, 12);

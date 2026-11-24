@@ -1,8 +1,11 @@
 import path from "node:path";
 import type { Operation } from "../../../api/operation.js";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
-import { readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { readControllerSnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, type ControllerProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+import { isUnreleasedWebLaunch, sameUnreleasedWebState } from "./web-process.js";
+import type { requestController } from "../../controller/local-client.js";
 import { preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix } from "./orchestration.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
@@ -17,15 +20,15 @@ const matches = (task: LocalTask, saved: ControllerSnapshot): boolean => {
     && (task.resources.nativeSession === null || saved.nativeSessionId === task.resources.nativeSession.sessionId);
 };
 
-type ConfirmStoppedBoundary = (launchId: string, controller: ProcessProof, native: readonly ProcessProof[], deadline: number, snapshot: ControllerSnapshot, ticket?: ControllerLaunchTicket) => Promise<boolean>;
+type ConfirmStoppedBoundary = (launchId: string, controller: ControllerProcessProof, native: readonly ProcessProof[], deadline: number, snapshot: ControllerSnapshot, ticket?: ControllerLaunchTicket) => Promise<boolean>;
 
 /** Observations release capacity only after the original complete native boundary is proven empty. */
-export const createWebStopObserver = (options: { homeDirectory: string; store: WebExecutionStore; now: () => number; confirmStopped?: ConfirmStoppedBoundary }) =>
+export const createWebStopObserver = (options: { homeDirectory: string; store: WebExecutionStore; now: () => number; confirmStopped?: ConfirmStoppedBoundary; request?: typeof requestController }) =>
   async (target: CleanupTarget, operation: Operation): Promise<StopObservation> => {
     try {
       operation.check();
       const deadline = Date.now() + Math.ceil(operation.remainingMs());
-      const inspectOriginal = async (proof: ProcessProof): Promise<"running" | "stopped" | "replaced"> => {
+      const inspectOriginal = async (proof: ControllerProcessProof): Promise<"running" | "stopped" | "replaced"> => {
         operation.check();
         const state = await inspectProcessProof(proof, Math.max(1, Math.min(5000, Math.ceil(operation.remainingMs()))));
         operation.check();
@@ -34,6 +37,18 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
         return state;
       };
       const confirmStopped: ConfirmStoppedBoundary = options.confirmStopped ?? (async (launchId, controller, native, until, snapshot, ticketHint) => {
+        if (isLinuxControllerLaunch(controller)) {
+          const ticket = ticketHint ?? await readLaunchTicket(options.homeDirectory, launchId);
+          if (controller.launchId !== launchId || ticket.launchId !== launchId) throw new Error("The original Linux boundary ticket conflicts with its launch.");
+          const proven = readHistoricalStoppedControllerGeneration(path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId), "journal.sqlite"), ticket, until);
+          if (proven !== null) {
+            if (proven.executionId !== snapshot.executionId || proven.executionGeneration !== snapshot.executionGeneration
+              || proven.controllerInstanceId !== snapshot.controllerInstanceId || proven.nativeSessionId !== snapshot.nativeSessionId
+              || !preservesControllerProcessProof(controller, proven.controllerProcess, launchId)
+              || JSON.stringify(native) !== JSON.stringify(proven.nativeProcesses)) throw new Error("Linux boundary stop proof conflicts with its original snapshot.");
+            return true;
+          }
+        }
         if (process.platform !== "win32") return confirmControllerProcessesStopped(controller, native, until);
         const ticket = ticketHint ?? await readLaunchTicket(options.homeDirectory, launchId);
         if (ticket.launchId !== launchId) throw new Error("The original Windows boundary ticket conflicts with its launch.");
@@ -67,34 +82,41 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
       }
       const journal = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
       const saved = readControllerSnapshot(journal);
-      if (execution.launchSubmission === "not-submitted") {
-        if (execution.controllerProcess !== null || execution.nativeProcesses.length !== 0) throw new ExecutionSourceConflictError("Unsubmitted Web launch has conflicting process evidence.");
+      const unreleased = execution.launchSubmission === "unknown" && await isUnreleasedWebLaunch(options.homeDirectory, task, await readLaunchTicket(options.homeDirectory, execution.launchId), operation.signal, options.request, deadline);
+      if (execution.launchSubmission === "not-submitted" || unreleased) {
+        if (!unreleased && (execution.controllerProcess !== null || execution.nativeProcesses.length !== 0)) throw new ExecutionSourceConflictError("Unsubmitted Web launch has conflicting process evidence.");
         if (saved !== null) {
           if (saved.testExecutionId !== undefined || saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.sessionId !== execution.sessionId
             || BigInt(saved.executionGeneration) + 1n !== BigInt(execution.executionGeneration) || saved.controllerInstanceId === execution.controllerInstanceId || saved.controllerProcess === null
             || saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId)
             throw new ExecutionSourceConflictError("Unsubmitted Web launch conflicts with its preceding generation.");
-          if (await inspectOriginal(saved.controllerProcess) === "running") throw new Error("The preceding Web controller is still running.");
+          const previousLaunchId = isLinuxControllerLaunch(saved.controllerProcess) ? saved.controllerProcess.launchId : /^Local\\Daynight-([0-9a-f-]{36})$/.exec(saved.controllerProcess.jobObjectName ?? "")?.[1] ?? execution.launchId;
+          const proven = isLinuxControllerLaunch(saved.controllerProcess) && await confirmStopped(previousLaunchId, saved.controllerProcess, saved.nativeProcesses, deadline, saved);
+          if (!proven && await inspectOriginal(saved.controllerProcess) === "running") throw new Error("The preceding Web controller is still running.");
           operation.check();
           const latest = readControllerSnapshot(journal);
           if (latest === null || latest.executionId !== saved.executionId || latest.claimId !== saved.claimId || latest.sessionId !== saved.sessionId
             || latest.executionGeneration !== saved.executionGeneration || latest.controllerInstanceId !== saved.controllerInstanceId
-            || !preservesControllerEvidence(saved, latest, "")) throw new ExecutionSourceConflictError("The preceding Web generation changed during observation.");
-          for (const proof of latest.nativeProcesses) { operation.check(); if (await inspectOriginal(proof) === "running") throw new Error("A preceding Web provider is still running."); }
-          const previousLaunchId = /^Local\\Daynight-([0-9a-f-]{36})$/.exec(latest.controllerProcess?.jobObjectName ?? "")?.[1] ?? execution.launchId;
+            || !preservesControllerEvidence(saved, latest, previousLaunchId)) throw new ExecutionSourceConflictError("The preceding Web generation changed during observation.");
+          if (!proven) for (const proof of latest.nativeProcesses) { operation.check(); if (await inspectOriginal(proof) === "running") throw new Error("A preceding Web provider is still running."); }
           if (latest.controllerProcess === null
             || !await confirmStopped(previousLaunchId, latest.controllerProcess, latest.nativeProcesses, deadline, latest))
             throw new Error("The preceding Web native boundary has not been confirmed empty.");
         } else if (execution.executionGeneration !== "1") throw new Error("The preceding Web generation evidence is missing.");
         operation.check();
         ensureCurrent();
+        if (unreleased) {
+          const current = options.store.getTask(task);
+          if (current === null || !sameUnreleasedWebState(task, current)) throw new ExecutionSourceConflictError("Unreleased Web process evidence changed during observation.");
+        }
         return { kind: "not-started", owner, observedAt: options.now() };
       }
       const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
-      if (ticket.executionId !== execution.executionId || ticket.controllerId !== execution.controllerId || ticket.claimId !== task.claimId
+      if (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.controllerId !== execution.controllerId || ticket.claimId !== task.claimId
         || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.sessionId !== execution.sessionId
         || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
-        || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin)
+        || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin
+        || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt)
         throw new ExecutionSourceConflictError("The Web ticket does not identify the original execution owner.");
       if (saved === null || saved.controllerProcess === null || execution.controllerProcess === null) throw new Error("The original Web journal or process evidence is missing.");
       if (!matches(task, saved)
@@ -102,6 +124,9 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
         || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new ExecutionSourceConflictError("The original Web journal or process evidence conflicts.");
       const ref = { owner, backend: "web" as const, runKey: JSON.stringify([execution.executionId, execution.executionGeneration, execution.controllerInstanceId]) };
       operation.check();
+      if (isLinuxControllerLaunch(saved.controllerProcess) && await confirmStopped(execution.launchId, saved.controllerProcess, saved.nativeProcesses, deadline, saved, ticket)) {
+        operation.check(); ensureCurrent(saved); return { kind: "stopped", execution: ref, observedAt: options.now() };
+      }
       if (await inspectOriginal(saved.controllerProcess) === "running") { operation.check(); ensureCurrent(saved); return { kind: "running", execution: ref, observedAt: options.now() }; }
       operation.check();
       const latest = readControllerSnapshot(journal);

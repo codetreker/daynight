@@ -7,8 +7,9 @@ import { openSqliteDatabase } from "../../../platform/sqlite-access.js";
 import { inspectSqlite } from "../../../platform/sqlite-format.js";
 import { sqliteFilename } from "../../../platform/sqlite-filename.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath, parseLaunchTicket, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
-import { readCompatibleControllerSnapshot, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readCompatibleControllerSnapshot, readHistoricalStoppedControllerGeneration, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
 import { acquireControllerStoragePermit, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { openTimelineStore, type TimelinePageQuery } from "../../controller/content/timeline-store.js";
 import { inspectReadCompatibleControllerJournal } from "../../controller/journal-format.js";
@@ -165,7 +166,10 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
           || !preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, intent.launchId)
           || !preservesNativeProcessPrefix(execution.snapshot?.nativeProcesses ?? [], snapshot.nativeProcesses)
           || execution.snapshot?.nativeSessionId != null && snapshot.nativeSessionId !== execution.snapshot.nativeSessionId) throw new Error("Bot migration requires complete original process stop evidence.");
-        if (options.confirmStopped !== undefined) await options.confirmStopped(ticket, snapshot, signal);
+        const historical = isLinuxControllerLaunch(snapshot.controllerProcess) ? readHistoricalStoppedControllerGeneration(intent.journalPath, ticket, Date.now() + 10_000) : null;
+        if (historical !== null && controllerPayloadHash(historical) !== controllerPayloadHash(snapshot)) throw new Error("Bot migration stopped boundary conflicts with its original journal.");
+        if (historical !== null) { /* The ticket-bound stop has already settled the process boundary. */ }
+        else if (options.confirmStopped !== undefined) await options.confirmStopped(ticket, snapshot, signal);
         else if (process.platform === "win32") validateWindowsControllerStopProof(snapshot, ticket, controllerPayloadHash(ticket));
         else if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses, Date.now() + 10_000)) throw new Error("Bot original process tree is not proven stopped.");
       } else if (snapshot !== null || execution?.controllerProcess != null || execution?.snapshot != null || execution === null && ticket !== null || intent.nativeSessionId !== null || intent.executionGeneration !== "1") {

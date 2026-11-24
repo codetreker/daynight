@@ -59,7 +59,7 @@ export const createBotDeletion = (options: {
         const execution = original.intent === null ? null : options.executions.get(original);
         const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
           && execution.controllerProcess === null && execution.snapshot === null;
-        if (execution === null || execution.launchSubmission !== "not-submitted" && !rejected) {
+        if (execution === null || execution.launchSubmission !== "not-submitted" && !rejected && !hasNeverStartedDeletionEvidence(original, execution)) {
           await reportMissing(original);
           if (settings.recover === true) throw new BotExecutionEvidenceMissingError();
           return;

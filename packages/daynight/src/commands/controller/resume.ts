@@ -13,8 +13,9 @@ import { resolveConfigurationPaths } from "../../config/paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import type { SessionProvider } from "../../session/protocol.js";
-import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, readCurrentControllerInventorySnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { readControllerSnapshot, readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { isLinuxControllerLaunch } from "./linux-controller-launch.js";
 import { controllerJournalFormat } from "./journal-format.js";
 import { captureProcessProof, confirmControllerProcessesStopped } from "./process-proof.js";
 
@@ -66,6 +67,13 @@ const inventory = async (home: string): Promise<LocalExecution[]> => {
 };
 const assertStopped = async ({ ticket, snapshot, file }: LocalExecution): Promise<void> => {
   if (!snapshot || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || !snapshot.stoppedAt || !Number.isFinite(Date.parse(snapshot.stoppedAt)) || !snapshot.controllerProcess || !Array.isArray(snapshot.nativeProcesses)) throw new Error("The original native execution is not proven stopped; reconcile its controller evidence before resuming.");
+  if (isLinuxControllerLaunch(snapshot.controllerProcess)) {
+    const proven = readHistoricalStoppedControllerGeneration(file, ticket, Date.now() + 5000);
+    if (proven !== null) {
+      if (controllerPayloadHash(proven) !== controllerPayloadHash(snapshot)) throw new Error("The original controller evidence changed during resume verification.");
+      return;
+    }
+  }
   if (process.platform === "win32") {
     const proven = readProvenWindowsStoppedControllerGeneration(file, ticket);
     if (JSON.stringify(proven) !== JSON.stringify(snapshot)) throw new Error("The original controller evidence changed during resume verification.");

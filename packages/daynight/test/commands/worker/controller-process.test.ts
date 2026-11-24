@@ -1,21 +1,24 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn(), reconcile: vi.fn(), prepare: vi.fn(), suspended: vi.fn(), job: vi.fn(), retainJob: vi.fn(), releaseJob: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn(), linuxCapture: vi.fn(), reconcile: vi.fn(), prepare: vi.fn(), suspended: vi.fn(), job: vi.fn(), retainJob: vi.fn(), releaseJob: vi.fn() }));
 vi.mock("../../../src/platform/windows-suspended-process.js", () => ({ createSuspendedProcess: native.suspended }));
 vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJobLease: native.job, releaseControllerJobLease: native.releaseJob }));
 vi.mock("node:child_process", () => ({ spawn: native.spawn }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: native.observe }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture }));
+vi.mock("../../../src/commands/controller/linux-controller-launch.js", () => ({ captureLinuxControllerLaunch: native.linuxCapture }));
 vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ reconcileSubmittedControllerLaunch: native.reconcile }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-preparation.js")>(), prepareControllerStorage: native.prepare }));
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
-import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../../../src/commands/worker/backends/controller-process.js";
+import * as durableDirectory from "../../../src/platform/durable-directory.js";
+import { readUnreleasedLaunch, unreleasedLaunchPath } from "../../../src/commands/controller/unreleased-launch.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 
 const roots: string[] = [];
@@ -25,11 +28,12 @@ const fixture = async () => {
   const homeDirectory = await mkdtemp(path.join(base, "h-")); roots.push(homeDirectory);
   const executionId = randomUUID(), sessionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
   await mkdir(controllerExecutionDirectory(homeDirectory, executionId), { recursive: true });
-  const ticket = { launchId, executionId, sessionId, controllerInstanceId, testExecutionId: executionId, executionGeneration: "1", cwd: homeDirectory, provider: "codex" } as ControllerLaunchTicket;
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId, executionId, controllerId: randomUUID(), sessionId, controllerInstanceId, testExecutionId: executionId, ownerUserId: randomUUID(), initialInput: "none", executionGeneration: "1", serverOrigin: "https://daynight.example", cwd: homeDirectory, nativeHome: homeDirectory, provider: "codex", configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "", resumeNativeSessionId: null, credentialFile: path.join(homeDirectory, "grant.json"), ipcEndpoint: path.join(homeDirectory, "ipc.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  await mkdir(path.dirname(controllerTicketPath(homeDirectory, launchId)), { recursive: true });
   const snapshot: ControllerSnapshot = { executionId, sessionId, controllerInstanceId, testExecutionId: executionId, executionGeneration: "1", lifecycle: "starting", nativeProcesses: [], nativeSessionId: null, initialInputState: "not_required", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeStopped: false, stoppedAt: null, error: null };
-  const proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
-  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null, signalCode: null, connected: true,
-    unref: vi.fn(), send: vi.fn(() => order.push("resume")), kill: vi.fn(() => { queueMicrotask(() => child.emit("close")); }),
+  const proof = process.platform === "linux" ? { kind: "linux-controller-launch" as const, pid: 987, launchId } : { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
+  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, connected: true,
+    unref: vi.fn(), send: vi.fn(() => order.push("resume")), disconnect: vi.fn(() => { child.connected = false; queueMicrotask(() => { child.signalCode = "SIGKILL"; child.emit("exit", null, "SIGKILL"); child.emit("close"); }); }), kill: vi.fn(() => { queueMicrotask(() => { child.signalCode = "SIGKILL"; child.emit("exit", null, "SIGKILL"); child.emit("close"); }); }),
     resume: vi.fn(() => order.push("resume")), terminate: vi.fn(), hasExited: vi.fn(() => true), close: vi.fn(), releaseAfterResume: vi.fn() });
   const order: string[] = [];
   native.prepare.mockImplementation(() => { order.push("prepare"); return { kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false }; });
@@ -37,6 +41,7 @@ const fixture = async () => {
   native.suspended.mockImplementation(async () => { order.push("spawn"); return child; });
   native.job.mockImplementation(async () => { order.push("assign"); return {}; });
   native.capture.mockImplementation(async () => { order.push("capture"); return proof; });
+  native.linuxCapture.mockImplementation(async () => { order.push("capture"); return proof; });
   native.observe.mockImplementation(async () => { order.push("observe"); return { snapshot }; });
   native.reconcile.mockImplementation(async () => { order.push("observe"); return { kind: "observed", snapshot }; });
   const options = { homeDirectory, packageDirectory: homeDirectory, ticket, env: { HOME: "/real/home", PATH: "/real/path", DN_CONFIG_DIR: "/worker/state" }, signal: new AbortController().signal,
@@ -53,7 +58,7 @@ test("persists submission and process identity before authenticated observation 
     expect(native.suspended).toHaveBeenCalledWith(expect.objectContaining({ cwd: f.options.ticket.cwd, environment: expect.objectContaining(f.options.env) }));
     expect(f.child.resume).toHaveBeenCalledOnce();
   } else {
-    expect(native.spawn).toHaveBeenCalledWith(process.execPath, [expect.stringContaining("controller-bootstrap.js"), path.join(f.options.packageDirectory, "dist", "main.js"), "codex", f.options.ticket.launchId, expect.stringContaining("controller.log")], expect.objectContaining({ cwd: f.options.ticket.cwd, env: f.options.env, detached: true, windowsHide: true }));
+    expect(native.spawn).toHaveBeenCalledWith(process.execPath, [expect.stringContaining("controller-bootstrap.js"), path.join(f.options.packageDirectory, "dist", "main.js"), "codex", ...(process.platform === "linux" ? ["--launch-id"] : []), f.options.ticket.launchId, expect.stringContaining("controller.log")], expect.objectContaining({ cwd: f.options.ticket.cwd, env: f.options.env, detached: true, windowsHide: true }));
     expect(f.child.unref).toHaveBeenCalledOnce();
   }
 });
@@ -142,7 +147,7 @@ test("does not repeat launch or observation after acknowledgement storage fails"
 });
 
 test("retains the original spawn outcome when process proof cannot be captured", async () => {
-  const f = await fixture(), failure = new Error("process identity unavailable"); native.capture.mockRejectedValue(failure);
+  const f = await fixture(), failure = new Error("process identity unavailable"); (process.platform === "linux" ? native.linuxCapture : native.capture).mockRejectedValue(failure);
   await expect(launchControllerProcess(f.options)).rejects.toBe(failure);
   expect(f.order).toEqual(["prepare", "submitting", "spawn"]); expect(process.platform === "win32" ? native.suspended : native.spawn).toHaveBeenCalledOnce(); expect(native.observe).not.toHaveBeenCalled();
 });
@@ -211,7 +216,7 @@ test("rechecks cancellation after the birth proof commit before releasing the Co
 
 test("retains failed pre-dispatch native cleanup in the original owner for bounded reconciliation", async () => {
   const f = await fixture(), owner = createControllerJobLeases(process.platform);
-  const stop = process.platform === "win32" ? f.child.terminate : f.child.kill;
+  const stop = process.platform === "win32" ? f.child.terminate : process.platform === "linux" ? f.child.disconnect : f.child.kill;
   stop.mockImplementationOnce(() => { throw new Error("native stop temporarily unavailable"); });
   const pending = launchControllerProcess({ ...f.options,
     retainBirthCleanup: cleanup => owner.retainBirthCleanup(f.options.ticket.launchId, cleanup),
@@ -224,4 +229,44 @@ test("retains failed pre-dispatch native cleanup in the original owner for bound
   await owner.close();
   expect(stop).toHaveBeenCalledTimes(2);
   expect(process.platform === "win32" ? native.suspended : native.spawn).toHaveBeenCalledOnce();
+});
+
+
+test.skipIf(process.platform !== "linux")("publishes the unreleased receipt after retained cleanup later confirms child exit", async () => {
+  const f = await fixture(), failure = new Error("birth proof commit failed");
+  const registered = Promise.withResolvers<(deadline: number) => Promise<void>>();
+  f.child.disconnect.mockImplementationOnce(() => { f.child.connected = false; });
+  const pending = launchControllerProcess({ ...f.options,
+    retainBirthCleanup: cleanup => { registered.resolve(cleanup); return vi.fn(); },
+    onSpawned: () => { vi.useFakeTimers(); throw failure; },
+  });
+  const rejected = expect(pending).rejects.toMatchObject({ message: "Controller launch failed with retained original birth handles.", cause: failure });
+  const cleanup = await registered.promise;
+  await vi.advanceTimersByTimeAsync(5001);
+  await rejected;
+  vi.useRealTimers();
+  expect(await readUnreleasedLaunch(f.options.homeDirectory, f.options.ticket)).toBeUndefined();
+  f.child.signalCode = "SIGKILL";
+  await cleanup(Date.now() + 5000);
+  expect(await readUnreleasedLaunch(f.options.homeDirectory, f.options.ticket)).toEqual({ kind: "controller-unreleased", ticketHash: controllerPayloadHash(f.options.ticket), pid: f.child.pid });
+  expect(f.child.send).not.toHaveBeenCalled();
+  expect(native.reconcile).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux")("does not replay a receipt write whose outcome is unknown", async () => {
+  const f = await fixture(), failure = new Error("birth proof commit failed");
+  const receiptPath = unreleasedLaunchPath(f.options.homeDirectory, f.options.ticket);
+  const syncFailure = new Error("receipt directory sync failed");
+  const sync = vi.spyOn(durableDirectory, "syncDurableDirectory").mockImplementationOnce(() => { throw syncFailure; });
+  let cleanup!: (deadline: number) => Promise<void>;
+  await expect(launchControllerProcess({ ...f.options,
+    retainBirthCleanup: retained => { cleanup = retained; return vi.fn(); },
+    onSpawned: () => { throw failure; },
+  })).rejects.toMatchObject({ message: "Controller launch failed with retained original birth handles.", cause: failure });
+  sync.mockRestore();
+  const original = await readFile(receiptPath);
+  await expect(cleanup(Date.now() + 5000)).resolves.toBeUndefined();
+  expect(await readFile(receiptPath)).toEqual(original);
+  expect(await readUnreleasedLaunch(f.options.homeDirectory, f.options.ticket)).toMatchObject({ pid: f.child.pid });
+  expect(f.child.send).not.toHaveBeenCalled();
 });

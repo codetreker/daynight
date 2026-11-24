@@ -6,7 +6,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerSnapshot, readCurrentControllerSnapshot, readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+import { readUnreleasedLaunch } from "../../controller/unreleased-launch.js";
+import type { ControllerProcessProof } from "../../controller/process-proof.js";
+import type { BotExecution } from "./execution-store.js";
 import { ControllerIpcOutcomeUnknownError, LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
@@ -71,7 +75,19 @@ export const createBotProcess = (options: {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
   const environments = new Map<string, PreparedBotEnvironment>();
   const jobLeases = options.jobLeases ?? createControllerJobLeases();
+  const retainJob = async (launchId: string, proof: ControllerProcessProof, deadline: number) => {
+    if (!jobLeases.enabled) return;
+    if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
+    await jobLeases.retain(launchId, proof, deadline);
+  };
   const confirmWithLease = async (ticket: ControllerLaunchTicket, file: string, controller: Parameters<typeof confirmControllerProcessesStopped>[0], native: Parameters<typeof confirmControllerProcessesStopped>[1], deadline?: number, snapshot?: ControllerSnapshot) => {
+    if (isLinuxControllerLaunch(controller) && snapshot !== undefined) {
+      const historical = readHistoricalStoppedControllerGeneration(file, ticket, deadline ?? Date.now() + 5000);
+      if (historical !== null) {
+        if (controllerPayloadHash(historical) !== controllerPayloadHash(snapshot) || !preservesControllerProcessProof(controller, historical.controllerProcess, ticket.launchId) || controllerPayloadHash(native) !== controllerPayloadHash(historical.nativeProcesses)) throw new Error("Bot durable stop proof conflicts with its original execution evidence.");
+        return true;
+      }
+    }
     if (!jobLeases.enabled) return deadline === undefined ? confirmStopped(controller, native) : confirmStopped(controller, native, deadline);
     const lease = await jobLeases.get(ticket.launchId);
     if (lease === undefined && snapshot?.lifecycle === "stopped" && snapshot.nativeStopped) {
@@ -170,6 +186,56 @@ export const createBotProcess = (options: {
       || controllerPayloadHash(configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit, ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true } : {}) })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
     return ticket;
   };
+  const settleUnreleased = async (record: BotRecord, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<boolean> => {
+    const execution = options.executions.get(record);
+    if (execution === null || execution.launchSubmission === "not-submitted") return false;
+    const storage = resolveBotControllerStateDirectory(options.homeDirectory, record);
+    const receipt = await readUnreleasedLaunch(options.homeDirectory, ticket, storage);
+    if (receipt === undefined) {
+      if (execution.unreleased !== undefined) throw new Error("Bot unreleased launch receipt is missing; execution evidence is retained.");
+      return false;
+    }
+    signal.throwIfAborted();
+    if (execution.unreleased !== undefined && controllerPayloadHash(execution.unreleased) !== controllerPayloadHash(receipt)
+      || execution.controllerProcess !== null && execution.controllerProcess.pid !== receipt.pid || execution.snapshot !== null) throw new Error("Bot unreleased launch receipt conflicts with saved process evidence.");
+    const deadline = Date.now() + 10_000;
+    try {
+      await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 });
+      throw new Error("Bot unreleased launch conflicts with authenticated Controller IPC.");
+    } catch (error) {
+      signal.throwIfAborted();
+      const cause = error instanceof ControllerIpcOutcomeUnknownError ? error.cause : undefined;
+      if (!(cause instanceof Error && "code" in cause && (cause.code === "ENOENT" || cause.code === "ECONNREFUSED"))) throw error;
+    }
+    const previous = execution.previous;
+    const previousTicket = previous === null ? null : await readLaunchTicket(options.homeDirectory, previous.launchId, storage);
+    if (previousTicket !== null && (previousTicket.executionId !== ticket.executionId || previousTicket.testExecutionId !== ticket.testExecutionId
+      || previousTicket.sessionId !== ticket.sessionId || previousTicket.executionGeneration !== previous!.generation
+      || previousTicket.controllerInstanceId !== previous!.instanceId || previousTicket.resumeNativeSessionId !== null && previousTicket.resumeNativeSessionId !== ticket.resumeNativeSessionId)) throw new Error("Bot preceding ticket conflicts with unreleased launch.");
+    const currentJournal = readCurrentControllerInventorySnapshot(record.intent!.journalPath, previousTicket === null ? [ticket] : [ticket, previousTicket], deadline);
+    if (currentJournal !== null) {
+      if (previousTicket === null || currentJournal.ticket.launchId !== previousTicket.launchId) throw new Error("Bot unreleased launch conflicts with its current journal.");
+      const saved = currentJournal.snapshot;
+      if (saved.lifecycle !== "stopped" || !saved.nativeStopped || saved.stoppedAt !== previous!.stoppedAt || saved.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Bot unreleased launch conflicts with preceding stop evidence.");
+      if (saved.controllerProcess !== null && isLinuxControllerLaunch(saved.controllerProcess)) {
+        const historical = readHistoricalStoppedControllerGeneration(record.intent!.journalPath, previousTicket, deadline);
+        if (historical === null || controllerPayloadHash(historical) !== controllerPayloadHash(saved)) throw new Error("Bot preceding Controller stop is unproven.");
+      }
+    } else if (previous !== null) throw new Error("Bot preceding Controller journal is unavailable.");
+    signal.throwIfAborted();
+    options.executions.update(record, { unreleased: receipt });
+    return true;
+  };
+  const historicalStop = (record: BotRecord, ticket: ControllerLaunchTicket, execution: BotExecution): ControllerSnapshot | null => {
+    if (!isLinuxControllerLaunch(execution.controllerProcess)) return null;
+    const saved = readHistoricalStoppedControllerGeneration(record.intent!.journalPath, ticket, Date.now() + 10_000);
+    if (saved === null) return null;
+    validateBotExecutionSnapshot(record, saved);
+    if (!preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
+      || !preservesNativeProcessPrefix(execution.snapshot?.nativeProcesses ?? [], saved.nativeProcesses)
+      || execution.snapshot?.nativeSessionId != null && execution.snapshot.nativeSessionId !== saved.nativeSessionId) throw new Error("Bot historical stop conflicts with its original process evidence.");
+    return saved;
+  };
   const missingSelection = (record: BotRecord): ToolSelectionError => new ToolSelectionError(record.definition!.resolvedConfiguration.provider as "codex" | "copilot", "web", "launch", "legacy_tool_identity_missing");
   const assertUnsubmitted = (input: BotRecord): BotRecord => {
     const record = current(input), intent = record.intent!, execution = options.executions.get(record);
@@ -231,10 +297,14 @@ export const createBotProcess = (options: {
   const advance = async (input: BotRecord, signal: AbortSignal): Promise<ControllerSnapshot> => {
     let record = current(input);
     const prior = record.intent === null ? null : options.executions.get(record);
-    if (prior?.startup?.state === "failed" && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
     checkAdmission(record);
     if (prior !== null && prior.launchSubmission !== "not-submitted") {
       const ticket = await checkedTicket(record);
+      if (await settleUnreleased(record, ticket, signal)) {
+        await releaseEnvironment(record.botId);
+        throw new Error("Bot controller launch was confirmed unreleased; the original ticket cannot be replayed.");
+      }
+      if (prior.startup?.state === "failed" && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
       if (prior.controllerProcess === null) {
         // Legacy records can still authenticate a live peer, but cannot prove stop
         // or authorize a replacement generation without the original process proof.
@@ -255,7 +325,8 @@ export const createBotProcess = (options: {
         throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
       }
       const reconcileOriginal = () => reconcileLaunch({ journalFile: record.intent!.journalPath, ticket, spawnProof: prior.controllerProcess!, signal });
-      let observation = await reconcileOriginal();
+      const historical = historicalStop(record, ticket, prior);
+      let observation = historical === null ? await reconcileOriginal() : { kind: "controller-exited" as const, process: prior.controllerProcess, snapshot: historical };
       if (observation.kind === "observed" && observation.workerLifecycleProtocol === 1) {
         try {
           await shutdown(record, signal);
@@ -268,7 +339,7 @@ export const createBotProcess = (options: {
         }
       }
       if (observation.kind === "observed") {
-        await jobLeases.retain(ticket.launchId, prior.controllerProcess, Date.now() + 10_000);
+        await retainJob(ticket.launchId, prior.controllerProcess, Date.now() + 10_000);
         const observed = remember(record, observation.snapshot);
         if (["starting", "ready", "working"].includes(observed.lifecycle) && !observed.nativeStopped) {
           options.executions.resumeObserved(record);
@@ -384,14 +455,17 @@ export const createBotProcess = (options: {
         onSubmitting: () => { checkAdmission(record); options.executions.update(current(record), { launchSubmission: "unknown" }); },
         onSpawned: (proof, ownership) => {
           options.executions.update(current(record, true), { controllerProcess: proof });
-          if (ownership !== undefined) jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
+          if (ownership !== undefined) {
+            if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job.");
+            jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
+          }
         },
         onObserved: async snapshot => {
           if (jobLeases.enabled) {
             const proof = options.executions.get(current(record, true))?.controllerProcess;
             if (snapshot.controllerProcess !== null) {
               if (proof == null || !preservesControllerProcessProof(proof, snapshot.controllerProcess, ticket.launchId)) throw new Error("The observed Bot controller conflicts with its spawn proof.");
-              await jobLeases.retain(ticket.launchId, proof, Date.now() + 10_000);
+              await retainJob(ticket.launchId, proof, Date.now() + 10_000);
             }
           }
           remember(record, snapshot);
@@ -429,6 +503,13 @@ export const createBotProcess = (options: {
     await jobLeases.cleanupBirth(record.intent!.launchId, Date.now() + 5000);
     const execution = options.executions.get(record);
     if (execution === null || execution.launchSubmission === "not-submitted") { await releaseEnvironment(record.botId); return; }
+    let originalTicket: ControllerLaunchTicket | undefined;
+    try { originalTicket = await checkedTicket(record); } catch { /* The ordinary cleanup path retains and reports ticket failures. */ }
+    if (originalTicket !== undefined) {
+      if (await settleUnreleased(record, originalTicket, AbortSignal.timeout(10_000))) { await releaseEnvironment(record.botId); return; }
+      const historical = historicalStop(record, originalTicket, execution);
+      if (historical !== null) { options.executions.update(record, { snapshot: historical }); await jobLeases.release(originalTicket.launchId); await releaseEnvironment(record.botId); return; }
+    }
     if (execution.controllerProcess === null) throw new Error("Bot shutdown has no original spawn proof; execution evidence is retained.");
     const deadline = Date.now() + 10_000;
     const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Bot cleanup exceeded its deadline; execution evidence is retained."); return time; };
@@ -442,7 +523,7 @@ export const createBotProcess = (options: {
       remaining();
       if (before.kind === "controller-exited" || before.kind === "pre-writer-exited") bootstrapCompleted = true;
       if (before.kind === "pre-writer-exited") treeEvidenceBlocked = true;
-      if (before.kind === "observed" || before.kind === "running-unobserved") { leaseAttempted = true; await jobLeases.retain(ticket.launchId, execution.controllerProcess, deadline); }
+      if (before.kind === "observed" || before.kind === "running-unobserved") { leaseAttempted = true; await retainJob(ticket.launchId, execution.controllerProcess, deadline); }
       if (before.kind === "observed") {
         const observed = before.snapshot;
         try {
@@ -501,7 +582,7 @@ export const createBotProcess = (options: {
       const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
       treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
       if (!bootstrapAttempted && !bootstrapCompleted && !leaseAttempted && cleanupTicket !== undefined) {
-        try { leaseAttempted = true; await jobLeases.retain(cleanupTicket.launchId, execution.controllerProcess, deadline); } catch (leaseError) { failures.push(leaseError); }
+        try { leaseAttempted = true; await retainJob(cleanupTicket.launchId, execution.controllerProcess, deadline); } catch (leaseError) { failures.push(leaseError); }
       }
       if (!bootstrapAttempted && !bootstrapCompleted) {
         try { await stopBootstrap(execution.controllerProcess, deadline); bootstrapCompleted = true; }
@@ -525,7 +606,7 @@ export const createBotProcess = (options: {
           const saved = execution.snapshot;
           if (!treeAttempted && journalIoFailure && (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError)
             && process.platform !== "win32" && execution.launchSubmission === "acknowledged" && saved?.controllerProcess != null
-            && execution.controllerProcess.processGroupId === execution.controllerProcess.pid && execution.controllerProcess.jobObjectName === undefined
+            && (isLinuxControllerLaunch(execution.controllerProcess) ? execution.controllerProcess.launchId === cleanupTicket.launchId : execution.controllerProcess.processGroupId === execution.controllerProcess.pid && execution.controllerProcess.jobObjectName === undefined)
             && preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, cleanupTicket.launchId)) {
             try {
               remaining(); await stopProcesses(saved.controllerProcess, saved.nativeProcesses, deadline); remaining();
@@ -553,17 +634,20 @@ export const createBotProcess = (options: {
     if (record.observed.deletion?.workerCleanup.code !== "execution_evidence_missing" || record.observed.deletion.workerCleanup.state !== "failed") throw new BotExecutionEvidenceMissingError();
     const deadline = Date.now() + 10_000, ticket = await checkedTicket(record);
     signal.throwIfAborted(); deletionRecord(record);
-    const snapshot = readCurrentControllerSnapshot(intent.journalPath, ticket, deadline);
+    const historical = readHistoricalStoppedControllerGeneration(intent.journalPath, ticket, deadline);
+    const snapshot = historical !== null && isLinuxControllerLaunch(historical.controllerProcess) ? historical : readCurrentControllerSnapshot(intent.journalPath, ticket, deadline);
     validateBotExecutionSnapshot(record, snapshot);
     if (snapshot.controllerProcess === null) throw new BotExecutionEvidenceMissingError();
     let stopped: ControllerSnapshot;
     try {
       // A durable stop needs no second termination. Windows additionally requires
       // its authenticated Job proof; a stopped PID alone cannot prove the tree.
-      if (snapshot.lifecycle === "stopped" && snapshot.nativeStopped) {
+      if (historical !== null && isLinuxControllerLaunch(historical.controllerProcess)) {
+        stopped = historical;
+      } else if (snapshot.lifecycle === "stopped" && snapshot.nativeStopped) {
         stopped = await recordWithLease(intent.journalPath, ticket, deadline);
       } else {
-        if (jobLeases.enabled) await jobLeases.retain(intent.launchId, snapshot.controllerProcess, deadline);
+        if (jobLeases.enabled) await retainJob(intent.launchId, snapshot.controllerProcess, deadline);
         signal.throwIfAborted(); deletionRecord(record);
         await stopWithLease(intent.launchId, snapshot.controllerProcess, snapshot.nativeProcesses, deadline);
         stopped = await recordWithLease(intent.journalPath, ticket, deadline);
@@ -604,7 +688,9 @@ export const createBotProcess = (options: {
     const unsubmitted = execution.launchSubmission === "not-submitted";
     const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
       && execution.controllerProcess === null && execution.snapshot === null;
-    if (unsubmitted || rejected) {
+    const unreleased = !unsubmitted && !rejected && await settleUnreleased(record, await checkedTicket(record), signal);
+    if (unsubmitted || rejected || unreleased) {
+      if (unreleased) await releaseEnvironment(record.botId);
       // A prepared recovery may have advanced the remote fence even when its
       // grant response was lost. Never guess which generation owns deletion.
       if (intent.executionGeneration !== "1") throw new Error("Bot deletion server generation is unconfirmed after recovery preparation; original evidence is retained.");

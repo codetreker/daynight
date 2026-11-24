@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import Database from "better-sqlite3";
@@ -13,6 +13,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
+import { prepareControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
@@ -175,7 +176,7 @@ it.each((["live", "stopped"] as const).flatMap(state => (["none", "pid", "birth"
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const source = await cleanupSource(f, task, "unknown");
-  const launcherProof = { ...source.snapshot.controllerProcess!, parentPid: 777 };
+  const launcherProof = { ...(source.snapshot.controllerProcess! as processProof.ProcessProof), parentPid: 777 };
   const native = { ...launcherProof, pid: 988, parentPid: launcherProof.pid, startedAt: "native-original", commandHash: "b".repeat(64) };
   f.store.updateWebExecution(source.task, { launchSubmission: "unknown", controllerProcess: launcherProof, nativeProcesses: [native] }, 6);
   f.store.close(); stores.splice(stores.indexOf(f.store), 1);
@@ -314,8 +315,7 @@ it.skipIf(process.platform === "win32")("uses the actual OS process group and co
 it.skipIf(process.platform === "win32")("stops the original bootstrap when its IPC accepts connections without replying", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");
   vi.restoreAllMocks();
-  // A relative socket keeps the address below the macOS Unix socket limit.
-  const endpoint = `../../.tmp/stall-${randomUUID()}.sock`;
+  const endpoint = await prepareControllerIpcEndpoint(f.home, source.ticket.launchId);
   vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...source.ticket, ipcEndpoint: endpoint });
   const script = "const net=require('node:net'); net.createServer(() => {}).listen(process.argv[1], () => process.stdout.write('ready\\n'));";
   const child = spawn(process.execPath, ["-e", script, endpoint], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -330,5 +330,21 @@ it.skipIf(process.platform === "win32")("stops the original bootstrap when its I
     expect(await processProof.inspectProcessProof(proof)).toBe("stopped");
     expect(f.store.getTask(task)?.webExecution).toMatchObject({ launchId: source.ticket.launchId, launchSubmission: "unknown", controllerProcess: proof });
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  } finally { await rm(endpoint, { force: true }); }
+  } finally {
+    await rm(endpoint, { force: true });
+    if (!endpoint.startsWith(`${f.home}${path.sep}`)) {
+      try { await rmdir(path.dirname(endpoint)); }
+      catch (error) { if (!(error instanceof Error && "code" in error && ["ENOENT", "ENOTEMPTY"].includes(String(error.code)))) throw error; }
+    }
+  }
 }, 15_000);
+
+it("rejects an invalid relative IPC ticket before bootstrap cleanup", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");
+  vi.restoreAllMocks();
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...source.ticket, ipcEndpoint: "relative.sock" });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 20, immediateStop: true })).rejects.toThrow("Controller IPC endpoint is invalid");
+  expect(f.store.getTask(source.task)?.webExecution).toMatchObject({ launchId: source.ticket.launchId, launchSubmission: "unknown", controllerProcess: source.task.webExecution!.controllerProcess });
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});

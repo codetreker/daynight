@@ -11,7 +11,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { controllerExecutionDirectory, readLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { readControllerOperation, readControllerSnapshot, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, type ControllerProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../../src/commands/controller/linux-controller-launch.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -38,7 +39,7 @@ afterEach(async ({ task }) => {
   if (errors.length) throw new AggregateError(errors, "Web tool selection fixture cleanup remains unconfirmed.");
 }, 180_000);
 
-const stopped = async (controller: ProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease): Promise<void> => {
+const stopped = async (controller: ControllerProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease): Promise<void> => {
   await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(controller, native, undefined, lease)).toBe(true), { timeout: 20_000, interval: 100 });
 };
 
@@ -147,6 +148,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(home, execution.executionId), "journal.sqlite"))!;
       expect(saved).toMatchObject({ claimId: task.claimId, executionGeneration: previous.generation, controllerInstanceId: previous.instanceId, nativeStopped: true, stoppedAt: previous.stoppedAt });
       if (process.platform === "win32") {
+        if (saved.controllerProcess === null || isLinuxControllerLaunch(saved.controllerProcess)) throw new Error("Missing Windows Controller proof.");
         const name = saved.controllerProcess!.jobObjectName!;
         const ticket = await readLaunchTicket(home, name.slice("Local\\Daynight-".length));
         expect(readProvenWindowsStoppedControllerGeneration(path.join(controllerExecutionDirectory(home, execution.executionId), "journal.sqlite"), ticket)).toEqual(saved);
@@ -168,12 +170,13 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   const buildPrompt = vi.fn((task: LocalTask) => `${task.resources.nativeSession === null ? "original" : "resumed"} assignment ${tasks.get(task.claimId)!.tool}`);
   const leaseOwners: ReturnType<typeof createControllerJobLeases>[] = [];
   const observerJobs = new Map<string, ControllerJobLease>();
-  const observerFor = (proof: ProcessProof) => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
+  const observerFor = (proof: ControllerProcessProof) => isLinuxControllerLaunch(proof) || proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
   const stack = () => {
     const owned = createControllerJobLeases(); leaseOwners.push(owned);
-    const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
+    const jobLeases = { ...owned, retain: async (launchId: string, proof: ControllerProcessProof, deadline: number) => {
       const lease = await owned.retain(launchId, proof, deadline);
       if (process.platform === "win32") {
+        if (isLinuxControllerLaunch(proof)) throw new Error("Windows requires a Job proof.");
         const name = `Local\\Daynight-${launchId}`;
         if (!observerJobs.has(name)) observerJobs.set(name, await acquireControllerJobLease(launchId, proof, deadline));
       }
@@ -238,7 +241,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
             catch (failure) { return { name: path.basename(name), error: String(failure) }; }
           }));
           const lease = proof === null ? undefined : observerFor(proof);
-          const members = proof === null || lease === undefined ? null : await inspectControllerJobLease(lease, proof, false, Date.now() + 5000).catch(failure => String(failure));
+          const members = proof === null || isLinuxControllerLaunch(proof) || lease === undefined ? null : await inspectControllerJobLease(lease, proof, false, Date.now() + 5000).catch(failure => String(failure));
           const processes = await Promise.all([...(proof === null ? [] : [proof]), ...original.nativeProcesses].map(async item => ({ pid: item.pid, state: await inspectProcessProof(item).catch(failure => String(failure)) })));
           console.error(JSON.stringify({ fixture: "web-tool-selection", stage: "stop-journal-failure", files, members, processes }));
         } catch (failure) { console.error(JSON.stringify({ fixture: "web-tool-selection", stage: "stop-journal-diagnostic-failure", error: String(failure) })); }

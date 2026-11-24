@@ -7,7 +7,9 @@ import { assertCurrentSqlite, type SqliteFormat } from "../../../platform/sqlite
 import { parseStartupObservation, type StartupObservation } from "../../../session/startup.js";
 import { controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import type { ProcessProof } from "../../controller/process-proof.js";
+import type { ControllerProcessProof, ProcessProof } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
+import type { UnreleasedLaunchReceipt } from "../../controller/unreleased-launch.js";
 import { workerStoreFormat } from "../store-format.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
@@ -17,13 +19,14 @@ export type BotPreviousGeneration = { launchId: string; generation: string; inst
 export type BotExecution = {
   launchId: string; executionId: string; executionGeneration: string;
   launchSubmission: "not-submitted" | "unknown" | "acknowledged";
-  controllerProcess: ProcessProof | null; snapshot: ControllerSnapshot | null;
+  controllerProcess: ControllerProcessProof | null; snapshot: ControllerSnapshot | null;
+  unreleased?: UnreleasedLaunchReceipt;
   aliasDirectory: string | null; lastError: string | null; startup: StartupObservation | null;
   recoveryCount: number; restartAfterShutdown: boolean; recoveryBlocked: string | null;
   previous: BotPreviousGeneration | null; retainedLaunchIds: string[]; retainedAliasDirectories: string[];
 };
-export type BotExecutionPatch = Partial<Pick<BotExecution, "launchSubmission" | "controllerProcess" | "snapshot" | "aliasDirectory" | "lastError" | "startup">>;
-const fields = ["launchSubmission", "controllerProcess", "snapshot", "aliasDirectory", "lastError", "startup"];
+export type BotExecutionPatch = Partial<Pick<BotExecution, "launchSubmission" | "controllerProcess" | "snapshot" | "aliasDirectory" | "lastError" | "startup" | "unreleased">>;
+const fields = ["launchSubmission", "controllerProcess", "snapshot", "aliasDirectory", "lastError", "startup", "unreleased"];
 const recoveryFields = ["recoveryCount", "restartAfterShutdown", "recoveryBlocked", "previous", "retainedLaunchIds", "retainedAliasDirectories"];
 const submissions = ["not-submitted", "unknown", "acknowledged"];
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId AND bot_id = @botId";
@@ -41,10 +44,21 @@ const checkProcess = (proof: ProcessProof): void => {
   }
 };
 // Parent exit may reparent the same writer; match the birth identity used by process-proof.ts.
-const sameProcess = (previous: ProcessProof, next: ProcessProof): boolean => previous.pid === next.pid
+const checkController = (proof: ControllerProcessProof, launchId: string): void => {
+  if (isLinuxControllerLaunch(proof)) {
+    if (proof.launchId !== launchId) throw new Error("Bot controller launch identity conflicts with its ticket.");
+  } else {
+    if (proof !== null && typeof proof === "object" && "kind" in proof) throw new Error("Bot controller process evidence is invalid.");
+    checkProcess(proof as ProcessProof);
+  }
+};
+const sameProcess = (previous: ControllerProcessProof, next: ControllerProcessProof): boolean => {
+  if (isLinuxControllerLaunch(previous) || isLinuxControllerLaunch(next)) return isLinuxControllerLaunch(previous) && isLinuxControllerLaunch(next) && previous.pid === next.pid && previous.launchId === next.launchId;
+  return previous.pid === next.pid
   && previous.processGroupId === next.processGroupId
   && previous.startedAt === next.startedAt && previous.commandHash === next.commandHash
   && (previous.jobObjectName === undefined || previous.jobObjectName === next.jobObjectName);
+};
 
 export const validateBotExecutionSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void => {
   const intent = record.intent!;
@@ -60,12 +74,12 @@ export const validateBotExecutionSnapshot = (record: BotRecord, snapshot: Contro
     || !Array.isArray(snapshot.nativeProcesses) || typeof snapshot.nativeStopped !== "boolean"
     || !(snapshot.stoppedAt === null || typeof snapshot.stoppedAt === "string" && Number.isFinite(Date.parse(snapshot.stoppedAt)))
     || !(snapshot.error === null || typeof snapshot.error === "string")) throw new Error("Bot snapshot lifecycle evidence is invalid.");
-  if (snapshot.controllerProcess !== null) checkProcess(snapshot.controllerProcess);
+  if (snapshot.controllerProcess !== null) checkController(snapshot.controllerProcess, intent.launchId);
   for (const proof of snapshot.nativeProcesses) checkProcess(proof);
 };
 const check = (record: BotRecord, value: BotExecution): BotExecution => {
   const intent = record.intent!;
-  if (value === null || typeof value !== "object" || Object.keys(value).sort().join() !== [...fields, ...recoveryFields, "launchId", "executionId", "executionGeneration"].sort().join()
+  if (value === null || typeof value !== "object" || Object.keys(value).filter(key => key !== "unreleased").sort().join() !== [...fields.filter(key => key !== "unreleased"), ...recoveryFields, "launchId", "executionId", "executionGeneration"].sort().join()
     || value.launchId !== intent.launchId || value.executionId !== intent.executionId || value.executionGeneration !== intent.executionGeneration) throw new Error("Bot execution identity differs from its durable launch intent.");
   botUUID(value.launchId, "Bot launch ID"); botUUID(value.executionId, "Bot execution ID"); botVersion(value.executionGeneration);
   if (!Number.isSafeInteger(value.recoveryCount) || value.recoveryCount < 0 || typeof value.restartAfterShutdown !== "boolean"
@@ -84,7 +98,11 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   } else if (value.executionGeneration !== "1") throw new Error("A recovered Bot requires the preceding stopped generation.");
   if (!submissions.includes(value.launchSubmission)) throw new Error("Bot launch submission evidence is invalid.");
   if (value.startup !== null) parseStartupObservation(value.startup);
-  if (value.controllerProcess !== null) checkProcess(value.controllerProcess);
+  if (value.controllerProcess !== null) checkController(value.controllerProcess, intent.launchId);
+  if (value.unreleased !== undefined && (value.unreleased === null || typeof value.unreleased !== "object" || Object.keys(value.unreleased).sort().join() !== "kind,pid,ticketHash"
+    || value.unreleased.kind !== "controller-unreleased" || !/^[a-f0-9]{64}$/.test(value.unreleased.ticketHash)
+    || !Number.isSafeInteger(value.unreleased.pid) || value.unreleased.pid < 1 || value.unreleased.pid > 2_147_483_647
+    || value.controllerProcess !== null && value.controllerProcess.pid !== value.unreleased.pid || value.snapshot !== null || value.launchSubmission === "not-submitted")) throw new Error("Bot unreleased launch evidence is invalid or conflicts with its execution.");
   if (value.snapshot !== null) {
     validateBotExecutionSnapshot(record, value.snapshot);
     if (value.controllerProcess !== null && value.snapshot.controllerProcess !== null && !sameProcess(value.controllerProcess, value.snapshot.controllerProcess)) throw new Error("Bot snapshot has a conflicting controller process.");
@@ -103,7 +121,7 @@ export const hasNeverStartedDeletionEvidence = (record: BotRecord, execution: Bo
   check(record, execution);
   const rejected = execution.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
     && execution.controllerProcess === null && execution.snapshot === null;
-  return (execution.launchSubmission === "not-submitted" && execution.startup === null || rejected)
+  return (execution.launchSubmission === "not-submitted" && execution.startup === null || rejected || execution.unreleased !== undefined)
     && stop.protocol === "daynight.session.v1" && stop.sessionId === intent.sessionId && stop.testExecutionId === intent.executionId
     && stop.executionGeneration === intent.executionGeneration && stop.controllerId === intent.registration.controllerId
     && stop.controllerInstanceId === intent.controllerInstanceId && stop.stopProof.previousControllerInstanceId === intent.controllerInstanceId
@@ -159,6 +177,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
         throw new Error("Bot terminal startup evidence cannot change within the original generation.");
       }
       if (previous.controllerProcess !== null && (next.controllerProcess === null || !sameProcess(previous.controllerProcess, next.controllerProcess))) throw new Error("Bot controller process evidence cannot be replaced or discarded.");
+      if (previous.unreleased !== undefined && !same(previous.unreleased, next.unreleased)) throw new Error("Bot unreleased launch evidence cannot be replaced or discarded.");
       if (previous.snapshot !== null) {
         if (next.snapshot === null) throw new Error("Bot snapshot evidence cannot be discarded.");
         if (previous.snapshot.nativeSessionId !== null && next.snapshot.nativeSessionId !== previous.snapshot.nativeSessionId) throw new Error("Bot snapshot cannot replace the original native session.");

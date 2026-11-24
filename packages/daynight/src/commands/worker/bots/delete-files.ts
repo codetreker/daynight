@@ -143,6 +143,15 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
       if (canonicalId(temporaryId) !== temporaryId) continue;
       targets.push(await capture(path.join(launchRoot, name), "file", signal));
     }
+    const unreleased = path.join(launchRoot, `${launch}.unreleased.json`);
+    const receipt = await capture(unreleased, "file", signal);
+    if (!receipt.completed) targets.push(receipt);
+    const receiptPrefix = `${launch}.unreleased.json.`;
+    for (const name of launchFiles) {
+      if (!name.startsWith(receiptPrefix) || !name.endsWith(".tmp")) continue;
+      const temporaryId = name.slice(receiptPrefix.length, -4);
+      if (canonicalId(temporaryId) === temporaryId) targets.push(await capture(path.join(launchRoot, name), "file", signal));
+    }
     targets.push(target);
   }
   // Retain the journal until all other captured private sources are removed.

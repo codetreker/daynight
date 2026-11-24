@@ -4,7 +4,10 @@ import { pathToFileURL } from "node:url";
 
 // POSIX executes only this trusted gate before the parent's durable birth record.
 // Windows starts this same bootstrap with its primary thread suspended.
-const [target, provider, launchId, logFile] = process.argv.slice(2);
+const [target, provider, markerOrLaunchId, idOrLog, newLog] = process.argv.slice(2);
+const explicit = markerOrLaunchId === "--launch-id";
+const launchId = explicit ? idOrLog : markerOrLaunchId;
+const logFile = explicit ? newLog : idOrLog;
 if (!target || !provider || !launchId || !logFile) process.exit(1);
 if (process.platform !== "win32") {
   if (!process.connected) process.exit(1);

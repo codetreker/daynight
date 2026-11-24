@@ -9,6 +9,9 @@ import { once } from "node:events";
 import { expect, it, vi } from "vitest";
 import { createWorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
+import { isUnreleasedWebLaunch } from "../../../src/commands/worker/backends/web-process.js";
+import { createWebStopObserver } from "../../../src/commands/worker/backends/web-stop.js";
+import { writeUnreleasedLaunch } from "../../../src/commands/controller/unreleased-launch.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import { PromptInputLimitError } from "../../../src/commands/worker/prompt-input-limit.js";
 import type { WorkerPromptTuple } from "../../../src/commands/worker/prompt-source.js";
@@ -25,6 +28,125 @@ import { ArchiveRepairRequiredError, ArchiveRequestError } from "../../../src/co
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
+
+it("settles a durable unreleased launch without replaying it or waiting for the PID", async () => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task, "unknown");
+  source.saved.mockReturnValue(null);
+  await writeUnreleasedLaunch(f.home, source.ticket, source.task.webExecution!.controllerProcess!.pid);
+  source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("Controller unavailable.", { cause: Object.assign(new Error("No endpoint"), { code: "ENOENT" }) }));
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
+  const paused = await backend.advance(source.task, new AbortController().signal);
+  expect(paused.recovery.pauseReason).toMatch(/confirmed unreleased/);
+  expect(paused.webExecution?.launchSubmission).toBe("unknown");
+  expect(launcher.launch).not.toHaveBeenCalled();
+  const operation = createOperation({ limits: { totalMs: 5000 } });
+  try {
+    expect(await createWebStopObserver({ homeDirectory: f.home, store: f.store, now: () => 51, request: source.request })(source.task, operation)).toMatchObject({ kind: "not-started" });
+  } finally { operation.dispose(); }
+});
+
+it.each(["pid", "journal", "native", "ipc", "ticket", "timeout", "transport"] as const)("retains an unreleased launch when %s evidence conflicts", async conflict => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task, "unknown");
+  source.saved.mockReturnValue(conflict === "journal" ? source.snapshot : null);
+  await writeUnreleasedLaunch(f.home, source.ticket, conflict === "pid" ? 986 : 987);
+  let current = source.task;
+  if (conflict === "native") current = f.store.updateWebExecution(current, { nativeProcesses: [{ pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native", commandHash: "b".repeat(64) }] }, 6);
+  if (conflict !== "ipc") source.request.mockRejectedValue(conflict === "timeout"
+    ? new ControllerIpcOutcomeUnknownError("Controller timed out.")
+    : new ControllerIpcOutcomeUnknownError("Controller unavailable.", { cause: Object.assign(new Error("Transport"), { code: conflict === "transport" ? "ECONNRESET" : "ENOENT" }) }));
+  const ticket = conflict === "ticket" ? { ...source.ticket, taskId: randomUUID() } : source.ticket;
+  await expect(isUnreleasedWebLaunch(f.home, current, ticket, new AbortController().signal, source.request)).rejects.toThrow();
+});
+
+it("accepts inherited initial input evidence for an unreleased later generation", async () => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task, "unknown");
+  const nativeSessionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
+  const current: LocalTask = { ...source.task, resources: { ...source.task.resources, nativeSession: { source: "controller", sessionId: nativeSessionId } },
+    webExecution: { ...source.task.webExecution!, launchId, controllerInstanceId, executionGeneration: "2", initialInputState: "confirmed" } };
+  const ticket = { ...source.ticket, launchId, controllerInstanceId, executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
+  source.saved.mockReturnValue({ ...source.snapshot, nativeSessionId });
+  await writeUnreleasedLaunch(f.home, ticket, current.webExecution!.controllerProcess!.pid);
+  source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("Controller unavailable.", { cause: Object.assign(new Error("No endpoint"), { code: "ENOENT" }) }));
+  await expect(isUnreleasedWebLaunch(f.home, current, ticket, new AbortController().signal, source.request)).resolves.toBe(true);
+});
+
+it("keeps an unreleased stop unknown if its saved PID changes during observation", async () => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task, "unknown");
+  source.saved.mockReturnValue(null);
+  await writeUnreleasedLaunch(f.home, source.ticket, 987);
+  source.request.mockImplementation(async () => {
+    f.store.updateWebExecution(source.task, { controllerProcess: { ...(source.task.webExecution!.controllerProcess! as processProof.ProcessProof), pid: 988 } }, 6);
+    throw new ControllerIpcOutcomeUnknownError("Controller unavailable.", { cause: Object.assign(new Error("No endpoint"), { code: "ENOENT" }) });
+  });
+  const operation = createOperation({ limits: { totalMs: 5000 } });
+  try {
+    const observed = await createWebStopObserver({ homeDirectory: f.home, store: f.store, now: () => 51, request: source.request })(source.task, operation);
+    expect(observed.kind).toBe("unknown");
+  } finally { operation.dispose(); }
+});
+
+it.each(["terminal", "shutdown"] as const)("settles an unreleased later generation locally without archiving its preceding journal (%s)", async kind => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task);
+  const nativeSessionId = randomUUID();
+  task = f.store.bindNativeSession(source.task, { source: "controller", sessionId: nativeSessionId }, 6);
+  task = f.store.updateWebExecution(task, { initialInputState: "confirmed" }, 7);
+  const preceding: ControllerSnapshot = { ...source.snapshot, nativeSessionId };
+  source.saved.mockReturnValue(preceding);
+  task = f.store.beginWebGeneration(task, preceding, 8);
+  const execution = task.webExecution!;
+  const ticket = { ...source.ticket, launchId: execution.launchId, executionGeneration: execution.executionGeneration,
+    controllerInstanceId: execution.controllerInstanceId, resumeNativeSessionId: nativeSessionId };
+  const ticketPath = await launchTickets.writeLaunchTicket(f.home, ticket);
+  const proof = { kind: "linux-controller-launch" as const, pid: 987, launchId: ticket.launchId };
+  task = f.store.updateWebExecution(task, { ticketPath, launchSubmission: "unknown", controllerProcess: proof }, 9);
+  await writeUnreleasedLaunch(f.home, ticket, proof.pid);
+  source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("Controller unavailable.", { cause: Object.assign(new Error("No endpoint"), { code: "ENOENT" }) }));
+  const archive = vi.fn(), onArchiveFailure = vi.fn(), stopped = vi.fn();
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, onArchiveFailure, request: source.request });
+  const request = kind === "terminal" ? { kind, deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: stopped } } as const
+    : { kind, deadline: 30, immediateStop: true } as const;
+  const result = await backend.cleanup(task, request);
+  expect(result.complete).toBe(true);
+  expect(result.task.resources.nativeSession).toEqual({ source: "controller", sessionId: nativeSessionId });
+  expect(result.task.webExecution).toMatchObject({ executionId: source.ticket.executionId, sessionId: source.ticket.sessionId,
+    executionGeneration: "2", launchId: ticket.launchId, controllerInstanceId: ticket.controllerInstanceId, launchSubmission: "unknown", initialInputState: "confirmed" });
+  expect(source.saved.mock.results.at(-1)?.value).toEqual(preceding);
+  expect(archive).not.toHaveBeenCalled(); expect(onArchiveFailure).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled();
+  expect(source.request.mock.calls.every(([observedTicket, action]) => observedTicket.launchId === ticket.launchId && action.kind === "observe")).toBe(true);
+  if (kind === "terminal") expect(stopped).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({ kind: "not-started" }) }));
+});
+
+it.each([false, true])("uses ticket-bound stopped history before inspecting a reused Linux PID (conflict=%s)", async conflict => {
+  const f = await orchestrationFixture();
+  const proof = { kind: "linux-controller-launch" as const, pid: 987, launchId: f.source.ticket.launchId };
+  const task = f.store.updateWebExecution(f.task, { controllerProcess: proof }, 7);
+  const snapshot: ControllerSnapshot = { ...f.snapshot, controllerProcess: proof, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date(0).toISOString() };
+  f.source.saved.mockReturnValue(snapshot);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(conflict
+    ? { ...snapshot, controllerProcess: { ...proof, pid: 12345 } } : snapshot);
+  const inspect = vi.mocked(processProof.inspectProcessProof);
+  inspect.mockClear();
+  const operation = createOperation({ limits: { totalMs: 5000 } });
+  try {
+    const result = await f.backend.observeExecutionStop(task, operation);
+    expect(result.kind).toBe(conflict ? "unknown" : "stopped");
+    expect(history).toHaveBeenCalledWith(expect.any(String), f.source.ticket, expect.any(Number));
+    expect(inspect).not.toHaveBeenCalled();
+  } finally { operation.dispose(); }
+});
 
 it("stops the proven native boundary without mutating its Task writer or releasing its Windows lease", async () => {
   const f = await orchestrationFixture();
@@ -1101,7 +1223,7 @@ it("retains initializing until an explicit retry is actually observed ready", as
 it.each((["automatic", "explicit"] as const).flatMap(mode => [false, true].map(partial => [mode, partial] as const)))("continues an allocated %s recovery after starting before all process proofs exist (partial=%s)", async (mode, partial) => {
   const f = await recoveryFixture(4);
   const input = mode === "explicit" ? f.store.authorizeRecoveryRetry(f.task, 9) : f.task;
-  const controller = { ...f.snapshot.controllerProcess!, pid: 124, processGroupId: 124, startedAt: "replacement-controller" };
+  const controller = { ...(f.snapshot.controllerProcess! as processProof.ProcessProof), pid: 124, processGroupId: 124, startedAt: "replacement-controller" };
   const first = { ...controller, pid: 125, parentPid: 124, startedAt: "replacement-native" };
   const second = { ...first, pid: 126, startedAt: "second-native" };
   let observed!: ControllerSnapshot;
@@ -1325,7 +1447,7 @@ it.each(["unknown", "controller", "native", "generation", "claim", "session", "n
   const allocated = f.store.getTask(f.task)!;
   if (changed === "unknown") f.store.updateWebExecution(allocated, { launchSubmission: "unknown" }, 21);
   if (changed === "controller") f.store.updateWebExecution(allocated, { controllerProcess: f.snapshot.controllerProcess }, 21);
-  if (changed === "native") f.store.updateWebExecution(allocated, { nativeProcesses: [f.snapshot.controllerProcess!] }, 21);
+  if (changed === "native") f.store.updateWebExecution(allocated, { nativeProcesses: [f.snapshot.controllerProcess! as processProof.ProcessProof] }, 21);
   const previous = { ...f.snapshot };
   if (changed === "generation") previous.executionGeneration = "0";
   if (changed === "claim") previous.claimId = randomUUID();
@@ -1539,7 +1661,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const source = await cleanupSource(f, task);
   const jobObjectName = `Local\\Daynight-${source.ticket.launchId}`;
-  const cached = { ...source.snapshot.controllerProcess!, processGroupId: null, ...(conflict.startsWith("known-job") ? { jobObjectName } : {}) };
+  const cached = { ...(source.snapshot.controllerProcess! as processProof.ProcessProof), processGroupId: null, ...(conflict.startsWith("known-job") ? { jobObjectName } : {}) };
   const controller = { ...cached, jobObjectName };
   if (conflict === "known-job-lost") delete (controller as { jobObjectName?: string }).jobObjectName;
   if (conflict === "known-job-changed" || conflict === "wrong-launch") controller.jobObjectName = `Local\\Daynight-${randomUUID()}`;
@@ -1843,6 +1965,28 @@ it.skipIf(process.platform === "win32")("Task cleans the retained tree when jour
   expect(error.cause.errors).toEqual([first, second]); expect(stop).toHaveBeenCalledOnce();
   expect(tree).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, source.task.webExecution!.nativeProcesses, expect.any(Number));
   expect(source.stopped).toHaveBeenCalledOnce(); expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "linux")("Task retains the journal error while stopping a ticket-bound Linux boundary after bootstrap exit", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const proof = { kind: "linux-controller-launch" as const, pid: 987, launchId: source.ticket.launchId };
+  const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native", commandHash: "b".repeat(64) };
+  const task = f.store.updateWebExecution(source.task, { controllerProcess: proof, nativeProcesses: [native] }, 6);
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable"), io = () => new launchObservation.ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const first = io(), second = io();
+  source.request.mockRejectedValue(ipc);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof })).mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+  vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause.errors).toEqual([first, second]);
+  expect(stop).toHaveBeenCalledOnce();
+  expect(tree).toHaveBeenCalledWith(proof, [native], expect.any(Number));
+  expect(source.stopped).toHaveBeenCalledWith(proof, [native], expect.any(Number));
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled();
+  expect(f.store.getTask(task)?.webExecution?.controllerProcess).toEqual(proof);
 });
 
 it.skipIf(process.platform !== "win32")("Task does not use a retained Job after bootstrap stop and journal I/O failure", async () => {

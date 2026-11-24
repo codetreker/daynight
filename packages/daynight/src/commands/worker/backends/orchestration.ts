@@ -5,7 +5,8 @@ import path from "node:path";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
 import type { ControllerOperation, ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import type { ProcessProof } from "../../controller/process-proof.js";
+import type { ControllerProcessProof } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
 import type { LocalTask } from "./web-types.js";
 
 export const LEGACY_BRANCH_ERROR = "The task worktree no longer uses its original task branch.";
@@ -25,11 +26,16 @@ export const sameOrchestrationIdentity = (task: LocalTask, blocker: Orchestratio
   JSON.stringify(orchestrationIdentity(task)) === JSON.stringify(blocker.identity);
 
 /** The detached POSIX Controller may be reparented between launcher and self-capture. Windows retains its parent and adds the launch Job. */
-export const preservesControllerProcessProof = (previous: ProcessProof, observed: ProcessProof | null, launchId: string): boolean =>
-  observed !== null && observed.pid === previous.pid && (previous.processGroupId !== null || observed.parentPid === previous.parentPid)
+export const preservesControllerProcessProof = (previous: ControllerProcessProof, observed: ControllerProcessProof | null, launchId: string): boolean => {
+  if (observed === null) return false;
+  if (isLinuxControllerLaunch(previous) || isLinuxControllerLaunch(observed))
+    return isLinuxControllerLaunch(previous) && isLinuxControllerLaunch(observed)
+      && previous.launchId === launchId && observed.launchId === launchId && previous.pid === observed.pid;
+  return observed.pid === previous.pid && (previous.processGroupId !== null || observed.parentPid === previous.parentPid)
   && observed.processGroupId === previous.processGroupId && observed.startedAt === previous.startedAt && observed.commandHash === previous.commandHash
   && (previous.jobObjectName !== undefined ? observed.jobObjectName === previous.jobObjectName
     : observed.jobObjectName === undefined || (previous.processGroupId === null && observed.jobObjectName === `Local\\Daynight-${launchId}`));
+};
 
 /** Controller startup appends captured processes; every previously captured identity must remain unchanged. */
 export const preservesNativeProcessPrefix = (previous: ControllerSnapshot["nativeProcesses"], observed: ControllerSnapshot["nativeProcesses"]): boolean =>

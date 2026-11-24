@@ -23,8 +23,104 @@ import { ControllerStorageWaitingError } from "../../../src/commands/controller/
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+import { writeUnreleasedLaunch } from "../../../src/commands/controller/unreleased-launch.js";
+import { hasNeverStartedDeletionEvidence } from "../../../src/commands/worker/bots/execution-store.js";
 
 afterEach(cleanupBotProcesses);
+
+test("settles a persisted unreleased Bot after restart without replaying its ticket", async () => {
+  const f = fixture("codex", {}, true), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting();
+    await options.onSpawned({ kind: "linux-controller-launch", pid: 123, launchId: options.ticket.launchId });
+    await writeUnreleasedLaunch(f.home, options.ticket, 123);
+    throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  f.reopen();
+  const restarted = f.createProcess();
+  await expect(restarted.advance(f.current(), signal)).rejects.toThrow(/confirmed unreleased/);
+  expect(f.executions.get(f.current())?.unreleased).toMatchObject({ kind: "controller-unreleased", pid: 123 });
+  expect(f.launch).toHaveBeenCalledOnce();
+  const deleting = markDeleting(f);
+  const stop = await restarted.withDeletion(deleting, signal, stop => stop());
+  expect(stop).toMatchObject({ stopProof: { kind: "never_started" } });
+  const prepared = f.store.prepareDeletion(deleting, stop, []);
+  expect(hasNeverStartedDeletionEvidence(prepared, f.executions.get(prepared))).toBe(true);
+});
+
+test("rejects an unreleased receipt with a conflicting saved PID", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting();
+    await options.onSpawned({ kind: "linux-controller-launch", pid: 123, launchId: options.ticket.launchId });
+    await writeUnreleasedLaunch(f.home, options.ticket, 124);
+    throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  await expect(f.process.shutdown(f.current(), signal)).rejects.toThrow(/conflicts with saved process/);
+  expect(f.executions.get(f.current())?.unreleased).toBeUndefined();
+});
+
+test("an authenticated Controller conflicts with an unreleased receipt", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await writeUnreleasedLaunch(f.home, options.ticket, 123);
+    throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  const request = vi.fn(async () => ({ snapshot: await f.observe(await f.process.readTicket(f.current())) }));
+  await expect(f.createProcess({ request }).shutdown(f.current(), signal)).rejects.toThrow(/authenticated Controller IPC/);
+  expect(f.executions.get(f.current())?.unreleased).toBeUndefined();
+});
+
+test("an unknown IPC outcome cannot settle an unreleased receipt", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await writeUnreleasedLaunch(f.home, options.ticket, 123);
+    throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  const request = vi.fn(async () => { throw new ControllerIpcOutcomeUnknownError("observation timed out"); });
+  await expect(f.createProcess({ request }).shutdown(f.current(), signal)).rejects.toThrow("observation timed out");
+  expect(f.executions.get(f.current())?.unreleased).toBeUndefined();
+});
+
+test("a current journal row conflicts with an unreleased receipt", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await writeUnreleasedLaunch(f.home, options.ticket, 123);
+    throw new Error("launch gate failed");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch gate failed");
+  const ticket = await f.process.readTicket(f.current());
+  const read = vi.spyOn(lifecycle, "readCurrentControllerInventorySnapshot").mockReturnValue({ ticket, snapshot: await f.observe(ticket) });
+  try {
+    await expect(f.process.shutdown(f.current(), signal)).rejects.toThrow(/current journal/);
+    expect(f.executions.get(f.current())?.unreleased).toBeUndefined();
+  } finally { read.mockRestore(); }
+});
+
+test("a ticket-bound stopped Linux generation does not recheck its reused PID", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    const proof = { kind: "linux-controller-launch" as const, pid: 123, launchId: options.ticket.launchId };
+    await options.onSubmitting(); await options.onSpawned(proof);
+    const snapshot = { ...await f.observe(options.ticket), controllerProcess: proof };
+    await options.onObserved(snapshot); return snapshot;
+  });
+  await f.process.advance(f.current(), signal);
+  const saved = f.executions.get(f.current())!.snapshot!;
+  const stopped = { ...saved, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(stopped);
+  const reconcileLaunch = vi.fn(async () => { throw new Error("reused PID must not be observed"); });
+  const stopProcesses = vi.fn(async () => { throw new Error("reused PID must not be stopped"); });
+  try {
+    await f.createProcess({ reconcileLaunch, stopProcesses }).shutdown(f.current(), signal);
+    expect(f.executions.get(f.current())?.snapshot).toEqual(stopped);
+    expect(reconcileLaunch).not.toHaveBeenCalled(); expect(stopProcesses).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
 
 test("ordinary shutdown retains failed preflight cleanup until the original probe and aliases close", async () => {
   const f = fixture(), signal = new AbortController().signal;
@@ -194,6 +290,31 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps, recoveryLimit) };
 };
+
+test("an unreleased recovery keeps the previous native session and never replays its ticket", async () => {
+  const f = await recoveryFixture();
+  await f.manager.shutdown(f.current(), f.signal);
+  const previousTicket = await f.manager.readTicket(f.current()), previousStopped = f.executions.get(f.current())!.snapshot!;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned({ kind: "linux-controller-launch", pid: 321, launchId: options.ticket.launchId });
+    await writeUnreleasedLaunch(f.home, options.ticket, 321);
+    throw new Error("recovery launch gate failed");
+  });
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow("recovery launch gate failed");
+  const intent = f.current().intent!;
+  expect(intent).toMatchObject({ executionGeneration: "2", nativeSessionId: previousStopped.nativeSessionId });
+  const read = vi.spyOn(lifecycle, "readCurrentControllerInventorySnapshot").mockReturnValue({ ticket: previousTicket, snapshot: previousStopped });
+  const request = vi.fn(async () => { throw new ControllerIpcOutcomeUnknownError("socket absent", { cause: Object.assign(new Error("absent"), { code: "ENOENT" }) }); });
+  try {
+    const restarted = f.createProcess({ ...f.deps, request });
+    await expect(restarted.advance(f.current(), f.signal)).rejects.toThrow(/confirmed unreleased/);
+    expect(f.current().intent).toEqual(intent);
+    expect(f.executions.get(f.current())?.unreleased).toMatchObject({ pid: 321 });
+    expect(f.launch).toHaveBeenCalledTimes(2);
+    const deleting = markDeleting(f);
+    await expect(restarted.withDeletion(deleting, f.signal, stop => stop())).rejects.toThrow(/generation is unconfirmed/);
+  } finally { read.mockRestore(); }
+});
 
 test("refreshes authenticated IPC before renewing a credential from a cached starting snapshot", async () => {
   const f = await recoveryFixture({}, false, true);
@@ -934,6 +1055,29 @@ test.skipIf(process.platform === "win32")("Bot uses retained attributed POSIX pr
   expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
   expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "linux")("Bot uses retained Linux launch and native proof on journal I/O failure", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    const proof = { kind: "linux-controller-launch" as const, pid: 123, launchId: options.ticket.launchId };
+    await options.onSubmitting(); await options.onSpawned(proof);
+    const snapshot = { ...await f.observe(options.ticket), controllerProcess: proof };
+    await options.onObserved(snapshot); return snapshot;
+  });
+  await f.process.advance(f.current(), signal);
+  const saved = f.executions.get(f.current())!.snapshot!;
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const io = () => new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const reconcileLaunch = vi.fn().mockRejectedValueOnce(io()).mockRejectedValueOnce(io());
+  const stopBootstrap = vi.fn(async () => {}), stopProcesses = vi.fn(async () => {}), confirmStopped = vi.fn(async () => true);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  try {
+    await expect(f.createProcess({ reconcileLaunch, stopBootstrap, stopProcesses, confirmStopped }).shutdown(f.current(), signal)).rejects.toThrow();
+    expect(stopProcesses).toHaveBeenCalledWith(saved.controllerProcess, saved.nativeProcesses, expect.any(Number));
+    expect(confirmStopped).toHaveBeenCalledWith(saved.controllerProcess, saved.nativeProcesses, expect.any(Number));
+    expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
 });
 
 test.skipIf(process.platform === "win32").each(["observed", "running-unobserved"] as const)("Bot cleans the retained tree when journal I/O fails after %s bootstrap stop", async kind => {

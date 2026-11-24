@@ -23,6 +23,12 @@ conflicting identity and unknown process facts remain errors. The
 [protocol design](../../../../docs/design/task-session-protocol.md) owns the
 identity, cancellation and recovery contracts.
 
+The later [Linux Controller launch identity decision](2026-11-24-linux-controller-launch-identity.md)
+uses a distinct Controller record, settles a provably unreleased bootstrap and
+persists an externally verified complete stop for new Linux records. The ticket,
+authenticated IPC and retention of uncertain submissions remain essential;
+legacy records and other platforms keep their existing observation rules.
+
 Bootstrap cancellation stops the single original process through a bounded,
 identity-checked operation. On Windows, one birth-verified original process
 handle covers identity, necessary termination and completion. If the original is

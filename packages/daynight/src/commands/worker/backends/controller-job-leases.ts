@@ -1,4 +1,5 @@
-import type { ProcessProof } from "../../controller/process-proof.js";
+import type { ControllerProcessProof, ProcessProof } from "../../controller/process-proof.js";
+import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
 import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../controller/windows-job.js";
 
 /** Hold authenticated Job handles for the lifetime of the Worker responsibility. */
@@ -26,12 +27,13 @@ export const createControllerJobLeases = (platform: NodeJS.Platform = process.pl
       return () => { if (births.get(launchId) === birth) births.delete(launchId); };
     },
     cleanupBirth,
-    adopt: (launchId: string, proof: ProcessProof, lease: ControllerJobLease, closeHandles: () => void): void => {
-      if (platform !== "win32" || entries.has(launchId)) throw new Error("Controller launch ownership cannot replace an existing Job lease.");
+    adopt: (launchId: string, proof: ControllerProcessProof, lease: ControllerJobLease, closeHandles: () => void): void => {
+      if (platform !== "win32" || isLinuxControllerLaunch(proof) || entries.has(launchId)) throw new Error("Controller launch ownership cannot replace an existing Job lease.");
       entries.set(launchId, { proof: { ...proof }, lease: Promise.resolve(lease), closeHandles });
     },
-    retain: async (launchId: string, proof: ProcessProof, deadline: number): Promise<ControllerJobLease | undefined> => {
+    retain: async (launchId: string, proof: ControllerProcessProof, deadline: number): Promise<ControllerJobLease | undefined> => {
       if (platform !== "win32") return undefined;
+      if (isLinuxControllerLaunch(proof)) throw new Error("Linux Controller identity cannot own a Windows Job lease.");
       let entry = entries.get(launchId);
       if (entry !== undefined && !same(entry.proof, proof, launchId)) throw new Error("Controller Job lease conflicts with the original spawn proof.");
       if (entry === undefined) {
