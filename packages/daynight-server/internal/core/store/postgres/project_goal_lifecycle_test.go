@@ -532,10 +532,11 @@ func readCleanupGoal(t *testing.T, db *Store, goal string) cleanupGoalState {
 }
 
 func TestProjectCleanupUpdatesOnlySurvivingGoalWatermarks(t *testing.T) {
+	db := isolatedStore(t)
 	for _, app := range []bool{false, true} {
 		for _, deleting := range []bool{false, true} {
-			t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
-				f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+			if !t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
+				f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 				ctx := t.Context()
 				other, err := testutil.CreatePrivateProject(ctx, f.db, f.principal, uuid.NewString(), "Deleted downstream", "https://example.test/deleted-downstream")
 				if err != nil {
@@ -599,24 +600,38 @@ func TestProjectCleanupUpdatesOnlySurvivingGoalWatermarks(t *testing.T) {
 				if (newSourceEpoch != sourceEpoch) != deleting || newRemoteEpoch != remoteEpoch {
 					t.Fatalf("wrong cache epoch source=%s/%s remote=%s/%s", sourceEpoch, newSourceEpoch, remoteEpoch, newRemoteEpoch)
 				}
-			})
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
 		}
 	}
 }
 
 func TestProjectCleanupTaskWatermarkFailureRollsBack(t *testing.T) {
+	db := isolatedStore(t)
 	for _, app := range []bool{false, true} {
 		for _, deleting := range []bool{false, true} {
 			for _, failure := range []string{"version exhaustion", "touch failure"} {
-				t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete/", false: " transfer/"}[deleting]+failure, func(t *testing.T) {
-					f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+				if !t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete/", false: " transfer/"}[deleting]+failure, func(t *testing.T) {
+					f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 					ctx := t.Context()
 					if failure == "version exhaustion" {
 						mustQueryExec(t, f.db, `UPDATE tasks SET version=$1 WHERE id=$2`, int64(math.MaxInt64), f.down)
 					} else {
 						mustQueryExec(t, f.db, `CREATE FUNCTION refuse_cleanup_goal_touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cleanup touch refused'; END $$;
       CREATE TRIGGER refuse_cleanup_goal_touch BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_cleanup_goal_touch()`)
-						defer mustQueryExec(t, f.db, `DROP TRIGGER refuse_cleanup_goal_touch ON tasks; DROP FUNCTION refuse_cleanup_goal_touch()`)
+						defer func() {
+							cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+							defer cancel()
+							if _, err := f.db.Pool.Exec(cleanup, `DROP TRIGGER refuse_cleanup_goal_touch ON tasks; DROP FUNCTION refuse_cleanup_goal_touch()`); err != nil {
+								t.Errorf("remove touch fault: %v", err)
+								return
+							}
+							if err := checkFaultTriggerRemoved(cleanup, f.db, "refuse_cleanup_goal_touch", "tasks"); err != nil {
+								t.Errorf("verify touch fault cleanup: %v", err)
+							}
+						}()
 					}
 					before := readCleanupGoal(t, f.db, f.down)
 					var epoch string
@@ -655,7 +670,10 @@ func TestProjectCleanupTaskWatermarkFailureRollsBack(t *testing.T) {
 					if e := f.db.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text,deleted_at IS NOT NULL,(SELECT team_id::text FROM project_ownership WHERE project_id=$1) FROM projects WHERE id=$1`, f.upProject.ID).Scan(&actualEpoch, &deleted, &owner); e != nil || deleted || actualEpoch != epoch || owner != f.upProject.Ownership.TeamID {
 						t.Fatalf("project effects persisted: epoch=%s deleted=%v owner=%s error=%v", actualEpoch, deleted, owner, e)
 					}
-				})
+				}) {
+					return
+				}
+				testutil.AssertPoolReusable(t, db.Pool)
 			}
 		}
 	}
