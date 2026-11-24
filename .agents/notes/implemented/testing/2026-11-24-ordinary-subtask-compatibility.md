@@ -41,4 +41,5 @@ The matrix requires multiple builds and isolated runtime resources. A result is
 bound to its recorded sources and artifacts; it does not establish support for
 unexamined historical versions. Failed or interrupted runs retain any
 unconfirmed ownership evidence instead of treating absent observations as a
-confirmed cleanup.
+confirmed cleanup. An unconfirmed cleanup stops the matrix before another
+combination starts, preserving the original run for reconciliation.
