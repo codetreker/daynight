@@ -34,6 +34,12 @@ an explicit removal permission refusal allow a later removal attempt. Other
 unresolved removal outcomes retain the fixture. A tracked Docker signal gate
 allows recovery to join the original client and terminate a stuck container.
 
+Worker Task reads retry bounded, explicitly recoverable partial Session
+observations. They validate the Task and original Worker and claim identities
+before using a complete observation; the last partial reason, error and
+freshness remain available on failure. Mutations are never retried by this
+reader.
+
 ## Alternatives
 
 **Use only process groups and Controller records.** The current records can
@@ -43,6 +49,10 @@ leave no complete record for an independently detached process.
 **Run the whole matrix inside a container.** The runner currently owns Docker
 service cleanup while it is alive; an outer owner would need a separate cleanup
 stage after the entire runner boundary stops.
+
+**Accept partial Task reads as complete.** The Task data may survive a partial
+Session observation, but treating it as complete conceals an unavailable or
+changing execution and could allow later assertions to use the wrong claim.
 
 ## Consequences
 

@@ -86,6 +86,12 @@ signal client before forcing a still-running container to stop. A definite bind
 refusal and a confirmed absent container permit fixture cleanup; other uncertain
 creation outcomes remain unconfirmed.
 
+The Worker scenario re-reads the same Task within a bounded deadline when a
+Session observation reports a recoverable execution change or temporary
+unavailability. It checks the original Worker and claim identities and requires
+a complete observation before proceeding. Other errors and exhausted retries
+fail the scenario with the last observation diagnostics.
+
 The recovery control client addresses the socket in its private run directory
 through an open directory descriptor, avoiding Unix socket path-length limits
 without moving the socket outside the owned runtime.
