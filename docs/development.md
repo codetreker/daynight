@@ -1443,8 +1443,10 @@ Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
 Windows and macOS ARM64, plus Node compatibility. Completion unit tests remain
-in the ordinary CLI suite. The Go module job runs its PostgreSQL-backed module
-gate and uploads coverage. The independent
+in the ordinary CLI suite. The single Go module job runs full vet and
+PostgreSQL-backed tests and uploads coverage. PR validation uses a bounded
+in-memory data directory in the isolated PostgreSQL service and Go's package
+scheduler. The independent
 `verify-server-startup-shutdown` job uses the same server selection, waits only
 for detection, and owns its PostgreSQL-backed command lifecycle tests and
 command-package coverage. Both coverage jobs provide isolated Azurite to execute
