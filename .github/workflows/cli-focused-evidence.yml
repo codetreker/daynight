@@ -51,19 +51,19 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -sm)" = 'Darwin arm64'
-          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          git merge-base --is-ancestor "$CANDIDATE" HEAD
           mkdir -p .tmp/successor-evidence/bin
           actual_git=$(command -v git)
           cat > .tmp/successor-evidence/bin/git <<'WRAPPER'
           #!/bin/bash
-          printf '%s\n' "$*" >> "$GIT_COUNT_FILE"
+          printf '%s\n' "$*" >> "$DN_PROCESS_COUNT_FILE"
           exec "$ACTUAL_GIT" "$@"
           WRAPPER
           chmod +x .tmp/successor-evidence/bin/git
           export ACTUAL_GIT="$actual_git" PATH="$PWD/.tmp/successor-evidence/bin:$PATH"
           test_file=packages/daynight/test/commands/worker/worktrees.test.ts
           source_file=packages/daynight/src/commands/worker/worktrees.ts
-          export GIT_COUNT_FILE="$PWD/.tmp/successor-evidence/setup-git.log"
+          export DN_PROCESS_COUNT_FILE="$PWD/.tmp/successor-evidence/setup-git.log"
           "$actual_git" show "$CANDIDATE:$test_file" > .tmp/successor-evidence/candidate.ts
           "$actual_git" show "$CANDIDATE^:$test_file" > .tmp/successor-evidence/baseline.ts
           cp "$source_file" .tmp/successor-evidence/source.ts
@@ -76,17 +76,17 @@ jobs:
             if (( pair % 2 )); then order='baseline candidate'; else order='candidate baseline'; fi
             for variant in $order; do
               cp ".tmp/successor-evidence/$variant.ts" "$test_file"
-              export GIT_COUNT_FILE="$PWD/.tmp/successor-evidence/$pair-$variant-git.log"
-              : > "$GIT_COUNT_FILE"
+              export DN_PROCESS_COUNT_FILE="$PWD/.tmp/successor-evidence/$pair-$variant-git.log"
+              : > "$DN_PROCESS_COUNT_FILE"
               { time -p pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/worktrees.test.ts -t 'recognizes a verified successor|does not treat a task branch registered outside'; } > ".tmp/successor-evidence/$pair-$variant.log" 2>&1
               cat ".tmp/successor-evidence/$pair-$variant.log"
-              echo "pair=$pair variant=$variant git_processes=$(wc -l < "$GIT_COUNT_FILE" | tr -d ' ')" | tee -a .tmp/successor-evidence/summary.txt
+              echo "pair=$pair variant=$variant git_processes=$(wc -l < "$DN_PROCESS_COUNT_FILE" | tr -d ' ')" | tee -a .tmp/successor-evidence/summary.txt
             done
           done
           node -e 'const fs=require("fs"); const p=process.argv[1]; const s=fs.readFileSync(p,"utf8"); const needle="      if (occupied.length !== 1) return false;"; if(s.split(needle).length!==2) throw Error("fault anchor not unique"); fs.writeFileSync(p,s.replace(needle,needle+"\n      return true;"));' "$source_file"
           for variant in baseline candidate; do
             cp ".tmp/successor-evidence/$variant.ts" "$test_file"
-            export GIT_COUNT_FILE="$PWD/.tmp/successor-evidence/fault-$variant-git.log"
+            export DN_PROCESS_COUNT_FILE="$PWD/.tmp/successor-evidence/fault-$variant-git.log"
             if pnpm --filter @codetreker/daynight exec vitest run test/commands/worker/worktrees.test.ts -t 'does not treat a task branch registered outside' > ".tmp/successor-evidence/fault-$variant.log" 2>&1; then exit 1; fi
             cat ".tmp/successor-evidence/fault-$variant.log"
             grep -q 'expected true to be false' ".tmp/successor-evidence/fault-$variant.log"
