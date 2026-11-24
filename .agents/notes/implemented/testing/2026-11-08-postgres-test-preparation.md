@@ -244,12 +244,19 @@ rollback or expired-code cleanup and reading the affected login back. The
 cleanup case runs before the other redemption cases seed their logins.
 The parent checks pool reuse after each case.
 
-The Project deletion claim and thread matrix shares one Store across its
-lock-order cases. Each trigger is limited to the case Project or Task. Its
-advisory gate belongs to a transaction, and both writers exit before the
-trigger and function are removed and their absence is checked. Case-specific
-records preserve independent committed-state checks. A failed case stops
-reuse.
+The Project deletion snapshot and retirement cases share one Store across
+independent Projects, Teams, principals and Task identifiers. The 130 Task and
+Worker-property rows are inserted in two batches, retaining the deleted and
+blocked Task and the real Worker and attachment observations. The mark fault
+trigger and function are removed and checked after each case. The deletion lock
+cases share a second Store; their transactions and waiters finish before the
+pool is checked. The claim and thread matrix retains its nested lock-order cases.
+Each trigger is limited to the case Project or Task. Its advisory gate belongs
+to a transaction, and both writers exit before the trigger and function are
+removed and their absence is checked. Case-specific records preserve independent
+committed-state checks. A failed case stops reuse. Historical corrupt Worker
+data and the column-rename fault retain separate schemas because their schema
+changes cannot be shared with these cases.
 
 The [Project Thread authorization matrices](../../../../packages/daynight-server/internal/core/store/postgres/project/authorization_contract_test.go)
 and [authorization source matrices](../../../../packages/daynight-server/internal/core/store/postgres/internal/project_access_contract_test.go)
