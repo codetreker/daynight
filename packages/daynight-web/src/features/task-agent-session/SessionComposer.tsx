@@ -50,6 +50,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   const [imageDrop, setImageDrop] = useState(false);
   const hasImages = !!attachments && (attachments.view.items.length > 0 || attachments.view.rejectedCandidates.length > 0 || attachments.view.overflowRejectedCount > 0);
   const imagesManaged = attachments?.view.active ?? false;
+  const currentAttachments = useRef(attachments); currentAttachments.current = attachments;
   const imageReadOnly = attachments?.view.loading || (attachments?.view.readOnly ?? attachments?.view.frozen ?? false);
   const imageEditable = active && canInteract && !imageReadOnly;
   useEffect(() => { if (!active) { dragDepth.current = 0; setImageDrop(false); } }, [active]);
@@ -457,7 +458,12 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     let accepted = false;
     setPending(true); latest.current.pending = true; setError(null);
     try { await onSend(imagesManaged ? submitted : submitted.trim()); accepted = true; if (!draft && localRevision.current === revision) setText(''); }
-    catch (cause) { errorKind.current = 'send'; setError(imagesManaged || cause instanceof Error && cause.message.startsWith('image_') ? imageMessages.issue(cause instanceof Error ? cause.message : '') : cause instanceof Error ? cause : m.failure); }
+    catch (cause) {
+      errorKind.current = 'send';
+      const message = imagesManaged || cause instanceof Error && cause.message.startsWith('image_') ? imageMessages.issue(cause instanceof Error ? cause.message : '') : cause instanceof Error ? cause : m.failure;
+      const draftError = currentAttachments.current?.view.active && currentAttachments.current.view.error;
+      setError(draftError && message === imageMessages.issue(draftError) ? null : message);
+    }
     finally {
       stopTracking(); focusCleanups.current.delete(stopTracking);
       setPending(false); latest.current.pending = false;

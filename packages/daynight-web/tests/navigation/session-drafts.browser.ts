@@ -889,6 +889,49 @@ test('releases the visible send freeze after same-owner authorization changes an
   await info.attach('authorization-generation-send-freeze', { body: JSON.stringify({ boundary, before, retained, originals, locks, commands: api.observations.commands }), contentType: 'application/json' });
 });
 
+test('reports admission refusal after a committed dispatch claim and preserves the draft for manual retry', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), image = file('Refused.png');
+  await openDraft(page);
+  const textbox = page.getByRole('textbox'), send = page.getByRole('button', { name: 'Send', exact: true });
+  await textbox.fill('retain this caption'); await page.locator('input[type=file]').setInputFiles(image); await ready(page, 1);
+  const before = await saved(page);
+  await page.evaluate(() => window.sessionDraftHarness.storage.holdAfterDispatchClaim());
+  await send.click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.storage.dispatchClaimArrivals())).toBe(1);
+  const claimed = await saved(page), locks = await page.evaluate(() => navigator.locks.query());
+  expect(claimed?.submission?.state).toBe('dispatch_claimed');
+  expect(locks.held?.some(lock => lock.name?.endsWith(':send'))).toBe(true);
+  expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.setCanSend(false));
+  await page.evaluate(() => window.sessionDraftHarness.storage.releaseDispatchClaim());
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.sendsFinished)).toBe(1);
+  await expect.poll(async () => (await current(page)).error).toBe('image_session_unavailable');
+  await expect(page.locator('.session-error')).toHaveCount(1);
+  await expect(page.locator('.session-error')).toContainText('Wait for the Session to reconnect before sending.');
+  await expect(textbox).toBeEditable(); await expect(textbox).toHaveValue('retain this caption');
+  await expect(page.getByRole('button', { name: 'Remove image: Refused.png', exact: true })).toBeEnabled();
+  await expect(send).toBeDisabled();
+  const restored = await saved(page), originals = await page.evaluate(() => window.sessionDraftHarness.originals());
+  expect(restored?.submission).toBeNull(); expect(restored?.frozen).toBeNull();
+  expect(restored?.editable?.draftId).toBe(before?.editable?.draftId);
+  expect(restored?.editable?.text).toBe('retain this caption');
+  expect(originals[0]?.sha256).toBe(sha256(image.buffer));
+  expect(api.observations.commands).toEqual([]); expect(api.observations.queries).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.setCanSend(true));
+  await expect(send).toBeEnabled(); expect(api.observations.commands).toEqual([]);
+  await send.click();
+  await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(async () => (await saved(page))?.submission).toBeNull();
+  await expect(textbox).toHaveValue('');
+  const command = api.observations.commands[0]!;
+  expect(command.operationId).not.toBe(claimed?.submission?.operationId);
+  expect(command.kind).toBe('send_message');
+  if (command.kind === 'send_message') expect(command.payload.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'text', text: 'retain this caption' }), expect.objectContaining({ type: 'image', sha256: sha256(image.buffer) })]));
+  expect(api.observations.commands).toHaveLength(1); expect(api.observations.queries).toEqual([]);
+  expect(await page.evaluate(() => window.sessionDraftHarness.pageErrors)).toEqual([]);
+  await info.attach('claimed-admission-refusal', { body: JSON.stringify({ boundary: `${boundary} A barrier holds the successful native IndexedDB claim result while the actual Web Lock remains held; canSend changes without changing owner or authorization generation.`, before, claimed, restored, originals, locks, observations: api.observations }), contentType: 'application/json' });
+});
+
 test('refuses a second tab while the native send lock is held and sends once after release', async ({ page, context }, info) => {
   const api = await installDraftAPI(context); await openDraft(page); await page.locator('input[type=file]').setInputFiles(file()); await ready(page, 1);
   const peer = await context.newPage(); await openDraft(peer); await ready(peer, 1);

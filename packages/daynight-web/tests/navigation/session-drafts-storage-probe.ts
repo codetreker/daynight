@@ -117,6 +117,16 @@ export function createDraftStorageProbe(identity: () => DraftOwnerIdentity) {
         return originalClaimDispatch.apply(this, args);
       };
     },
+    holdAfterDispatchClaim: () => {
+      if (releaseClaim) throw new Error('The dispatch claim barrier is already armed.');
+      claimArrivals = 0;
+      const held = new Promise<void>(resolve => { releaseClaim = resolve; });
+      SessionDraftStore.prototype.claimDispatch = async function (this: SessionDraftStore, ...args) {
+        const claim = await originalClaimDispatch.apply(this, args);
+        if (claim && args[0].ownerKey === draftOwnerKey(identity())) { claimArrivals++; await held; }
+        return claim;
+      };
+    },
     dispatchClaimArrivals: () => claimArrivals,
     releaseDispatchClaim: () => { SessionDraftStore.prototype.claimDispatch = originalClaimDispatch; releaseClaim?.(); releaseClaim = null; },
     armFault: (kind: Fault) => {

@@ -67,6 +67,7 @@ window.sessionDraftHarness = {
   originalReads: () => [...originalReadBarrier?.reads ?? []],
   releaseOriginalRead: () => { originalReadBarrier?.release(); },
   setCapabilities: async value => { context = { ...context, capabilities: { ...capabilities, ...value } }; await controller.sync(); },
+  setCanSend: async value => { context = { ...context, canSend: value }; await controller.sync(); },
   setAuthorizationGeneration: async value => { context = { ...context, authorizationGeneration: value }; await controller.sync(); },
   holdCapabilities: () => { if (capabilityBarrier) throw new Error('The capability barrier is already armed.'); const held = Promise.withResolvers<void>(); capabilityBarrier = { arrivals: 0, held: held.promise, release: () => held.resolve() }; },
   capabilityArrivals: () => capabilityBarrier?.arrivals ?? 0,
@@ -107,6 +108,7 @@ declare global {
       originals(): Promise<{ id: string; label: string; size: number | null; mediaType: string | null; sha256: string | null }[]>;
       holdOriginalRead(): void; originalReads(): string[]; releaseOriginalRead(): void;
       setCapabilities(value: Partial<ImageCapabilities>): Promise<void>; holdWrites(): void; writesArrived(): number; releaseWrites(): void;
+      setCanSend(value: boolean): Promise<void>;
       setAuthorizationGeneration(value: string): Promise<void>; holdCapabilities(): void; capabilityArrivals(): number; releaseCapabilities(): void; sendsFinished: number;
       holdLock(purpose: string): Promise<void>; releaseLock(): void; lockName(purpose: string): Promise<string>;
       pageErrors: string[]; plainCommands: string[]; plainMessages: string[]; usage(): ReturnType<typeof pageImageStore.usage>;

@@ -51,6 +51,17 @@ it('allows a prepared image-only message and preserves mixed-message whitespace'
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith(''));
 });
 
+it.each([null, 'image_session_unavailable', 'image_draft_failed'])('shows a rejected send once while retaining a distinct draft error: %s', async draftError => {
+  const props = setup('retained message', true, { error: draftError });
+  props.onSend.mockRejectedValue(new Error('image_session_unavailable'));
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+  expect(props.onSend).toHaveBeenCalledOnce();
+  expect(screen.getAllByRole('alert')).toHaveLength(draftError === 'image_draft_failed' ? 2 : 1);
+  expect(screen.getByRole('textbox')).toHaveValue('retained message');
+  expect(screen.getByText('reference.png')).toBeInTheDocument();
+});
+
 it('keeps the complete message blocked when an image failed', () => {
   const props = setup('Explain this image', false);
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();

@@ -24,6 +24,14 @@ with CAS protect concurrent tabs. Web Locks coordinate network mutations, while
 a durable single transition grants dispatch ownership. Unknown results retain
 the original operation and block another send.
 
+A post-claim admission refusal reaches the caller only after the original dispatch
+claim is successfully revoked and the frozen draft is restored. The exact admission
+reason survives through the current controller epoch; replacement owners receive
+neither the old snapshot nor its error. Failed restoration preserves the original
+responsibility and exposes its storage error. The controller rejects the send Promise
+when it publishes a current failure, so Composer cannot treat it as accepted. The
+attachment area owns a matching draft error without a duplicate Composer alert.
+
 Selected originals enter the same transaction as their ordered pending items,
 before asynchronous image validation. The Blob record distinguishes an
 unvalidated original from verified image metadata; storing bytes never grants
@@ -210,6 +218,11 @@ version is admitted, preserving existing image frames without authorizing new
 bindings.
 
 ## Alternatives
+
+**Restore the draft and fulfill a refused send.** Persistence recovery alone does
+not communicate that no message was sent. The caller treats fulfillment as success
+and may run acceptance-only focus or input handling. Current-epoch rejection
+preserves both the recovered content and the unsuccessful send result.
 
 **Clear a shared preflight flag when authorization changes.** A late completion
 from the invalidated send could also clear a newer send's flag. Attempt identity

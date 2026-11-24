@@ -14,6 +14,59 @@ async function savedText() {
   return { store, saved };
 }
 describe('original image submission observations', () => {
+  it.each(['image_session_unavailable', 'image_capability_changed', 'image_command_unavailable'])('reports %s only after the winning claim restores the whole draft', async issue => {
+    const { store, saved } = await savedText();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const claim = store.claimDispatch.bind(store);
+    vi.spyOn(store, 'claimDispatch').mockImplementationOnce(async (...args) => { const result = await claim(...args); entered.resolve(); await release.promise; return result; });
+    let admission: string | null = null, nextCommand = command;
+    const dispatch = vi.fn(async () => operation('provider_accepted')), changed = vi.fn();
+    const sender = new DraftSender({ store, locks: null, isCurrent: () => true, admit: () => admission, command: () => nextCommand, dispatch, query: vi.fn(), changed });
+    const sending = sender.send(saved.owner);
+    const rejected = expect(sending).rejects.toThrow(issue);
+    try {
+      await entered.promise; admission = issue;
+      expect(await store.read(saved.owner)).toMatchObject({ editable: null, submission: { state: 'dispatch_claimed' } });
+      release.resolve(); await rejected;
+      const restored = await store.read(saved.owner);
+      expect(restored).toMatchObject({ editable: { text: 'a', draftId: saved.editable!.draftId }, submission: null, executionBlocked: false });
+      expect(changed).toHaveBeenLastCalledWith(restored); expect(dispatch).not.toHaveBeenCalled();
+      admission = null; nextCommand = { ...command, operationId: crypto.randomUUID(), requestId: crypto.randomUUID() }; expect(dispatch).not.toHaveBeenCalled();
+      dispatch.mockImplementationOnce(async () => ({ ...operation('provider_accepted'), operationId: nextCommand.operationId }));
+      await sender.send(saved.owner); expect(dispatch).toHaveBeenCalledOnce(); expect(dispatch).toHaveBeenCalledWith(nextCommand);
+    } finally { release.resolve(); await rejected; }
+  });
+  it.each(['claim', 'restore'] as const)('preserves the original responsibility and storage error when %s confirmation fails', async phase => {
+    const { store, saved } = await savedText(), fault = new Error('storage confirmation lost');
+    let admission: string | null = null;
+    const claim = store.claimDispatch.bind(store);
+    vi.spyOn(store, 'claimDispatch').mockImplementationOnce(async (...args) => {
+      const result = await claim(...args); admission = 'image_session_unavailable';
+      if (phase === 'claim') throw fault;
+      return result;
+    });
+    if (phase === 'restore') vi.spyOn(store, 'refuseClaimed').mockRejectedValueOnce(fault);
+    const dispatch = vi.fn(), changed = vi.fn(), query = vi.fn(async () => operation('unknown'));
+    const sender = new DraftSender({ store, locks: null, isCurrent: () => true, admit: () => admission, command: () => command, dispatch, query, changed });
+    await expect(sender.send(saved.owner)).rejects.toBe(fault);
+    expect(await store.read(saved.owner)).toMatchObject({ editable: null, frozen: { text: 'a' }, submission: { operationId: command.operationId, state: 'dispatch_claimed' }, executionBlocked: true });
+    expect(dispatch).not.toHaveBeenCalled(); expect(changed).toHaveBeenCalledOnce();
+    admission = null; await sender.send(saved.owner);
+    expect(query).toHaveBeenCalledWith({ sessionId: command.sessionId, claimId: command.claimId, executionGeneration: command.executionGeneration }, command.operationId, undefined);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+  it.each(['claim', 'restore', 'publish'] as const)('does not publish an old refusal after ownership changes during %s', async phase => {
+    const { store, saved } = await savedText();
+    let current = true, admission: string | null = null;
+    const claim = store.claimDispatch.bind(store), restore = store.refuseClaimed.bind(store);
+    vi.spyOn(store, 'claimDispatch').mockImplementationOnce(async (...args) => { const result = await claim(...args); admission = 'image_session_unavailable'; if (phase === 'claim') current = false; return result; });
+    vi.spyOn(store, 'refuseClaimed').mockImplementationOnce(async (...args) => { const result = await restore(...args); if (phase === 'restore') current = false; return result; });
+    const dispatch = vi.fn(), changed = vi.fn(snapshot => { if (!snapshot.submission && phase === 'publish') current = false; });
+    const sender = new DraftSender({ store, locks: null, isCurrent: () => current, admit: () => admission, command: () => command, dispatch, query: vi.fn(), changed });
+    await expect(sender.send(saved.owner)).resolves.toBeUndefined();
+    expect(await store.read(saved.owner)).toMatchObject({ editable: { text: 'a' }, submission: null });
+    expect(changed).toHaveBeenCalledTimes(phase === 'publish' ? 2 : 1); expect(dispatch).not.toHaveBeenCalled();
+  });
   it.each([false, true])('rejects malformed local commands before dispatch and preserves the draft (prepared=%s)', async prepared => {
     const { store, saved } = await savedText(), malformed: SessionCommand = { ...command, contentRevision: 2 };
     if (prepared) await store.freeze(saved.owner, { draftId: saved.editable!.draftId, expectedStoreVersion: saved.editable!.storeVersion, command: malformed });
