@@ -8,7 +8,8 @@ The ordinary Go module check spent time compiling separate vet and coverage
 graphs. On slower runners its two-package schedule also left a long tail after
 the PostgreSQL Store root finished. Database fixtures perform real schema
 creation, catalog work and transactions, which compete with test compilation
-for the resources of a single hosted runner.
+for the resources of a single hosted runner. The module check also prepared its
+authentication fixture after its independent script contract tests completed.
 
 ## Decision
 
@@ -29,6 +30,20 @@ concurrency stay at two, with the existing race policy for each entry. The
 ordinary command vet also uses four package slots in PR CI; lifecycle coverage
 retains two.
 
+In PR CI the module check overlaps the Node script contract tests with the
+fixed UniAuth fixture preparation and its explicit `testauth` invocation. The
+contract tests use isolated temporary fixtures; the authentication stage owns
+the module Go cache until both stages finish. Both must succeed and the fixture
+must be read back before the ordinary cache cleanup and coverage invocation.
+The Linux PR entry uses a Python subreaper to collect detached test descendants
+on cancellation or deadline expiry. It allows two seconds for graceful cleanup
+before forcibly collecting the remaining descendants, including during Go
+coverage. Local and main validation retain the sequential preparation order.
+
+The module job declares PostgreSQL before Redis and Azurite. The hosted runner
+can start PostgreSQL health checks while it starts the other services, while
+Actions continues to own service readiness, failure propagation and cleanup.
+
 ## Alternatives
 
 **Vet the full module in a second build graph.** This repeats dependency
@@ -40,6 +55,13 @@ and new binaries must interoperate when coordinating schema initialization.
 Keeping the lock also preserves the real database contention exercised by
 the tests.
 
+**Keep preparation sequential.** This avoids overlapping resource use, but
+leaves the independent contract tests and authentication preparation on the
+same critical path.
+
+**Start PostgreSQL last.** Its readiness wait follows the other service starts
+and can extend the setup critical path.
+
 ## Consequences
 
 The module job records phase timings and the usual raw Go test evidence.
@@ -48,3 +70,9 @@ without putting its separate compile graph on the module job's critical path.
 Memory-backed PostgreSQL consumes runner memory up to its configured limit.
 The hosted check establishes elapsed time and exercises the complete suite
 under the selected package concurrency.
+Parallel preparation adds process and cancellation coordination. Its stage
+timings expose resource contention, and its failure paths do not admit an
+incomplete fixture into the covered Go suite. The PR entry requires Python 3 and
+Linux procfs; a failed descendant cleanup is reported as a validation failure.
+The service startup overlap depends on hosted runner behavior and does not
+guarantee a fixed reduction in total job time.

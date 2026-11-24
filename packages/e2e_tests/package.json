@@ -6,8 +6,10 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test:harness": "node --test test/*.test.ts",
+    "test:harness": "node --test --test-concurrency=3 test/*.test.ts tests/subtask-compat-gateway-check.ts tests/subtask-compat-process-check.ts tests/subtask-compat-interruption-check.ts tests/subtask-compat-artifact-check.ts tests/subtask-compat-worker-observer-check.ts",
+    "test:auth-interruption": "node --test tests/subtask-compat-auth-browser-check.ts tests/subtask-compat-auth-browser-success-check.ts",
     "test": "node src/run.ts",
+    "test:subtask-compat": "node src/subtask-compat.ts",
     "cleanup": "node src/ci-cleanup.ts"
   },
   "devDependencies": {

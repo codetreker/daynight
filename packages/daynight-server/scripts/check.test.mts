@@ -45,6 +45,7 @@ test('PR coverage alone receives the database launcher', async (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(trace, /go-cov-capture.mts module-pr /);
+  assert.match(trace, /node --test [^\n]*scripts\/go-test-database-exec.test.mts/);
   const commands = trace.split('\n');
   const coveredTests = commands.filter(line => line.startsWith('go test -exec='));
   assert.equal(coveredTests.length, 1);
@@ -52,6 +53,21 @@ test('PR coverage alone receives the database launcher', async (t) => {
   assert.doesNotMatch(coveredTests[0]!.split(' GOFLAGS=')[1]!, /-exec=/);
   assert.doesNotMatch(trace, /^go vet /m);
   assert.doesNotMatch(commands.find(line => line.startsWith('go test -count=1'))!, /-exec=/);
+});
+
+test('PR preparation failures prevent the covered invocation', { skip: process.platform !== 'linux' }, async (t) => {
+  for (const [extra, expected] of [
+    [{ CONTRACT_EXIT: '17' }, 17],
+    [{ PREP_EXIT: '21' }, 21],
+    [{ TESTAUTH_EXIT: '22' }, 22],
+    [{ MISSING_FIXTURE: '1' }, 1],
+  ] as const) {
+    const { result, trace } = await runValidation(t, 'check', 'true', {
+      GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/42/merge', ...extra,
+    });
+    assert.equal(result.status, expected, result.stderr);
+    assert.doesNotMatch(trace, /(?:^|\n)go-cov |node scripts\/coverage.mts/);
+  }
 });
 
 test('module check propagates fixture and covered test failures', async (t) => {

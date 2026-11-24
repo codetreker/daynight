@@ -36,14 +36,26 @@ const liveJournal = async (recoveryLimit = 3, windowsBoundary = false) => {
     nativeStopped: f.snapshot.nativeStopped, stoppedAt: f.snapshot.stoppedAt, startup: f.snapshot.startup!, capabilities: f.snapshot.capabilities }); }
   finally { journal.close(); }
   const db = new Database(file);
-  try { restoreControllerJournalVersion(db, 16); db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid); }
+  try {
+    restoreControllerJournalVersion(db, 16);
+    db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect(db.prepare("SELECT owner_pid FROM execution WHERE id=1").get()).toEqual({ owner_pid: process.pid });
+  }
   finally { db.close(); }
   const bytes = readFileSync(file);
-  expect(() => lifecycle.readControllerSnapshot(file)).toThrow();
-  expect(() => lifecycle.readCurrentControllerSnapshot(file, f.source.ticket)).toThrow(/current journal format/);
-  expect(readFileSync(file)).toEqual(bytes);
   return { ...f, file, bytes };
 };
+
+it("rejects both reads of a live v16 journal without changing its bytes", async () => {
+  const f = await liveJournal();
+  let failure: unknown;
+  try { lifecycle.readControllerSnapshot(f.file); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ kind: "upgrade-blocked", cause: { kind: "upgrade-blocked", context: { phase: "owner-admission" } } });
+  expect(readFileSync(f.file)).toEqual(f.bytes);
+  expect(() => lifecycle.readCurrentControllerSnapshot(f.file, f.source.ticket)).toThrow(/current journal format/);
+  expect(readFileSync(f.file)).toEqual(f.bytes);
+});
 
 it("stops a live v16 boundary while the original cancelled Task writer remains unjoined", async () => {
   const f = await liveJournal(), store = openWorkerStore(createMemoryDatabase()), root = new AbortController();

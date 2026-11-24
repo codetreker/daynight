@@ -20,14 +20,23 @@ if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
   capture_scope=module-pr
 fi
 
-node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts scripts/go-test-database-exec.test.mts
-
-started=$SECONDS
-DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-export DAYNIGHT_TEST_UNIAUTH_FIXTURE
-# Go's ./... discovery excludes testdata; verify this shared fixture explicitly.
-GOFLAGS="$unit_go_flags" go test -count=1 -timeout=30s ./testdata/testauth
-printf 'Authentication fixture validation completed in %ss\n' "$((SECONDS - started))"
+if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request && "$(uname -s)" == Linux ]]; then
+  fixture_dir="$(mktemp -d "$TMPDIR/check-fixture.XXXXXXXX")"
+  trap 'rm -rf -- "$fixture_dir"' EXIT
+  UNIT_GO_FLAGS="$unit_go_flags" node scripts/parallel-check-preparation.mts "$fixture_dir/result"
+  DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(cat -- "$fixture_dir/result")"
+  rm -rf -- "$fixture_dir"
+  trap - EXIT
+  export DAYNIGHT_TEST_UNIAUTH_FIXTURE
+else
+  node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts scripts/go-test-database-exec.test.mts scripts/parallel-check-preparation.test.mts
+  started=$SECONDS
+  DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
+  export DAYNIGHT_TEST_UNIAUTH_FIXTURE
+  # Go's ./... discovery excludes testdata; verify this shared fixture explicitly.
+  GOFLAGS="$unit_go_flags" go test -count=1 -timeout=30s ./testdata/testauth
+  printf 'Authentication fixture validation completed in %ss\n' "$((SECONDS - started))"
+fi
 # Database state is outside Go's test-result cache key.
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache

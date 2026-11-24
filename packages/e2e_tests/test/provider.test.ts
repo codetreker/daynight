@@ -58,7 +58,7 @@ const request = async (provider: Provider, certificate: Buffer, hostname: string
 };
 
 const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cleanup: () => Promise<void> }> => {
-  const temporary = path.resolve(import.meta.dirname, "../../../..", ".tmp");
+  const temporary = path.resolve(import.meta.dirname, "../../..", ".tmp");
   await mkdir(temporary, { recursive: true });
   const directory = await mkdtemp(path.join(temporary, "e2e-provider-test-"));
   const certificatePath = path.join(directory, "provider.pem");

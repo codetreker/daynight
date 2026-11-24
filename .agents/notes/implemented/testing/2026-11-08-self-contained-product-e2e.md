@@ -34,6 +34,11 @@ against the same persisted tasks. The targeted refusal demonstrates that an
 edited credential is effective across assembled entry points; detailed refusal
 and concurrency matrices remain with their owning layers.
 
+The ordinary subtask journey verifies the same repair relationship across Web,
+CLI and MCP, including the parent's refusal while its repair is unfinished. That
+refusal connects the cross-client repair and reverification journey; the full
+lifecycle and concurrency matrices remain with their module and store owners.
+
 Every run owns an internal database network, a private ingress bridge, a
 PostgreSQL instance and data volume, an ephemeral Redis monitoring store, an application container, private
 credentials and storage. Public addresses are
@@ -91,6 +96,9 @@ original process-group identity are persisted separately, so a failed Playwright
 run can verify that the recorded browser group stopped without relying on
 `browser.close()` alone. A missing or conflicting proof keeps the responsibility
 visible instead of turning process absence into a guessed successful cleanup.
+The guarded authentication bootstrap records a prepared launch against its
+original launcher. That launcher can record a cancellation before submission as
+never started; after submission, a missing browser proof remains unconfirmed.
 The product E2E guide owns the recovery procedure.
 
 The auxiliary recovery harness waits for the payload to publish its PID and
@@ -112,7 +120,12 @@ the normal journey fail while preserving the original claim.
 
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
-remain with their established owners. Preparation may retrieve pinned build
+remain with their established owners. The provider harness creates certificates
+under the current checkout's `.tmp` so worktree runs retain their own fixtures.
+The harness permits three test files to run concurrently; recovery cases retain
+independent run directories, locks and process evidence. This reduces serialized
+waiting without sharing mutable fixture state; the CI step remains time-bounded.
+Preparation may retrieve pinned build
 dependencies and sources; running tests require no remote service.
 
 ## Alternatives

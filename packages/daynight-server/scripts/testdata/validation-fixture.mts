@@ -20,7 +20,7 @@ export const runValidation = async (t: TestContext, entry: 'check' | 'startup-sh
   await mkdir(scripts);
   await mkdir(tools);
   await mkdir(join(fixture, 'cmd/daynight-server'), { recursive: true });
-  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts', 'command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts', 'go-test-database-exec.sh']) {
+  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts', 'command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts', 'parallel-check-preparation.mts', 'go-test-database-exec.sh']) {
     await copyFile(join(moduleRoot, 'scripts', file), join(scripts, file));
   }
   await chmod(join(scripts, 'go-test-database-exec.sh'), 0o755);
@@ -63,8 +63,15 @@ esac
   const fakeNode = `#!/usr/bin/env bash
 set -eu
 printf 'node %s\\n' "$*" >> "$TRACE"
-if [[ "$1" == --input-type=module || "$1" == *coverage.mts || "$1" == *command-timeout.mts || "$1" == *go-cov-capture.mts ]]; then exec ${shellQuote(process.execPath)} "$@"; fi
-if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then printf '%s\\n' fixture; fi
+if [[ "$1" == --input-type=module || "$1" == *coverage.mts || "$1" == *command-timeout.mts || "$1" == *go-cov-capture.mts || "$1" == *parallel-check-preparation.mts ]]; then exec ${shellQuote(process.execPath)} "$@"; fi
+if [[ "$1" == --test ]]; then exit "\${CONTRACT_EXIT:-0}"; fi
+if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then
+  if [[ -n "\${PREP_EXIT-}" ]]; then exit "$PREP_EXIT"; fi
+  if [[ -n "\${MISSING_FIXTURE-}" ]]; then printf '%s\\n' "$GOBIN/missing"; exit 0; fi
+  printf '#!/bin/sh\\nexit 0\\n' > "$GOBIN/fixture"
+  chmod +x "$GOBIN/fixture"
+  printf '%s\\n' "$GOBIN/fixture"
+fi
 `;
   await writeFile(join(tools, 'go'), fakeGo);
   await writeFile(join(tools, 'node'), fakeNode);

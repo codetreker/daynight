@@ -670,7 +670,7 @@ test("PR Azure validation uses the current module capture while main retains the
   const evidence = steps.find(step => step.includes("name: Validate Azure tests in the covered invocation\n"))!;
   const separate = steps.find(step => step.includes("name: Validate Azure storage and startup\n"))!;
   assert.ok(steps.indexOf(validation) < steps.indexOf(evidence));
-  assert.match(validation, /rm -rf \.tmp\/go-test-evidence\/module\n          bash scripts\/check\.sh --coverage/);
+  assert.match(validation, /rm -rf \.tmp\/go-test-evidence\/module\n          if \[\[ "\$GITHUB_EVENT_NAME" == pull_request \]\]; then\n            exec python3 scripts\/reap-validation\.py 1800000 2000 bash scripts\/check\.sh --coverage\n          fi\n          bash scripts\/check\.sh --coverage/);
   assert.match(evidence, /^        if: \$\{\{ github.event_name == 'pull_request' \}\}$/m);
   assert.match(evidence, /node --test scripts\/azure-evidence\.test\.mts\n          node scripts\/azure-evidence\.mts \.tmp\/go-test-evidence\/module/);
   assert.match(separate, /^        if: \$\{\{ github.event_name != 'pull_request' \}\}$/m);
