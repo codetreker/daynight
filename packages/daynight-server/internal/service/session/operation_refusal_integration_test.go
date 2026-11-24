@@ -10,9 +10,10 @@ import (
 )
 
 func TestServiceOperationRefusalProofSurvivesRestart(t *testing.T) {
+	db := newServiceStore(t)
 	for _, stage := range []string{"poll", "begin", "controller-receipt", "controller-reconcile", "legacy"} {
-		t.Run(stage, func(t *testing.T) {
-			f := newServiceFixture(t)
+		if !t.Run(stage, func(t *testing.T) {
+			f := newServiceFixtureWithStore(t, db)
 			v := f.connectWeb(t, f.registerWeb(t))
 			synchronizeServiceSession(t, f, v)
 			command := serviceMessage(v)
@@ -103,6 +104,9 @@ func TestServiceOperationRefusalProofSurvivesRestart(t *testing.T) {
 				}
 			})
 			assertReceipt(New(f.db, engine))
-		})
+		}) {
+			t.FailNow()
+		}
+		requireNoServiceLeases(t, db)
 	}
 }

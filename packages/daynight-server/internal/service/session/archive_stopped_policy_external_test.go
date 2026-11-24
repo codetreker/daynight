@@ -34,11 +34,12 @@ import (
 )
 
 func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
+	db := newArchiveStore(t)
 	for _, scenario := range []string{"wrong-policy", "missing-body-capture", "shared-tool-image", "capacity", "matching-read-lease", "other-read-lease"} {
-		t.Run(scenario, func(t *testing.T) {
+		if !t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
-			db, owner, project, task, reg := archiveFixture(t)
+			db, owner, project, task, reg := archiveFixtureWithStore(t, db)
 			files, err := local.New(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -158,6 +159,7 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 			var captureID string
 			var captureBefore sp.ImageCaptureReceipt
 			var readGate io.Closer
+			var otherLeaseID string
 			t.Cleanup(func() {
 				if readGate != nil {
 					if e := readGate.Close(); e != nil {
@@ -218,6 +220,9 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 							}
 						}
 						leaseID := uuid.NewString()
+						if scenario == "other-read-lease" {
+							otherLeaseID = leaseID
+						}
 						readGate, e = files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+leaseID)
 						if e != nil {
 							t.Fatal(e)
@@ -392,6 +397,21 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 					t.Fatalf("shared original changed: %q", got)
 				}
 			}
-		})
+			if otherLeaseID != "" {
+				if err = readGate.Close(); err != nil {
+					t.Fatal(err)
+				}
+				readGate = nil
+				if _, err = db.Pool.Exec(ctx, `DELETE FROM session_resource_leases WHERE session_id=$1 AND lease_id=$2`, snapshot.SessionID, otherLeaseID); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}) {
+			t.FailNow()
+		}
+		var remaining int
+		if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM session_resource_leases`).Scan(&remaining); err != nil || remaining != 0 {
+			t.Fatalf("leases remain before fixture reuse: %d %v", remaining, err)
+		}
 	}
 }

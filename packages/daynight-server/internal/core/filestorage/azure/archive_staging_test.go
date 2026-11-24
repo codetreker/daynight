@@ -677,9 +677,7 @@ func TestArchiveExpiredLeaseStopsReader(t *testing.T) {
 	}
 }
 
-// Exercise the SDK lease renewal timer with independent success, refusal and
-// expired leases concurrently. The test waits for requests or cancellation,
-// not an assumed ordering between the three goroutines.
+// Drive independent success, refusal and expired leases through the SDK.
 func TestArchiveLeaseRenewal(t *testing.T) {
 	success := &archiveHTTP{exists: true, renewEvents: make(chan struct{}, 1)}
 	failure := &archiveHTTP{exists: true, renewStatus: 403, renewEvents: make(chan struct{}, 1)}
@@ -687,7 +685,19 @@ func TestArchiveLeaseRenewal(t *testing.T) {
 	_, good, _ := archiveControl(t, success)
 	_, bad, _ := archiveControl(t, failure)
 	_, stale, _ := archiveControl(t, expired)
-	for _, h := range []*archiveStaging{good, bad, stale} {
+	ticks := []chan time.Time{make(chan time.Time), make(chan time.Time), make(chan time.Time)}
+	renewed := make(chan struct{}, 1)
+	for i, h := range []*archiveStaging{good, bad, stale} {
+		name, _ := h.name(objID)
+		var onRenewed func()
+		if i == 0 {
+			onRenewed = func() { renewed <- struct{}{} }
+		}
+		l, err := newArchiveLeaseWithTicks(t.Context(), h.storage.client.NewBlobClient(name), ticks[i], onRenewed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.leases[name] = l
 		if _, err := h.Observe(t.Context(), objID, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -702,6 +712,13 @@ func TestArchiveLeaseRenewal(t *testing.T) {
 	staleLease.mu.Unlock()
 	ctx, cancel := context.WithTimeout(t.Context(), 35*time.Second)
 	defer cancel()
+	for _, tick := range ticks {
+		select {
+		case tick <- time.Now():
+		case <-ctx.Done():
+			t.Fatal("renewal loop did not accept tick")
+		}
+	}
 	select {
 	case <-success.renewEvents:
 	case <-ctx.Done():
@@ -733,18 +750,17 @@ func TestArchiveLeaseRenewal(t *testing.T) {
 		t.Fatal("expired lease was renewed")
 	default:
 	}
-	for {
-		goodLease.mu.Lock()
-		extended := goodLease.until.After(originalDeadline)
-		goodLease.mu.Unlock()
-		if extended {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("renewal did not extend deadline")
-		case <-time.After(5 * time.Millisecond):
-		}
+	// The handler event precedes the SDK response and deadline update.
+	select {
+	case <-renewed:
+	case <-ctx.Done():
+		t.Fatal("successful renewal did not finish")
+	}
+	goodLease.mu.Lock()
+	extended := goodLease.until.After(originalDeadline)
+	goodLease.mu.Unlock()
+	if !extended {
+		t.Fatal("renewal did not extend deadline")
 	}
 	if _, err := good.Observe(t.Context(), objID, 0); err != nil {
 		t.Fatalf("renewed lease unavailable: %v", err)

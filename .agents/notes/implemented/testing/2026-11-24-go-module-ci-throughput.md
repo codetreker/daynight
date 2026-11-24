@@ -38,6 +38,10 @@ on cancellation or deadline expiry. It allows two seconds for graceful cleanup
 before forcibly collecting the remaining descendants, including during Go
 coverage. Local and main validation retain the sequential preparation order.
 
+The module job declares PostgreSQL before Redis and Azurite. The hosted runner
+can start PostgreSQL health checks while it starts the other services, while
+Actions continues to own service readiness, failure propagation and cleanup.
+
 ## Alternatives
 
 **Vet the full module in a second build graph.** This repeats dependency
@@ -53,6 +57,9 @@ the tests.
 leaves the independent contract tests and authentication preparation on the
 same critical path.
 
+**Start PostgreSQL last.** Its readiness wait follows the other service starts
+and can extend the setup critical path.
+
 ## Consequences
 
 The module job records phase timings and the usual raw Go test evidence.
@@ -65,3 +72,5 @@ Parallel preparation adds process and cancellation coordination. Its stage
 timings expose resource contention, and its failure paths do not admit an
 incomplete fixture into the covered Go suite. The PR entry requires Python 3 and
 Linux procfs; a failed descendant cleanup is reported as a validation failure.
+The service startup overlap depends on hosted runner behavior and does not
+guarantee a fixed reduction in total job time.
