@@ -63,6 +63,33 @@ test("rejects mixed hosted origins and groups while preserving per-job rerun att
   assert.throws(() => verify(mixed), /Mixed execution origins/);
 });
 test("verifies a synthetic checkout separately from its PR head, native sentinels and retained case states", () => verify(fixture()));
+test("requires every macOS portable pass to pass on Linux with unique suite and case identities", () => {
+  const e = fixture();
+  const portableModule = (label: string) => e[label].results.testResults.find((x: any) => x.name.endsWith(paths[0]));
+  for (const label of ["linux-full", "macos-full"]) {
+    portableModule(label).assertionResults.push({ ancestorTitles: ["protocol"], title: "second case", status: "passed", failureMessages: [] });
+    e[label].results.numTotalTests++; e[label].results.numPassedTests++;
+  }
+  verify(e);
+  const missing = structuredClone(e);
+  missing["linux-full"].results.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults.pop();
+  missing["linux-full"].results.numTotalTests--; missing["linux-full"].results.numPassedTests--;
+  assert.throws(() => verify(missing), /Portable case did not pass on Linux/);
+  const skipped = structuredClone(e), report = skipped["linux-full"].results;
+  report.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults[1].status = "skipped";
+  report.numPassedTests--; report.numPendingTests++;
+  assert.throws(() => verify(skipped), /Portable case did not pass on Linux/);
+  for (const label of ["linux-full", "macos-full"]) {
+    const duplicate = structuredClone(e), result = duplicate[label].results;
+    const cases = result.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults;
+    cases.push({ ...cases[0], status: "skipped" }); result.numTotalTests++; result.numPendingTests++;
+    assert.throws(() => verify(duplicate), /Duplicate portable test identity/);
+  }
+  const empty = structuredClone(e), mac = empty["macos-full"].results;
+  for (const a of mac.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults) a.status = "skipped";
+  mac.numPassedTests -= 2; mac.numPendingTests += 2;
+  assert.throws(() => verify(empty), /Portable file did not pass on macOS/);
+});
 test("rejects stale, duplicate, malformed and empty portable classifications", () => {
   const blob = "1".repeat(40), good = { path: paths[0], blob, reason: "DTO" };
   const guards = Object.fromEntries(["packages/daynight/src", "packages/daynight/test", "packages/daynight/scripts", "packages/daynight/package.json", "packages/daynight/vitest.config.ts", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/vitest.focused-evidence.config.ts", "patches", ".github/workflows/cli-focused-evidence.yml"].map(path => [path, blob]));
