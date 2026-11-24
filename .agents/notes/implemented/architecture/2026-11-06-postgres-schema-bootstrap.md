@@ -23,22 +23,20 @@ schemas do not change the choice.
 
 An empty namespace is initialized from the current snapshot in one Read
 Committed transaction. Final definitions, all required initial data and the
-complete ordered ledger are committed together. Ledger checksums use the same
-migration checksum algorithm as upgrades, including migration 026's frozen
-transformation source. Historical SQL and Go transforms are represented by their
-resulting format and checksums, rather than executed during bootstrap. The
-ledger's application timestamps record the initialization of that format.
+complete ordered ledger are committed together. Bootstrap and upgrades use the same ordered ledger, including the original
+checksums that cover frozen Go transforms. The ledger timestamps record the
+initialization of that format.
 
-Nonempty namespaces use the original ordered history and per-version
-transactions. Previously committed migration prefixes remain committed if a
-later version fails. Unknown versions, gaps and changed checksums still fail;
-reopening current data does not rewrite it or its ledger timestamps. An invalid
-snapshot version fails explicitly instead of selecting another initialization
-path.
+The original bootstrap decision replayed the full ordered history in any
+nonempty namespace. The [099 baseline decision](2026-11-24-postgres-migration-baseline.md)
+sets the direct upgrade floor while preserving per-version transactions.
+Nonempty namespaces require a valid ledger through 099. Previously committed
+migration prefixes remain committed if a later version fails. Unknown versions,
+gaps and changed checksums fail. Reopening current data preserves its ledger
+timestamps. An invalid snapshot version aborts before writing.
 
-Explicit historical replay remains available to upgrade and rollback tests.
-It shares connection acquisition, advisory locking and release with normal
-initialization, so lock ownership is not nested or split between helpers.
+Explicit baseline-plus-tail replay shares connection acquisition, advisory
+locking and release with normal initialization.
 Snapshot, initial-data, ledger and deferred commit failures roll back the whole
 bootstrap. A lost commit acknowledgment retains an unknown outcome and its
 original cause; it does not prove that the database rolled back. The next
@@ -54,9 +52,10 @@ owns current behavior and maintenance commands.
 
 ## Alternatives
 
-**Replay every historical version for an empty namespace.** This remains valid
-for upgrades, but repeats intermediate DDL and commits when there is no data to
-transform. The final-format artifact already has independent equivalence proof.
+**Replay every historical version for an empty namespace.** The original chain
+could initialize an empty namespace, at the cost of intermediate DDL and commits
+for data that needed no transformation. The final-format artifact already had
+independent equivalence proof.
 
 **Treat a missing ledger as an empty database.** Existing objects can precede a
 ledger, including a failed or manually prepared installation. Skipping history
@@ -77,8 +76,8 @@ unchanged.
 
 Empty installations and test schemas avoid historical replay while retaining
 the same current objects, initial state and upgrade checksums. Existing data
-keeps its migration and recovery path. Historical tests explicitly select
-replay, so faster ordinary fixtures cannot silently remove upgrade coverage.
+within the direct upgrade range keeps its migration and recovery path.
+Upgrade tests explicitly select replay for supported checkpoints.
 
 Every migration change also requires a current, independently verified snapshot.
 The shared advisory lock still serializes initializing schemas; it coordinates

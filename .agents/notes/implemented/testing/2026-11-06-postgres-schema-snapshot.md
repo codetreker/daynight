@@ -13,16 +13,18 @@ omit system rows, or accidentally encode the schema used to generate it.
 ## Decision
 
 The PostgreSQL package keeps a final-format SQL snapshot and a version anchor.
-Its explicit maintenance command derives the snapshot from the complete
-historical migration path with PostgreSQL 18 `pg_dump`. It captures final
-schema definitions, all initial non-ledger table data and sequence state.
+Its explicit maintenance command replays migrations 100 onward from the 099
+baseline and derives the snapshot with PostgreSQL 18 `pg_dump`. The
+[099 baseline decision](../architecture/2026-11-24-postgres-migration-baseline.md)
+owns verification against the original complete historical path. The current
+artifact captures final definitions, all initial non-ledger rows and sequence state.
 The artifact includes the migration-ledger table structure but no historical
 application timestamps. The equivalence test checks the artifact independently
 of runtime initialization. The [bootstrap decision](../architecture/2026-11-06-postgres-schema-bootstrap.md)
 owns its use for atomic initialization of an empty target namespace; existing
-namespaces retain historical migration replay.
+namespaces with the required prefix replay later migrations.
 
-Ordinary validation builds independent historical and snapshot schemas and
+Ordinary validation builds independent replay and snapshot schemas and
 compares their actual catalogs and initial data. It preserves visible column
 order, types, defaults, nullability, constraints, indexes, sequence ownership
 and state, and the routines, views and triggers present in the format. Database
@@ -34,8 +36,8 @@ only change initial data.
 Required system rows are part of the database format. The transfer ledger and
 both OAuth cleanup cursors are captured together with any future initial rows;
 validation must not silently restrict its data comparison to a fixed table
-allowlist. Historical SQL and the frozen migration 026 transform retain their
-original bytes and checksum semantics.
+allowlist. The original SQL and frozen Go transform checksums through 099
+remain part of every installed ledger.
 
 The [server maintenance guide](../../../../packages/daynight-server/README.md#schema-snapshot-maintenance)
 owns regeneration and routine verification commands. Regeneration is explicit;
@@ -44,9 +46,8 @@ source files.
 
 ## Alternatives
 
-**Keep only the historical chain.** It remains the authority for upgrades but
-requires replay to derive the final format and offers no independently checked
-current-format artifact.
+**Keep only the migration chain.** This requires replay to derive the final
+format and offers no independently checked current-format artifact.
 
 **Concatenate migration SQL.** This retains obsolete tables, alterations and
 intermediate operations rather than expressing the final format. Historical

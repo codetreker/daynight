@@ -37,7 +37,10 @@ func validateSchemaSnapshot(snapshot string, migrations []migration) error {
 	line, _, _ := strings.Cut(snapshot, "\n")
 	value, ok := strings.CutPrefix(line, "-- Schema snapshot version: ")
 	version, err := strconv.ParseInt(value, 10, 64)
-	latest := migrations[len(migrations)-1].version
+	latest := schemaBaselineVersion
+	if len(migrations) > 0 {
+		latest = migrations[len(migrations)-1].version
+	}
 	if !ok || err != nil || version != latest {
 		return fmt.Errorf("schema snapshot version %q does not match latest migration %d; regenerate schema/current.sql", line, latest)
 	}
@@ -53,10 +56,11 @@ func bootstrapSchema(ctx context.Context, conn *pgxpool.Conn, migrations []migra
 		if _, err := tx.Exec(ctx, snapshot); err != nil {
 			return err
 		}
-		versions := make([]int64, len(migrations))
-		checksums := make([]string, len(migrations))
-		for index, migration := range migrations {
-			versions[index], checksums[index] = migration.version, migration.checksum()
+		entries := migrationChecksums(migrations)
+		versions := make([]int64, len(entries))
+		checksums := make([]string, len(entries))
+		for index, entry := range entries {
+			versions[index], checksums[index] = entry.version, entry.checksum
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version,checksum)
 			SELECT * FROM unnest($1::bigint[],$2::text[])`, versions, checksums)

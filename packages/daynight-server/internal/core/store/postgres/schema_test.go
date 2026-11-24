@@ -44,36 +44,19 @@ func TestSchemaBootstrapSkipsHistoryAndPreservesCurrentState(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracer.mutex.Lock()
-	for _, query := range tracer.queries {
+	queries := slices.Clone(tracer.queries)
+	tracer.mutex.Unlock()
+	for _, query := range queries {
+		if query == baselineSchemaSnapshot {
+			t.Fatal("bootstrap replayed the version 99 baseline")
+		}
 		for _, migration := range schemaMigrations {
 			if query == migration.sql {
-				tracer.mutex.Unlock()
-				t.Fatalf("bootstrap executed historical migration %d", migration.version)
+				t.Fatalf("bootstrap executed migration %d", migration.version)
 			}
 		}
 	}
-	tracer.mutex.Unlock()
-	rows, err := pool.Query(ctx, "SELECT version,checksum FROM schema_migrations ORDER BY version")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	index := 0
-	for rows.Next() {
-		var version int64
-		var saved string
-		if err := rows.Scan(&version, &saved); err != nil {
-			t.Fatal(err)
-		}
-		if index >= len(schemaMigrations) || version != schemaMigrations[index].version || saved != schemaMigrations[index].checksum() {
-			t.Fatalf("bootstrap ledger entry %d: version=%d checksum=%q", index, version, saved)
-		}
-		index++
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil || index != len(schemaMigrations) {
-		t.Fatalf("bootstrap ledger count=%d error=%v", index, err)
-	}
+	assertMigrationLedger(t, pool)
 	var seedRows int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM private_transfer_ledger WHERE singleton)
 		+ (SELECT count(*) FROM oauth_credential_cleanup_cursor WHERE singleton AND next_kind=0)
@@ -83,16 +66,13 @@ func TestSchemaBootstrapSkipsHistoryAndPreservesCurrentState(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES('00000000-0000-4000-8000-000000000001','Retained','https://example.com/retained')`); err != nil {
 		t.Fatal(err)
 	}
-	var before, after string
-	const historySQL = `SELECT jsonb_agg(jsonb_build_array(version,checksum,applied_at) ORDER BY version)::text FROM schema_migrations`
-	if err := pool.QueryRow(ctx, historySQL).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
+	latest := schemaMigrations[len(schemaMigrations)-1].version
+	before := readMigrationHistory(t, pool, latest)
 	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, historySQL).Scan(&after); err != nil || before != after {
-		t.Fatalf("repeat initialization rewrote history: %v", err)
+	if after := readMigrationHistory(t, pool, latest); before != after {
+		t.Fatal("repeat initialization rewrote history")
 	}
 	var title string
 	if err := pool.QueryRow(ctx, "SELECT name FROM projects").Scan(&title); err != nil || title != "Retained" {
@@ -140,7 +120,7 @@ func TestSchemaBootstrapRollsBackEveryInitializationStage(t *testing.T) {
 	}
 }
 
-func TestSchemaInitializationReplaysHistoryForEveryExistingObjectKind(t *testing.T) {
+func TestSchemaInitializationRejectsLedgerlessNamespaces(t *testing.T) {
 	for _, test := range []struct{ name, sql string }{
 		{"table", "CREATE TABLE tasks(private_migration_marker boolean)"},
 		{"sequence", "CREATE SEQUENCE retained_sequence"},
@@ -152,21 +132,92 @@ func TestSchemaInitializationReplaysHistoryForEveryExistingObjectKind(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			pool := emptyPool(t)
-			if _, err := pool.Exec(context.Background(), test.sql); err != nil {
+			if _, err := pool.Exec(t.Context(), test.sql); err != nil {
 				t.Fatal(err)
 			}
-			sentinel := errors.New("existing schema selected historical replay")
-			migrations := slices.Clone(schemaMigrations)
-			migrations[0].transform = func(context.Context, pgx.Tx) error { return sentinel }
-			if err := initializeSchema(context.Background(), pool, migrations, currentSchemaSnapshot); !errors.Is(err, sentinel) {
-				t.Fatalf("existing %s bypassed historical replay: %v", test.name, err)
+			objects := schemaObjectCount(t, pool)
+			assertBaselineUpgradeRequired(t, initializeSchema(t.Context(), pool, schemaMigrations, currentSchemaSnapshot), 0)
+			if got := schemaObjectCount(t, pool); got != objects {
+				t.Fatalf("refusal changed namespace objects: before=%d after=%d", objects, got)
 			}
-			var projects *string
-			if err := pool.QueryRow(context.Background(), "SELECT to_regclass('projects')::text").Scan(&projects); err != nil || projects != nil {
-				t.Fatalf("failed historical migration retained new objects: %v %v", projects, err)
+			var ledger *string
+			if err := pool.QueryRow(t.Context(), "SELECT to_regclass('schema_migrations')::text").Scan(&ledger); err != nil || ledger != nil {
+				t.Fatalf("refusal unexpectedly created a ledger: %v %v", ledger, err)
 			}
 			assertMigrationPoolReusable(t, pool)
 		})
+	}
+}
+
+func TestSchemaInitializationRejectsShortOrEmptyLedgerWithoutWrites(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		latestApplied int64
+	}{
+		{"empty ledger", 0},
+		{"prefix before numbering gap", 83},
+		{"prefix just below baseline", 98},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pool := emptyPool(t)
+			bootstrapBaseline(t, pool)
+			if _, err := pool.Exec(t.Context(), "DELETE FROM schema_migrations WHERE version > $1", test.latestApplied); err != nil {
+				t.Fatal(err)
+			}
+			before := readMigrationHistory(t, pool, 99)
+			objects := schemaObjectCount(t, pool)
+			assertBaselineUpgradeRequired(t, initializeSchema(t.Context(), pool, schemaMigrations, currentSchemaSnapshot), test.latestApplied)
+			if got := readMigrationHistory(t, pool, 99); got != before {
+				t.Fatal("refusal changed the old ledger")
+			}
+			if got := schemaObjectCount(t, pool); got != objects {
+				t.Fatalf("refusal changed namespace objects: before=%d after=%d", objects, got)
+			}
+			assertMigrationPoolReusable(t, pool)
+		})
+	}
+}
+
+func TestSchemaInitializationDoesNotBorrowAnotherNamespacesLedger(t *testing.T) {
+	other := emptyPool(t)
+	bootstrapBaseline(t, other)
+	target := emptyPool(t)
+	if _, err := target.Exec(t.Context(), "CREATE TABLE retained_marker(id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	schemaName := func(pool *pgxpool.Pool) string {
+		t.Helper()
+		var name string
+		if err := pool.QueryRow(t.Context(), "SELECT current_schema()").Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		return pgx.Identifier{name}.Sanitize()
+	}
+	config := target.Config()
+	config.ConnConfig.RuntimeParams["search_path"] = schemaName(target) + ", " + schemaName(other)
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	objects := schemaObjectCount(t, target)
+	ledger := readMigrationHistory(t, other, 99)
+	assertBaselineUpgradeRequired(t, initializeSchema(t.Context(), pool, schemaMigrations, currentSchemaSnapshot), 0)
+	if got := schemaObjectCount(t, target); got != objects {
+		t.Fatalf("refusal added objects to the target schema: before=%d after=%d", objects, got)
+	}
+	if got := readMigrationHistory(t, other, 99); got != ledger {
+		t.Fatal("refusal changed the other schema's ledger")
+	}
+	assertMigrationPoolReusable(t, pool)
+}
+
+func assertBaselineUpgradeRequired(t *testing.T, err error, version int64) {
+	t.Helper()
+	var requirement *baselineUpgradeRequiredError
+	if !errors.As(err, &requirement) || requirement.version != version || !strings.Contains(err.Error(), "bridge") {
+		t.Fatalf("expected bridge requirement for ledger ending at %d: %v", version, err)
 	}
 }
 
@@ -189,11 +240,8 @@ func TestSchemaInitializationChecksEmptinessAfterAcquiringLock(t *testing.T) {
 	blocker := holdSchemaInitializationLock(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sentinel := errors.New("schema changed while initialization waited")
-	migrations := slices.Clone(schemaMigrations)
-	migrations[0].transform = func(context.Context, pgx.Tx) error { return sentinel }
 	done := make(chan error, 1)
-	go func() { done <- initializeSchema(ctx, instance, migrations, currentSchemaSnapshot) }()
+	go func() { done <- initializeSchema(ctx, instance, schemaMigrations, currentSchemaSnapshot) }()
 	waitForSchemaInitializationLock(t, blocker, application)
 	if _, err := blocker.Exec(ctx, "CREATE TABLE retained_marker(id integer)"); err != nil {
 		t.Fatal(err)
@@ -201,8 +249,10 @@ func TestSchemaInitializationChecksEmptinessAfterAcquiringLock(t *testing.T) {
 	if _, err := blocker.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationLock); err != nil {
 		t.Fatal(err)
 	}
-	if err := awaitSchemaInitialization(t, done); !errors.Is(err, sentinel) {
-		t.Fatalf("initializer did not observe the schema created while waiting: %v", err)
+	assertBaselineUpgradeRequired(t, awaitSchemaInitialization(t, done), 0)
+	var ledger *string
+	if err := pool.QueryRow(t.Context(), "SELECT to_regclass('schema_migrations')::text").Scan(&ledger); err != nil || ledger != nil {
+		t.Fatalf("initializer created a ledger after locked refusal: %v %v", ledger, err)
 	}
 	assertMigrationPoolReusable(t, instance)
 }
@@ -257,11 +307,19 @@ func TestSchemaInitializationCancellationBeforeSnapshot(t *testing.T) {
 
 func assertSchemaHasNoObjects(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_depend
-		WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("schema contains %d objects after failed initialization: %v", count, err)
+	if count := schemaObjectCount(t, pool); count != 0 {
+		t.Fatalf("schema contains %d objects after failed initialization", count)
 	}
+}
+
+func schemaObjectCount(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_depend
+		WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func holdSchemaInitializationLock(t *testing.T, pool *pgxpool.Pool) *pgx.Conn {
@@ -338,11 +396,12 @@ func (tracer *schemaInitializationTracer) TraceQueryEnd(context.Context, *pgx.Co
 	}
 }
 
-var updateSchemaSnapshot = flag.Bool("update-schema-snapshot", false, "Regenerate schema/current.sql from the complete migration history.")
+var updateSchemaSnapshot = flag.Bool("update-schema-snapshot", false, "Regenerate schema/current.sql from the version 99 baseline and later migrations.")
 var schemaSnapshotPGDump = flag.String("schema-snapshot-pg-dump", "pg_dump", "PostgreSQL 18 pg_dump executable used to regenerate the schema snapshot.")
 
 func TestSchemaSnapshotMatchesMigrations(t *testing.T) {
 	history := emptyPool(t)
+	bootstrapBaseline(t, history)
 	if err := migrate(context.Background(), history, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
@@ -760,10 +819,8 @@ func assertMigrationConstraints(t *testing.T, pool *pgxpool.Pool) {
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	var count, foreignKeys int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != len(schemaMigrations) {
-		t.Fatalf("versions: %d, %v", count, err)
-	}
+	assertMigrationLedger(t, pool)
+	var foreignKeys int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
 	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass)
 	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {

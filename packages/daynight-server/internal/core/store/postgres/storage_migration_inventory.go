@@ -21,14 +21,14 @@ func OpenOfflineStorageMigration(ctx context.Context, url string) (*Store, error
 		pool.Close()
 		return nil, databaseFailure("connect", err)
 	}
-	count, err := appliedMigrations(ctx, connection, schemaMigrations)
+	ledger, err := readMigrationLedger(ctx, connection, schemaMigrations)
 	connection.Release()
-	if err == nil && count != len(schemaMigrations) {
+	if err == nil && ledger.applied != len(schemaMigrations) {
 		err = errors.New("offline migration database requires the candidate schema")
 	}
 	if err != nil {
 		pool.Close()
-		return nil, databaseFailure("offline migration reader version", err)
+		return nil, migrationFailure("offline migration reader version", err)
 	}
 	return &Store{Pool: pool}, nil
 }

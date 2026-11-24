@@ -3,11 +3,9 @@ package webhook
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,20 +14,11 @@ import (
 
 func TestSubscriptionDAOIdentityAndDatabaseFailures(t *testing.T) {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, testutil.ScopedDatabaseURL(t))
+	conn, err := pgx.Connect(ctx, webhookSchemaURL(t, ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	for _, path := range []string{"../schema/migrations/048_webhook_management.sql", "../schema/migrations/049_webhook_subscriptions.sql", "../schema/migrations/051_webhook_delivery.sql", "../schema/migrations/052_webhook_redelivery.sql", "../schema/migrations/113_webhook_endpoint_client_key.sql"} {
-		sql, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = conn.Exec(ctx, string(sql)); err != nil {
-			t.Fatal(err)
-		}
-	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

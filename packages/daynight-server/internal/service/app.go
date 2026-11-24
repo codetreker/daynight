@@ -218,9 +218,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 			}
 			return openFileStorage(root, c.Monitoring.Redis.RedisURL)
 		},
-		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
-			return openPostgresWithLogger(ctx, databaseURL, logger)
-		},
+		database:   openPostgres,
 		monitoring: openMonitoring,
 	})
 }

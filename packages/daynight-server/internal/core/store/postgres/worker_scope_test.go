@@ -600,16 +600,13 @@ func TestWorkerClaimTagFilterLinearizesWithConfiguration(t *testing.T) {
 	}
 }
 
-// The historical target stays at the exact encoded configuration budget while
-// migration adds the canonical empty member and a legacy PUT omits it.
-func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
+// A stored exact-limit configuration may include the additional canonical empty
+// filter member while a legacy PUT still omits that field.
+func TestWorkerTaskTagFilterCapacityAndLegacyPut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
-		t.Fatal(err)
-	}
-	db := &Store{Pool: pool}
+	db := isolatedStore(t)
+	pool := db.Pool
 	user, id := queryID(1), queryID(2)
 	putWorkerSnapshot(t, db, workerSnapshotFixture(user, id, time.Now().UTC()))
 	value := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: make([]model.WorkerProjectConfiguration, 128)}
@@ -653,12 +650,10 @@ func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
 		t.Fatalf("fixture length=%d remainder=%d", len(raw), excess)
 	}
 	if _, err := workercore.ParseWorkerConfiguration(raw); err != nil {
-		t.Fatalf("historical exact-limit input: %v", err)
+		t.Fatalf("legacy exact-limit input: %v", err)
 	}
-	mustQueryExec(t, db, `UPDATE workers SET configuration_revision=1,configuration_updated_at=now(),desired_configuration=$3 WHERE user_id=$1 AND worker_id=$2`, user, id, raw)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
+	mustQueryExec(t, db, `UPDATE workers SET configuration_revision=2,configuration_updated_at=now(),
+		desired_configuration=$3::text::jsonb || '{"taskTagFilter":{"names":[],"match":"any"}}'::jsonb WHERE user_id=$1 AND worker_id=$2`, user, id, string(raw))
 	read := func() model.WorkerConfigurationResource {
 		t.Helper()
 		var result model.WorkerConfigurationResource
@@ -673,7 +668,7 @@ func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
 	}
 	observed := read()
 	if observed.Desired == nil || !observed.Desired.ValueValid || observed.Desired.Revision != "2" || observed.Desired.Value.TaskTagFilter == nil || len(observed.Desired.Value.TaskTagFilter.Names) != 0 {
-		t.Fatal("migrated target was not readable with canonical empty filter")
+		t.Fatal("stored target was not readable with canonical empty filter")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(observed.Desired.Raw, &fields); err != nil {
@@ -684,7 +679,7 @@ func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(compact) != workercore.MaxConfigurationJSONBytes+int(workerprotocol.EmptyTaskTagFilterMemberBytes) {
-		t.Fatalf("migrated size=%d", len(compact))
+		t.Fatalf("stored size=%d", len(compact))
 	}
 	old, err := workercore.ParseWorkerConfigurationProtocol(raw, workerprotocol.Capabilities{ToolPaths: true, PlatformTaskMode: true})
 	if err != nil {

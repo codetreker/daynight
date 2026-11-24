@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	teamstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
@@ -178,9 +176,6 @@ func deviceStoreCredential(now time.Time) model.PersonalAccessToken {
 func (s *Store) CreateProject(ctx context.Context, id, name, repoURL string) (model.Project, error) {
 	return testutil.CreateProject(ctx, s.Pool, s, id, name, repoURL)
 }
-func seedHistoricalProjectAdmin(ctx context.Context, s *Store, projectID string) error {
-	return testutil.SeedHistoricalProjectAdmin(ctx, s.Pool, projectID)
-}
 func writeProjectForTest(s *Store, ctx context.Context, id string, operation func(ProjectWriteScope) error) error {
 	return testutil.WriteProject(ctx, s, id, operation)
 }
@@ -206,20 +201,6 @@ func fixtureWorker(t *testing.T, properties model.TaskProperties) *model.WorkerC
 func putTaskPropertyFixture(t *testing.T, database *Store, taskID, name string, value []byte) {
 	t.Helper()
 	testutil.PutTaskProperty(t, database.Pool, taskID, name, value)
-}
-func decodeHistoricalPropertiesFixture(data []byte) (model.TaskProperties, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	if _, exists := fields["worker"]; !exists {
-		fields["worker"] = json.RawMessage("null")
-	}
-	normalized, err := json.Marshal(fields)
-	if err != nil {
-		return nil, err
-	}
-	return migration026.DecodeLegacyProperties(normalized)
 }
 func currentTaskFactsFixture(t *testing.T, database *Store) map[string]string {
 	t.Helper()

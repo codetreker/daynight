@@ -62,7 +62,7 @@ func assertMemberTerminalIndexes(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-func TestMemberTerminalIndexesSnapshotAndUpgrade(t *testing.T) {
+func TestMemberTerminalIndexesSnapshotAndBaseline(t *testing.T) {
 	ctx := context.Background()
 	snapshot := emptyPool(t)
 	if err := initializeSchema(ctx, snapshot, schemaMigrations, currentSchemaSnapshot); err != nil {
@@ -71,13 +71,6 @@ func TestMemberTerminalIndexesSnapshotAndUpgrade(t *testing.T) {
 	assertMemberTerminalIndexes(t, snapshot)
 
 	upgrade := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 55 })
-	if index < 1 || schemaMigrations[index-1].version != 54 {
-		t.Fatal("migration 055 must follow 054")
-	}
-	if err := migrate(ctx, upgrade, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
 	var upgradeSchema, snapshotSchema string
 	if err := upgrade.QueryRow(ctx, "SELECT current_schema()").Scan(&upgradeSchema); err != nil {
 		t.Fatal(err)
@@ -99,11 +92,9 @@ func TestMemberTerminalIndexesSnapshotAndUpgrade(t *testing.T) {
 			t.Fatalf("fallback index %s not visible: %t, %v", name, found, err)
 		}
 		if _, err := memberTerminalIndex(t, withFallback, name); !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("index %s before upgrade: expected no rows, got %v", name, err)
+			t.Fatalf("index %s before baseline: expected no rows, got %v", name, err)
 		}
 	}
-	if err := initializeSchema(ctx, withFallback, schemaMigrations, currentSchemaSnapshot); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapBaseline(t, withFallback)
 	assertMemberTerminalIndexes(t, withFallback)
 }

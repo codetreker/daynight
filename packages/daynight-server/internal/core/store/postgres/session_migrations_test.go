@@ -17,6 +17,7 @@ func TestBrowserManagementMigrationPreservesLegacySessions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 120 })
 	if index < 2 || schemaMigrations[index-1].version != 119 || schemaMigrations[index-2].version != 118 {
 		t.Fatal("browser management must follow activity and Step Webhook retirement migrations")
@@ -59,6 +60,7 @@ func TestBrowserActivityMigrationPreservesPublishedMigrationsAndOldSession(t *te
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 118 })
 	if index < 4 || schemaMigrations[index-4].version != 114 || schemaMigrations[index-4].sql != sessionHistoryPolicySQL || schemaMigrations[index-3].version != 115 || schemaMigrations[index-3].transformSource == "" || schemaMigrations[index-2].version != 116 || schemaMigrations[index-2].sql != archiveUploadVersionSQL || schemaMigrations[index-1].version != 117 || schemaMigrations[index-1].sql != sessionOnlineModeSQL {
 		t.Fatal("browser activity must follow the published history policy, frozen worker index, archive upload and Session online mode migrations")
@@ -135,53 +137,11 @@ func TestBrowserActivityMigrationPreservesPublishedMigrationsAndOldSession(t *te
 	}
 }
 
-func TestPreviewSSOMigrationPreservesSessions(t *testing.T) {
-	ctx := t.Context()
-	pool := emptyPool(t)
-	if len(schemaMigrations) < 75 || schemaMigrations[73].version != 74 || schemaMigrations[74].version != 75 {
-		t.Fatal("preview migration must follow version 74")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:74]); err != nil {
-		t.Fatal(err)
-	}
-	id, user := queryID(1), queryID(2)
-	_, err := pool.Exec(ctx, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,now(),now()+interval '1 day')`, id, user, deviceStoreHash("existing"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var found, empty bool
-	err = pool.QueryRow(ctx, `SELECT user_id=$2 AND token_hash=$3,preview_token_hash IS NULL FROM sessions WHERE id=$1`, id, user, deviceStoreHash("existing")).Scan(&found, &empty)
-	if err != nil || !found || !empty {
-		t.Fatalf("existing session changed: found=%v empty=%v err=%v", found, empty, err)
-	}
-	_, err = pool.Exec(ctx, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,now(),now()+interval '1 day')`, queryID(3), user, deviceStoreHash("second"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = pool.Exec(ctx, `UPDATE sessions SET preview_token_hash=$2 WHERE id=$1`, id, deviceStoreHash("preview"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = pool.Exec(ctx, `UPDATE sessions SET preview_token_hash=$2 WHERE id=$1`, queryID(3), deviceStoreHash("preview"))
-	if err == nil {
-		t.Fatal("duplicate preview credential accepted")
-	}
-	if err = migrate(ctx, pool, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=75`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("migration ledger: count=%d err=%v", count, err)
-	}
-}
-
 func TestSessionHistoryPolicyMigration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 114 })
 	if index < 1 {
 		t.Fatal("history policy migration missing")
@@ -257,6 +217,7 @@ func TestSessionOnlineModeMigrationAndPersistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
+	bootstrapBaseline(t, pool)
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 117 })
 	if index < 1 {
 		t.Fatal("online mode migration missing")
@@ -338,17 +299,10 @@ func TestSessionOnlineModeMigrationAndPersistence(t *testing.T) {
 	}
 }
 
-func TestArchiveRetentionMigrationPreservesUnknownPublicationTime(t *testing.T) {
+func TestArchiveRetentionKeepsLegacyPublicationUnknown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 89 })
-	if index < 1 {
-		t.Fatal("missing retention migration")
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
-		t.Fatal(err)
-	}
+	pool := isolatedStore(t).Pool
 	project, task := queryID(901), queryID(902)
 	if _, err := pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'retention','https://example.test/retention');`, project); err != nil {
 		t.Fatal(err)
@@ -356,44 +310,24 @@ func TestArchiveRetentionMigrationPreservesUnknownPublicationTime(t *testing.T) 
 	if _, err := pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'historical','done')`, task, project); err != nil {
 		t.Fatal(err)
 	}
-	ready, pending := queryID(903), queryID(904)
-	for _, id := range []string{ready, pending} {
-		if _, err := pool.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$1,$1,$1,'{}','{}')`, id, project, task); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path,updated_at) VALUES($1,'ready',repeat('a',64),5,'old/path','2020-01-01');`, ready); err != nil {
+	ready := queryID(903)
+	if _, err := pool.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$1,$1,$1,'{}','{}')`, ready, project, task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archives(session_id,state) VALUES($1,'pending')`, pending); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path,updated_at) VALUES($1,'ready',repeat('a',64),5,'old/path','2020-01-01')`, ready); err != nil {
 		t.Fatal(err)
 	}
-	var before time.Time
-	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&before); err != nil {
+	publication := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	grace := publication.Add(7 * 24 * time.Hour)
+	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_retention(session_id,grace_until) VALUES($1,$2)`, ready, grace); err != nil {
 		t.Fatal(err)
-	}
-	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
-		t.Fatal(err)
-	}
-	var first, expires *time.Time
-	var grace time.Time
-	var version int64
-	if err := pool.QueryRow(ctx, `SELECT first_succeeded_at,grace_until,expires_at,version FROM session_archive_retention WHERE session_id=$1`, ready).Scan(&first, &grace, &expires, &version); err != nil {
-		t.Fatal(err)
-	}
-	if first != nil || expires != nil || version != 1 || grace.Before(before.Add(7*24*time.Hour)) {
-		t.Fatalf("invented time or short grace: %v %v %v %d", first, grace, expires, version)
-	}
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM session_archive_retention`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("unpublished archive seeded: %d %v", count, err)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	if err := pgsession.New(tx).(store.SessionArchiveRetentionDAO).RecordSessionArchiveSuccess(ctx, ready, before); err != nil {
+	if err := pgsession.New(tx).(store.SessionArchiveRetentionDAO).RecordSessionArchiveSuccess(ctx, ready, publication); err != nil {
 		t.Fatal(err)
 	}
 	var retained bool

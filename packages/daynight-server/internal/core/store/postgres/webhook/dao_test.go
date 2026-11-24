@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -37,34 +36,7 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	migration, err := os.ReadFile("../schema/migrations/048_webhook_management.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = conn.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	migration, err = os.ReadFile("../schema/migrations/051_webhook_delivery.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = conn.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	migration, err = os.ReadFile("../schema/migrations/052_webhook_redelivery.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = conn.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	migration, err = os.ReadFile("../schema/migrations/113_webhook_endpoint_client_key.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = conn.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
-	}
+	loadWebhookSchema(t, ctx, conn)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +242,7 @@ func TestSigningKeyMapping(t *testing.T) {
 	}
 }
 
-func clientKeySchema(t *testing.T, ctx context.Context) string {
+func webhookSchemaURL(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	url := testutil.ScopedDatabaseURL(t)
 	conn, err := pgx.Connect(ctx, url)
@@ -278,15 +250,7 @@ func clientKeySchema(t *testing.T, ctx context.Context) string {
 		t.Fatal(err)
 	}
 	defer conn.Close(context.Background())
-	for _, path := range []string{"048_webhook_management.sql", "051_webhook_delivery.sql", "052_webhook_redelivery.sql", "113_webhook_endpoint_client_key.sql"} {
-		migration, err := os.ReadFile("../schema/migrations/" + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = conn.Exec(ctx, string(migration)); err != nil {
-			t.Fatal(err)
-		}
-	}
+	loadWebhookSchema(t, ctx, conn)
 	return url
 }
 
@@ -299,7 +263,7 @@ func keyedEndpoint(owner model.Owner, key string, now time.Time) model.Endpoint 
 func TestEndpointClientKeyLiveUniqueness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(ctx, clientKeySchema(t, ctx))
+	conn, err := pgx.Connect(ctx, webhookSchemaURL(t, ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +332,7 @@ func TestEndpointClientKeyLiveUniqueness(t *testing.T) {
 func TestEndpointClientKeyConcurrentCreate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	url := clientKeySchema(t, ctx)
+	url := webhookSchemaURL(t, ctx)
 	connect := func() *pgx.Conn {
 		conn, err := pgx.Connect(ctx, url)
 		if err != nil {
