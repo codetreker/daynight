@@ -42,8 +42,10 @@ test("the live Codex adapter publishes native authority before projecting resume
   await policy.authorizeCheckpoint(checkpoint()); await policy.authorizeCheckpoint(checkpoint());
   const calls = await requests();
   expect(calls.filter(call => call.method === "hooks/list")).toHaveLength(2);
-  expect(calls.find(call => call.method === "thread/resume")?.params).not.toHaveProperty("sandbox");
-  expect(calls.find(call => call.method === "thread/resume")?.params).not.toHaveProperty("approvalPolicy");
+  expect(calls.find(call => call.method === "thread/resume")?.params).toMatchObject({
+    sandbox: "danger-full-access",
+    approvalPolicy: "never",
+  });
 });
 
 test.each(["version", "restricted", "remote", "startup-restrict"])("Codex %s keeps the session available without granting local reads", async scenario => {

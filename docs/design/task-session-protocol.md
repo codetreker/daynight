@@ -132,7 +132,7 @@ Controller 在所有副作用构造之前取得 permit 并准备 writer；自身
 
 本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 
-Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
+Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 的 Codex adapter 在 `thread/start` 和 `thread/resume` 均发送 `sandbox: "danger-full-access"` 与 `approvalPolicy: "never"`。恢复时模型和推理强度由原生会话恢复。其他 Task Worker Provider 在新建会话时应用各自的后台执行策略，恢复沿用已确认的原生设置。网页权限操作必须经过当前 capability 和原生确认。
 
 ### Linux 稳定出生身份确定方案
 

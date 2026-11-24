@@ -365,9 +365,14 @@ test("closing native Codex rejects an unresolved response without waiting for it
 });
 
 
-test.each([{ unattended: false, resume: false }, { unattended: true, resume: false }, { unattended: true, resume: true }])("Codex full access only changes new Worker sessions: %j", async ({ unattended, resume }) => {
+test.each([
+  { unattended: false, resume: false },
+  { unattended: false, resume: true },
+  { unattended: true, resume: false },
+  { unattended: true, resume: true },
+])("Codex applies full access to Worker sessions on start and resume: %j", async ({ unattended, resume }) => {
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resume ? "native-thread" : null, unattended,
-    env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended && !resume ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+    env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   await provider.close();
 });
 

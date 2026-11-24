@@ -2672,8 +2672,10 @@ Already assembled inputs retain their original delivery identity. See the
 [prompt contract](../../docs/spec/worker-prompts.md#worker-输入) for the text,
 synchronization and input limits.
 
-Fixed native full access and folder trust apply to every fresh/resumed process;
-task delivery remains within its business authorization.
+Worker-owned Codex sessions start and resume with full sandbox access and
+command approval disabled. See the [Session permission
+contract](../../docs/spec/task-sessions.md) for Provider-specific
+behavior. Task delivery remains within its business authorization.
 
 Web execution sends the initial assignment before patrol. On Worker restart or
 Controller replacement it reconstructs the full assignment using the current
