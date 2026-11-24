@@ -15,7 +15,7 @@ async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
   const revalidationGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, viewerName: 'Reader', project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), modernParents: false, deletedTaskIds: [] as string[], coverageUpdatedAt: undefined as string | undefined, deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, viewerName: 'Reader', project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), modernParents: false, incrementalDeletes: false, deletedTaskIds: [] as string[], coverageUpdatedAt: undefined as string | undefined, deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId;
@@ -39,7 +39,7 @@ async function install(page: Page, initial: TaskDetail[]) {
     if (path === `/api/v1/projects/${targetProject}/access`) return send(directAccessFixture(targetProject, state.viewer));
     if (path === `/api/v1/projects/${targetProject}/task-sync`) {
       if (state.graphMode === 'pending') await gate.promise;
-      if (state.holdReplacement && taskSyncQuery(url).epoch === undefined) { state.replacementHeld = true; await gate.promise; }
+      if (state.holdReplacement && (state.incrementalDeletes ? state.deletedTaskIds.length !== 0 : taskSyncQuery(url).epoch === undefined)) { state.replacementHeld = true; await gate.promise; }
       if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
       const sync = taskSyncFixture(graph, { query: taskSyncQuery(url), deletedTaskIds: state.deletedTaskIds, ...(state.coverageUpdatedAt === undefined ? {} : { coverageUpdatedAt: state.coverageUpdatedAt }), epoch: targetProject === projectId ? state.epoch : taskSyncEpoch(targetProject), actorAccess: directAccessFixture(targetProject, state.viewer), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties });
       return send(state.modernParents ? { ...sync, tasks: sync.tasks.map(task => ({ ...task, parentTaskId: null })) } : sync);
@@ -48,8 +48,15 @@ async function install(page: Page, initial: TaskDetail[]) {
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
       if (detail && parts.length === 1 && request.method() === 'DELETE') {
-        state.tasks = state.tasks.filter(item => item.id !== detail.id).map(item => ({ ...item, dependsOn: item.dependsOn.filter(dep => dep !== detail.id), externalDependsOn: item.externalDependsOn.filter(dep => dep !== detail.id), blockedBy: item.blockedBy.filter(dep => dep !== detail.id), ready: item.status === 'todo' && item.blockedBy.filter(dep => dep !== detail.id).length === 0 }));
-        state.epoch = id(900 + ++state.deletions);
+        const deletion = ++state.deletions, deletedAt = `2026-10-22T11:00:${String(deletion).padStart(2, '0')}Z`;
+        state.tasks = state.tasks.filter(item => item.id !== detail.id).map(item => {
+          const changed = item.dependsOn.includes(detail.id) || item.externalDependsOn.includes(detail.id);
+          return { ...item, ...(state.incrementalDeletes && changed ? { version: item.version + 1n, updatedAt: deletedAt } : {}),
+            dependsOn: item.dependsOn.filter(dep => dep !== detail.id), externalDependsOn: item.externalDependsOn.filter(dep => dep !== detail.id),
+            blockedBy: item.blockedBy.filter(dep => dep !== detail.id), ready: item.status === 'todo' && item.blockedBy.filter(dep => dep !== detail.id).length === 0 };
+        });
+        if (state.incrementalDeletes) { state.deletedTaskIds.push(detail.id); state.coverageUpdatedAt = deletedAt; }
+        else state.epoch = id(900 + deletion);
         return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
       }
       if (detail && parts.length === 1) return send(detail, 200, { 'Daynight-Task-Epoch': state.epoch });
@@ -754,6 +761,7 @@ for (const width of [1100, 390]) test(`deleting a Goal member keeps the graph an
   const first = { ...row(2, 'Deleted member'), parentId: goal.id };
   const second = { ...row(3, 'Remaining member', [first.id]), parentId: goal.id };
   const state = await install(page, [goal, first, second]);
+  state.incrementalDeletes = true;
   await page.setViewportSize({ width, height: 700 });
   try {
     await page.goto(`/projects/${projectId}`);
@@ -787,10 +795,14 @@ for (const width of [1100, 390]) test(`deleting a Goal member keeps the graph an
     await page.getByRole('alertdialog').getByRole('button', { name: 'Delete and remove dependencies' }).click();
     await expect.poll(() => state.replacementHeld).toBe(true);
     await expect(detail).toHaveCount(0);
+    const deleted = page.getByRole('dialog', { name: 'Task deleted', exact: true });
+    await expect(deleted).toBeVisible();
+    await deleted.getByRole('button', { name: 'Close task details', exact: true }).click();
+    await expect(deleted).toHaveCount(0);
     await expect(dialog).toBeVisible(); await expect(viewport).toHaveAttribute('style', transform!);
     await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
     await expect(selected).toHaveAttribute('aria-pressed', 'true');
-    await fullscreen.focus(); const scroll = await position(page);
+    await fullscreen.focus(); await expect(fullscreen).toBeFocused(); const scroll = await position(page);
     state.releaseGraph();
     await expect(dialog.locator('.react-flow__node')).toHaveCount(1);
     await expect(dialog.locator('.task-dependency-edge')).toHaveCount(0);
