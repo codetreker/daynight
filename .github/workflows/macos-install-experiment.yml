@@ -1,0 +1,803 @@
+name: Temporary macOS installation scope evidence
+on:
+  push:
+    branches: [daynight/8b582783-3751-415c-849d-72867e02134d]
+permissions:
+  contents: read
+jobs:
+  sample_1:
+    name: macOS install full-1
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-1
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-1
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-1
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-1
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-1
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  sample_2:
+    name: macOS install filtered-2
+    needs: sample_1
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm --filter day-night-workspace --filter '@codetreker/daynight...' --fail-if-no-match install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-2
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-2
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-2
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-2
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-2
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  sample_3:
+    name: macOS install filtered-3
+    needs: sample_2
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm --filter day-night-workspace --filter '@codetreker/daynight...' --fail-if-no-match install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-3
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-3
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-3
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-3
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-3
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  sample_4:
+    name: macOS install full-4
+    needs: sample_3
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-4
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-4
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-4
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-4
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-4
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  sample_5:
+    name: macOS install full-5
+    needs: sample_4
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-5
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-5
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-5
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-5
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-5
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+  sample_6:
+    name: macOS install filtered-6
+    needs: sample_5
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      CLI_EVIDENCE_LABEL: macos-full
+      CLI_FOCUSED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Confirm cold source
+        run: |
+          test "$(git rev-parse HEAD)" = 63d6d7c1ffe91f4822e9c2f0dfa83782887ffc77
+          test "$(git rev-parse HEAD^{tree})" = ca4d12bfb1b6640b975e31288e26ffd75548c3d8
+          test ! -e node_modules && test ! -e .tmp/pnpm-store
+          test -z "$(git status --porcelain)"
+          shasum -a 256 pnpm-lock.yaml
+      - name: Frozen install
+        run: pnpm --filter day-night-workspace --filter '@codetreker/daynight...' --fail-if-no-match install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Record installation and native bindings
+        run: |
+          mkdir -p .tmp/install-evidence
+          git rev-parse HEAD HEAD^{tree} > .tmp/install-evidence/source.txt
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-before.txt
+          pnpm --version > .tmp/install-evidence/pnpm.txt
+          node --version > .tmp/install-evidence/node.txt
+          sw_vers > .tmp/install-evidence/os.txt
+          printf '%s\n' "$ImageOS" "$ImageVersion" > .tmp/install-evidence/image.txt
+          pnpm -r list --depth -1 --json > .tmp/install-evidence/workspace.json
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-before.txt
+          cd packages/daynight
+          node --input-type=module <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          const sharp = require('sharp');
+          await sharp({create:{width:1,height:1,channels:4,background:{r:0,g:0,b:0,alpha:1}}}).png().toBuffer();
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('select 1 as value').get().value !== 1) throw Error('SQLite');
+          db.close();
+          require('koffi');
+          const pty = require('node-pty');
+          const child = pty.spawn('/bin/sh', ['-c', 'exit 0']);
+          await new Promise((resolve, reject) => { const t = setTimeout(() => reject(Error('pty timeout')), 10000); child.onExit(e => {clearTimeout(t); e.exitCode === 0 ? resolve() : reject(Error('pty exit'));}); });
+          console.log('sharp SQLite koffi node-pty native probes passed');
+          EOF
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Test the local development installer
+        run: pnpm dev:test
+      - name: Prepare complete discovery and result reporting
+        id: prepare
+        run: |
+          mkdir -p .tmp/focused-evidence/macos-full
+          pnpm --filter @codetreker/daynight exec vitest list --config vitest.focused-evidence.config.ts --filesOnly --json=../../.tmp/install-evidence/discovered.json
+      - name: Test the compiled CLI with macOS termination diagnostics
+        run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run --config vitest.focused-evidence.config.ts
+      - name: Verify unchanged lock and installed package set
+        if: ${{ always() && steps.prepare.outcome != 'skipped' }}
+        run: |
+          shasum -a 256 pnpm-lock.yaml > .tmp/install-evidence/lock-after.txt
+          diff -u .tmp/install-evidence/lock-before.txt .tmp/install-evidence/lock-after.txt
+          find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -print | sort > .tmp/install-evidence/packages-after.txt
+          diff -u .tmp/install-evidence/packages-before.txt .tmp/install-evidence/packages-after.txt
+          test -z "$(git status --porcelain)"
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: environment-6
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: probes-6
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload immediate CLI test failure diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: failures-6
+          path: .tmp/cli-test-failures/*.jsonl
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: termination-6
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: install-evidence-6
+          path: |
+            .tmp/install-evidence/
+            .tmp/focused-evidence/macos-full/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
