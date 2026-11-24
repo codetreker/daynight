@@ -33,8 +33,9 @@ unknown migration commit would then be reported as a successful format change.
 
 ## Consequences
 
-Reports follow the canonical sequence without a separate version setting and
-preserve the distinction between an observed source and an admitted connection.
+Internal observations and [failure logs](../simplification/2026-11-24-sqlite-migration-failure-logs.md)
+follow the canonical sequence and distinguish the observed source from the
+admitted connection.
 The generic phase name changes for consumers of diagnostic records; the original
 SQLite phase and transaction outcome remain available. At adoption this decision
 did not introduce a new journal format or outbox accounting.

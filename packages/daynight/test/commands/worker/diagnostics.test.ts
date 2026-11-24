@@ -1,7 +1,7 @@
 import { appendFile, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticFiles, type WorkerDiagnosticSinkEvent } from "../../../src/commands/worker/diagnostics.js";
+import { createWorkerDiagnostics, workerSqliteMigrationReporter, type WorkerDiagnosticFiles, type WorkerDiagnosticSinkEvent } from "../../../src/commands/worker/diagnostics.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { WorkerConfigurationDiagnosticMetadata } from "../../../src/commands/worker/configuration-diagnostics.js";
@@ -97,12 +97,16 @@ it("retains queryable SQLite migration metadata while rejecting extra payload an
   const migration = { migrationId: "00112233-4455-6677-8899-aabbccddeeff", database: "web", file: path.join(home, "state.sqlite"), kind: "completed", phase: "commit", fromVersion: 0, toVersion: 1, durationMs: 8, outcome: "committed", prompt: "private-extra-payload" } as const;
   const cause = Object.assign(new Error("SQL parameter private-raw-value"), { code: "SQLITE_FULL" });
   const error = new SqliteAccessError("cleanup-failed", { database: "web", phase: "close", fromVersion: 0, toVersion: 1 }, { cause, outcome: "committed" });
-  logger.emit(workerSqliteMigrationEvent(migration));
+  const reportMigration = workerSqliteMigrationReporter(logger.emit);
+  reportMigration({ ...migration, kind: "started", phase: "begin", outcome: "not-started" });
+  reportMigration(migration);
+  reportMigration({ ...migration, kind: "failed", phase: "migrate", outcome: "rolled-back" });
   logger.emit({ kind: "sqlite-migration-failed", message: "SQLite close failed after commit.", sqlite: { ...migration, kind: "failed", phase: "close" }, error });
   await logger.flush();
   const text = await readFile(logger.filename, "utf8");
   const records = text.trim().split("\n").map(line => JSON.parse(line));
-  expect(records[0].sqlite).toMatchObject({ migrationId: migration.migrationId, database: "web", phase: "commit", fromVersion: 0, toVersion: 1, durationMs: 8, outcome: "committed" });
+  expect(records.map(record => record.kind)).toEqual(["sqlite-migration-failed", "sqlite-migration-failed"]);
+  expect(records[0].sqlite).toMatchObject({ migrationId: migration.migrationId, database: "web", phase: "migrate", fromVersion: 0, toVersion: 1, durationMs: 8, outcome: "rolled-back" });
   expect(records[0].sqlite).not.toHaveProperty("prompt");
   expect(records[1].error).toMatchObject({ database: "web", phase: "close", fromVersion: 0, toVersion: 1, outcome: "committed", cause: { name: "Error", sqliteCode: "SQLITE_FULL" } });
   expect(text).not.toContain("private-raw-value");

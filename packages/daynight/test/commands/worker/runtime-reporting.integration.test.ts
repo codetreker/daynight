@@ -95,7 +95,7 @@ vi.mock("../../../src/commands/worker/web-archive-backfill.js", async original =
     return actual.createWebArchiveMaintenance(archiveOptions);
   } };
 });
-vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
+vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const remoteUrl = "https://git.example/team/repo.git";

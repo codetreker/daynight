@@ -618,7 +618,7 @@ test("an empty current journal still reports a committed deadline failure after 
   } finally { permit.release(); f.permit.release(); }
 });
 
-test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonical journal migration stage through the existing production envelope", mode => {
+test.each(["automatic-read", "stopped-storage"] as const)("%s upgrades the journal without emitting successful SQLite diagnostics", mode => {
   const f = fixture(); f.permit.release();
   const writes: string[] = [];
   vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; });
@@ -628,18 +628,7 @@ test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonica
     } else {
       withStoppedControllerStorage({ journalPath: f.file, ticket: f.ticket, assertOriginal: db => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot) }, db => expect(marker(db)).toBe(0));
     }
-    const envelopes = writes.flatMap(text => text.split("\n").filter(Boolean).map(line => JSON.parse(line) as { kind: string; sqlite: SqliteMigrationEvent })).filter(item => item.sqlite?.file === f.file);
-    const events = envelopes.map(item => item.sqlite), imported = events.filter(event => event.phase === "journal-migration");
-    expect(imported.map(event => event.kind)).toEqual(["started", "completed"]);
-    expect(envelopes.every(item => item.kind === `sqlite-migration-${item.sqlite.kind}`)).toBe(true);
-    expect(imported[0]).toMatchObject({ fromVersion: 9, toVersion: currentSqliteVersion(controllerJournalFormat), outcome: "not-started", storage: { role: "upgrade-only", roleResult: "pending", sqlitePhase: "begin" } });
-    expect(imported[1]).toMatchObject({ fromVersion: 9, toVersion: currentSqliteVersion(controllerJournalFormat), outcome: "committed", storage: { role: "upgrade-only", roleResult: "admitted", sqlitePhase: "commit", entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(f.entry)), databaseBytes: expect.any(Number), walBytes: expect.any(Number), freePageCount: expect.any(Number), freePageBytes: expect.any(Number), oldFileCount: 2, oldFileBytes: Buffer.byteLength(JSON.stringify(f.entry)) + Buffer.byteLength("interrupted candidate") } });
-    if (mode === "stopped-storage") {
-      expect(new Set(events.map(event => event.phase))).toEqual(new Set(["journal-migration", "legacy-timeline-retirement", "journal-compaction", "storage-admission"]));
-      expect(events.at(-1)).toMatchObject({ phase: "storage-admission", kind: "completed", fromVersion: currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat), storage: { admission: "settlement", role: "stopped-maintenance", roleResult: "admitted", executionId: f.ticket.executionId } });
-    }
-    const serialized = JSON.stringify(envelopes);
-    expect(serialized).not.toContain(f.entry.kind === "reasoning" ? f.entry.text : "not-a-real-body"); expect(serialized).not.toContain(f.ticket.initialPrompt); expect(serialized).not.toContain(f.ticket.ipcSecret);
+    expect(writes.join("")).not.toContain("sqlite-migration-");
   } finally { f.permit.release(); }
 });
 

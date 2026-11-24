@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:os";
 import path from "node:path";
-import type { SqliteMigrationEvent } from "../../platform/sqlite-access.js";
+import { sqliteMigrationFailureReporter, type SqliteMigrationEvent } from "../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError } from "../../platform/sqlite-error.js";
 import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerPaths } from "./paths.js";
@@ -22,10 +22,12 @@ const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   ...(event.error === undefined ? {} : { error: event.error }),
 });
 
-export const workerSqliteMigrationEvent = (event: SqliteMigrationEvent): WorkerDiagnostic => ({
-  kind: `sqlite-migration-${event.kind}`,
-  message: `SQLite ${event.database} ${event.phase}: ${event.fromVersion} → ${event.toVersion} (${event.outcome}).`,
-  sqlite: sqliteMetadata(event),
+export const workerSqliteMigrationReporter = (emit: (event: WorkerDiagnostic) => void) => sqliteMigrationFailureReporter(event => {
+  emit({
+    kind: "sqlite-migration-failed",
+    message: `SQLite ${event.database} ${event.phase}: ${event.fromVersion} → ${event.toVersion} (${event.outcome}).`,
+    sqlite: sqliteMetadata(event),
+  });
 });
 
 const abbreviateGuids = (value: string): string => value.replace(/\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "$1");

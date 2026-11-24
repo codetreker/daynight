@@ -73,7 +73,12 @@ const validateOptions = (options: CommonOptions): number => {
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
   return timeout;
 };
-export const reportSqliteMigrationEvent: SqliteMigrationReporter = (event) => { process.stderr.write(`${JSON.stringify({ kind: `sqlite-migration-${event.kind}`, sqlite: event })}\n`); };
+export const sqliteMigrationFailureReporter = (report: SqliteMigrationReporter): SqliteMigrationReporter => event => {
+  if (event.kind === "failed") report(event);
+};
+export const reportSqliteMigrationEvent = sqliteMigrationFailureReporter(event => {
+  process.stderr.write(`${JSON.stringify({ kind: "sqlite-migration-failed", sqlite: event })}\n`);
+});
 const databaseName = (source: SqliteDatabaseSource): string => typeof source === "string" ? source : sqliteDisplayFilename(source.name);
 const context = (options: CommonOptions, phase: string, fromVersion?: number) => ({ database: options.format.name, file: databaseName(options.file), phase, ...(fromVersion === undefined ? {} : { fromVersion }), toVersion: currentSqliteVersion(options.format) });
 const accessContext = (error: unknown, depth = 0): SqliteAccessError | undefined => {

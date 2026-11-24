@@ -23,6 +23,21 @@ const seed = (file: string): void => { const db = connect(file); baseline(db); d
 afterEach(() => { vi.restoreAllMocks(); for (const db of connections) if (db.open) db.close(); connections.clear(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("SQLite access lifecycle", () => {
+  it("logs only a failed migration to stderr", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const memory = connect(":memory:");
+    openSqliteDatabase({ file: memory, format, allowCreate: true }).close();
+    const file = makeFile(); seed(file);
+    const bad: SqliteFormat = { ...format, migrations: [{ toVersion: 2, up: () => { throw new Error("Upgrade failed."); } }] };
+    expect(() => openSqliteDatabase({ file, format: bad, allowCreate: false })).toThrow("migration-failed");
+    openSqliteDatabase({ file, format, allowCreate: false }).close();
+
+    expect(stderr).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(stderr.mock.calls[0]![0]))).toMatchObject({
+      kind: "sqlite-migration-failed",
+      sqlite: { kind: "failed", file, fromVersion: 1, toVersion: 2, outcome: "rolled-back", error: expect.any(Object) },
+    });
+  });
   it("upgrades before a read, closes migration resources, then reads exactly once", () => {
     const file = makeFile(); seed(file); const release = vi.fn(), acquire = vi.fn(() => ({ owner: "maintenance", release })); const read = vi.fn((db: Database.Database) => db.prepare("SELECT * FROM records").all()); const events: SqliteMigrationEvent[] = [];
     expect(readSqliteDatabase({ file, format, onMissing: () => [], acquireMaintenance: acquire, onMigration: event => { events.push(event); } }, read)).toEqual([{ id: 1, value: "committed", extra: null }]);

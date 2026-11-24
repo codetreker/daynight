@@ -110,7 +110,7 @@ Journal 在任何 DDL 前执行 owner 准入：版本 0 没有 `execution` 表�
 
 Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版本 0 没有该表时可重置；陈旧、过期或 PID 缺失都不提供回收权限。已取得租约的 release 在同一事务内断言当前格式，按 native_key+nonce 删除并验证恰好一行，不进入自动升级路径。其业务释放仍要求原有“从未启动”或完整停止证据。
 
-格式 COMMIT、设置恢复与完成报告均在 lease INSERT 前完成。只有业务事务 COMMIT 正常返回后才记录已取得 lease；之后 inventory 失败按原 native_key 与 nonce 精确释放。业务 COMMIT 结果未知时保留可能已持久化的 nonce，不以格式事务已提交推断业务结果。
+格式 COMMIT 与连接设置恢复均在 lease INSERT 前完成。只有业务事务 COMMIT 正常返回后才记录已取得 lease；之后 inventory 失败按原 native_key 与 nonce 精确释放。业务 COMMIT 结果未知时保留可能已持久化的 nonce，不以格式事务已提交推断业务结果。
 
 ## 错误与诊断
 
@@ -118,7 +118,7 @@ Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版�
 
 连接适配层区分未开始、已提交、已回滚和未知事务结果。提交前失败按既有回滚、结果记录和私有连接关闭边界处理，保留原始错误；外键设置恢复只属于提交后的连接返回边界。COMMIT 成功后先记录已提交，再恢复并核实原 `foreign_keys` 设置，完成后才返回连接。恢复失败使用独立的 `restore-foreign-keys` 阶段，关闭连接后报告 `cleanup-failed` 和已提交结果，不重放已提交操作。提交成功后 close 失败同样仍报告已提交；操作和回滚/关闭双失败聚合原始对象，不自动重跑。实际原因修复后，再次打开按真实版本识别。当前五个目标 schema 不含外键；增加依赖外键动作的目标格式必须重新审查此重置边界。业务 SQLite 错误使用独立 operation-failed 阶段和业务事务结果；回滚或关闭失败保留错误链与连接关闭事实，未确认关闭时继续持有 permit。
 
-同步迁移事件复用 stderr 与现有 Worker JSONL。数据库名称、路径、阶段、源/目标版本、步骤、migrationId 和结果采用有限字段，版本 0 转换使用 `reset` 事件；原 cause 留在内存。文本及 JSONL 对访问错误使用安全表示，避免 JSON parser 的原 message 或 SQL 参数泄露业务内容。日志失败不改变数据库已知提交结果，也不覆盖已有迁移错误。
+SQLite 连接层同步通知内部回调迁移开始、完成和失败，Controller 借此记录连接准入后的状态。默认 stderr、Review 和 Worker 的日志入口只写入 `failed` 事件。失败诊断使用有限的结构化字段，包括数据库名称、路径、阶段、源/目标版本、步骤、migrationId 和事务结果。原始 cause 保留在内存，诊断使用安全表示以避免泄露 JSON parser 的原 message 或 SQL 参数。日志失败保留数据库已知提交结果和原迁移错误。
 
 ## 切换与验证边界
 
