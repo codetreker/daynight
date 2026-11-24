@@ -526,7 +526,7 @@ describe("worker cloud-first startup", () => {
         // its original ownership only for teardown, after the assertions above.
         if (lifecycle !== undefined) for (const probe of retainedBotCliProbes()) {
           const state = lifecycle.readState();
-          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!,
+          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!,
             intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
           resourceId: probe.launchId, operationId: probe.launchId, ownerKind: "repository", identity: { kind: "owned_command" } });
           await reconcileBotCliProbe(probe.launchId);
