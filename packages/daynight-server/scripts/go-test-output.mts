@@ -3,7 +3,7 @@ import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } fro
 import { constants } from 'node:os';
 import { join } from 'node:path';
 
-const [realGo, directory, ...args] = process.argv.slice(2);
+const [realGo, directory, normalizer, normalizerTemp, ...args] = process.argv.slice(2);
 let descriptor: number | undefined;
 const fail = (error: unknown): never => {
   // Keep the first capture failure even if an overlapping invocation later
@@ -56,6 +56,20 @@ try {
   const result = await closed;
   closeSync(descriptor);
   descriptor = undefined;
+  if (normalizer && result.exitCode === 0 && result.signal === null) {
+    const profiles = args.filter(arg => arg.startsWith('-coverprofile=')).map(arg => arg.slice('-coverprofile='.length));
+    if (profiles.length !== 1 || !profiles[0]) throw new Error('Expected exactly one go test coverage profile.');
+    // Keep stdout open until the profile is ready: go-cov reads it after EOF.
+    const compact = spawn(normalizer, [profiles[0], normalizerTemp!], { stdio: ['ignore', 'ignore', 'inherit'] });
+    let launchError: Error | undefined;
+    compact.once('error', error => { launchError = error; });
+    const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      compact.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    if (launchError || outcome.code !== 0 || outcome.signal !== null) {
+      throw new Error(`Coverage normalization failed: ${launchError ?? outcome.signal ?? outcome.code}`);
+    }
+  }
   const temporary = join(directory, '.go-test.complete.tmp');
   writeFileSync(temporary, JSON.stringify({ version: 1, bytes, ...result }) + '\n', { flag: 'wx', mode: 0o600 });
   renameSync(temporary, join(directory, 'go-test.complete.json'));

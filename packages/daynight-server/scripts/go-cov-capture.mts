@@ -13,6 +13,16 @@ try {
     throw new Error('Usage: go-cov-capture.mts module|startup-shutdown ABSOLUTE_GO ABSOLUTE_GO_COV [ARGUMENT...]');
   }
   accessSync(realGo, fsConstants.X_OK);
+  let normalizer = '';
+  let normalizerTemp = '';
+  if (args[0]?.startsWith('--normalize=')) {
+    normalizer = args.shift()!.slice('--normalize='.length);
+    if (scope !== 'module' || !isAbsolute(normalizer)) throw new Error('Expected an absolute module coverage normalizer.');
+    accessSync(normalizer, fsConstants.X_OK);
+    if (!args[0]?.startsWith('--normalize-temp=')) throw new Error('Expected an absolute normalizer temporary path.');
+    normalizerTemp = args.shift()!.slice('--normalize-temp='.length);
+    if (!isAbsolute(normalizerTemp)) throw new Error('Expected an absolute normalizer temporary path.');
+  }
   const base = resolve(scripts, '../.tmp/go-test-evidence', scope!);
   mkdirSync(base, { recursive: true });
   const directory = mkdtempSync(join(base, 'run-'));
@@ -24,7 +34,7 @@ try {
     // the caller's PATH, including its absence, without private environment keys.
     process.env.PATH === undefined ? 'unset PATH' : 'PATH=' + quote(process.env.PATH) + '; export PATH',
     'if [ "$1" != test ]; then exec ' + quote(realGo) + ' "$@"; fi',
-    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' "$@"',
+    'exec ' + quote(process.execPath) + ' ' + quote(join(scripts, 'go-test-output.mts')) + ' ' + quote(realGo) + ' ' + quote(directory) + ' ' + quote(normalizer) + ' ' + quote(normalizerTemp) + ' "$@"',
     '',
   ].join('\n'), { mode: 0o700 });
   console.error('Go test evidence: ' + directory);

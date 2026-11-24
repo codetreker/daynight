@@ -14,7 +14,9 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
 rm -f coverage.out
 
 module_go_flags="$unit_go_flags"
+pr_ci=false
 if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
+  pr_ci=true
   module_go_flags+=" -p=4"
 fi
 
@@ -36,7 +38,15 @@ packages="$(GOFLAGS="$unit_go_flags" go list -f '{{if or .GoFiles .CgoFiles}}{{.
 [[ -n "$packages" ]] || { printf '%s\n' 'No production packages found.' >&2; exit 1; }
 GOFLAGS= go install github.com/codetreker/go-cov/cmd/go-cov@v0.1.4
 started=$SECONDS
+normalizer_args=()
+if "$pr_ci"; then
+  GOFLAGS= node scripts/command-timeout.mts 180000 5000 go test -count=1 ./scripts/testdata/coverage-normalize
+  GOFLAGS= node scripts/command-timeout.mts 180000 5000 go build -o "$GOBIN/daynight-coverage-normalize" ./scripts/testdata/coverage-normalize
+  normalizer_temp="$(mktemp "$DAYNIGHT_MODULE_ROOT/.coverage-normalize.XXXXXXXX")"
+  trap 'rm -f -- "$normalizer_temp"' EXIT
+  normalizer_args=("--normalize=$GOBIN/daynight-coverage-normalize" "--normalize-temp=$normalizer_temp")
+fi
 node scripts/command-timeout.mts 1800000 5000 env GOFLAGS="$module_go_flags -vet=all -coverpkg=$packages" \
-  node scripts/go-cov-capture.mts module "$(command -v go)" "$GOBIN/go-cov" --race="$race" --exclude-packages="$command_package"
+  node scripts/go-cov-capture.mts module "$(command -v go)" "$GOBIN/go-cov" "${normalizer_args[@]}" --race="$race" --exclude-packages="$command_package"
 node scripts/coverage.mts coverage.out
 printf 'Module vet, tests and coverage completed in %ss\n' "$((SECONDS - started))"

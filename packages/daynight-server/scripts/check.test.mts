@@ -39,6 +39,34 @@ test('PR CI uses four Go package slots with race disabled and propagates coverag
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
 });
 
+test('PR CI builds and runs the normalizer before coverage gates', async (t) => {
+  const { result, trace, fixture } = await runValidation(t, 'check', 'true', { GITHUB_EVENT_NAME: 'pull_request' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(trace, /go test -count=1 \.\/scripts\/testdata\/coverage-normalize/);
+  assert.match(trace, /go build -o .*daynight-coverage-normalize \.\/scripts\/testdata\/coverage-normalize/);
+  assert.match(trace, /normalize coverage.out/);
+  assert.ok(trace.indexOf('normalize coverage.out') < trace.indexOf('node scripts/coverage.mts coverage.out'));
+  assert.doesNotMatch(trace.split('\n').find(line => line.startsWith('go-cov '))!, /--normalize=/);
+  assert.ok(!(await readdir(fixture)).some(name => name.startsWith('.coverage-normalize.')));
+  for (const fault of ['NORMALIZE_TEST_EXIT', 'NORMALIZE_BUILD_EXIT', 'NORMALIZE_EXIT']) {
+    const failed = await runValidation(t, 'check', 'true', { GITHUB_EVENT_NAME: 'pull_request', [fault]: '19' });
+    assert.notEqual(failed.result.status, 0, fault);
+    assert.doesNotMatch(failed.trace, /node scripts\/coverage.mts coverage.out/);
+    assert.ok(!(await readdir(failed.fixture)).some(name => name.startsWith('.coverage-normalize.')));
+  }
+  const killed = await runValidation(t, 'check', 'true', { GITHUB_EVENT_NAME: 'pull_request', NORMALIZE_KILL: '1' });
+  assert.notEqual(killed.result.status, 0);
+  assert.ok(!(await readdir(killed.fixture)).some(name => name.startsWith('.coverage-normalize.')));
+  assert.match(await readFile(join(killed.fixture, 'coverage.out'), 'utf8'), /^mode: atomic\n/);
+});
+
+test('a local invocation with an inherited pull request event does not normalize', async t => {
+  const { result, trace } = await runValidation(t, 'check', undefined, { GITHUB_EVENT_NAME: 'pull_request' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(trace, /coverage-normalize|normalize coverage.out/);
+  assert.doesNotMatch(trace, /-p=4/);
+});
+
 test('module check propagates fixture and covered test failures', async (t) => {
   const fixtureFailure = await runValidation(t, 'check', undefined, { TESTAUTH_EXIT: '22' });
   assert.equal(fixtureFailure.result.status, 22);

@@ -5,6 +5,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { exists, fixture, marker, payload, stopped, waitFor } from './testdata/go-cov-fixture.mts';
 
+const normalizationArgs = (root: string): string[] => [
+  '--normalize=' + join(root, 'normalizer'), '--normalize-temp=' + join(root, 'normalize.tmp'),
+];
+
 test('capture retains Test output followed only by package fail without changing bytes or invocation', async t => {
   const f = await fixture(t);
   f.env.FIXTURE_GO_EXIT = '17';
@@ -59,6 +63,104 @@ test('capture failures cannot become success even when the consumer ignores fail
   }
 });
 
+test('normalization runs after successful go test and before the consumer reads the profile', async t => {
+  const f = await fixture(t);
+  f.env.FIXTURE_PROFILE_ARG = '1';
+  const profile = join(f.root, 'coverage.out');
+  const result = f.run('module', 5000, normalizationArgs(f.root));
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(await readFile(join(f.root, 'normalizer-args'), 'utf8')), [profile, join(f.root, 'normalize.tmp')]);
+  assert.equal(await exists(join(f.root, 'normalize.tmp')), false);
+  assert.equal(await readFile(join(f.root, 'consumer-profile'), 'utf8'),
+    'mode: atomic\na.go:1.1,1.2 1 1\nnormalized\n');
+  const [run] = await f.runs();
+  assert.ok(run);
+  assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
+  assert.deepEqual(await readFile(join(f.root, 'received')), payload);
+  assert.deepEqual(JSON.parse(await readFile(join(f.root, 'cov-args'), 'utf8')),
+    ['--race=true', '--coverprofile=coverage.out']);
+});
+
+test('a normalizer error preserves the original profile and raw output even if the consumer ignores failure', async t => {
+  const f = await fixture(t, 'ignore-failure');
+  f.env.FIXTURE_PROFILE_ARG = '1';
+  f.env.FIXTURE_PROFILE = 'broken profile\n';
+  const result = f.run('module', 5000, normalizationArgs(f.root));
+  assert.equal(result.status, 125, result.stderr);
+  assert.equal(await readFile(join(f.root, 'coverage.out'), 'utf8'), 'broken profile\n');
+  const [run] = await f.runs();
+  assert.ok(run);
+  assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
+  assert.deepEqual(await readFile(join(f.root, 'received')), payload);
+  const failure = JSON.parse(await readFile(join(run, 'go-test.failed.json'), 'utf8'));
+  assert.equal(failure.version, 1);
+  assert.match(failure.error, /normaliz/i);
+});
+
+test('failed go test and the unchanged local and startup paths do not normalize', async t => {
+  const failed = await fixture(t);
+  failed.env.FIXTURE_PROFILE_ARG = '1';
+  failed.env.FIXTURE_GO_EXIT = '17';
+  const result = failed.run('module', 5000, normalizationArgs(failed.root));
+  assert.equal(result.status, 17, result.stderr);
+  assert.equal(await exists(join(failed.root, 'normalizer-args')), false);
+  assert.equal(await readFile(join(failed.root, 'consumer-profile'), 'utf8'), 'mode: atomic\na.go:1.1,1.2 1 1\n');
+  for (const scope of ['module', 'startup-shutdown']) {
+    const f = await fixture(t);
+    f.env.FIXTURE_PROFILE_ARG = '1';
+    const unchanged = f.run(scope);
+    assert.equal(unchanged.status, 0, unchanged.stderr);
+    assert.equal(await exists(join(f.root, 'normalizer-args')), false);
+    assert.equal(await readFile(join(f.root, 'consumer-profile'), 'utf8'), 'mode: atomic\na.go:1.1,1.2 1 1\n');
+  }
+});
+
+test('normalization refuses missing profile arguments and invalid normalizer paths', async t => {
+  for (const profile of ['missing', 'empty', 'duplicate']) {
+    const f = await fixture(t, 'ignore-failure');
+    f.env.FIXTURE_PROFILE_ARG = profile;
+    const result = f.run('module', 5000, normalizationArgs(f.root));
+    assert.equal(result.status, 125, result.stderr);
+    assert.equal(await exists(join(f.root, 'normalizer-args')), false);
+    const [run] = await f.runs();
+    assert.ok(run);
+    assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
+    assert.equal(await exists(join(run, 'go-test.failed.json')), true);
+  }
+
+  const invalid = await fixture(t);
+  const badPath = invalid.run('module', 5000, ['--normalize=relative-normalizer', '--normalize-temp=' + join(invalid.root, 'normalize.tmp')]);
+  assert.equal(badPath.status, 125, badPath.stderr);
+  assert.equal(await exists(join(invalid.root, 'trace')), false);
+
+  for (const temporary of ['', 'relative.tmp']) {
+    const f = await fixture(t);
+    const args = ['--normalize=' + join(f.root, 'normalizer')];
+    if (temporary) args.push('--normalize-temp=' + temporary);
+    const result = f.run('module', 5000, args);
+    assert.equal(result.status, 125, result.stderr);
+    assert.equal(await exists(join(f.root, 'trace')), false);
+  }
+});
+
+test('cancellation while normalizing stops the worker and leaves the original profile intact', async t => {
+  const f = await fixture(t);
+  f.env.FIXTURE_PROFILE_ARG = '1';
+  f.env.FIXTURE_NORMALIZER_HANG = '1';
+  const active = f.start(5000, false, normalizationArgs(f.root));
+  await active.ready('normalizer-ready');
+  const pid = Number(await readFile(join(f.root, 'normalizer-pid'), 'utf8'));
+  assert.equal(await readFile(join(f.root, 'normalize.tmp'), 'utf8'), 'mode: atomic\na.go:1.1,1.2 1 1\nnormalized\n');
+  active.child.kill('SIGTERM');
+  assert.deepEqual(await active.closed, [143, null], active.output().stderr);
+  assert.ok(stopped(pid), 'normalizer remains after cancellation');
+  assert.equal(await readFile(join(f.root, 'coverage.out'), 'utf8'), 'mode: atomic\na.go:1.1,1.2 1 1\n');
+  const [run] = await f.runs();
+  assert.ok(run);
+  assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
+  assert.equal(await exists(join(run, 'go-test.complete.json')), false);
+});
+
 test('a closed consumer fails capture and preserves the written prefix', async t => {
   const f = await fixture(t, 'forward-failure', Buffer.alloc(2 * 1024 * 1024, 97));
   const result = f.run();
@@ -103,16 +205,18 @@ test('the outer supervisor cleans real go and tests after shim kill or early con
 test('cancellation and deadlines retain partial output and clean the same process group', async t => {
   for (const interrupted of [false, true]) {
     const f = await fixture(t, 'hang');
+    f.env.FIXTURE_PROFILE_ARG = '1';
     // Trigger the supervisor's deadline only after raw output reached its consumer.
     // command-timeout.test.mts owns real elapsed-time expiry; this test owns capture
     // and descendant cleanup after that deadline fires, independent of startup cost.
-    const active = f.start(5000, !interrupted);
+    const active = f.start(5000, !interrupted, normalizationArgs(f.root));
     await active.ready('capture-ready');
     if (interrupted) active.child.kill('SIGTERM');
     assert.deepEqual(await active.closed, [interrupted ? 143 : 124, null], active.output().stderr);
     const [run] = await f.runs();
     assert.ok(run);
     assert.equal(await exists(join(run, 'go-test.complete.json')), false);
+    assert.equal(await exists(join(f.root, 'normalizer-args')), false);
     assert.ok((await stat(join(run, 'go-test.jsonl'))).size > 0);
     for (const pid of JSON.parse(await readFile(join(f.root, 'pids'), 'utf8')) as number[]) {
       assert.ok(stopped(pid), 'owned test process remains after cancellation');

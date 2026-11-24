@@ -3050,9 +3050,18 @@ build and verifies it in the binary; other process tests may differ. The explici
 `scripts/check.sh` and `scripts/startup-shutdown.sh` invoke `go-cov` v0.1.4 with
 one checked-in configuration. Package and function thresholds remain 85% and
 80%. `critical_blocks.fail` is false, so critical-block analysis is disabled.
-Each raw profile passes an exact statement comparison strictly greater than
+Each profile passes an exact statement comparison strictly greater than
 90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
 coverage blocks without loading the complete profile into one string.
+
+In PR CI the module capture compacts a successful atomic profile before go-cov
+reads it. Matching blocks retain their statement counts and summed execution
+counts, including zero-count blocks. The normalizer writes a candidate beside
+the original and replaces it only after successful validation. A normalization
+failure fails the check and retains the original profile. Local, main and
+startup/shutdown coverage retain their original profiles. The
+[profile decision](../../.agents/notes/implemented/testing/2026-11-24-go-pr-profile-normalization.md)
+records the trade-offs.
 
 Each coverage invocation also retains the original `go test -json` bytes under
 `.tmp/go-test-evidence/module/run-*/` or
