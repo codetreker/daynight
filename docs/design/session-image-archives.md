@@ -282,7 +282,13 @@ status 在持有存储保护时观察暂存，不修改业务状态或触发清�
 
 已有 active history bundle 时，source-tail 与 prepare 使用同一停止转换，在最终 history 开始前将其推进 settling，再沿原批次协调 ACK。服务分别保留最后完整活动账本的来源截止点和最终 source 屏障；精确尾部重放只推进后者，丢失 ACK 的重试不会再次增加准备 revision。最终 history 开始、sealed 或 manifest 提交后仍禁止追加尾部；不得用旧活动账本替代最终同步。
 
-服务推进原source checkpoint及有界原event/batch hash账本，不重放state或改变lifecycle、generation和operations。原stopped身份可将服务尚未知的native ID从null单调登记为原Controller已创建的ID，初始化null事实不会清除已知ID，不同的非null ID仍冲突；最终manifest沿同一停止授权保留该旧writer保证。成功返回严格`{sourceEpoch,batchId,lastAckedSourceSeq}`，ACK必须精确等于该批末尾；未知结果重发同batchId及原bytes。Controller先持久完整批次，再发送，只有核验并持久该精确ACK后才删除对应outbox前缀。原sourceFloor已越过本地ACK且缺少连续前缀时明确拒绝；不能猜测服务ACK或用最终历史文件掩盖源缺口。尾部协调后仍要求最终历史sourceThrough精确匹配；冲突ACK不能删尾，原活动身份不能借用此入口。
+服务推进原source checkpoint及有界原event/batch hash账本，不重放state或改变lifecycle、generation和operations。原stopped身份可将服务尚未知的native ID从null单调登记为原Controller已创建的ID，初始化null事实不会清除已知ID，不同的非null ID仍冲突；最终manifest沿同一停止授权保留该旧writer保证。成功返回严格`{sourceEpoch,batchId,lastAckedSourceSeq}`；服务 checkpoint 可以领先批末尾，但该回执只证明请求中的事件，且不能超过冻结截止点。未知结果重发同 batchId 及原内容。Controller 先持久完整批次，再发送，核验回执后至多删除该批末尾的 outbox 前缀。原 sourceFloor 已越过本地 ACK 且缺少连续前缀时明确拒绝；不能猜测服务 ACK 或用最终历史文件掩盖源缺口。尾部协调后仍要求最终历史 sourceThrough 精确匹配；冲突 ACK 不能删尾，原活动身份不能借用此入口。
+
+新停止批次严格验证事件但保留在线实际发送的表示；使用 `sessionDisplayEntry` 的投影必须重建并验证实际表示。旧 `stopped_source_tail` 先按原 batch ID 和完整内容重放。只有明确的 `409 session_conflict`，且本地证明每项与原 outbox 语义及序号一致并至少一项 wire 编码不同，才进入恢复；未知结果及其他失败保留原 pending。无法证明旧投影时不得猜测历史表示。
+
+受控恢复使用 `POST {base}/archive/source-tail/recover`，携带原 `fence`、`controllerId`、`controllerInstanceId`、`sourceEpoch`、`oldBatchId`、独立 `recoveryId`、冻结 `cutoff` 和连续 `events`。完整请求与事件数沿用原上限。服务在相同 Task→Session 锁和事务内执行原停止授权、active ledger 结算及阶段检查；已有原 batch 记录时拒绝恢复并要求原样对账。首次恢复逐项核对重叠摘要、连续性及 native 身份，原子保存 checkpoint 和恢复回执。相同 recovery ID 绑定原 batch、cutoff、范围与内容；精确重试在同锁内检查当前 checkpoint 不超过 cutoff，返回原 `verifiedThrough` 和实时 `currentThrough`。超过截止点、缺少或不匹配摘要、封存后和身份变化均拒绝。事件及 batch 摘要窗口有限，batch 缺失不能证明永久历史不存在；独立恢复账本在所属资源生命周期内保留回执，核对清单完整性，并在资源删除后保留不可复用的身份墓碑。账本有容量上限和拒绝路径，不能通过逐出未对账记录腾出空间。
+
+Controller 在发送前持久每个符合请求预算的连续前缀、固定 recovery ID 和精确内容，并保留完整旧 pending 与 outbox。未知结果先对账同一段；原请求并发提交时按原 batch 对账并原子结算，不以迟到回执覆盖当前状态。每次本地结算重新核对 ticket hash、停止证明、fence、cutoff、pending 和已确认恢复段，在一个事务中仅推进已核验末尾并清理对应 outbox 与图片出现记录。旧服务不支持恢复、证明不足或单事件超限时保留源并明确失败；普通新批次仍可使用旧 source-tail 入口。
 
 ### 已停止执行的 Markdown 图片投影修复
 

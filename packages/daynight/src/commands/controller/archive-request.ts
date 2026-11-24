@@ -31,7 +31,13 @@ export const createArchiveRequest = (options: {
       }
       // Early capacity rejection on an older service can precede the version header.
       const error = await readArchiveRequestError(response, signal);
-      if (!error.busy && options.bodyOnly() && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body archives.");
+      const recoveryRequest = method === "POST" && suffix === "/source-tail/recover";
+      if (recoveryRequest && response.status === 404 && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") {
+        // A missing route and a missing or inaccessible original resource can
+        // both return 404. Preserve the response details and the durable intent.
+        error.message = "Source-tail recovery is unavailable (HTTP 404); check service compatibility and the original resource identity and access.";
+      }
+      if (!recoveryRequest && !error.busy && options.bodyOnly() && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body archives.");
       if (!error.busy || !replayable) throw error;
       const responseRequestId = response.headers.get("X-Request-ID");
       const requestId = responseRequestId !== null && /^[A-Za-z0-9._:-]{1,128}$/.test(responseRequestId) ? responseRequestId : null;

@@ -137,3 +137,23 @@ test("the original 15 second attempt deadline bounds a stalled capacity error bo
   expect(request).toHaveBeenCalledOnce();
   expect(events).toEqual([]);
 });
+
+test("a recovery 404 without a capability header reports the ambiguous unavailable endpoint and retains response details", async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { code: "not_found" } }, { status: 404 }));
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => true, signal: new AbortController().signal, deadline: now + 60000, sessionId: "original-session" });
+  await expect(call("POST", "/source-tail/recover", true, "{}")).rejects.toMatchObject({ status: 404, code: "not_found", payload: { error: { code: "not_found" } }, message: expect.stringContaining("Source-tail recovery is unavailable") });
+  expect(request).toHaveBeenCalledOnce();
+});
+
+test.each([401, 403, 409, 500])("recovery preserves HTTP %i and its error without a capability header", async status => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { code: "original_error" } }, { status }));
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => true, signal: new AbortController().signal, deadline: now + 60000, sessionId: "original-session" });
+  await expect(call("POST", "/source-tail/recover", true, "{}")).rejects.toMatchObject({ status, code: "original_error", message: `Session archive request failed (${status}).` });
+  expect(request).toHaveBeenCalledOnce();
+});
+
+test("other archive routes keep their Task body capability check", async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { code: "not_found" } }, { status: 404 }));
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => true, signal: new AbortController().signal, deadline: now + 60000, sessionId: "original-session" });
+  await expect(call("POST", "/source-tail", true, "{}")).rejects.toThrow("service does not support Task body archives");
+});

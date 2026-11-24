@@ -286,6 +286,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"session_resource_state",
 		"session_resources",
 		"session_source_hashes",
+		"session_source_recoveries",
 		"session_timeline",
 		"sessions",
 		"task_attachments",

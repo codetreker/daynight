@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -124,6 +125,67 @@ func TestStoppedArchiveWithoutActiveBundleHTTP(t *testing.T) {
 	if err = json.Unmarshal(request(http.MethodPost, base+"/archive/source-tail", "application/json", marshal(tail), nil), &tailReceipt); err != nil || tailReceipt.LastAckedSourceSeq != "1" || tailReceipt.BatchID != tail.BatchID {
 		t.Fatalf("source tail receipt: %+v %v", tailReceipt, err)
 	}
+	// A recovery response may be lost after commit. Replay it and check that
+	// its receipt proves only the supplied event while the old batch remains
+	// subject to original event and batch identity checks.
+	recovery := sp.ArchiveSourceRecoveryRequest{Fence: snapshot.Fence, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, SourceEpoch: epoch, OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "1", Events: tail.Events}
+	for i := 0; i < 2; i++ {
+		var receipt sp.ArchiveSourceRecoveryReceipt
+		if err = json.Unmarshal(request(http.MethodPost, base+"/archive/source-tail/recover", "application/json", marshal(recovery), nil), &receipt); err != nil || receipt.VerifiedThrough != "1" || receipt.CurrentThrough != "1" || receipt.RecoveryID != recovery.RecoveryID {
+			t.Fatal(receipt, err)
+		}
+	}
+	refuse := func(path string, body []byte) {
+		t.Helper()
+		req, e := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, bytes.NewReader(body))
+		if e != nil {
+			t.Fatal(e)
+		}
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		response, e := server.Client().Do(req)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusConflict {
+			data, _ := io.ReadAll(response.Body)
+			t.Fatalf("expected conflict: %d %s", response.StatusCode, data)
+		}
+	}
+	var reordered map[string]json.RawMessage
+	if err = json.Unmarshal(tail.Events[0].Payload, &reordered); err != nil {
+		t.Fatal(err)
+	}
+	changed := tail
+	changed.BatchID = recovery.OldBatchID
+	changed.Events = append([]sp.SourceEvent(nil), tail.Events...)
+	keys := make([]string, 0, len(reordered))
+	for key := range reordered {
+		keys = append(keys, key)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	var raw bytes.Buffer
+	raw.WriteByte('{')
+	for index, key := range keys {
+		if index > 0 {
+			raw.WriteByte(',')
+		}
+		raw.Write(marshal(key))
+		raw.WriteByte(':')
+		raw.Write(reordered[key])
+	}
+	raw.WriteByte('}')
+	changed.Events[0].Payload = raw.Bytes()
+	if bytes.Equal(changed.Events[0].Payload, tail.Events[0].Payload) {
+		t.Fatal("fixture did not reorder source event")
+	}
+	refuse(base+"/archive/source-tail", marshal(changed))
+	// A different recovery cannot bypass an existing original batch ID.
+	existing := recovery
+	existing.RecoveryID = uuid.NewString()
+	existing.OldBatchID = tail.BatchID
+	refuse(base+"/archive/source-tail/recover", marshal(existing))
 	prepare := sp.ArchivePrepareRequest{Fence: snapshot.Fence, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID}
 	var prepared sp.ArchivePrepareReceipt
 	if err = json.Unmarshal(request(http.MethodPost, base+"/archive/prepare", "application/json", marshal(prepare), nil), &prepared); err != nil || prepared.Phase != "settling" || prepared.SourceThrough != "1" {
@@ -145,6 +207,7 @@ func TestStoppedArchiveWithoutActiveBundleHTTP(t *testing.T) {
 	if err = json.Unmarshal(request(http.MethodPost, base+"/archive/seal", "", nil, nil), &sealed); err != nil || sealed.Phase != "sealed" || len(sealed.Resources) != 0 {
 		t.Fatalf("seal: %+v %v", sealed, err)
 	}
+	refuse(base+"/archive/source-tail/recover", marshal(recovery))
 	timeline := marshal(sp.ArchiveTimeline{Entries: []sp.TimelineEntry{entry}})
 	fileID := uuid.NewString()
 	put(base+"/archive/files/"+fileID, timeline)
@@ -160,5 +223,8 @@ func TestStoppedArchiveWithoutActiveBundleHTTP(t *testing.T) {
 	var phase string
 	if err = db.Pool.QueryRow(ctx, `SELECT phase FROM session_archive_bundles WHERE session_id=$1`, snapshot.SessionID).Scan(&phase); err != nil || (phase != "committed" && phase != "verified") {
 		t.Fatalf("durable archive phase %q: %v", phase, err)
+	}
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM session_source_recoveries WHERE session_id=$1 AND recovery_id=$2`, snapshot.SessionID, recovery.RecoveryID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("archive publication lost recovery receipt: %d %v", count, err)
 	}
 }

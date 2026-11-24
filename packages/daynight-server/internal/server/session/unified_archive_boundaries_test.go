@@ -118,7 +118,7 @@ func TestUnifiedArchiveTimelineReadRetainsExactBytesAndCapability(t *testing.T) 
 }
 
 func TestUnifiedArchiveRefusalReleasesCapabilityAtEachAdmissionBoundary(t *testing.T) {
-	for _, endpoint := range []string{"prepare", "seal", "content", "source-tail"} {
+	for _, endpoint := range []string{"prepare", "seal", "content", "source-tail", "source-tail/recover"} {
 		for _, stage := range []string{"begin", "legacy capability", "operation"} {
 			t.Run(endpoint+"/"+stage, func(t *testing.T) {
 				f := archiveHTTPSetup(t)
@@ -133,6 +133,9 @@ func TestUnifiedArchiveRefusalReleasesCapabilityAtEachAdmissionBoundary(t *testi
 				}
 				if endpoint == "source-tail" {
 					body = archiveSourceTailBody(t, f)
+				}
+				if endpoint == "source-tail/recover" {
+					body = archiveSourceRecoveryBody(t, f)
 				}
 				fault := &model.Fault{Code: "archive_conflict", Message: "Original archive scope changed."}
 				calls := 0
@@ -153,6 +156,10 @@ func TestUnifiedArchiveRefusalReleasesCapabilityAtEachAdmissionBoundary(t *testi
 						op.source = func(context.Context, sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error) {
 							calls++
 							return sp.ArchiveSourceTailReceipt{}, fault
+						}
+						op.recoverSource = func(context.Context, sp.ArchiveSourceRecoveryRequest) (sp.ArchiveSourceRecoveryReceipt, error) {
+							calls++
+							return sp.ArchiveSourceRecoveryReceipt{}, fault
 						}
 					})
 				}
@@ -179,8 +186,14 @@ func archiveSourceTailBody(t *testing.T, f *archiveHTTPFixture) string {
 	return jsonBody(t, sp.ArchiveSourceTailRequest{Fence: f.snapshot.Fence, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, SourceEpoch: uuid.NewString(), BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: []byte(jsonBody(t, state))}}})
 }
 
+func archiveSourceRecoveryBody(t *testing.T, f *archiveHTTPFixture) string {
+	t.Helper()
+	state := sp.State{InitialInputState: "not_submitted", Activity: "initializing"}
+	return jsonBody(t, sp.ArchiveSourceRecoveryRequest{Fence: f.snapshot.Fence, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, SourceEpoch: uuid.NewString(), OldBatchID: uuid.NewString(), RecoveryID: uuid.NewString(), Cutoff: "1", Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: []byte(jsonBody(t, state))}}})
+}
+
 func TestUnifiedArchiveSourceAndPrepareRejectMalformedBodiesBeforeCore(t *testing.T) {
-	for _, endpoint := range []string{"source-tail", "prepare"} {
+	for _, endpoint := range []string{"source-tail", "source-tail/recover", "prepare"} {
 		for _, kind := range []string{"content type", "shape", "query"} {
 			t.Run(endpoint+"/"+kind, func(t *testing.T) {
 				f := archiveHTTPSetup(t)

@@ -2,7 +2,7 @@ import type { ImageCaptureReceipt, ValidatedImage, ImageCapabilities } from "../
 import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
 import { ImageCaptureNotDispatchedError, ImageCaptureRequestError, ImageCaptureRetrySettledError, ImageCaptureRetryUnknownError } from "./media/capture-error.js";
-import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
+import { sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -274,7 +274,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         const source = { ...(row.payload as object), sourceSeq: row.sequence } as SourceEvent;
         // Older journals may already contain a display event that could never
         // fit the relay. Preserve its source identity and project it as history does.
-        const event = requiresLiveSync && source.kind === "timeline_upsert" ? { ...source, payload: sessionDisplayEntry(source.payload) } : source;
+        const event = journal.bindSourceWire(source, requiresLiveSync);
         const size = sessionWireBytes(event);
         if (size + 1024 > RELAY_LIMITS.maxFrameBytes) throw new Error("Durable controller event exceeds relay frame limit.");
         if (bytes + size > RELAY_LIMITS.maxFrameBytes) break;

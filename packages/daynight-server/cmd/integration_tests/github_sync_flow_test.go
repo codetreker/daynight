@@ -334,7 +334,6 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if response.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("restart routed to old backend: %d", response.StatusCode)
 		}
-
 	})
 	if f.origin != origin || f.callbackURL != callback {
 		t.Fatal("public origin or gateway callback changed after restart")
