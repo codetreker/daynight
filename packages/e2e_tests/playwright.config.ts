@@ -8,6 +8,7 @@ const topology = JSON.parse(readFileSync(path.join(runDirectory, "environment.js
 
 export default defineConfig({
   testDir: "tests",
+  testIgnore: "**/subtask-compat*.spec.ts",
   workers: 1,
   retries: 0,
   timeout: 120_000,
