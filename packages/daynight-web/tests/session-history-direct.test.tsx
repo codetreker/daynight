@@ -326,6 +326,42 @@ it('withdraws a same-history peer cache when a direct records request is denied'
   expect(await readCachedSessionHistory(reopened, await reopened.beginSync(projectId, signal), taskId, signal)).toBeNull();
 });
 
+it.each([false, true])('captures the cached Session owner after candidate recovery and fences a later 403 with newer owner=%s', async newerOwner => {
+  const { peer, ticket, signal } = await seedPeer();
+  const events = vi.fn(); peer.subscribe(events);
+  const { api, scope } = setup();
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  let rejectDenied!: (error: Error) => void;
+  api.history.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectDenied = reject; }));
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (String(url).includes('/task-sync')) return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }));
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  });
+  const missingTask = '20000000-0000-4000-8000-000000000002';
+  const missingFence = await scope.beginTaskRead(projectId, missingTask, 0, 0, signal);
+  await act(async () => { expect(scope.reportTaskDeleted(missingFence, epoch)).toBe(true); });
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  const freshFence = await scope.beginTaskRead(projectId, taskId, 0, 0, signal);
+  const historyTicket = await scope.getDirectHistoryTicket(freshFence, epoch, signal);
+  expect(historyTicket).not.toBeNull();
+  expect(historyTicket!.deletionRevision).toBe(1);
+  expect(await readSessionHistoryOwnership(scope, historyTicket!, taskId, signal)).toMatchObject({ kind: 'present' });
+  if (newerOwner) {
+    const lease = await beginSessionHistoryRefresh(peer, ticket, taskId, signal);
+    if (lease === null || lease.kind !== 'lease') throw new Error('Expected a session refresh lease.');
+    expect(await saveSessionHistory(peer, ticket, taskId, { items: [second], nextCursor: null }, lease.token, signal)).toBe(true);
+  }
+  await act(async () => rejectDenied(new ApiError('server', 403)));
+  expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission');
+  if (newerOwner) {
+    expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toMatchObject({ items: [second] });
+    expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.anything() }));
+  } else {
+    await waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryCleared: expect.objectContaining({ taskId }) })));
+    expect(await readCachedSessionHistory(peer, ticket, taskId, signal)).toBeNull();
+  }
+});
+
 it('withdraws direct records when another tab reports a matching denial', async () => {
   const { peer, ticket, signal } = await seedPeer();
   setup();

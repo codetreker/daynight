@@ -1444,14 +1444,15 @@ export class TaskCacheScope {
     if (!this.isTaskReadCurrent(fence) || canonicalId(epoch) !== epoch) return released();
     const cacheRevision = this.getProjectRevision(fence.projectId);
     const admissionRevision = this.getAdmissionRevision(fence.projectId);
+    const deletionRevision = this.readAdmission.projectRevision(fence.projectId);
     const manifest = await this.userTransaction(async (transaction, userFence) => {
       if (userFence !== fence.userFence) return released();
       return this.manifest(transaction, fence.projectId, userFence);
     }, signal);
-    if (!this.isTaskReadCurrent(fence) || cacheRevision !== this.getProjectRevision(fence.projectId) || admissionRevision !== this.getAdmissionRevision(fence.projectId)) return released();
+    if (!this.isTaskReadCurrent(fence) || cacheRevision !== this.getProjectRevision(fence.projectId) || admissionRevision !== this.getAdmissionRevision(fence.projectId) || deletionRevision !== this.readAdmission.projectRevision(fence.projectId)) return released();
     if (manifest === undefined || manifest.state !== "active" || manifest.epoch !== epoch) return null;
     return { userId: fence.userId, projectId: fence.projectId, userFence: fence.userFence, scopeRevision: cacheRevision,
-      cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, coverageUpdatedAt: manifest.coverageUpdatedAt, syncRevision: manifest.syncRevision, admissionRevision,
+      cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, coverageUpdatedAt: manifest.coverageUpdatedAt, syncRevision: manifest.syncRevision, admissionRevision, deletionRevision,
       generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true };
   }
   async observeHistory(ticket: SyncTicket | TaskReadFence, epoch: string, signal: AbortSignal): Promise<"current" | "retired" | "confirm"> {
