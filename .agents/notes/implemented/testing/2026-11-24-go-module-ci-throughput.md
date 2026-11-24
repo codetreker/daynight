@@ -33,7 +33,10 @@ fixed UniAuth fixture preparation and its explicit `testauth` invocation. The
 contract tests use isolated temporary fixtures; the authentication stage owns
 the module Go cache until both stages finish. Both must succeed and the fixture
 must be read back before the ordinary cache cleanup and coverage invocation.
-Local and main validation retain the sequential preparation order.
+The Linux PR entry uses a Python subreaper to collect detached test descendants
+on cancellation or deadline expiry. It allows two seconds for graceful cleanup
+before forcibly collecting the remaining descendants, including during Go
+coverage. Local and main validation retain the sequential preparation order.
 
 ## Alternatives
 
@@ -60,4 +63,5 @@ The hosted check establishes elapsed time and exercises the complete suite
 under the selected package concurrency.
 Parallel preparation adds process and cancellation coordination. Its stage
 timings expose resource contention, and its failure paths do not admit an
-incomplete fixture into the covered Go suite.
+incomplete fixture into the covered Go suite. The PR entry requires Python 3 and
+Linux procfs; a failed descendant cleanup is reported as a validation failure.

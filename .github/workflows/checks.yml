@@ -367,6 +367,9 @@ jobs:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
         run: |
           rm -rf .tmp/go-test-evidence/module
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            exec python3 scripts/reap-validation.py 1800000 2000 bash scripts/check.sh --coverage
+          fi
           bash scripts/check.sh --coverage
       - name: Validate Azure tests in the covered invocation
         if: ${{ github.event_name == 'pull_request' }}

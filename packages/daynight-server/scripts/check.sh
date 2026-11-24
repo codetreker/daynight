@@ -18,7 +18,7 @@ if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
   module_go_flags+=" -p=4"
 fi
 
-if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
+if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request && "$(uname -s)" == Linux ]]; then
   fixture_dir="$(mktemp -d "$TMPDIR/check-fixture.XXXXXXXX")"
   trap 'rm -rf -- "$fixture_dir"' EXIT
   UNIT_GO_FLAGS="$unit_go_flags" node scripts/parallel-check-preparation.mts "$fixture_dir/result"

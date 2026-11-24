@@ -85,7 +85,7 @@ const timed = async <T extends { code: number }>(name: string, operation: () => 
 
 try {
   const [contractsOutcome, authOutcome] = await Promise.allSettled([
-    timed('Node contract tests', () => run('node', ['--test', 'scripts/coverage.test.mts', 'scripts/check.test.mts', 'scripts/validation-env.test.mts', 'scripts/command-timeout.test.mts', 'scripts/go-cov-capture.test.mts', 'scripts/parallel-check-preparation.test.mts'], false, process.env, false)),
+    timed('Node contract tests', () => run('node', ['--test', 'scripts/coverage.test.mts', 'scripts/check.test.mts', 'scripts/validation-env.test.mts', 'scripts/command-timeout.test.mts', 'scripts/go-cov-capture.test.mts', 'scripts/parallel-check-preparation.test.mts', 'scripts/reap-validation.test.mts', 'scripts/check-cancellation.test.mts'], false, process.env, false)),
     timed('Authentication fixture validation', async () => {
       const prepared = await run('node', ['scripts/prepare-uniauth-fixture.mts'], true);
       if (prepared.code !== 0 || interrupted !== undefined) return { code: prepared.code || interrupted!, path: '' };

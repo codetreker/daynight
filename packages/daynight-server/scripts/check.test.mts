@@ -39,7 +39,7 @@ test('PR CI uses four Go package slots with race disabled and propagates coverag
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
 });
 
-test('PR preparation failures prevent the covered invocation', async (t) => {
+test('PR preparation failures prevent the covered invocation', { skip: process.platform !== 'linux' }, async (t) => {
   for (const [extra, expected] of [
     [{ CONTRACT_EXIT: '17' }, 17],
     [{ PREP_EXIT: '21' }, 21],
