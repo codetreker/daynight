@@ -14,8 +14,7 @@ as current before it observes the restored epoch and authorization.
 The supported fallback is a reproducible Server built from the fixed historical
 source and a scoped Web patch. It uses a separate task-cache database and hint
 channel. Each authenticated scope obtains an authorized full snapshot before
-using its persistent cache, and withdraws project content on synchronization or
-detail-read failure until a new snapshot succeeds. The recovery runner verifies
+using its persistent cache, and withdraws project content on synchronization, access, detail or Thread read failure until a new snapshot succeeds. The recovery runner verifies
 the patch, migration registry, independently reproduced Web and Server, and the
 bytes actually served by the embedded Web. The [task synchronization design](../../../../docs/design/daynight-task-sync.md#8-历史替换与约束)
 owns the recovery sequence and constraints.

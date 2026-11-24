@@ -42,6 +42,7 @@ const cli = async (args: string[], onOutput?: (channel: 'stdout' | 'stderr', chu
 };
 let context: BrowserContext | undefined;
 let phase = 'launch';
+let safeFailureDetail: string | undefined;
 const setPhase = async (value: string): Promise<void> => { phase = value; await writeAtomic(path.join(privateDirectory, 'browser-phase.json'), JSON.stringify({ phase })); };
 let scope: string | undefined, bound = false;
 try {
@@ -258,9 +259,13 @@ try {
     if (operation === 'verify-failures') {
       await setPhase('restored-failures');
       for (const failure of ['denied', 'offline', 'storage'] as const) {
+        await setPhase(`restored-${failure}-prepare`);
         const probe = await context.newPage(); probe.setDefaultTimeout(30_000);
         let refused = 0;
+        const refusedKinds = new Set<string>();
         if (failure !== 'storage') {
+          await probe.bringToFront();
+          await expect.poll(async () => await probe.evaluate(() => document.visibilityState)).toBe('visible');
           await probe.goto(`${childURL}?tab=discussion`);
           await expect(probe.getByText('Recovery baseline history', { exact: true })).toBeVisible();
         }
@@ -273,22 +278,43 @@ try {
             }) as typeof indexedDB.open;
           });
         } else {
-          await probe.route(`**/api/v1/projects/${project}/**`, route => {
+          await probe.route(new RegExp(`/api/v1/projects/${project}(?:/|[?]|$)`), route => {
             refused++;
+            const pathname = new URL(route.request().url()).pathname;
+            refusedKinds.add(pathname.endsWith('/task-sync') ? 'sync' : pathname.endsWith(`/tasks/${child}`) ? 'detail' : pathname.includes('/thread') ? 'thread' : 'other');
             return failure === 'denied'
               ? route.fulfill({ status: 403, contentType: 'application/json', headers: { 'Daynight-User-ID': String(me.id) }, body: JSON.stringify({ code: 'forbidden' }) })
               : route.abort('failed');
           });
         }
+        await setPhase(`restored-${failure}-await-error`);
         if (failure === 'storage') await probe.goto(childURL);
+        else {
+          await setPhase(`restored-${failure}-await-sync`);
+          await expect.poll(() => refusedKinds.has('sync'), { timeout: 60_000 }).toBe(true);
+          await setPhase(`restored-${failure}-await-error`);
+        }
         await expect(probe.getByRole('alert').first()).toBeVisible({ timeout: 60_000 });
+        await setPhase(`restored-${failure}-verify-hidden`);
         if (failure === 'storage') {
           if (!await probe.evaluate(() => (window as Window & { recoveryStorageFailed?: boolean }).recoveryStorageFailed === true)) throw new Error('Storage failure was not exercised.');
         } else if (refused === 0) throw new Error('Project access failure was not exercised.');
-        await expect(probe.getByRole('heading', { name: 'Recovery child', exact: true })).toHaveCount(0);
-        await expect(probe.getByText('Recovery baseline history', { exact: true })).toHaveCount(0);
+        const hidden = async (label: 'heading' | 'history', locator: ReturnType<Page['getByText']>): Promise<void> => {
+          await setPhase(`restored-${failure}-${label}`);
+          try { await expect(locator).toHaveCount(0); }
+          catch (error) {
+            const count = await locator.count();
+            let visible = 0;
+            for (let index = 0; index < count; index++) if (await locator.nth(index).isVisible()) visible++;
+            safeFailureDetail = `${label}-total-${count}-visible-${visible}-requests-${[...refusedKinds].sort().join('-') || 'none'}`;
+            throw error;
+          }
+        };
+        await hidden('heading', probe.getByRole('heading', { name: 'Recovery child', exact: true }));
+        await hidden('history', probe.getByText('Recovery baseline history', { exact: true }));
         await probe.close();
       }
+      await setPhase('restored-blocked-prepare');
       await page.close();
       const lockPage = await context.newPage();
       await lockPage.goto(`${input.baseURL}/projects`);
@@ -305,6 +331,7 @@ try {
         request.onupgradeneeded = () => { request.transaction!.abort(); };
         request.onerror = () => { Object.assign(window, { recoveryAborted: request.error?.name === 'AbortError' }); };
       });
+      await setPhase('restored-blocked-barrier');
       await expect.poll(async () => await upgrade.evaluate(() => (window as Window & { recoveryBlocked?: boolean }).recoveryBlocked === true)).toBe(true);
       const blocked = await context.newPage();
       await blocked.addInitScript(() => {
@@ -319,10 +346,12 @@ try {
           return request;
         }) as typeof indexedDB.open;
       });
+      await setPhase('restored-blocked-open');
       await blocked.goto(childURL);
       await expect.poll(async () => await blocked.evaluate(() => (window as Window & { recoveryOpen?: string }).recoveryOpen)).toBe('pending');
       await expect(blocked.getByRole('heading', { name: 'Recovery child', exact: true })).toHaveCount(0);
       await expect(blocked.getByText('Recovery baseline history', { exact: true })).toHaveCount(0);
+      await setPhase('restored-blocked-release');
       await lockPage.evaluate(() => (window as Window & { recoveryLock?: IDBDatabase }).recoveryLock!.close());
       await expect.poll(async () => await upgrade.evaluate(() => (window as Window & { recoveryAborted?: boolean }).recoveryAborted === true)).toBe(true);
       await expect(blocked.getByRole('heading', { name: 'Recovery child', exact: true })).toBeVisible();
@@ -346,6 +375,7 @@ try {
         restartedIdentity = await context.request.get(`${input.baseURL}/api/v1/me`);
       }
       if (restartedIdentity.status() !== 200 || (await restartedIdentity.json() as { id?: unknown }).id !== me.id) throw new Error('Browser restart identity mismatch.');
+      await setPhase('restored-restart-snapshot');
       const restored = await snapshot(restarted);
       await restarted.goto(`${childURL}?tab=discussion`);
       await expect(restarted.getByText('Recovery baseline history', { exact: true })).toBeVisible();
@@ -358,17 +388,20 @@ try {
       await expect(page.getByText('Recovery baseline history', { exact: true })).toBeVisible();
       const upgrade = await context.newPage();
       await upgrade.goto(`${input.baseURL}/projects`);
+      await setPhase('restored-real-storage-upgrade');
       await upgrade.evaluate(async () => {
         const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 14);
         const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
         db.close();
       });
+      await setPhase('restored-real-storage-version');
       const errorName = await upgrade.evaluate(async () => await new Promise<string>(resolve => {
         const request = indexedDB.open('daynight-task-cache-recovery-12ebdd08', 13);
         request.onsuccess = () => { request.result.close(); resolve('success'); };
         request.onerror = () => resolve(request.error?.name ?? 'unknown');
       }));
       if (errorName !== 'VersionError') throw new Error('Actual IndexedDB version failure was not observed.');
+      await setPhase('restored-real-storage-withdraw');
       await expect(page.getByText('Recovery baseline history', { exact: true })).toHaveCount(0, { timeout: 60_000 });
       const failurePage = await context.newPage(); await failurePage.goto(childURL);
       await expect(failurePage.getByRole('alert').first()).toBeVisible();
@@ -395,7 +428,11 @@ try {
   const message = error instanceof Error ? error.message : '';
   const apiStatus = message.match(/^Fixture API creation failed \((\d{3})\)\.$/)?.[1];
   const cliFailure = message.match(/^CLI (project|task|login) (create|show|delete|attachment|--no-browser) failed \(exit=(\d+|null)\)\.$/);
-  const detail = apiStatus ? `api-status-${apiStatus}` : cliFailure ? `cli-${cliFailure[1]}-${cliFailure[2]!.replaceAll('-', '')}-exit-${cliFailure[3]}` : undefined;
+  const detail = safeFailureDetail ?? (apiStatus ? `api-status-${apiStatus}` : cliFailure ? `cli-${cliFailure[1]}-${cliFailure[2]!.replaceAll('-', '')}-exit-${cliFailure[3]}`
+    : message.includes('toBeVisible') ? 'assert-visible' : message.includes('toHaveCount') ? 'assert-count'
+      : message.includes('toBe(') ? 'assert-value' : message.includes('Storage failure was not exercised') ? 'storage-not-exercised'
+        : message.includes('Project access failure was not exercised') ? 'access-not-exercised'
+          : message.includes('Actual IndexedDB version failure was not observed') ? 'version-error-not-observed' : undefined);
   await send({ type: 'failed', phase, category, ...(detail ? { detail } : {}) }); process.exitCode = 1;
 }
 finally {

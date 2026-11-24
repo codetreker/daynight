@@ -50,7 +50,7 @@ export const verifyCandidateBuild = (input: { revision: string; architecture: 'a
 };
 
 export const fallbackBaseline = '12ebdd08f63c9e09f64937b096d4f9390987be7a';
-export const fallbackPatchSHA256 = 'b24a5c8c276c2bc371c66f90dfa9fe7a608ed75322b4091e6589d0cbba94e363';
+export const fallbackPatchSHA256 = '9b852ff6c1a076840774c50bdd99cbdb2f633b1df87e4a6ec186d46bd6db49c4';
 
 // A fallback is a patched baseline, not the original binary. Compare independent
 // production builds and their embedded Web trees before starting either artifact.

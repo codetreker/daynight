@@ -1,0 +1,47 @@
+import { useRef, type RefObject } from 'react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { CurrentAccountProvider } from '../src/app/CurrentAccountContext';
+import { browserNavigation } from '../src/app/navigation';
+import { parseRoute, taskDetailUrl } from '../src/app/router';
+import type { ThreadMessage } from '../src/features/task-thread/contract';
+import { TaskDiscussion } from '../src/features/task-thread/TaskDiscussion';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { ProjectDraftHost, TaskDraftBoundary } from '../src/features/task-detail/TaskDraftNavigation';
+import { renderWithLocale } from './helpers/renderWithLocale';
+import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({ MermaidDiagram: ({ source }: { source: string }) => <div data-testid="diagram">{source}</div> }));
+
+const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+const projectId = id(100), taskId = id(200);
+const message = (value: number, body: string, extra: Partial<ThreadMessage> = {}): ThreadMessage => ({ id: id(value), author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false }, body, createdAt: `2026-11-03T08:${String(value).padStart(2, '0')}:00.123Z`, ...extra });
+const resource = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+const page = (items: readonly ThreadMessage[], hasMoreBefore = false, hasMoreAfter = false) => resource({ items, hasMoreBefore, hasMoreAfter });
+const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false, parentUnavailable = false, preserveHistoryDraft = false, historyAdmitted = true, historyRevision = 0, trackDraft = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean; readonly parentUnavailable?: boolean; readonly preserveHistoryDraft?: boolean; readonly historyAdmitted?: boolean; readonly historyRevision?: number; readonly trackDraft?: boolean }) => {
+  const owner = useRef<HTMLDivElement>(null);
+  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice', avatarUrl: null }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} preserveHistoryDraft={preserveHistoryDraft} historyAdmitted={historyAdmitted} historyRevision={historyRevision} trackDraft={trackDraft} /></div></CurrentAccountProvider>;
+};
+const render = (ui = <Harness />) => renderWithLocale(ui, { locale: 'zh-CN', taskCache: true });
+
+
+it.each(['denied', 'offline'])('fallback withdraws live discussion and project admission on %s', async (failure) => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const observed: unknown[] = []; scope.subscribe(event => observed.push(event));
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(page([message(1, 'Previously visible history')]))
+    .mockImplementationOnce(async () => {
+      if (failure === 'offline') throw new TypeError('Network unavailable');
+      return resource({ error: { code: 'forbidden', message: 'forbidden', requestId: 'refused' } }, 403);
+    });
+  vi.stubGlobal('fetch', fetcher);
+  try {
+    const view = renderWithLocale(<Harness />, { locale: 'zh-CN', taskCache: { scope } });
+    await screen.findByText('Previously visible history');
+    fireEvent.click(view.container.querySelector('.thread-bar button')!);
+    await waitFor(() => expect(observed).toContainEqual(expect.objectContaining({ projectId, accessRevoked: true, directAccessUncertain: true })));
+    expect(screen.queryByText('Previously visible history')).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally { scope.dispose(); }
+});

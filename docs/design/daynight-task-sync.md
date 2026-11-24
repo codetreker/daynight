@@ -332,7 +332,7 @@ Goal 同步边的部署先退出不推进 Goal Task version/updatedAt 的旧关�
 
 只保留一个项目 cache epoch，避免数据库恢复后要求每个浏览器人工清缓存。支持的恢复/导入/原始替换流程停止全部写入，完成操作后、开放服务前执行受影响项目的 `UPDATE projects SET task_cache_epoch=gen_random_uuid()`。备份本身会恢复旧 UUID，维护流程必须显式轮换。
 
-从 `12ebdd08f63c9e09f64937b096d4f9390987be7a` 回退到配对备份时，使用由该源码和固定补丁构建的兼容 Server，而不是原版 Server。兼容 Web 使用独立的 IndexedDB 和广播名称，不打开或改写升级后的库。每个认证 scope 必须先取得并应用真实授权下的完整 snapshot，才可展示缓存；同步或详情读取失败时撤回该项目的展示资格，重新取得 snapshot 后恢复。旧版原始 Server 对新账本的拒绝仍独立于这个配对恢复路径。构建入口及来源校验见 [兼容性测试说明](../../packages/e2e_tests/README.md#ordinary-subtask-compatibility)。
+从 `12ebdd08f63c9e09f64937b096d4f9390987be7a` 回退到配对备份时，使用由该源码和固定补丁构建的兼容 Server，而不是原版 Server。兼容 Web 使用独立的 IndexedDB 和广播名称，不打开或改写升级后的库。每个认证 scope 必须先取得并应用真实授权下的完整 snapshot，才可展示缓存；同步、项目访问、详情或讨论读取失败时撤回该项目的展示资格，重新取得 snapshot 后恢复。旧版原始 Server 对新账本的拒绝仍独立于这个配对恢复路径。构建入口及来源校验见 [兼容性测试说明](../../packages/e2e_tests/README.md#ordinary-subtask-compatibility)。
 
 窗口不会自动识别时钟倒退或绕过正式写路径的修改。运行环境保持数据库时间正常；异常回拨或离线历史维护应恢复时间并轮换 epoch 触发完整重建。维护验收须确认任务时间假设已恢复；导入的未来任务时间不能仅靠 epoch 修正。普通重启保持 epoch。[Task 软删除](daynight-task-deletion.md)在标记删除的同一事务内轮换项目 epoch，旧客户端基线因而获得不含该任务的完整 snapshot。delta 继续只表示当前未删除任务，不增加墓碑字段。显式 removeDepends=true 的删除同时更新每个实际引用源的 version/updatedAt；同一 epoch 替换原子发布源任务关系、ready 和目标消失，不引入逐源同步提交。
 

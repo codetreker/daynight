@@ -1,3 +1,13 @@
+diff --git a/packages/daynight-web/src/features/projects/ProjectAccess.tsx b/packages/daynight-web/src/features/projects/ProjectAccess.tsx
+index 454f055cb..c05b0f469 100644
+--- a/packages/daynight-web/src/features/projects/ProjectAccess.tsx
++++ b/packages/daynight-web/src/features/projects/ProjectAccess.tsx
+@@ -189,0 +190,5 @@ export class ProjectAccessSession {
++        if (!denied) {
++          this.scope.withdrawRecoveryProject(this.projectId, error);
++          this.update({ access: null, status: 'error', refreshing: false, error, projectReadAvailable: false });
++          return null;
++        }
 diff --git a/packages/daynight-web/src/features/projects/useTaskGraph.ts b/packages/daynight-web/src/features/projects/useTaskGraph.ts
 index 9b393606b..7cc0c4514 100644
 --- a/packages/daynight-web/src/features/projects/useTaskGraph.ts
@@ -150,3 +160,16 @@ index 2045476af..d90518ad9 100644
 @@ -744 +745 @@ export class TaskDetailSessions {
 -      if (!negative) { try { await this.scope.ready(signal); } catch { return; } }
 +      if (!negative) { try { await this.scope.ready(signal); } catch (cause) { this.scope.withdrawRecoveryProject(projectId, cause); return; } }
+diff --git a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
+index ab7906fdc..babb5b268 100644
+--- a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
++++ b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
+@@ -2 +2 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type
+-import { authRequestsPaused } from '../../api/client';
++import { authRequestsPaused, isAbortError } from '../../api/client';
+@@ -7,0 +8 @@ import { createThreadController } from './controller';
++import { getThreadPage, postThreadMessage } from './api';
+@@ -25 +26,2 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
+-  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch, captureNavigation: () => {
++  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch,
++    api: { list: async (...args) => { try { return await getThreadPage(...args); } catch (error) { if (!isAbortError(error)) cacheScope.withdrawRecoveryProject(projectId, error); throw error; } }, post: postThreadMessage }, captureNavigation: () => {

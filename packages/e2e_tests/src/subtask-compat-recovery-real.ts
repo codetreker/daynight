@@ -512,6 +512,7 @@ export const runAuthenticatedRecovery = async (ctx: Context): Promise<Record<str
     await ctx.evidence('restore', { ledgerRestored: true, attachmentRestored: true, postUpgradeWriteRemoved: true, epochRotated: true, endpointReconciled: true, cliReadback: true, restoredBrowser: 'not-yet-verified' });
     await tellBrowser('verify-restored'); const restored = await nextEvent('restored-verified');
     if (restored.epoch !== restoredEpoch || restored.user !== fixture.user || restored.project !== fixture.project || restored.child !== fixture.child || restored.hiddenChild !== fixture.hiddenChild || restored.originalCacheDigest !== post.originalCacheDigest || restored.sameContext !== true || restored.candidateTabRetired !== true || restored.attachment !== 'paired122' || restored.history !== 'baseline-only' || restored.deletedStatus !== 410) throw new Error('Restored browser evidence mismatch.');
+    await ctx.evidence('browserRestored', { baselineEpoch: epoch, restoredEpoch, ...restored });
     await tellBrowser('verify-failures'); const failures = await nextEvent('failures-verified');
     if (failures.denied !== true || failures.offline !== true || failures.storage !== true || failures.storageInjected !== true || failures.blocked !== true) throw new Error('Browser failure evidence missing.');
     await tellBrowser('verify-restart'); const restart = await nextEvent('restart-verified');

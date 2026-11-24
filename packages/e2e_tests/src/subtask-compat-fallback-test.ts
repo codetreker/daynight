@@ -21,8 +21,8 @@ try {
   const web = path.join(source, 'packages/daynight-web');
   await symlink(path.join(repository, 'node_modules'), path.join(source, 'node_modules'), 'dir');
   await symlink(path.join(repository, 'packages/daynight-web/node_modules'), path.join(web, 'node_modules'), 'dir');
-  for (const [fixture, destination] of [['fallback-cache-engine.test.ts.txt', 'fallback-cache-engine.test.ts'], ['fallback-cache-graph.test.tsx.txt', 'fallback-cache-graph.test.tsx']]) {
+  for (const [fixture, destination] of [['fallback-cache-engine.test.ts.txt', 'fallback-cache-engine.test.ts'], ['fallback-cache-graph.test.tsx.txt', 'fallback-cache-graph.test.tsx'], ['fallback-thread.test.tsx.txt', 'fallback-thread.test.tsx'], ['fallback-access.test.ts.txt', 'fallback-access.test.ts']]) {
     await cp(path.join(repository, 'packages/e2e_tests/validation', fixture!), path.join(web, 'tests', destination!), { errorOnExist: true, force: false });
   }
-  await run(path.join(repository, 'packages/daynight-web/node_modules/.bin/vitest'), ['run', 'tests/fallback-cache-engine.test.ts', 'tests/fallback-cache-graph.test.tsx'], web);
+  await run(path.join(repository, 'packages/daynight-web/node_modules/.bin/vitest'), ['run', 'tests/fallback-cache-engine.test.ts', 'tests/fallback-cache-graph.test.tsx', 'tests/fallback-thread.test.tsx', 'tests/fallback-access.test.ts'], web);
 } finally { assertCommandQuiescence(); await rm(temporary, { recursive: true, force: true }); }
