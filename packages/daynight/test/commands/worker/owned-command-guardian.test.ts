@@ -1,5 +1,7 @@
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -152,6 +154,35 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
     const started = Date.now(), operation = createOperation({ limits: { totalMs: 5000, requestMs: 5000 } });
     const events: OwnedCommandLifecycleEvent[] = [], save = async (event: OwnedCommandLifecycleEvent) => { events.push(event); };
     const stop = vi.spyOn(processProof, "stopControllerProcesses");
+    const inventories: number[] = [];
+    const execFile = childProcess.execFile;
+    const observations = vi.spyOn(childProcess, "execFile").mockImplementation(((file: string, args: string[], ...rest: unknown[]) => {
+      if (file === "ps" && args[0] === "-A") inventories.push(Date.now());
+      return (execFile as (...args: any[]) => any)(file, args, ...rest);
+    }) as typeof childProcess.execFile);
+    syncBuiltinESMExports();
+    const schedule = globalThis.setTimeout;
+    const proofSource = readFileSync(path.resolve(import.meta.dirname, "../../../src/commands/controller/process-proof.ts"), "utf8").split("\n");
+    let intercepted = 0;
+    const scheduling = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) => {
+      const deadline = stop.mock.calls[0]?.[2];
+      if (intercepted === 0 && deadline !== undefined && milliseconds === 25 && existsSync(term)) {
+        const frame = /process-proof\.ts:(\d+):\d+/.exec(new Error().stack ?? "");
+        const line = frame === null ? "" : proofSource[Number(frame[1]) - 1] ?? "";
+        // The child can be between creating the receipt and finishing its write.
+        let receipt: { pid: number; at: number } | undefined;
+        try { receipt = JSON.parse(readFileSync(term, "utf8")) as { pid: number; at: number }; } catch { /* Wait for the complete receipt. */ }
+        if (line.includes("Math.min(25, graceful - Date.now())") && receipt?.pid === Number(readFileSync(ready, "utf8")) && receipt.at < deadline && Date.now() < deadline - 25) {
+          intercepted++;
+          const wake = () => {
+            if (Date.now() < deadline) schedule(wake, deadline - Date.now());
+            else callback(...args);
+          };
+          return schedule(wake, deadline - Date.now());
+        }
+      }
+      return schedule(callback, milliseconds, ...args);
+    }) as typeof globalThis.setTimeout);
     let output = "";
     const pending = runLifecycleOwnedCommand({ file: process.execPath, args: ["--input-type=module", "--eval", source], environment: process.env }, operation, save,
       { cleanupWithinDeadline: true, onStdout: async chunk => { output += chunk.toString(); } }).catch(error => error);
@@ -159,6 +190,7 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
     try {
       original = await captureProcessProof(Number(await waitFile(ready)));
       const error = await pending, sampledAt = Date.now();
+      scheduling.mockRestore(); observations.mockRestore(); syncBuiltinESMExports();
       expect(error).toBeInstanceOf(OwnedCommandCleanupError);
       expect(error.cause).toBeInstanceOf(processProof.ControllerProcessWaitDeadlineError);
       expect(error.cause.phase).toBe("term");
@@ -166,6 +198,9 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
       const deadline = stop.mock.calls[0]![2], resourceId = events[0]!.resourceId, proof = events[1]!.proof;
       const received = JSON.parse(await readFile(term, "utf8")) as { pid: number; at: number };
+      expect(intercepted).toBe(1);
+      expect(inventories.length).toBeGreaterThan(0);
+      expect(inventories.every(at => at < deadline)).toBe(true);
       expect(received.pid).toBe(original.pid);
       expect(received.at).toBeLessThan(deadline);
       expect(deadline).toBeLessThanOrEqual(started + 5020);
@@ -184,6 +219,7 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       expect(output).toBe("original output");
       expect((await readFile(launches, "utf8")).trim().split("\n")).toEqual([String(original.pid)]);
     } finally {
+      scheduling.mockRestore(); observations.mockRestore(); syncBuiltinESMExports();
       await killOriginal(original); await pending; operation.dispose();
       const resourceId = events[0]?.resourceId;
       if (resourceId && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, save, Date.now() + 10_000);
