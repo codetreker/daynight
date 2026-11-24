@@ -850,6 +850,45 @@ test('resolves cross-tab CAS conflicts without losing either local text or origi
   await info.attach('cross-tab-CAS', { body: JSON.stringify({ boundary, saved: await saved(peer), local: await current(peer) }), contentType: 'application/json' });
 });
 
+test('releases the visible send freeze after same-owner authorization changes and retries manually', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), image = file('Retained.png');
+  await openDraft(page);
+  const textbox = page.getByRole('textbox');
+  await textbox.fill('original caption'); await page.locator('input[type=file]').setInputFiles(image); await ready(page, 1);
+  const before = await saved(page), originals = await page.evaluate(() => window.sessionDraftHarness.originals());
+  expect(before?.editable?.text).toBe('original caption'); expect(originals[0]?.sha256).toBe(sha256(image.buffer));
+  await page.evaluate(() => window.sessionDraftHarness.holdCapabilities());
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.capabilityArrivals())).toBe(1);
+  await expect(textbox).not.toBeEditable(); expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.setAuthorizationGeneration('2'));
+  await page.evaluate(() => window.sessionDraftHarness.releaseCapabilities());
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.sendsFinished)).toBe(1);
+  await expect(textbox).toBeEditable(); await expect(textbox).toHaveValue('original caption');
+  await expect(page.getByRole('button', { name: 'Remove image: Retained.png', exact: true })).toBeEnabled();
+  const retained = await saved(page);
+  expect(retained?.submission).toBeNull(); expect(retained?.editable?.draftId).toBe(before?.editable?.draftId);
+  expect((await page.evaluate(() => window.sessionDraftHarness.originals()))[0]?.sha256).toBe(sha256(image.buffer));
+  expect(api.observations.commands).toEqual([]);
+  await textbox.fill('edited caption'); await ready(page, 1);
+  await page.evaluate(() => window.sessionDraftHarness.storage.holdBeforeDispatchClaim());
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.storage.dispatchClaimArrivals())).toBe(1);
+  const locks = await page.evaluate(() => navigator.locks.query());
+  expect(locks.held?.some(lock => lock.name?.endsWith(':send'))).toBe(true);
+  expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.storage.releaseDispatchClaim());
+  await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(async () => (await saved(page))?.submission).toBeNull();
+  const command = api.observations.commands[0]!;
+  expect(command.kind).toBe('send_message');
+  if (command.kind === 'send_message') {
+    expect(command.payload.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'text', text: 'edited caption' }), expect.objectContaining({ type: 'image', sha256: sha256(image.buffer) })]));
+  }
+  expect(await page.evaluate(() => window.sessionDraftHarness.pageErrors)).toEqual([]);
+  await info.attach('authorization-generation-send-freeze', { body: JSON.stringify({ boundary, before, retained, originals, locks, commands: api.observations.commands }), contentType: 'application/json' });
+});
+
 test('refuses a second tab while the native send lock is held and sends once after release', async ({ page, context }, info) => {
   const api = await installDraftAPI(context); await openDraft(page); await page.locator('input[type=file]').setInputFiles(file()); await ready(page, 1);
   const peer = await context.newPage(); await openDraft(peer); await ready(peer, 1);

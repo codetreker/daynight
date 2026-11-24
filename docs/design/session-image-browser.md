@@ -144,6 +144,8 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 3. dispatch 权持有者在实际请求前再次核对当前账户/owner/target、能力和是否仍 live。若确定尚未调用请求就发现变化，可持久记录 local_not_dispatched 并解冻；否则只以原 command 调现有 client 一次。client新增接受已冻结 command 的内部派发入口，不调用会重新生成operationId的旧execute(input)；同一身份由冻结事务一路保留。发布后按下一项区分确认拒绝和未知，不自动重新编号或重发。
 4. accepted/offered/dispatching 只观察；provider_accepted/confirmed 才按原 owner+operationId+target+draftId/revision 结算。operation 读取先解析协议/fence/ID/kind，target 从不可变本地 intent 关联，而非假定 operation 回执新增 target 字段。可信的 rejected/failed/expired 未提交终态解冻保留尚未按权限清理的内容。对首次提交的确定性拒绝，只有经认证/表示/严格错误解析、且公共协议服务分支保证 operation 未登记且未派发的响应，才能归为本地 definitive_not_dispatched，保存原拒绝并解除屏障。当前 `operation-error.ts` 只接受命令接纳端点经认证严格解析的 `409 capability_changed`：服务先返回已存在 operation 的原事实，再在新操作登记前检查该能力 revision。即使服务没有 operation 行，也允许用户修复后以新 operation 显式发送。不能简单按所有 4xx、任意同名 code 或错误 message 推断；operation_conflict、通用 401/403/404、预算拒绝、代理错误、解析失败、5xx、超时及响应丢失都不属于当前分类，只查原身份。扩展分类须先验证对应服务分支保证。公共操作恢复模块拥有确定拒绝分类的唯一语义，草稿发送模块消费内部分类，不向 wire error 私加字段。
 
+发送前 flush 和资格查询期间的临时只读状态归属于特定 owner、授权代次和发送尝试。授权代次变化或重新准入使旧尝试失效时释放该临时状态；迟到的旧回调不能解除新尝试的冻结。持久 submission 与执行屏障独立保留，解除临时状态不会自动重发、清空草稿或改变原操作的恢复规则。
+
 服务接纳前先按原 actor/Session/operationId 查询已有操作，再检查会变化的 target、model 和预算。已有操作只返回原事实或 operation_conflict，不能以新的 capability_changed 把原操作伪装为未派发。已登记操作的 rejected/failed/expired 也不天然允许新发送：只有持久证明没有原生调用，或精确原生 profile 证明已经调用但未接受，才能作为可修复拒绝；后者不得计为调用数 0。无法证明未接受的 SDK 异常保持 unknown。接受后的部分附件交付失败保留在原 operation 和消息中并关闭有问题 profile，不能退为普通 rejected 或只显示瞬时提示。
 
 发送后原冻结内容继续在同一 composer 可查看（含图预览），不能在 service accepted 时清空。用户点“继续编辑”才显式创建空的 successor 草稿并把原冻结快照缩成待确认摘要；原文字/附件仍可展开查看，只有一个活动 textarea，没有第二套编辑器。新输入进入新 draftId，不自动拷贝旧图片。successor 可以本地保存和准备图片，但原操作 unknown 期间 Send/再次新建 successor 禁用；不是队列。用户不点继续编辑则保留原只读草稿，接受后清理该版本并显示空编辑框。

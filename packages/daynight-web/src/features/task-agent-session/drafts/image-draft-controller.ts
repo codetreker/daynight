@@ -110,7 +110,7 @@ export class ImageDraftController {
   private error: string | null = null;
   private conflict = false;
   private checking = false;
-  private freezing = false;
+  private freezing: { readonly ownerKey: string | null; readonly epoch: number } | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private observeTimer: ReturnType<typeof setTimeout> | null = null;
   private observeStarted = 0;
@@ -261,7 +261,7 @@ export class ImageDraftController {
       return;
     }
     const draft = this.local ?? this.saved?.frozen ?? null, submission = this.saved?.submission ?? null;
-    const readOnly = !!this.loading || this.freezing || (!!this.saved || this.view.active) && !this.local || !this.options.getContext()?.canEdit;
+    const readOnly = !!this.loading || !!this.freezing || (!!this.saved || this.view.active) && !this.local || !this.options.getContext()?.canEdit;
     const next: ImageDraftView = { active: !!this.saved || this.view.active, loading: !!this.loading, text: draft?.text ?? this.view.text, revision: draft?.revision ?? '1', draftId: draft?.draftId ?? null,
       items: this.items(draft), frozenItems: this.items(this.saved?.frozen ?? null), rejectedCandidates: draft?.rejectedCandidates.map(item => ({ id: item.candidateId, label: item.label, error: item.reason })) ?? [], overflowRejectedCount: draft?.overflowRejectedCount ?? 0,
       saving: this.dirty && !this.error, error: this.error, conflict: this.conflict, frozen: !!this.saved?.frozen && !this.local, readOnly,
@@ -387,7 +387,7 @@ export class ImageDraftController {
   private syncOwner = async (): Promise<void> => {
     if (this.closed) return;
     const c = this.options.getContext();
-    if (!c) { this.editAdmission = false; if (!this.lifetime.signal.aborted) { this.resetWrites(); this.epoch++; } this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
+    if (!c) { this.editAdmission = false; if (!this.lifetime.signal.aborted) { this.resetWrites(); this.epoch++; this.freezing = null; } this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
     const admitted = c.canEdit && !this.editAdmission; this.editAdmission = c.canEdit;
     const key = draftOwnerKey(c.identity), fingerprint = JSON.stringify([key, c.authorizationGeneration, c.active, c.canEdit, c.canSend, c.mode, c.expectedTurnId, c.capabilities]);
     if (fingerprint === this.fingerprint && (this.restoreComplete || this.loadFailed || this.loading || !c.canEdit)) { if (this.loading) await this.loading; await this.resumeValidation(); this.publish(); return; }
@@ -397,13 +397,13 @@ export class ImageDraftController {
       const legacy = candidate && (!candidate.ownerKey || candidate.ownerKey === key) ? candidate : null;
       void this.retireWrite(this.capturePendingWrite()); this.resetWrites();
       this.epoch++; this.lifetime.abort(); this.network.abort(); this.lifetime = new AbortController(); this.network = new AbortController(); this.clearAssets();
-      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = legacy; this.legacyAdopted = false; this.legacySubmission = null; this.view = emptyView();
+      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = legacy; this.legacyAdopted = false; this.legacySubmission = null; this.view = emptyView();
       this.restoreComplete = false; this.loadFailed = false;
       if (typeof indexedDB === 'undefined') { this.restoreComplete = true; this.loading = null; this.publish(); return; }
       await this.startLoad(c, this.epoch);
       return;
     }
-    if (this.authGeneration !== c.authorizationGeneration || admitted) { this.resetWrites(); this.epoch++; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; this.restoreComplete = false; this.loadFailed = false; }
+    if (this.authGeneration !== c.authorizationGeneration || admitted) { this.resetWrites(); this.epoch++; this.freezing = null; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; this.restoreComplete = false; this.loadFailed = false; }
     if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
     if (!this.networkAllowed()) this.network.abort();
     else if (this.network.signal.aborted) this.network = new AbortController();
@@ -763,7 +763,7 @@ export class ImageDraftController {
     const item = this.local?.items.find(candidate => candidate.draftImageId === id), upload = this.saved?.uploads.find(candidate => candidate.uploadId === item?.uploadId);
     await this.prepareUploads(true, upload?.pendingAction?.kind === 'prepare' && !upload.receipt ? upload.uploadId : undefined);
   };
-  private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand): DraftSender {
+  private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand, attempt?: NonNullable<ImageDraftController['freezing']>): DraftSender {
     return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
       ...(nativeCommand ? { commandDraft: { text: nativeCommand.draftText, commandName: nativeCommand.commandName } } : {}),
       command: snapshot => {
@@ -774,14 +774,15 @@ export class ImageDraftController {
           ...(draft.items.length ? { target: c.target, expectedImageCapabilityRevision: this.capability(c)!.revision, draftId: draft.draftId, draftRevision: draft.revision } : {}) } };
       }, dispatch: this.options.dispatch, query: this.options.query, signal: this.network.signal,
       ...(this.options.isDefinitiveNotDispatched ? { isDefinitiveNotDispatched: this.options.isDefinitiveNotDispatched } : {}),
-      changed: async snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission) this.freezing = false; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } } });
+      changed: async snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission && attempt && this.freezing === attempt) this.freezing = null; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } } });
   }
   send = (): Promise<void> => this.submit();
   executeCommand = (command: ImageDraftNativeCommand): Promise<void> => this.submit(command);
   private async submit(nativeCommand?: ImageDraftNativeCommand): Promise<void> {
     if (this.freezing) return;
     const epochAtStart = this.epoch;
-    this.freezing = !!this.local; this.publish();
+    const attempt = this.local ? { ownerKey: this.scopeKey, epoch: epochAtStart } : undefined;
+    this.freezing = attempt ?? null; this.publish();
     try {
       await this.flush(); if (!this.current(epochAtStart)) return; this.context(); if (!this.saved) return;
       const c = this.context(), epoch = this.epoch;
@@ -790,9 +791,10 @@ export class ImageDraftController {
         if (!this.current(epoch) || c.capabilities?.revision !== this.context().capabilities?.revision || !sameProfile(c.capabilities, this.context().capabilities) || !sameProfile(result.capabilities, this.context().capabilities)) throw new Error('image_capability_changed');
         this.freshCapability = result.capabilities; this.capabilityBaseRevision = c.capabilities!.revision;
       }
-      await this.sender(epoch, this.saved.owner, nativeCommand).send(this.saved.owner); this.publish(); this.observeLater(true);
+      await this.sender(epoch, this.saved.owner, nativeCommand, attempt).send(this.saved.owner);
+      if (this.current(epoch)) { this.publish(); this.observeLater(true); }
     } catch (error) { if (this.current(epochAtStart)) this.fail(error); }
-    finally { if (this.current(epochAtStart)) { this.freezing = false; this.publish(); } }
+    finally { if (attempt && this.freezing === attempt) { this.freezing = null; this.publish(); } }
   }
   resumePrepared = async (): Promise<void> => { if (this.saved?.submission?.state === 'prepared') await this.send(); };
   private async recovery(ref: ImageDraftRecoveryRef, epoch: number): Promise<DraftRecoverySnapshot> {
@@ -978,7 +980,7 @@ export class ImageDraftController {
     await this.restore(epoch); this.publish(); await this.prepareUploads();
   };
   revoke = async (reason: 'revoked' | 'account_changed' | 'deleted' = 'revoked'): Promise<void> => {
-    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.retiringDrafts.clear(); this.pendingLegacy = null; this.legacySubmission = null; this.legacyAdopted = false; this.saved = null; this.local = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.detachedErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
+    const owner = this.saved?.owner; this.epoch++; this.freezing = null; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.retiringDrafts.clear(); this.pendingLegacy = null; this.legacySubmission = null; this.legacyAdopted = false; this.saved = null; this.local = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.detachedErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
     for (const listener of this.listeners) listener();
     if (owner) try { await this.store.blockOwner(owner, reason); } catch (error) { this.fail(error); }
   };
