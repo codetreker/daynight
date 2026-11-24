@@ -1292,21 +1292,36 @@ export class TaskCacheScope {
     return fence;
   }
   isTaskReadCurrent(fence: TaskReadFence, allowAuthPaused = false): boolean {
+    return this.isTaskHistoryFenceCurrent(fence, allowAuthPaused) && (fence.taskRevision ?? 0) === this.readAdmission.revision(fence.projectId, fence.taskId);
+  }
+  private isTaskHistoryFenceCurrent(fence: TaskReadFence, allowAuthPaused: boolean): boolean {
     return !this.isInvalidated && !this.identityMismatch && (allowAuthPaused || !authRequestsPaused()) && !this.isDirectProjectBlocked(fence.projectId) && fence.userId === this.userId &&
       fence.userFence === this.userFence && fence.scopeRevision === this.getDirectRevision(fence.projectId) &&
-      fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0) &&
-      (fence.taskRevision ?? 0) === this.readAdmission.revision(fence.projectId, fence.taskId);
+      fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0);
+  }
+  // Resource hints can withdraw read eligibility while a dispatched operation retains its lock.
+  // Operation history predicates never authorize read publication or a new dispatch.
+  isTaskOperationHistoryPossiblyCurrent(fence: TaskReadFence): boolean {
+    return this.isTaskHistoryFenceCurrent(fence, true) || this.isTaskHistoryUncertain(fence);
+  }
+  isTaskOperationHistoryConfirmedCurrent(fence: TaskReadFence): boolean {
+    return this.isTaskHistoryConfirmed(fence.projectId) && this.isTaskOperationHistoryPossiblyCurrent(fence);
   }
   isTaskHistoryPossiblyCurrent(fence: TaskReadFence): boolean {
-    return this.isTaskReadCurrent(fence, true) || !this.isInvalidated && !this.identityMismatch &&
+    return this.isTaskReadCurrent(fence, true) || this.isTaskHistoryUncertain(fence);
+  }
+  private isTaskHistoryUncertain(fence: TaskReadFence): boolean {
+    return !this.isInvalidated && !this.identityMismatch &&
       fence.userId === this.userId && fence.userFence === this.userFence &&
       fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0) &&
       this.uncertainDirectRevisions.get(fence.projectId)?.has(fence.scopeRevision) === true;
   }
   isTaskHistoryConfirmedCurrent(fence: TaskReadFence): boolean {
-    return !this.uncertainHistories.has(fence.projectId) && !this.isDirectProjectBlocked(fence.projectId) &&
-      (!this.withdrawnProjects.has(fence.projectId) || this.directAuthorizedRevisions.get(fence.projectId) === this.getDirectRevision(fence.projectId)) &&
-      this.isTaskHistoryPossiblyCurrent(fence);
+    return this.isTaskHistoryConfirmed(fence.projectId) && this.isTaskHistoryPossiblyCurrent(fence);
+  }
+  private isTaskHistoryConfirmed(projectId: string): boolean {
+    return !this.uncertainHistories.has(projectId) && !this.isDirectProjectBlocked(projectId) &&
+      (!this.withdrawnProjects.has(projectId) || this.directAuthorizedRevisions.get(projectId) === this.getDirectRevision(projectId));
   }
   async verifyTaskRead(fence: TaskReadFence, signal: AbortSignal): Promise<boolean> {
     await this.ready(signal);

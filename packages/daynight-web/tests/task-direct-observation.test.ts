@@ -28,6 +28,55 @@ const world = (onMismatch: (scope: TaskCacheScope) => void = (scope) => { void s
 };
 afterEach(() => { for (const { sessions, scope } of worlds.splice(0)) { sessions.dispose(); scope.dispose(); } vi.unstubAllGlobals(); });
 
+it.each(['confirmed', 'unknown'] as const)('keeps a sent %s status owner locked through a sibling deletion candidate recheck', async outcome => {
+  const missing = '20000000-0000-4000-8000-000000000002';
+  const original = body();
+  const saved = { ...original, status: 'in_progress' as const, ready: false, startedAt: original.updatedAt, version: original.version + 1n };
+  let finishWrite!: (value: Response) => void; let loseWrite!: (error: Error) => void;
+  const write = new Promise<Response>((resolve, reject) => { finishWrite = resolve; loseWrite = reject; });
+  let current = original; let failReads = false; let writes = 0; let reads = 0;
+  const sent = { signal: null as AbortSignal | null };
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes('/task-sync')) return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }));
+    if (init?.method === 'PUT') { writes++; sent.signal = init.signal as AbortSignal; return write; }
+    reads++;
+    return failReads ? Promise.reject(new Error('Reconciliation offline')) : Promise.resolve(response(current));
+  }));
+  const { scope, sessions } = world();
+  sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  const operationFence = await scope.beginTaskRead(project, task, 0, 0, scope.signal);
+  sessions.setStatus(project, task, 'in_progress', original.version);
+  await waitFor(() => expect(writes).toBe(1));
+  const missingFence = await scope.beginTaskRead(project, missing, 0, 0, scope.signal);
+  expect(scope.reportTaskDeleted(missingFence, epoch)).toBe(true);
+  await waitFor(() => expect(reads).toBeGreaterThan(1));
+  await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(original));
+  expect(scope.isTaskReadCurrent(operationFence)).toBe(false);
+  expect(scope.isTaskOperationHistoryConfirmedCurrent(operationFence)).toBe(true);
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  sessions.setStatus(project, task, 'done', original.version);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(writes).toBe(1); expect(sent.signal?.aborted).toBe(false);
+  if (outcome === 'confirmed') { current = saved; finishWrite(response(saved)); }
+  else { failReads = true; loseWrite(new Error('Status response lost')); }
+  if (outcome === 'unknown') {
+    await waitFor(() => expect(reads).toBeGreaterThan(2));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+    sessions.setStatus(project, task, 'done', original.version);
+    expect(writes).toBe(1);
+    failReads = false;
+    sessions.load(project, task, 3, 'refresh');
+  }
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(sessions.snapshot(project, task).detail).toEqual(current);
+  expect(writes).toBe(1); expect(sent.signal?.aborted).toBe(false);
+  const replacementFence = await scope.beginTaskRead(project, task, 0, 0, scope.signal);
+  expect(await scope.observeHistory(replacementFence, replacement, scope.signal)).toBe('retired');
+  expect(scope.isTaskOperationHistoryPossiblyCurrent(operationFence)).toBe(false);
+});
+
 it("strictly validates principal, epoch and complete task identity", async () => {
   for (const header of [null, "invalid", "AAAAAAAA-0000-4000-8000-000000000001"]) {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body(), header)));

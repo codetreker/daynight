@@ -303,7 +303,7 @@ export class TaskDetailSessions {
       entry.committedVersion !== null && entry.receipt.detail.version < entry.committedVersion;
   }
   private hasRetiredWrite(projectId: string, taskId: string): boolean {
-    return [...this.retiredMutations.values()].some((retired) => retired.projectId === projectId && retired.taskId === taskId && retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence));
+    return [...this.retiredMutations.values()].some((retired) => retired.projectId === projectId && retired.taskId === taskId && retired.fence !== null && this.scope.isTaskOperationHistoryPossiblyCurrent(retired.fence));
   }
   captureDirectQualification(projectId: string, taskId: string, allowAuthPaused = false): DirectQualification | null {
     const entry = this.entry(projectId, taskId);
@@ -904,7 +904,7 @@ export class TaskDetailSessions {
       this.scope.reportTaskDeleted(retired.fence, retired.taskEpoch);
     }
     if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-      if (retired.fence === null || !this.scope.isTaskHistoryPossiblyCurrent(retired.fence)) { this.retiredMutations.delete(operation); return; }
+      if (retired.fence === null || !this.scope.isTaskOperationHistoryPossiblyCurrent(retired.fence)) { this.retiredMutations.delete(operation); return; }
       if (!this.scope.isTaskReadCurrent(retired.fence, true)) {
         retired.reconciling = true;
         void this.verifyRetiredTask(operation, retired);
@@ -941,7 +941,7 @@ export class TaskDetailSessions {
             else retired.error = new ApiError("protocol");
             return;
           }
-          const belowFloor = retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence) && retired.committedVersion !== null && observation.detail.version < retired.committedVersion;
+          const belowFloor = retired.fence !== null && this.scope.isTaskOperationHistoryPossiblyCurrent(retired.fence) && retired.committedVersion !== null && observation.detail.version < retired.committedVersion;
           if (!belowFloor) break;
           if (attempt === 1) throw new ApiError("protocol");
         }
@@ -959,7 +959,7 @@ export class TaskDetailSessions {
   }
   private async verifyRetiredTask(operation: TaskMutationOperation, retired: NonNullable<ReturnType<typeof this.retiredMutations.get>>): Promise<void> {
     const { projectId, taskId } = retired;
-    const oldCurrent = (): boolean => retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence);
+    const oldCurrent = (): boolean => retired.fence !== null && this.scope.isTaskOperationHistoryPossiblyCurrent(retired.fence);
     const releaseOld = (): void => { this.retiredMutations.delete(operation); };
     try {
       if (!oldCurrent()) { releaseOld(); return; }
@@ -1018,7 +1018,7 @@ export class TaskDetailSessions {
     }
   }
   private notifyRetiredSettlement(retired: { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null }, refresh: boolean): void {
-    if (this.disposed || this.scope.isInvalidated || retired.fence === null || !this.scope.isTaskHistoryConfirmedCurrent(retired.fence)) return;
+    if (this.disposed || this.scope.isInvalidated || retired.fence === null || !this.scope.isTaskOperationHistoryConfirmedCurrent(retired.fence)) return;
     const entry = this.entries.get(`${retired.projectId}/${retired.taskId}`);
     if (entry === undefined || !entry.admitted || entry.listeners.size === 0) return;
     if (refresh) void this.read(retired.projectId, retired.taskId, entry.state.revision, false, true);
