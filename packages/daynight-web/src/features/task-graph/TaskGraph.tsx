@@ -7,6 +7,7 @@ import { scaleGraph, useGraphFontScale } from './graph-scale';
 import { projectChain, tracePrerequisites, traceSuccessors, type GraphIndex, type ChainProjection } from './model';
 import type { TaskFlowNode } from './TaskNode';
 import { getInitialTaskViewport } from './chain-viewport';
+import { prioritizeActiveTasks } from './active-viewport';
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
 import { TaskGraphToolbar } from './TaskGraphToolbar';
 import { InspectionLegend } from './inspection';
@@ -53,7 +54,17 @@ const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpen
       expansions: expansions.get(node.id)! },
     },
   })), [geometry, index, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask, onReadingRowChange]);
-  const viewportFactory = useCallback((width: number, height: number) => getInitialTaskViewport(geometry, rootId, width, height, folded), [geometry, rootId, folded]);
+  const lastReset = useRef<number | null>(null);
+  const viewportFactory = useCallback((width: number, height: number) => {
+    // Keep the existing React Flow integer-size framing as the zoom baseline;
+    // visibility itself uses the actual fractional canvas dimensions.
+    const base = getInitialTaskViewport(geometry, rootId, Math.round(width), Math.round(height), folded);
+    if (action?.kind === 'reset' && action.sequence !== lastReset.current) {
+      lastReset.current = action.sequence;
+      return base;
+    }
+    return prioritizeActiveTasks(base, width, height, geometry, index);
+  }, [geometry, rootId, folded, index, action]);
   const onFramingReset = useCallback(() => resetButton.current?.focus({ preventScroll: true }), []);
   return (
     <div className="task-graph" data-hidden-upstream-count={hiddenUpstreamCount} data-visible-task-count={visibleIds.size} data-total-task-count={totalTasks} ref={containerRef} onFocusCapture={onFocusCapture}>

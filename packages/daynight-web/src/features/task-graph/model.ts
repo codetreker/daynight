@@ -15,6 +15,7 @@ export type TaskComponent = {
 };
 
 export type GraphIndex = {
+  readonly legacyTaskParentIds?: ReadonlySet<string>;
   readonly nodes: ReadonlyMap<string, GraphTask>;
   readonly successors: ReadonlyMap<string, readonly string[]>;
   readonly representativeIds: readonly string[];

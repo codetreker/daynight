@@ -259,7 +259,7 @@ func TestScopedRegisteredReadsRejectBeforeSessionService(t *testing.T) {
 	base := "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions"
 	id := "/" + f.session
 	test := "/api/v1/test-sessions/" + f.session
-	for _, path := range []string{base, base + "/current", base + id + "/timeline", base + id + "/operations/" + f.session, base + id + "/resources/" + f.session + "/content", base + id + "/channel", base + id + "/archive", base + id + "/archive/content", base + id + "/archive/files/" + f.session, "/api/v1/test-sessions", test, test + "/timeline", test + "/operations/" + f.session, test + "/resources/" + f.session + "/content", test + "/channel", test + "/archive", test + "/archive/content", test + "/archive/files/" + f.session} {
+	for _, path := range []string{base, base + "/current", base + id + "/timeline", base + id + "/operations/" + f.session, base + id + "/resources/" + f.session + "/content", base + id + "/channel", base + id + "/archive", base + id + "/archive/content", base + id + "/archive/files/" + f.session, "/api/v1/test-sessions", test, test + "/timeline", test + "/bot-history-window", test + "/operations/" + f.session, test + "/resources/" + f.session + "/content", test + "/channel", test + "/archive", test + "/archive/content", test + "/archive/files/" + f.session} {
 		before := binds
 		r := httptest.NewRequest("GET", path, nil)
 		r.Header.Set("Authorization", "Bearer native-secret")

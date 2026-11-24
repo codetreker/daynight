@@ -133,9 +133,17 @@ func (s *Execution) localContent(ctx context.Context, p model.Principal, project
 		if err := onlineContent(r, s.now()); err != nil {
 			return err
 		}
+		if err := botWindowContentCapability(r, fields["kind"].(string)); err != nil {
+			return err
+		}
 		msg := envelope(r, "content_request")
 		for k, v := range fields {
 			msg[k] = v
+		}
+		if fields["kind"] == "bot_history_window" {
+			if value, ok := fields["historyEpoch"].(string); ok && value != r.Snapshot.HistoryEpoch {
+				return fault("reset_required", "The Bot history epoch changed.")
+			}
 		}
 		if fields["kind"] == "inspect_page" || fields["kind"] == "entry_chunk" {
 			if value, ok := fields["historyEpoch"].(string); ok && value != "" && value != r.Snapshot.HistoryEpoch {
@@ -145,7 +153,7 @@ func (s *Execution) localContent(ctx context.Context, p model.Principal, project
 				return fault("upgrade_required", "Reconnect an upgraded controller for full entry reads.")
 			}
 		}
-		if fields["kind"] == "timeline" || fields["kind"] == "inspect_page" || fields["kind"] == "entry_chunk" {
+		if fields["kind"] == "timeline" || fields["kind"] == "inspect_page" || fields["kind"] == "entry_chunk" || fields["kind"] == "bot_history_window" {
 			msg["historyEpoch"] = r.Snapshot.HistoryEpoch
 		}
 		pending = &pendingContent{projectID: project, fence: r.Snapshot.ControllerFence, epoch: r.Snapshot.HistoryEpoch, request: msg, kind: fields["kind"].(string), reply: make(chan contentReply, 1)}

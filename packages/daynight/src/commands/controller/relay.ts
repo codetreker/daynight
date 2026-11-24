@@ -257,6 +257,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             case "resource": result = journal.readResource(query.resourceId, query.offset, query.limit); break;
             case "inspect_page": result = journal.readInspection(query); break;
             case "entry_chunk": result = journal.readEntryChunk(query); break;
+            case "bot_history_window": throw new SessionHistoryError("upgrade_required", "This Controller does not provide Bot history windows.");
           }
         } catch (failure) { error = { code: failure instanceof SessionHistoryError ? failure.code : "content_unavailable", message: failure instanceof Error ? failure.message.slice(0, 4096) : "Local content is unavailable." }; }
         request.response = { requestId: request.request.requestId, sourceThrough: journal.getLastSourceSequence(), result, error };

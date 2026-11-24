@@ -108,7 +108,7 @@ export const useTaskGraph = (projectId: string) => {
           });
         }
       }
-      const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
+      const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null || ticket.parentTaskFullSync ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
       const accessTicket = access?.beginObservation();
       projectReadRevision = scope.getProjectReadRevision(projectId);
       const sessionAdmission = authRequestsPauseRevision();
@@ -131,7 +131,7 @@ export const useTaskGraph = (projectId: string) => {
       const observedVersions = deriveTaskSyncVersions(ticket, response);
       validateTaskSyncObservationBindings(response, observedBindings, observedVersions);
       const applyStarted = performance.now();
-      const result = await scope.applySync(ticket, response, signal);
+      const result = await scope.applySync(ticket, response, signal, !("since" in query));
       console.debug("Task sync", { cycle_id: cycleId, project_id: projectId, received: response.tasks.length,
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });

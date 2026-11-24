@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import { hasUnconfirmedOwnedCommandCleanup, isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError, OwnedCommandDeadlineError } from "../../../src/commands/worker/owned-command.js";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
@@ -55,6 +56,7 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
     { git: false, exitMain: false }, { git: false, exitMain: true },
     { git: true, exitMain: false }, { git: true, exitMain: true },
   ])("closes resistant descendants with git=$git and mainAlreadyExited=$exitMain", async ({ git, exitMain }) => {
+    const closedGroup = vi.spyOn(processProof, "confirmClosedOwnedCommandGroup");
     const directory = await root(), ready = path.join(directory, "leaf"), mainReady = path.join(directory, "main"), release = path.join(directory, "release");
     const leaf = `import {writeFileSync} from 'node:fs';process.on('SIGTERM',()=>{});writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000);`;
     const source = `import {spawn} from 'node:child_process';import {existsSync,writeFileSync} from 'node:fs';process.on('SIGTERM',()=>{});writeFileSync(${JSON.stringify(mainReady)},String(process.pid));const child=spawn(process.execPath,['--input-type=module','--eval',${JSON.stringify(leaf)}],{stdio:'ignore'});child.unref();setInterval(()=>{if(existsSync(${JSON.stringify(release)}))process.exit(0);},10);`;
@@ -83,6 +85,7 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       expect(outcome.kind).toBe(exitMain ? "success" : "failure");
       if (handle !== undefined) await expect(handle.joined).resolves.toEqual({ kind: "local-closed", cleanupErrors: [] });
       expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      if (process.platform === "linux") expect(closedGroup).toHaveBeenCalledWith(events[1]!.proof, expect.objectContaining({ pid: events[1]!.proof!.pid }), expect.any(Number));
       await vi.waitFor(async () => {
         expect(await inspectProcessProof(leafProof!)).toBe("stopped");
         expect(await inspectProcessProof(mainProof!)).toBe("stopped");
@@ -117,7 +120,9 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
     try {
       original = await captureProcessProof(Number(await waitFile(ready)));
       cancellation.abort(new Error("bounded stop"));
-      await expect(pending).resolves.toMatchObject({ name: "OwnedCommandCleanupError" });
+      const error = await pending;
+      expect(error).toMatchObject({ name: "OwnedCommandCleanupError" });
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
       expect(await readFile(terminated, "utf8")).toBe("received");
       expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "unknown"]);
       expect(await inspectProcessProof(events[1]!.proof!)).toBe("running");
@@ -127,6 +132,8 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       expect(events.at(-1)?.stage).toBe("stopped");
       expect(await inspectProcessProof(original)).toBe("stopped");
       expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
+      expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
     } finally {
       cancellation.abort(); stopping.mockRestore();
       await killOriginal(original);
@@ -136,6 +143,50 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
         await reconcileOwnedCommandBoundary(boundary, save, Date.now() + 10_000);
       }
       operation.dispose();
+    }
+  }, 20_000);
+
+  it.skipIf(process.platform !== "linux")("settles a delayed TERM only after the same five-second probe boundary is confirmed", async () => {
+    const directory = await root(), ready = path.join(directory, "ready"), term = path.join(directory, "term"), finished = path.join(directory, "finished"), launches = path.join(directory, "launches");
+    const source = `import {appendFileSync,writeFileSync} from 'node:fs';appendFileSync(${JSON.stringify(launches)},String(process.pid)+'\\n');process.on('SIGTERM',()=>{writeFileSync(${JSON.stringify(term)},JSON.stringify({pid:process.pid,at:Date.now()}));setTimeout(()=>{writeFileSync(${JSON.stringify(finished)},String(Date.now()));process.exit(0);},1700);});writeFileSync(${JSON.stringify(ready)},String(process.pid));process.stdout.write('original output');setInterval(()=>{},1000);`;
+    const started = Date.now(), operation = createOperation({ limits: { totalMs: 5000, requestMs: 5000 } });
+    const events: OwnedCommandLifecycleEvent[] = [], save = async (event: OwnedCommandLifecycleEvent) => { events.push(event); };
+    const stop = vi.spyOn(processProof, "stopControllerProcesses");
+    let output = "";
+    const pending = runLifecycleOwnedCommand({ file: process.execPath, args: ["--input-type=module", "--eval", source], environment: process.env }, operation, save,
+      { cleanupWithinDeadline: true, onStdout: async chunk => { output += chunk.toString(); } }).catch(error => error);
+    let original: ProcessProof | undefined;
+    try {
+      original = await captureProcessProof(Number(await waitFile(ready)));
+      const error = await pending, sampledAt = Date.now();
+      expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+      expect(error.cause).toBeInstanceOf(processProof.ControllerProcessWaitDeadlineError);
+      expect(error.cause.phase).toBe("term");
+      expect(error.errors).toEqual(expect.arrayContaining([expect.any(OwnedCommandDeadlineError)]));
+      expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+      const deadline = stop.mock.calls[0]![2], resourceId = events[0]!.resourceId, proof = events[1]!.proof;
+      const received = JSON.parse(await readFile(term, "utf8")) as { pid: number; at: number };
+      expect(received.pid).toBe(original.pid);
+      expect(received.at).toBeLessThan(deadline);
+      expect(deadline).toBeLessThanOrEqual(started + 5020);
+      expect(sampledAt).toBeLessThanOrEqual(deadline + 500);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "unknown"]);
+      expect(events.every(event => event.resourceId === resourceId)).toBe(true);
+      expect(events[2]!.proof).toEqual(proof);
+      expect(retainedOwnedCommandBoundaries()).toContainEqual({ resourceId, proof });
+      expect(await inspectProcessProof(original)).toBe("running");
+      expect(Number(await waitFile(finished))).toBeGreaterThan(deadline);
+      await reconcileOwnedCommandBoundary(resourceId, save, Date.now() + 10_000);
+      expect(events.at(-1)).toMatchObject({ resourceId, stage: "stopped", proof });
+      expect(await inspectProcessProof(original)).toBe("stopped");
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+      expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(true);
+      expect(output).toBe("original output");
+      expect((await readFile(launches, "utf8")).trim().split("\n")).toEqual([String(original.pid)]);
+    } finally {
+      await killOriginal(original); await pending; operation.dispose();
+      const resourceId = events[0]?.resourceId;
+      if (resourceId && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, save, Date.now() + 10_000);
     }
   }, 20_000);
 

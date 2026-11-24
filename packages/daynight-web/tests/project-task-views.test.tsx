@@ -47,7 +47,7 @@ const project = '00000000-0000-4000-8000-000000000100';
 const otherProject = '00000000-0000-4000-8000-000000000200';
 const canonicalTask = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
+const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ type: 'task', parentId: null, parentTaskId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false,
   createdAt: timestamp, updatedAt: timestamp,
 });
@@ -1028,6 +1028,20 @@ describe('project overview and task workspace', () => {
     expect(scroll).toBe(760);
     expect(scrollIntoView).toHaveBeenCalledOnce();
     expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it.each(['child', 'goal'] as const)('opens the actual graph when an overview chain has only %s members outside the project list', async (otherScope) => {
+    const rootId = canonicalTask(1), nextId = canonicalTask(2), parent = canonicalTask(90), goal = canonicalTask(91);
+    const other = otherScope === 'child' ? { ...seed(nextId, 'todo', [rootId]), parentTaskId: parent }
+      : { ...seed(nextId, 'todo', [rootId]), parentId: goal };
+    graphRequest.mockResolvedValue(snapshot([{ ...seed(rootId, 'done'), parentTaskId: parent }, other,
+      ...(otherScope === 'goal' ? [{ ...seed(goal), type: 'goal' as const }] : [])]));
+    mountOverview();
+    await screen.findByRole('heading', { name: project }); await waitForGraph();
+    fireEvent.click(progressButton(`任务 ${rootId}`));
+    expect(await screen.findByTestId('graph-node')).toHaveTextContent(rootId);
+    expect(chainRow(rootId)).toBeNull();
+    expect(screen.queryByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeNull();
   });
 
   it('clears a status filter that only matches a different Goal scope before locating an overview chain', async () => {

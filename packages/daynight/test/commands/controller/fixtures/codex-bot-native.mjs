@@ -37,10 +37,17 @@ for await (const line of createInterface({ input: process.stdin })) {
     reply(id, { ...settings, thread: { ...thread(), ...(process.env.CODEX_BOT_WRONG_ID ? { id: randomUUID() } : {}) } }); continue;
   }
   if (method === 'thread/name/set') {
-    if (!existsSync(rollout)) writeFileSync(rollout, `${JSON.stringify({ type: 'session_meta', payload: { id: threadId, cwd: process.cwd(), cli_version: '0.169.0' } })}\n`);
+    if (!existsSync(rollout)) writeFileSync(rollout, `${JSON.stringify({ type: 'session_meta', payload: { id: threadId, cwd: process.cwd(), cli_version: process.env.CODEX_BOT_VERSION ?? '0.169.0' } })}\n`);
     reply(id, {}); notify('thread/name/updated', { threadId, threadName: params.name }); continue;
   }
-  if (method === 'thread/read') { reply(id, { thread: { ...thread(), turns: params.includeTurns ? history() : [] } }); continue; }
+  if (method === 'thread/read') {
+    let turns = params.includeTurns ? history() : [];
+    if (process.env.CODEX_BOT_HISTORY_RESULT === 'empty') turns = [];
+    if (process.env.CODEX_BOT_HISTORY_RESULT === 'wrong-watermark') turns = turns.map(turn => ({ ...turn, id: randomUUID() }));
+    if (process.env.CODEX_BOT_HISTORY_RESULT === 'active') turns = turns.map(turn => ({ ...turn, status: 'inProgress' }));
+    if (process.env.CODEX_BOT_HISTORY_RESULT === 'duplicate') turns = [...turns, ...turns];
+    reply(id, { thread: { ...thread(), turns } }); continue;
+  }
   if (historyMode === 'legacy' && ['thread/turns/list', 'thread/items/list'].includes(method)) {
     out({ id, error: { code: -32601, message: 'Paginated history is unavailable for legacy threads' } }); continue;
   }

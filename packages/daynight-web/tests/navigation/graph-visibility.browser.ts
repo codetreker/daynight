@@ -200,3 +200,107 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
   await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
 });
+
+// Compare actual browser rectangles against an independent exhaustive translation
+// oracle. The baseline uses the same graph with no active cards in a fresh profile.
+const framingId = (n: number) => `00000000-0000-4000-8000-${String(4000 + n).padStart(12, '0')}`;
+const framingTasks = (kind: 'chain' | 'goal', active: readonly number[]) => {
+  const goal = detailFixture(projectId, framingId(99), { type: 'goal', title: 'Framing Goal' });
+  const tasks = Array.from({ length: 10 }, (_, n) => detailFixture(projectId, framingId(n), {
+    title: n === 4 ? 'A long task title that wraps across multiple lines in the graph card while work is in progress' : `Framing task ${n}`,
+    parentId: kind === 'goal' ? goal.id : null,
+    status: active.includes(n) ? 'in_progress' : n < 3 ? 'done' : 'todo',
+    startedAt: active.includes(n) ? time : null,
+    completedAt: n < 3 && !active.includes(n) ? time : null,
+    dependsOn: n === 0 ? [] : [framingId(n < 3 ? n - 1 : n === 9 ? 8 : 2)],
+  }));
+  return kind === 'goal' ? [goal, ...tasks] : tasks;
+};
+
+async function openFramingGraph(page: Page, kind: 'chain' | 'goal', direction: 'horizontal' | 'vertical') {
+  if (kind === 'goal') await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${framingId(99)}`);
+  else {
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.locator(`#task-chain-graph-${framingId(0)}`).click();
+  }
+  const dialog = page.locator(kind === 'goal' ? `#task-graph-${framingId(99)}` : '.task-chain-dialog');
+  await expect(dialog.locator('.react-flow__node')).toHaveCount(10);
+  const orientation = dialog.locator(`.graph-orientation [data-direction="${direction}"]`);
+  if (await orientation.getAttribute('aria-checked') !== 'true') await orientation.click();
+  await expect(orientation).toHaveAttribute('aria-checked', 'true');
+  await expect(dialog.locator('.react-flow__viewport')).toHaveAttribute('style', /scale\(/);
+  return dialog;
+}
+
+const framingMeasurement = (dialog: import('@playwright/test').Locator, active: readonly number[]) => dialog.locator('.task-graph-canvas').evaluate((canvas, ids) => {
+  const bounds = canvas.getBoundingClientRect();
+  const viewport = canvas.querySelector<HTMLElement>('.react-flow__viewport')!;
+  const matrix = new DOMMatrixReadOnly(getComputedStyle(viewport).transform);
+  const cards = ids.map(id => {
+    const rect = canvas.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!.getBoundingClientRect();
+    return { left: rect.left - bounds.left, right: rect.right - bounds.left, top: rect.top - bounds.top, bottom: rect.bottom - bounds.top };
+  });
+  return { width: bounds.width, height: bounds.height, x: matrix.e, y: matrix.f, zoom: matrix.a, cards };
+}, active.map(framingId));
+
+type FramingMeasurement = Awaited<ReturnType<typeof framingMeasurement>>;
+function expectedTranslation(current: FramingMeasurement, baseline: FramingMeasurement) {
+  const intervals = current.cards.filter(card => card.right - card.left <= current.width && card.bottom - card.top <= current.height)
+    .map(card => ({ left: -card.left, right: current.width - card.right, top: -card.top, bottom: current.height - card.bottom }));
+  const bx = baseline.x - current.x, by = baseline.y - current.y;
+  const xs = [bx, ...intervals.flatMap(rect => [rect.left, rect.right])];
+  const ys = [by, ...intervals.flatMap(rect => [rect.top, rect.bottom])];
+  const candidates = xs.flatMap(x => ys.map(y => ({ x, y, count: intervals.filter(rect => x >= rect.left - 0.001 && x <= rect.right + 0.001 && y >= rect.top - 0.001 && y <= rect.bottom + 0.001).length, distance: Math.hypot(x - bx, y - by) })));
+  candidates.sort((a, b) => b.count - a.count || a.distance - b.distance || a.x - b.x || a.y - b.y);
+  return candidates[0]!;
+}
+
+for (const kind of ['chain', 'goal'] as const) for (const width of [1440, 390]) {
+  test(`${kind} initial framing maximizes complete active cards at ${width}px`, async ({ page, browser }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const baselineContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4213', viewport: { width, height: 900 }, locale: 'en-US' });
+    try {
+      const baselinePage = await baselineContext.newPage();
+      const baselineState = await install(baselinePage); baselineState.tasks = framingTasks(kind, []);
+      const state = await install(page); const active = [3, 4, 8]; state.tasks = framingTasks(kind, active);
+      const direction = width === 390 ? 'vertical' : 'horizontal';
+      const baselineDialog = await openFramingGraph(baselinePage, kind, direction);
+      const dialog = await openFramingGraph(page, kind, direction);
+      const baseline = await framingMeasurement(baselineDialog, active);
+      console.log(`${kind} ${width}px initial canvas evidence: ${JSON.stringify(await framingMeasurement(dialog, active))}`);
+      await expect.poll(async () => {
+        const current = await framingMeasurement(dialog, active), expected = expectedTranslation(current, baseline);
+        const visible = current.cards.filter(card => card.left >= -0.01 && card.right <= current.width + 0.01 && card.top >= -0.01 && card.bottom <= current.height + 0.01).length;
+        const knownOptimum = width === 1440 ? (kind === 'chain' ? 2 : 3) : (kind === 'chain' ? 1 : 2);
+        return { optimalCount: expected.count === knownOptimum && visible === knownOptimum, distanceFromOptimum: Math.hypot(expected.x, expected.y) < 0.1, zoomPreserved: Math.abs(current.zoom - baseline.zoom) < 0.001 };
+      }).toEqual({ optimalCount: true, distanceFromOptimum: true, zoomPreserved: true });
+      await expect(dialog.locator(`.react-flow__node[data-id="${framingId(4)}"] .task-node-title`)).toContainText('long task title');
+      const viewport = dialog.locator('.react-flow__viewport');
+      await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
+      const zoomed = await viewport.getAttribute('style');
+      const canvas = (await dialog.locator('.task-graph-canvas').boundingBox())!;
+      await page.mouse.move(canvas.x + 10, canvas.y + 10); await page.mouse.down();
+      await page.mouse.move(canvas.x + 50, canvas.y + 35, { steps: 4 }); await page.mouse.up();
+      await expect.poll(() => viewport.getAttribute('style')).not.toBe(zoomed);
+      const adjusted = await viewport.getAttribute('style');
+      state.tasks = state.tasks.map(task => task.id === framingId(8) ? { ...task, status: 'todo', startedAt: null, version: 2n, updatedAt: '2027-01-01T10:00:00Z' } : task);
+      const refresh = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+      await page.locator('.project-title-actions>button').evaluate((element: HTMLButtonElement) => element.click()); await refresh;
+      await expect(dialog.locator(`.react-flow__node[data-id="${framingId(8)}"]`)).toContainText('To do');
+      await expect(viewport).toHaveAttribute('style', adjusted!);
+      if (kind === 'goal') {
+        await dialog.locator('.graph-reset-overview').click();
+        await expect.poll(async () => (await framingMeasurement(dialog, active)).zoom).toBeLessThan(baseline.zoom);
+      } else {
+        await dialog.locator('.graph-reset-overview').click();
+        await expect(dialog.locator('.react-flow__node')).toHaveCount(10);
+      }
+      await dialog.locator('.task-chain-close').click();
+      await expect(dialog).toHaveCount(0);
+      if (kind === 'goal') await page.locator(`#project-goal-graph-${framingId(99)}`).click();
+      else await page.locator(`#task-chain-graph-${framingId(0)}`).click();
+      await expect(page.locator('.react-flow__node')).toHaveCount(10);
+    } finally { await baselineContext.close(); }
+  });
+}

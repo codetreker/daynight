@@ -12,6 +12,7 @@ import { tracePrerequisites, traceSuccessors, type GraphIndex, type GraphProject
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
 import { TaskGraphToolbar } from './TaskGraphToolbar';
 import { InspectionLegend } from './inspection';
+import { prioritizeActiveTasks } from './active-viewport';
 import type { TaskFlowNode } from './TaskNode';
 
 type Props = {
@@ -112,7 +113,7 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
         size: { width: node.width, height: node.height }, actions: { kind: 'goal', onInspectTask, onOpenTask },
       } };
   }), [geometry, index, onInspectTask, onOpenTask, onReadingRowChange]);
-  const viewportFactory = useCallback(() => {
+  const viewportFactory = useCallback((canvasWidth: number, canvasHeight: number) => {
     const bounds = boundsOf(geometry!);
     const { width, height } = activeRequest!.size;
     const fit = getViewportForBounds(bounds, width, height, 0.00000001, 1, padding);
@@ -120,10 +121,11 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
     const widestNode = Math.max(...geometry!.nodes.map(node => node.width));
     const minimumZoom = Math.max(0.2, Math.min(0.8, (width - 40) / widestNode));
     const zoom = Math.max(minimumZoom, Math.min(1, fit.zoom));
-    return { zoom,
+    const base = { zoom,
       x: bounds.width * zoom <= width ? (width - bounds.width * zoom) / 2 - bounds.x * zoom : 32 - bounds.x * zoom,
       y: bounds.height * zoom <= height ? (height - bounds.height * zoom) / 2 - bounds.y * zoom : 32 - bounds.y * zoom };
-  }, [geometry, activeRequest]);
+    return prioritizeActiveTasks(base, canvasWidth, canvasHeight, geometry!, index);
+  }, [geometry, activeRequest, index]);
   const minZoom = geometry !== null && geometry.nodes.length > 0 && size.width > 0 && size.height > 0
     ? Math.min(0.2, getViewportForBounds(boundsOf(geometry), size.width, size.height, 0.00000001, 1, padding).zoom) : 0.00000001;
   const fitViewOptions = useMemo(() => ({ minZoom, maxZoom: 1, padding }), [minZoom]);

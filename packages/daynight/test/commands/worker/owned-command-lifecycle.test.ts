@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
-import { runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import { hasUnconfirmedOwnedCommandCleanup, isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError, OwnedCommandDeadlineError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -23,6 +23,43 @@ const command = (source: string) => ({ file: process.execPath, args: ["--input-t
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
+  it.skipIf(process.platform !== "linux")("classifies its retained unsubmitted join only after the original producer closes", async () => {
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const events: OwnedCommandLifecycleEvent[] = [], save = async (event: OwnedCommandLifecycleEvent) => { events.push(event); };
+    const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 15_000 } });
+    const now = Date.now;
+    let advance = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + advance);
+    const capture = processProof.captureProcessProof;
+    const observing = vi.spyOn(processProof, "captureProcessProof").mockImplementationOnce(async (pid, budget) => {
+      const proof = await capture(pid, budget);
+      entered.resolve(); await release.promise; return proof;
+    });
+    const pending = runLifecycleOwnedCommand(command("process.exit(99)"), operation, save, { cleanupWithinDeadline: true, timeoutMs: 10_000 }).catch(error => error);
+    try {
+      await Promise.race([entered.promise, pending.then(error => { throw error; })]);
+      advance = 20_000;
+      const error = await pending;
+      clock.mockRestore();
+      expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+      expect(error.errors).toEqual(expect.arrayContaining([expect.any(OwnedCommandDeadlineError)]));
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+      expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+      const resourceId = events[0]!.resourceId;
+      expect(events.map(event => event.stage)).toEqual(["prepared", "unknown"]);
+      release.resolve();
+      await reconcileOwnedCommandBoundary(resourceId, save, Date.now() + 5000);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "unknown", "prepared", "stopped"]);
+      expect(events.every(event => event.resourceId === resourceId)).toBe(true);
+      expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(true);
+      expect(observing).toHaveBeenCalledOnce();
+    } finally {
+      clock.mockRestore(); release.resolve(); await pending; operation.dispose();
+      const resourceId = events[0]?.resourceId;
+      if (resourceId && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, save, Date.now() + 5000);
+    }
+  }, 15_000);
+
   it.skipIf(process.platform !== "darwin").each(["spawn", "birth-message"] as const)("joins the original birth before stopping when cancellation arrives at %s", async phase => {
     const directory = await root(), marker = path.join(directory, "must-not-run");
     const cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];

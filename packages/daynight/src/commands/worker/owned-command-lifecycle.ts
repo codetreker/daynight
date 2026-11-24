@@ -3,13 +3,13 @@ import { finished } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Operation } from "../../api/operation.js";
-import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../controller/process-proof.js";
+import { OperationError, type Operation } from "../../api/operation.js";
+import { captureProcessProof, confirmClosedOwnedCommandGroup, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../controller/process-proof.js";
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../controller/windows-job.js";
 import { createSuspendedNodeChild } from "./suspended-node-child.js";
 import { isWorkerCancellation } from "./execution.js";
 import { withinExecutionDeadline } from "./execution-scope.js";
-import { OwnedCommandCleanupError, OwnedCommandError, registerOwnedCommandCleanupConfirmation, type OwnedCommand, type OwnedCommandResult } from "./owned-command.js";
+import { OwnedCommandCleanupError, OwnedCommandDeadlineError, OwnedCommandError, ownedCommandCleanupWait, registerOwnedCommandCleanupConfirmation, registerOwnedCommandCleanupWait, registerOwnedCommandLateCancellation, type OwnedCommand, type OwnedCommandResult } from "./owned-command.js";
 
 export type OwnedCommandLifecycleEvent = {
   resourceId: string;
@@ -28,12 +28,23 @@ const boundedSave = async (sink: OwnedCommandLifecycleSink, event: OwnedCommandL
   try { await Promise.race([Promise.resolve().then(() => sink(event)), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Owned command responsibility save exceeded its deadline.")), Math.max(1, Math.min(10_000, deadline === undefined ? 10_000 : deadline - Date.now()))); })]); }
   finally { clearTimeout(timer); }
 };
+// Only use this for an original join retained for reconciliation. Rejections
+// from native termination or persistence must retain their own classification.
+const withinOwnedCommandJoinDeadline = async (join: Promise<void>, deadline: number): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([join, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(ownedCommandCleanupWait("Worker execution owner stop deadline elapsed; responsibility is retained.")), Math.max(0, deadline - Date.now()));
+    })]);
+  } finally { clearTimeout(timer); }
+};
 const context = new AsyncLocalStorage<OwnedCommandLifecycleSink>();
 type RetainedCommand = {
   proof: ProcessProof | null; lease: ControllerJobLease | undefined; sequence: number;
   neverSpawned: boolean; unstartedClosed: boolean; closure: PromiseWithResolvers<void>; joinSave: () => Promise<void>;
   save: (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number) => Promise<void>;
-  closeHandles?: () => void; joinOutput?: () => Promise<void>; joinUnsubmitted?: () => Promise<void>;
+  closeHandles?: () => void; joinChild?: () => Promise<void>; joinUnsubmitted?: () => Promise<void>;
+  child?: { pid?: number | undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }; childClosed?: () => boolean;
 };
 const retained = new Map<string, RetainedCommand>();
 const reconciliations = new Map<string, Promise<void>>();
@@ -86,10 +97,17 @@ const reconcileBoundary = async (resourceId: string, sink: OwnedCommandLifecycle
     await original.save(sink, { resourceId, sequence: 1, stage: "prepared", proof: null }, deadline);
   } else {
     if (proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
-    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
-    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
+    const closedChild = process.platform === "linux" && original.child !== undefined && original.childClosed?.() === true;
+    const initiallyStopped = closedChild
+      ? await confirmClosedOwnedCommandGroup(proof, original.child!, deadline)
+      : await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true });
+    if (!initiallyStopped) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true, strictObservation: true });
+    if (process.platform === "linux" && original.child !== undefined && original.joinChild !== undefined) {
+      await withinExecutionDeadline(original.joinChild(), deadline);
+      if (!await confirmClosedOwnedCommandGroup(proof, original.child, deadline)) throw new Error("Original owned command boundary remains occupied.");
+    } else if (!await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true })) throw new Error("Original owned command boundary remains occupied.");
   }
-  if (original.joinOutput !== undefined) await withinExecutionDeadline(original.joinOutput(), deadline);
+  if (original.joinChild !== undefined) await withinExecutionDeadline(original.joinChild(), deadline);
   original.sequence++;
   await original.save(sink, { resourceId, sequence: original.sequence, stage: "stopped", proof }, deadline);
   original.closeHandles?.();
@@ -176,8 +194,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     registerOwnedCommandCleanupConfirmation(cleanup, () => !retained.has(resourceId));
     throw cleanup;
   }
-  let joinOutput: (() => Promise<void>) | undefined, joinUnsubmitted: (() => Promise<void>) | undefined;
-  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(joinUnsubmitted === undefined ? {} : { joinUnsubmitted }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
+  let joinOutput: (() => Promise<void>) | undefined, joinChild: (() => Promise<void>) | undefined, joinUnsubmitted: (() => Promise<void>) | undefined;
+  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, child, childClosed: () => closed, ...(joinChild === undefined ? {} : { joinChild }), ...(joinUnsubmitted === undefined ? {} : { joinUnsubmitted }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
   let closed = false, dispatchClosed = false, birthClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
   const captureFailures: unknown[] = [];
@@ -187,7 +205,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     failure ??= error;
     // A late channel or writer failure still belongs to the original result,
     // even when its owner has already started reconciling timed-out cleanup.
-    if (pendingCleanupError !== undefined && !pendingCleanupError.errors.includes(error)) pendingCleanupError.errors.push(error);
+    if (pendingCleanupError !== undefined && !pendingCleanupError.errors.includes(error)
+      && !registerOwnedCommandLateCancellation(pendingCleanupError, error, operation.signal)) pendingCleanupError.errors.push(error);
   };
   const birth = Promise.withResolvers<void>();
   void birth.promise.catch(() => {});
@@ -201,14 +220,25 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   };
   const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
   let bytes = 0, stdoutBytes = 0, stderrBytes = 0;
+  let outputLimitFailed = false, outputConsumeFailed = false, outputCaptureFailed = false;
   const accept = (target: Buffer[], chunk: Buffer) => {
     try {
       bytes += chunk.length;
       if (target === chunks.stdout) stdoutBytes += chunk.length; else stderrBytes += chunk.length;
-      if (bytes > (options.maximumOutputBytes ?? 64 * 1024) || (options.maximumStreamBytes !== undefined && Math.max(stdoutBytes, stderrBytes) > options.maximumStreamBytes)) throw new RangeError("The owned command exceeded its output limit.");
-      operation.consume(chunk.length); if (options.captureOutput !== false) target.push(chunk);
+      if (bytes > (options.maximumOutputBytes ?? 64 * 1024) || (options.maximumStreamBytes !== undefined && Math.max(stdoutBytes, stderrBytes) > options.maximumStreamBytes)) {
+        if (!outputLimitFailed) { outputLimitFailed = true; captureFailure(new RangeError("The owned command exceeded its output limit.")); }
+        return;
+      }
+      try { operation.consume(chunk.length); } catch (error) {
+        const stoppedOperation = error === operation.signal.reason && error instanceof OperationError && (
+          error === failure || failure instanceof OwnedCommandDeadlineError && (error.kind === "deadline" || error.kind === "disposed")
+        );
+        if (!stoppedOperation && !outputConsumeFailed) { outputConsumeFailed = true; captureFailure(error); }
+        return;
+      }
+      if (options.captureOutput !== false) target.push(chunk);
     }
-    catch (error) { failure ??= error; }
+    catch (error) { if (!outputCaptureFailed) { outputCaptureFailed = true; captureFailure(error); } }
   };
   const outputJobs = new Set<Promise<void>>();
   const outputStreams: Promise<void>[] = [];
@@ -232,6 +262,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     captureFailure(error);
     if (process.platform !== "win32" && !spawned && child.pid === undefined) failedSpawn = true;
   });
+  const childClosed = Promise.withResolvers<void>();
   child.once("close", () => {
     closed = true;
     birth.reject(new Error("Owned launcher closed before its original birth handshake completed."));
@@ -239,6 +270,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     // own error, absent PID and close prove no process was created; null proof
     // alone does not. Stream writers still have their independent join below.
     if (failedSpawn && !spawned && child.pid === undefined) { neverSpawned = true; remember(); }
+    childClosed.resolve();
   });
   let bound = false, dispatchAttempted = false;
   const handshake = async (message: unknown): Promise<void> => {
@@ -290,6 +322,10 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       birth.reject(error);
     });
   });
+  // Process-tree observation does not join the original child or its IPC.
+  // Drain messages again after output callbacks, which can still report errors.
+  joinChild = async () => { await childClosed.promise; await messages; await joinOutput!(); await messages; };
+  remember();
   if (suspended !== undefined) {
     try {
       proof = { ...await captureProcessProof(child.pid!, budget(15_000)), jobObjectName: `Local\\Daynight-${resourceId}` };
@@ -315,7 +351,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   try {
     while (!closed && result === undefined && failure === undefined && !operation.signal.aborted && Date.now() < timeout) await new Promise(resolve => setTimeout(resolve, 10));
     if (operation.signal.aborted) failure ??= operation.signal.reason;
-    if (!closed && result === undefined && failure === undefined) failure = new Error("The owned prerequisite command deadline elapsed.");
+    if (!closed && result === undefined && failure === undefined) failure = new OwnedCommandDeadlineError("The owned prerequisite command deadline elapsed.");
     dispatchClosed = true;
     const deadline = cleanupBoundaryLimit();
     // Cancellation closes dispatch, not the original birth handshake. A trusted
@@ -335,32 +371,42 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       const joining = (async () => { await close; await messages; await joinOutput!(); unstartedClosed = true; remember(); })();
       joinUnsubmitted = () => joining;
       remember();
-      await withinExecutionDeadline(joining, deadline);
+      await withinOwnedCommandJoinDeadline(joining, deadline);
     } else await messages;
     if (unstartedClosed) {
       // The original Linux launcher has closed without any run attempt.
     } else if (proof !== null && (suspended === undefined || lease !== undefined)) {
-      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
-      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Owned command boundary remains occupied.");
+      const initiallyStopped = process.platform === "linux" && closed
+        ? await confirmClosedOwnedCommandGroup(proof, child, deadline)
+        : await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true });
+      if (!initiallyStopped) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true, strictObservation: true });
+      if (process.platform === "linux") {
+        // Join the original child before another group inventory. A PID probe
+        // after termination can race with reaping; the child handle proves the
+        // original exit without interpreting a failed ps as disappearance.
+        await withinOwnedCommandJoinDeadline(childClosed.promise, deadline);
+        if (!await confirmClosedOwnedCommandGroup(proof, child, deadline)) throw new Error("Owned command boundary remains occupied.");
+      } else if (!await confirmControllerProcessesStopped(proof, [], deadline, lease, { strictObservation: true })) throw new Error("Owned command boundary remains occupied.");
     } else {
       // Before the handshake no user command was released. Kill only the direct
       // child handle; no PID-based descendant inference is permitted.
       child.kill("SIGKILL");
       if (!closed) await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Owned launcher birth and closure are unconfirmed.")), 1000);
+        const timer = setTimeout(() => reject(ownedCommandCleanupWait("Owned launcher birth and closure are unconfirmed.")), 1000);
         child.once("close", () => { clearTimeout(timer); resolve(); });
       });
     }
     if (!closed) await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Owned command streams did not close.")), 1000);
+      const timer = setTimeout(() => reject(ownedCommandCleanupWait("Owned command streams did not close.")), 1000);
       child.once("close", () => { clearTimeout(timer); resolve(); });
     });
     let outputTimer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([joinOutput(), new Promise<never>((_, reject) => {
-        outputTimer = setTimeout(() => reject(new Error("Owned command output consumers did not join.")), Math.max(1, deadline - Date.now()));
+        outputTimer = setTimeout(() => reject(ownedCommandCleanupWait("Owned command output consumers did not join.")), Math.max(1, deadline - Date.now()));
       })]);
     } finally { clearTimeout(outputTimer); }
+    await withinOwnedCommandJoinDeadline(messages, deadline);
     suspended?.closeHandles();
     if (suspended !== undefined && !resumed) { unstartedClosed = true; remember(); }
     // Other runnable launchers can start proof helpers before dispatch.
@@ -387,6 +433,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       const cleanup = new OwnedCommandCleanupError([...new Set([...failures, ...captureFailures])], error);
       pendingCleanupError = cleanup;
       registerOwnedCommandCleanupConfirmation(cleanup, () => !retained.has(resourceId));
+      registerOwnedCommandCleanupWait(cleanup, error, failure, operation.signal);
       throw cleanup;
     }
     throw error;

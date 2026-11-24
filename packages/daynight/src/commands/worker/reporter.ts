@@ -4,7 +4,7 @@ import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
+import { hasOwnedCommandCleanupFailure, isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError } from "./owned-command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
 import { syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "./configuration-exchange.js";
 import type { WorkerConfigurationExchange } from "./configuration-exchange.js";
@@ -55,7 +55,7 @@ export const createWorkerReporter = (options: {
   configuration?: WorkerConfigurationExchange;
   executionActive?: () => boolean;
   now?: () => number;
-}): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+}): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void>; isSettledCleanupFailure(error: unknown): boolean } => {
   const cancellation = new AbortController();
   const now = options.now ?? Date.now;
   const failures = new Map<string, FailureState>();
@@ -108,14 +108,13 @@ export const createWorkerReporter = (options: {
     (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
   const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
     if (seen.has(error)) return true;
-    if (error instanceof OwnedCommandCleanupError) return hasUnconfirmedOwnedCommandCleanup(error);
+    if (error instanceof OwnedCommandCleanupError) return !isConfirmedOwnedCommandCleanupWait(error, isCancellation);
     if (isCancellation(error)) return false;
-    // Keep mixed aggregates intact when any independent failure remains. A cause
-    // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
+    // Keep mixed aggregates intact when any independent failure remains. An
+    // arbitrary Error with a cause may itself represent an independent failure.
     const ancestors = new Set(seen).add(error);
     if (error instanceof AggregateError) return error.errors.some((item: unknown) => requiresCleanupFailure(item, ancestors)) ||
       (error.cause !== undefined && requiresCleanupFailure(error.cause, ancestors));
-    if (error instanceof Error && error.cause !== undefined) return requiresCleanupFailure(error.cause, ancestors);
     return true;
   };
   const attempt = async (): Promise<void> => {
@@ -182,6 +181,7 @@ export const createWorkerReporter = (options: {
 
   return {
     trigger,
+    isSettledCleanupFailure: error => hasOwnedCommandCleanupFailure(error) && !requiresCleanupFailure(error),
     demandChanged: () => { if (!stopped && !deferPromptCycle) { options.configuration?.prompts?.beginCycle(); pendingPrompt = true; schedule(); } },
     publishInventory: (value) => {
       if (stopped) return;

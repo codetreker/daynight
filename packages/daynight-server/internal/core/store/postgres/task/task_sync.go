@@ -2,12 +2,56 @@ package task
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/jackc/pgx/v5"
 )
+
+func (s *Reader) TaskSyncCoverageUpdatedAt(ctx context.Context, projectID string) (*time.Time, error) {
+	var updated time.Time
+	err := s.tx.QueryRow(ctx, `SELECT updated_at FROM tasks WHERE project_id=$1
+		ORDER BY updated_at DESC, id DESC LIMIT 1`, projectID).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, pg.QueryError("read task sync coverage", err)
+	}
+	updated = updated.UTC()
+	return &updated, nil
+}
+
+func (s *Reader) TaskSyncDeletedTaskIDs(ctx context.Context, projectID string, lower *time.Time) ([]string, error) {
+	query := `SELECT id::text FROM tasks WHERE project_id=$1
+		AND COALESCE(deleted_at, ancestor_deleted_at) IS NOT NULL`
+	args := []any{projectID}
+	if lower != nil {
+		query += ` AND COALESCE(deleted_at, ancestor_deleted_at) >= $2`
+		args = append(args, taskSyncLowerBound(lower))
+	}
+	query += ` ORDER BY id`
+	rows, err := s.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, pg.QueryError("read task sync deleted IDs", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, pg.QueryError("read task sync deleted ID", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, pg.QueryError("read task sync deleted IDs", err)
+	}
+	return ids, nil
+}
 
 func (s *Reader) TaskSyncActiveTasks(ctx context.Context, projectID string) ([]store.TaskSyncTaskIdentity, error) {
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.version FROM task_resource_rows t

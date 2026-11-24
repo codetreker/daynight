@@ -18,6 +18,8 @@ type TaskSyncObservation = taskprotocol.SessionRow
 type TaskSync struct {
 	Mode              string                         `json:"mode"`
 	Epoch             string                         `json:"epoch"`
+	CoverageUpdatedAt *time.Time                     `json:"coverageUpdatedAt"`
+	DeletedTaskIDs    []string                       `json:"deletedTaskIds"`
 	Project           Project                        `json:"project"`
 	ActorAccess       ProjectAccess                  `json:"actorAccess"`
 	ObservedAt        time.Time                      `json:"observedAt"`

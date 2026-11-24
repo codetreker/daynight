@@ -6,6 +6,7 @@ import { aggregateFailures } from '../src/failures.ts';
 import { prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity } from '../src/fixture-owner.ts';
 import { prepareWorkerFixtureConfiguration } from '../src/worker-config.ts';
 import { startCompatWorkerContainer, stopCompatWorkerContainer } from '../src/subtask-compat-worker-container.ts';
+import { readCompatTask, type CompatTask } from '../src/subtask-compat-task-read.ts';
 import { cliEnvironment, expect, runOwnedCommand } from './fixtures.ts';
 import { observeWorkerCandidates } from './subtask-compat-worker-observer.ts';
 
@@ -53,11 +54,16 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
     };
     const projectId = idFrom((await invoke(['project', 'create', `Goal Worker ${input.variant} ${randomUUID()}`, '--repo', remote, '--team', 'personal', '--confirm'])).stdout);
     const create = async (args: string[]) => idFrom((await invoke(['task', 'create', '--project', projectId, ...args])).stdout);
-    const read = async (id: string): Promise<Task & { ready: boolean; allowAgents: boolean; parentId: string | null; parentTaskId: string | null }> => JSON.parse((await invoke(['task', 'show', id, '--project', projectId, '--json'])).stdout);
+    let leafId: string | undefined, originalClaim: string | undefined;
+    const read = async (id: string): Promise<CompatTask & Task & { ready: boolean; allowAgents: boolean; parentId: string | null; parentTaskId: string | null }> => readCompatTask({
+      command: input.command, projectId, taskId: id,
+      ...(id === leafId ? { workerId, ...(originalClaim === undefined ? {} : { claimId: originalClaim }) } : {}),
+    });
     const goal = await create(['--type', 'goal', '--title', 'Worker ancestor Goal']);
     const ancestors = [await create(['--title', 'Worker root', '--parent', goal, '--status', 'todo'])];
     for (let depth = 1; depth < 5; depth++) ancestors.push(await create(['--title', `Worker ancestor ${depth}`, '--parent-task', ancestors.at(-1)!, '--status', 'todo']));
     const leaf = await create(['--title', 'Worker open descendant', '--parent-task', ancestors.at(-1)!, '--status', 'todo']);
+    leafId = leaf;
     const blocked = await create(['--title', 'Worker terminal descendant', '--parent-task', ancestors.at(-1)!, '--status', 'todo']);
     for (const id of [leaf, blocked]) {
       const task = await read(id);
@@ -87,7 +93,7 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
     worker = await startCompatWorkerContainer({ checkout, runDirectory, root, entry: input.entry, config, workerId, log, ca: path.join(runDirectory, 'artifacts', 'daynight-ca.pem'), resolver: path.join(checkout, 'packages/e2e_tests/src/resolve-local.cjs') });
     void worker.finished.then(() => { exited = true; }, error => { observationFailure = error; });
     const alive = () => { if (observationFailure !== undefined) throw new Error(`${input.variant} Worker observation failed.`, { cause: observationFailure }); if (exited) throw new Error(`${input.variant} Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`); };
-    await expect.poll(async () => { alive(); return (await read(leaf)).properties.worker?.claimId; }, { timeout: 90_000, intervals: [1_000] }).toEqual(expect.any(String));
+    await expect.poll(async () => { alive(); const worker = (await read(leaf)).properties.worker; if (worker) originalClaim = worker.claimId; return originalClaim; }, { timeout: 90_000, intervals: [1_000] }).toEqual(expect.any(String));
     const claim = (await read(leaf)).properties.worker;
     if (!claim || claim.workerId !== workerId || claim.state !== 'active') throw new Error('Worker did not own the original claim.');
     await registerFixtureClaim(checkout, runDirectory, claim.claimId);

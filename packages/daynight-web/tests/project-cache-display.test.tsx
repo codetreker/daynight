@@ -61,13 +61,31 @@ it("publishes cold durable data before sync, keeps online admission separate, an
   expect(result.current).toMatchObject({ status: "ready", error: null, snapshot: { observedAt: null, receivedAt: null } });
   expect(result.current.snapshot!.graph.summary.total).toBe(1);
   expect(cache.getAuthorizedProject(projectId)).toBeNull();
-  expect(getTaskSync).toHaveBeenCalledWith(projectId, { epoch: taskSyncEpoch(projectId), since: graph().tasks[0]!.updatedAt }, TEST_VIEWER_ID, expect.any(AbortSignal), expect.any(Function));
+  expect(getTaskSync).toHaveBeenCalledWith(projectId, { epoch: taskSyncEpoch(projectId) }, TEST_VIEWER_ID, expect.any(AbortSignal), expect.any(Function));
   const fresh = graphFixture([detailFixture(projectId, taskId, { title: "Updated task", version: 2n })]);
   await act(async () => { pending.resolve(sync(fresh, 2n)); });
   await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(0));
   expect(result.current.snapshot!.index.nodes.get(taskId)!.titlePreview).toBe("Updated task");
   expect(result.current.snapshot!.observedAt).toBe(fresh.observedAt);
   expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
+});
+
+it("retries a complete parent projection after failure, then resumes incremental sync", async () => {
+  await seed(); const cache = scope();
+  vi.mocked(getTaskSync).mockRejectedValueOnce(new ApiError("network"));
+  const { result } = mount(cache);
+  await waitFor(() => expect(result.current.error).toBeInstanceOf(ApiError));
+  expect(vi.mocked(getTaskSync).mock.calls[0]![1]).toEqual({ epoch: taskSyncEpoch(projectId) });
+  const fresh = graphFixture([detailFixture(projectId, taskId, { parentTaskId: null })]);
+  const full = sync(fresh);
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture({ ...full, tasks: full.tasks.map(task => ({ ...task, parentTaskId: null })) }));
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.index.nodes.get(taskId)?.parentTaskId).toBeNull());
+  expect(vi.mocked(getTaskSync).mock.calls[1]![1]).toEqual({ epoch: taskSyncEpoch(projectId) });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture({ ...sync(fresh), tasks: [], dependencyStates: {} }));
+  act(() => result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(getTaskSync).mock.calls[2]![1]).toEqual({ epoch: taskSyncEpoch(projectId), since: fresh.tasks[0]!.updatedAt });
 });
 
 it.each([false, true])("never previews a delayed peer's old graph while sync is pending or fails (hint received: %s)", async (hintFirst) => {

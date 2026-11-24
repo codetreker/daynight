@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const io = vi.hoisted(() => ({ exec: vi.fn(), read: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: io.exec }));
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), readFile: io.read }));
-import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, confirmControllerProcessesStopped, ControllerProcessWaitDeadlineError, inspectProcessProof, isControllerProcessObservationDeadline, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const boot = "876b21c9-30d7-48c0-a2ab-287291e903a7";
@@ -34,6 +34,108 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
 
+it("recognizes only the actual proc read abort and rejects modified evidence", async () => {
+  const proof = await captureProcessProof(pid);
+  io.read.mockImplementation((_path: string, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
+  }));
+  const error = await inspectProcessProof(proof, 20, { strictObservation: true }).catch(cause => cause);
+  expect(isControllerProcessObservationDeadline(error)).toBe(true);
+  error.cause.message = "changed";
+  expect(isControllerProcessObservationDeadline(error)).toBe(false);
+});
+
+it("does not classify a proc read error merely because it resembles an abort", async () => {
+  const proof = await captureProcessProof(pid);
+  const failure = Object.assign(new Error("aborted"), { name: "AbortError" });
+  io.read.mockRejectedValue(failure);
+  const error = await inspectProcessProof(proof, 20, { strictObservation: true }).catch(cause => cause);
+  expect(error).toBe(failure);
+  expect(isControllerProcessObservationDeadline(error)).toBe(false);
+});
+
+it.each([
+  "second command", "second parent", "second group", "second zombie",
+  "after birth", "after parent", "after group",
+  "exiting birth", "exiting group", "zombie birth", "zombie group",
+  "running after before exiting", "running after before zombie", "running after first zombie",
+  "consistent", "exiting command and parent", "zombie command and parent", "exiting first mismatch", "zombie first mismatch",
+] as const)("preserves a %s observation when the final boot read reaches its real deadline", async scenario => {
+  const proof = await captureProcessProof(pid);
+  let bootReads = 0, statReads = 0, psReads = 0;
+  io.read.mockImplementation((file: string, options: { signal: AbortSignal }) => {
+    if (file.endsWith("boot_id")) {
+      if (++bootReads === 1) return Promise.resolve(`${boot}\n`);
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(new Error("final boot read aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
+      });
+    }
+    if (file === `/proc/${pid}/stat`) {
+      const after = ++statReads === 2;
+      const exiting = after && scenario.startsWith("exiting ") || !after && scenario === "running after before exiting";
+      const zombie = after && scenario.startsWith("zombie ") || !after && scenario === "running after before zombie";
+      return Promise.resolve(stat(after && scenario.endsWith("birth") ? "26140756" : ticks,
+        after && (scenario === "after parent" || scenario.endsWith("command and parent")) ? parent + 1 : parent,
+        after && scenario.endsWith("group") && scenario !== "second group" ? group + 1 : group, zombie ? "Z" : "S", exiting ? "4" : "0"));
+    }
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    const second = ++psReads === 2;
+    const changedCommand = second && (scenario === "second command" || scenario === "exiting command and parent" || scenario === "zombie command and parent") || !second && scenario.endsWith("first mismatch");
+    const changedParent = second && (scenario === "second parent" || scenario === "exiting command and parent" || scenario === "zombie command and parent") || !second && scenario.endsWith("first mismatch");
+    const psZombie = second && scenario === "second zombie" || !second && (scenario === "running after first zombie" || scenario.endsWith("first mismatch"));
+    callback(null, `${pid} ${changedParent ? parent + 1 : parent} ${second && scenario === "second group" ? group + 1 : group} ${psZombie ? "Z" : "S"} ${wallTime} ${changedCommand ? "changed command" : command}\n`);
+  });
+  const error = await inspectProcessProof(proof, 500, { strictObservation: true }).catch(cause => cause);
+  expect(bootReads).toBe(2);
+  expect(statReads).toBe(2);
+  expect(psReads).toBe(2);
+  if (scenario === "consistent" || scenario === "exiting command and parent" || scenario === "zombie command and parent" || scenario.endsWith("first mismatch")) {
+    expect(isControllerProcessObservationDeadline(error)).toBe(true);
+    expect(error.cause).toMatchObject({ name: "AbortError", message: "final boot read aborted" });
+  } else {
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(isControllerProcessObservationDeadline(error)).toBe(false);
+    expect(error.cause).toBe(error.errors[0]);
+    expect(isControllerProcessObservationDeadline(error.errors[0])).toBe(true);
+    expect(error.errors[0].cause).toMatchObject({ name: "AbortError", message: "final boot read aborted" });
+    expect(error.errors[1].message).toMatch(/identity|conflict/i);
+  }
+});
+
+it.each(["conflicting", "consistent"] as const)("preserves a %s second ps group when the following stat read times out", async scenario => {
+  const proof = await captureProcessProof(pid);
+  let bootReads = 0, statReads = 0, psReads = 0;
+  io.read.mockImplementation((file: string, options: { signal: AbortSignal }) => {
+    if (file.endsWith("boot_id")) { bootReads++; return Promise.resolve(`${boot}\n`); }
+    if (file === `/proc/${pid}/stat`) {
+      if (++statReads === 1) return Promise.resolve(stat(ticks, parent, group));
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(new Error("final stat read aborted", { cause: options.signal.reason }), { name: "AbortError" })), { once: true });
+      });
+    }
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    const second = ++psReads === 2;
+    callback(null, `${pid} ${parent} ${second && scenario === "conflicting" ? group + 1 : group} S ${wallTime} ${command}\n`);
+  });
+  const error = await inspectProcessProof(proof, 500, { strictObservation: true }).catch(cause => cause);
+  expect([bootReads, statReads, psReads]).toEqual([1, 2, 2]);
+  if (scenario === "consistent") {
+    expect(isControllerProcessObservationDeadline(error)).toBe(true);
+    expect(error.cause).toMatchObject({ name: "AbortError", message: "final stat read aborted" });
+  } else {
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(isControllerProcessObservationDeadline(error)).toBe(false);
+    expect(error.cause).toBe(error.errors[0]);
+    expect(isControllerProcessObservationDeadline(error.errors[0])).toBe(true);
+    expect(error.errors[0].cause).toMatchObject({ name: "AbortError", message: "final stat read aborted" });
+    expect(error.errors[1].message).toMatch(/identity|conflict/i);
+  }
+});
+
 it("keeps the same Linux process running and stoppable when only ps wall-clock birth drifts", async () => {
   const proof = await captureProcessProof(pid);
   wallTime = "Thu Nov 19 19:43:32 2026";
@@ -58,6 +160,58 @@ it("retires an otherwise empty command guardian without waiting through the grac
   expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
   expect(process.kill).toHaveBeenCalledWith(-pid, "SIGKILL");
   expect(await confirmControllerProcessesStopped(proof, [])).toBe(true);
+});
+
+it.each([{ deadline: 100, phase: "term", killed: false }, { deadline: 2100, phase: "kill", killed: true }] as const)("classifies only a completed $phase signal followed by a group wait deadline", async ({ deadline, phase, killed }) => {
+  vi.useFakeTimers();
+  const proof = await captureProcessProof(pid);
+  vi.mocked(process.kill).mockReturnValue(true);
+  const pending = stopControllerProcesses(proof, [], Date.now() + deadline).catch(error => error);
+  await vi.advanceTimersByTimeAsync(deadline);
+  const error = await pending;
+  expect(error).toBeInstanceOf(ControllerProcessWaitDeadlineError);
+  expect(error.phase).toBe(phase);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(vi.mocked(process.kill).mock.calls.some(([target, signal]) => target === -pid && signal === "SIGKILL")).toBe(killed);
+});
+
+it("keeps signal failure independent from the wait deadline", async () => {
+  const proof = await captureProcessProof(pid), failure = new Error("signal denied");
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => { if (signal === "SIGTERM") throw failure; return true; });
+  const error = await stopControllerProcesses(proof, [], Date.now() + 1000).catch(cause => cause);
+  expect(error).toBe(failure);
+  expect(error).not.toBeInstanceOf(ControllerProcessWaitDeadlineError);
+});
+
+it("keeps KILL failure independent after TERM", async () => {
+  vi.useFakeTimers();
+  const proof = await captureProcessProof(pid), failure = new Error("kill denied");
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => { if (signal === "SIGKILL") throw failure; return true; });
+  const pending = stopControllerProcesses(proof, [], Date.now() + 5000).catch(cause => cause);
+  await vi.advanceTimersByTimeAsync(2100);
+  expect(await pending).toBe(failure);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGKILL");
+});
+
+it.each(["before", "at"] as const)("keeps a failed group observation independent $0 its deadline after TERM", async when => {
+  if (when === "at") vi.useFakeTimers();
+  const proof = await captureProcessProof(pid), failure = new Error("group inventory failed");
+  vi.mocked(process.kill).mockReturnValue(true);
+  const original = io.exec.getMockImplementation()!;
+  let inventories = 0; const deadline = Date.now() + 1000;
+  io.exec.mockImplementation((file: string, args: string[], options: unknown, callback: (error: Error | null, output: string) => void) => {
+    if (args.includes("-A") && ++inventories === 2) {
+      if (when === "at") vi.setSystemTime(deadline);
+      callback(failure, ""); return;
+    }
+    original(file, args, options, callback);
+  });
+  const error = await stopControllerProcesses(proof, [], deadline).catch(cause => cause);
+  if (when === "at") expect(error).toMatchObject({ cause: failure, errors: expect.arrayContaining([failure]) });
+  else expect(error).toBe(failure);
+  expect(error).not.toBeInstanceOf(ControllerProcessWaitDeadlineError);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
 });
 
 it("still authenticates the original guardian before an early final kill", async () => {
@@ -128,6 +282,79 @@ it.each(["ENOENT", "EACCES", "EIO"])("propagates a proc read failure (%s) withou
   io.read.mockRejectedValue(Object.assign(new Error(`proc read failed: ${code}`), { code }));
   await expect(captureProcessProof(pid)).rejects.toThrow();
   expect(process.kill).not.toHaveBeenCalled();
+});
+
+it("confirms disappearance when the original proc stat open is missing and liveness also reports ESRCH", async () => {
+  const proof = await captureProcessProof(pid);
+  const read = io.read.getMockImplementation()!;
+  io.read.mockImplementation(async (file: string, options: unknown) => {
+    if (file === `/proc/${pid}/stat`) {
+      present = false;
+      throw Object.assign(new Error("stat open failed"), { code: "ENOENT", syscall: "open", path: file });
+    }
+    return read(file, options);
+  });
+  expect(await inspectProcessProof(proof, 5000, { strictObservation: true })).toBe("stopped");
+});
+
+it("retains a boot read failure even if the process disappears", async () => {
+  const proof = await captureProcessProof(pid);
+  const failure = Object.assign(new Error("boot open failed"), { code: "ENOENT", syscall: "open", path: "/proc/sys/kernel/random/boot_id" });
+  io.read.mockImplementation(async () => { present = false; throw failure; });
+  await expect(inspectProcessProof(proof, 5000, { strictObservation: true })).rejects.toBe(failure);
+});
+
+it("retains a boot identity conflict when stat is missing and the process disappears", async () => {
+  const proof = await captureProcessProof(pid);
+  const read = io.read.getMockImplementation()!;
+  bootId = "187b21c9-30d7-48c0-a2ab-287291e903a7";
+  io.read.mockImplementation(async (file: string, options: unknown) => {
+    if (file === `/proc/${pid}/stat`) {
+      present = false;
+      throw Object.assign(new Error("stat open failed"), { code: "ENOENT", syscall: "open", path: file });
+    }
+    return read(file, options);
+  });
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors[0]).toMatchObject({ code: "ENOENT", path: `/proc/${pid}/stat` });
+  expect(error.errors[1].message).toMatch(/conflicts/);
+});
+
+it.each(["exit", "signal", "parse"] as const)("retains ps %s failure even if the process disappears", async kind => {
+  const proof = await captureProcessProof(pid);
+  const failure = Object.assign(new Error("ps failed"), kind === "signal" ? { signal: "SIGTERM", code: null } : { code: 1 });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    present = false;
+    callback(kind === "parse" ? null : failure, kind === "parse" ? "malformed" : "");
+  });
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
+  if (kind === "parse") expect(error.message).toMatch(/command identity/);
+  else expect(error).toBe(failure);
+});
+
+it("keeps ordinary disappearance handling while strict cleanup retains a ps failure", async () => {
+  const proof = await captureProcessProof(pid);
+  const failure = Object.assign(new Error("ps failed"), { code: 1 });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error, output: string) => void) => {
+    present = false; callback(failure, "");
+  });
+  expect(await inspectProcessProof(proof)).toBe("stopped");
+  present = true;
+  await expect(inspectProcessProof(proof, 5000, { strictObservation: true })).rejects.toBe(failure);
+});
+
+it("retains a partial identity conflict if ps fails and the process disappears", async () => {
+  const proof = await captureProcessProof(pid);
+  group++;
+  const failure = Object.assign(new Error("ps failed"), { code: 1 });
+  io.exec.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error, output: string) => void) => {
+    present = false; callback(failure, "");
+  });
+  const error = await inspectProcessProof(proof, 5000, { strictObservation: true }).catch(cause => cause);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors).toContain(failure);
+  expect(error.errors[1].message).toMatch(/conflicts/);
 });
 
 it("rejects command replacement between the two ps observations", async () => {
@@ -244,7 +471,7 @@ it.each(["Z", "ESRCH"] as const)("waits for a kernel-exiting original to reach %
   flags = "4"; command = "[node] <defunct>"; parent = 1;
   const read = io.read.getMockImplementation()!;
   io.read.mockImplementation(async (path: string) => {
-    if (path === `/proc/${pid}/stat` && !present) throw Object.assign(new Error("Process disappeared"), { code: "ENOENT" });
+    if (path === `/proc/${pid}/stat` && !present) throw Object.assign(new Error("Process disappeared"), { code: "ENOENT", syscall: "open", path });
     return read(path);
   });
   io.exec.mockClear(); io.read.mockClear();
@@ -287,6 +514,59 @@ it("does not renew the passive exit budget when re-sampling or when wall time mo
   expect(timeouts.at(-1)).toBe(25);
   expect(timeouts.every((timeout, index) => index === 0 || timeout <= timeouts[index - 1]!)).toBe(true);
   expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it("settles a completed consistent observation that finishes at its deadline", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  let bootReads = 0;
+  const read = io.read.getMockImplementation()!;
+  io.read.mockImplementation(async (file: string, options: unknown) => {
+    const result = await read(file, options);
+    if (file.endsWith("boot_id") && ++bootReads === 2) vi.advanceTimersByTime(100);
+    return result;
+  });
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
+  expect(isControllerProcessObservationDeadline(error)).toBe(true);
+});
+
+it("retains a complete conflicting observation even when its deadline expires", async () => {
+  const proof = await captureProcessProof(pid);
+  command = "unexpected command";
+  vi.useFakeTimers();
+  let bootReads = 0;
+  const read = io.read.getMockImplementation()!;
+  io.read.mockImplementation(async (file: string, options: unknown) => {
+    const result = await read(file, options);
+    if (file.endsWith("boot_id") && ++bootReads === 2) vi.advanceTimersByTime(100);
+    return result;
+  });
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
+  expect(error.message).toMatch(/conflicting identity/);
+  expect(isControllerProcessObservationDeadline(error)).toBe(false);
+});
+
+it("retains a malformed final observation even when its deadline expires", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  let bootReads = 0;
+  const read = io.read.getMockImplementation()!;
+  io.read.mockImplementation(async (file: string, options: unknown) => {
+    if (file.endsWith("boot_id") && ++bootReads === 2) { vi.advanceTimersByTime(100); return "invalid"; }
+    return read(file, options);
+  });
+  const error = await inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
+  expect(error.message).toMatch(/boot identity/);
+  expect(isControllerProcessObservationDeadline(error)).toBe(false);
+});
+
+it("settles an exiting-process wait only after a complete consistent observation", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  flags = "4";
+  const pending = inspectProcessProof(proof, 100, { strictObservation: true }).catch(cause => cause);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(isControllerProcessObservationDeadline(await pending)).toBe(true);
 });
 
 it.each(["ticks", "boot", "group"] as const)("does not wait on or authorize a kernel-exiting process with a different %s identity", async difference => {

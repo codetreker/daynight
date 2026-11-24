@@ -23,29 +23,30 @@ const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
 
 type Engine struct {
-	captureMutex          sync.Mutex
-	captureJobs           map[string]bool
-	mediaWork             imageWorkRegistry
-	archiveSlots          chan struct{}
-	archivePreflightSlots chan struct{}
-	archiveOwnerLimit     int
+	captureMutex                 sync.Mutex
+	captureJobs                  map[string]bool
+	mediaWork                    imageWorkRegistry
+	archiveSlots                 chan struct{}
+	archivePreflightSlots        chan struct{}
+	archiveOwnerLimit            int
 	archiveV2RegistrationEnabled bool
-	Origin                string
-	files                 filestorage.Storage
-	imageDecoder          ImageDecoder
-	releaseMediaLeaseRun  func(context.Context, string, string) error
-	recoverMediaLeasesRun func(context.Context) error
-	now                   func() time.Time
-	liveMutex             sync.Mutex
-	live                  map[string]*liveCell
-	instance              string
-	content               contentBroker
-	admissionMutex        sync.Mutex
-	closing               bool
-	activeOperations      int
-	idle                  chan struct{}
-	stopping              chan struct{}
-	workCanceled          bool
+	Origin                       string
+	files                        filestorage.Storage
+	imageDecoder                 ImageDecoder
+	releaseMediaLeaseRun         func(context.Context, string, string) error
+	recoverMediaLeasesRun        func(context.Context) error
+	botHistoryReclaimRun         func(context.Context, string) error
+	now                          func() time.Time
+	liveMutex                    sync.Mutex
+	live                         map[string]*liveCell
+	instance                     string
+	content                      contentBroker
+	admissionMutex               sync.Mutex
+	closing                      bool
+	activeOperations             int
+	idle                         chan struct{}
+	stopping                     chan struct{}
+	workCanceled                 bool
 }
 
 // SetArchiveV2RegistrationEnabled controls creation of new streaming uploads.
@@ -389,9 +390,10 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 
 // OnlineConnection keeps execution-level negotiation outside the public Snapshot.
 type OnlineConnection struct {
-	Snapshot             sp.Snapshot
-	OnlineMode           string
-	HistoryContentPolicy *string
+	Snapshot                sp.Snapshot
+	OnlineMode              string
+	HistoryContentPolicy    *string
+	BotHistoryWindowVersion int
 }
 
 func (s *Execution) ConnectWithOnlineMode(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int, optedIn, taskBody bool) (OnlineConnection, error) {
@@ -402,11 +404,20 @@ func (s *Execution) connectOnline(ctx context.Context, token string, h sp.Contro
 	if contentReadVersion != 0 && contentReadVersion != 1 {
 		return OnlineConnection{}, fault("unsupported_protocol", "Unsupported content read version.")
 	}
+	if h.BotHistoryWindowVersion != 0 && h.BotHistoryWindowVersion != sp.BotHistoryWindowVersion {
+		return OnlineConnection{}, fault("unsupported_protocol", "Unsupported Bot history window version.")
+	}
 	var out OnlineConnection
 	hash := sha256.Sum256([]byte(token))
 	err := s.grantRun(ctx, hash[:], func(access *Access) error {
 		tx, r := access.tx, access.record
 		v := &r.Snapshot
+		if h.BotHistoryWindowVersion != 0 && r.BotID == nil {
+			return fault("unsupported_protocol", "History windows require a Bot Session.")
+		}
+		if err := requireBotHistoryWindowConnection(ctx, tx, r, h.BotHistoryWindowVersion); err != nil {
+			return err
+		}
 		if r.ServerInstance != nil && *r.ServerInstance != s.instance && r.LastSeen != nil && s.now().Sub(*r.LastSeen) < HeartbeatTimeout && r.ConnectionExpiry != nil && s.now().Before(*r.ConnectionExpiry) {
 			return fault("relay_instance_unavailable", "The live controller belongs to another relay instance.")
 		}
@@ -464,13 +475,14 @@ func (s *Execution) connectOnline(ctx context.Context, token string, h sp.Contro
 			return err
 		}
 		r.Live.ContentReadVersion = contentReadVersion
+		r.Live.BotHistoryWindowVersion = h.BotHistoryWindowVersion
 		if err := tx.dao.ConnectSession(ctx, id, s.instance, now, r.GrantExpiry); err != nil {
 			return err
 		}
 		if err := s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
 			return err
 		}
-		out = OnlineConnection{Snapshot: permissions(r, false, now), OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy}
+		out = OnlineConnection{Snapshot: permissions(r, false, now), OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy, BotHistoryWindowVersion: h.BotHistoryWindowVersion}
 		return save(ctx, tx, r)
 	})
 	return out, err

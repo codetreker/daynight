@@ -344,6 +344,14 @@ prerequisites keep their actual satisfaction state; a Goal's status does not alt
 Task readiness. The current Web continues to derive readiness from its local graph.
 Selected canonical property text is loaded directly into RawMessage maps; reads
 do not repeat normalization, field validation or capacity admission.
+Each response includes nullable `coverageUpdatedAt`, the maximum physical task-row
+update time in the same snapshot, and a required `deletedTaskIds` array. A delta
+returns effective deletion IDs in the same inclusive window, including hidden
+descendants; an unbounded delta returns all retained deletion IDs. A snapshot
+returns an empty array. Current Web continues to use its summary watermark and
+ordinary deletion still rotates the project epoch. Query or validation failure
+fails the complete response.
+
 Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the

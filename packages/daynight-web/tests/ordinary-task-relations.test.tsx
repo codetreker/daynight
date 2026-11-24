@@ -2,9 +2,11 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError, createTask, getTask, getTaskObservation, listTaskChildren, type TaskChildrenPage } from '../src/api/client';
 import { OrdinaryTaskRelations } from '../src/features/task-detail/OrdinaryTaskRelations';
+import { ClockInputProvider } from '../src/features/task-execution/TaskExecutionClock';
+import { browserNavigation } from '../src/app/navigation';
 import type { TaskDetail } from '../src/api/types';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { detailFixture } from './helpers/taskDetail';
+import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 
 vi.mock('../src/app/polling', () => ({ pollingInterval: () => 500 }));
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), createTask: vi.fn(), getTask: vi.fn(), getTaskObservation: vi.fn(), listTaskChildren: vi.fn() }));
@@ -17,7 +19,19 @@ vi.mock('../src/features/task-detail/TaskDetailSession', () => ({ useTaskDetailS
 const sessions = { captureDirectQualification: () => gate.qualified ? {} : null, verifyDirectQualificationHistory: async () => gate.qualified, isDirectQualificationHistoryCurrent: () => gate.qualified, verifyDirectQualification: async () => gate.qualified };
 vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccess: () => ({ ready: gate.accessReady, status: 'ready', session: { waitForFreshAccess: async () => ({}), snapshot: () => ({ status: 'ready', refreshing: !gate.accessReady }) } }), ProjectAccessBoundary: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock('../src/features/task-assignment/AssigneePicker', () => ({ AssigneePicker: ({ children, onSelect }: { children: React.ReactNode; onSelect: (value: string) => void }) => <button type="button" onClick={() => onSelect('another')}>{children}</button> }));
-vi.mock('../src/features/task-assignment/TaskAssigneeIdentity', () => ({ TaskAssigneeIdentity: ({ assignedTo }: { assignedTo: string | null }) => <span>{assignedTo ?? 'Unassigned'}</span> }));
+const auxiliary = vi.hoisted(() => ({
+  usage: vi.fn(), colors: vi.fn(), assignees: vi.fn(),
+  people: new Map([['30000000-0000-4000-8000-000000000001', { name: 'Child owner', avatarUrl: null, hasProjectAccess: true }]]),
+}));
+vi.mock('../src/features/task-assignees/TaskAssignees', () => ({ useTaskAssigneeDemand: (projectId: string, ids: readonly (string | null)[]) => {
+  auxiliary.assignees(projectId, ids); return { people: auxiliary.people };
+} }));
+vi.mock('../src/features/usage/useTaskUsage', () => ({ useTaskUsage: (projectId: string, taskId: string, active: boolean) => {
+  auxiliary.usage(projectId, taskId, active); return { summary: null, error: null, pending: false };
+} }));
+vi.mock('../src/features/task-tags/useTagColors', () => ({ useTagColors: (projectId: string, ids: readonly string[]) => {
+  auxiliary.colors(projectId, ids); return { items: new Map(), loading: false, error: null, retry: vi.fn() };
+} }));
 vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: () => null }));
 const project = '10000000-0000-4000-8000-000000000001';
 const parentId = '20000000-0000-4000-8000-000000000001';
@@ -25,7 +39,7 @@ const parent = detailFixture(project, parentId, { title: 'Parent', parentTaskId:
 const { parentTaskId: _relation, ...oldParent } = parent;
 const child = (n: number, status: 'proposed' | 'todo' | 'in_progress' | 'done' | 'cancelled') => detailFixture(project, `20000000-0000-4000-8000-00000000000${n}`, { title: `Child ${n}`, status, parentTaskId: parentId });
 vi.mocked(getTaskObservation).mockImplementation(async () => ({ epoch: 'epoch', detail: parent }));
-const panel = (detail = parent) => <OrdinaryTaskRelations projectId={project} detail={detail} history={1} active onRefreshGraph={vi.fn()} />;
+const panel = (detail = parent) => <ClockInputProvider input={{ observedAt: '2026-10-22T10:02:00Z', receivedMonotonic: performance.now(), warningMinutes: 60 }}><OrdinaryTaskRelations projectId={project} detail={detail} history={1} active onRefreshGraph={vi.fn()} /></ClockInputProvider>;
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.resetAllMocks(); vi.mocked(getTaskObservation).mockImplementation(async () => ({ epoch: 'epoch', detail: parent })); gate.generation = 1; gate.revision = 1; gate.qualified = true; gate.possible = true; gate.verify = true; gate.revoked = false; gate.listeners.clear(); gate.ready = async () => {}; gate.observe = async () => 'current'; gate.verifyRead = null; gate.accessReady = true; });
 
 it('loads the authorized page, five states and real Task links, without treating missing projection as no parent', async () => {
@@ -36,8 +50,81 @@ it('loads the authorized page, five states and real Task links, without treating
   await screen.findByText('Ancestor');
   const section = screen.getByRole('region', { name: 'Subtasks' });
   for (const name of ['Proposed', 'To do', 'In progress', 'Done', 'Cancelled']) expect(within(section).getByText(name)).toBeVisible();
+  expect([...section.querySelectorAll('.task-row')].map(row => row.getAttribute('data-task-status'))).toEqual(['proposed', 'todo', 'in_progress', 'done', 'cancelled']);
   expect(within(section).getByRole('link', { name: 'Child 6' })).toHaveAttribute('href', `/projects/${project}/tasks/20000000-0000-4000-8000-000000000006`);
   expect(getTaskObservation).toHaveBeenCalledOnce(); expect(getTask).toHaveBeenCalledOnce();
+});
+
+it('maps the authorized child detail into standard metadata without fabricating Worker or Session facts', async () => {
+  const current = { ...child(2, 'in_progress'), title: 'Complete child title', assignedTo: '30000000-0000-4000-8000-000000000001',
+    tags: [{ id: '40000000-0000-4000-8000-000000000001', name: 'Important' }], allowAgents: true,
+    requiredPlatform: 'windows' as const, ready: true, blockedBy: [parentId], properties: { paused: true }, startedAt: '2026-10-22T10:00:00Z' };
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [current], nextCursor: null });
+  renderWithLocale(panel(), { locale: 'en' });
+  const row = (await screen.findByRole('link', { name: current.title })).closest('.task-row')!;
+  expect(row).toHaveTextContent(current.id);
+  for (const text of ['Child owner', 'Important', 'Windows', 'Automatic execution', 'Ready', 'Worker record unknown']) expect(row).toHaveTextContent(text);
+  expect(row.querySelector('time')).toHaveAttribute('datetime', current.createdAt);
+  expect(row.querySelector('.task-row-execution')).toBeVisible();
+  expect(row.querySelector('.task-paused-badge')).toBeVisible(); expect(row.querySelector('.graph-blocked-badge')).toBeVisible();
+  expect(row.querySelector('.task-row-primary-status')).toHaveTextContent(/^In progress$/);
+  expect(within(row as HTMLElement).queryByRole('button', { name: /Open Session/ })).toBeNull();
+  expect(getTask).not.toHaveBeenCalled();
+  expect(vi.mocked(getTaskObservation).mock.calls.every(call => call[1] === parentId)).toBe(true);
+});
+
+it('preserves modified links and copies the real child ID without navigating', async () => {
+  const current = child(2, 'todo');
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [current], nextCursor: null });
+  const write = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+  const navigate = vi.spyOn(browserNavigation(), 'navigate').mockImplementation(() => {});
+  renderWithLocale(panel(), { locale: 'en' });
+  const link = await screen.findByRole('link', { name: current.title });
+  for (const key of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, [key]: true });
+    act(() => link.dispatchEvent(event)); expect(event.defaultPrevented).toBe(false);
+  }
+  expect(navigate).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Copy task ID' }));
+  expect(await screen.findByRole('status')).toHaveTextContent('Copied');
+  expect(write).toHaveBeenCalledExactlyOnceWith(current.id); expect(navigate).not.toHaveBeenCalled();
+  fireEvent.click(link);
+  expect(navigate).toHaveBeenCalledExactlyOnceWith(`/projects/${project}/tasks/${current.id}`);
+  navigate.mockRestore(); vi.unstubAllGlobals();
+});
+
+it('starts row helper demands only for visible authorized subtasks and withdraws rows on access loss', async () => {
+  const current = { ...child(2, 'todo'), assignedTo: '30000000-0000-4000-8000-000000000001', tags: [{ id: '40000000-0000-4000-8000-000000000001', name: 'Important' }] };
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [current], nextCursor: null });
+  const tree = (subtasksActive: boolean) => <OrdinaryTaskRelations projectId={project} detail={parent} history={1} active subtasksActive={subtasksActive} onRefreshGraph={vi.fn()} />;
+  const view = renderWithLocale(tree(false), { locale: 'en' });
+  await screen.findByRole('link', { name: current.title });
+  expect(auxiliary.usage.mock.calls.every(call => call[2] === false)).toBe(true);
+  expect(auxiliary.colors.mock.calls.every(call => call[1].length === 0)).toBe(true);
+  expect(auxiliary.assignees).not.toHaveBeenCalled();
+  view.rerender(tree(true));
+  expect(auxiliary.usage).toHaveBeenCalledWith(project, current.id, true);
+  expect(auxiliary.colors).toHaveBeenCalledWith(project, [current.tags[0]!.id]);
+  expect(auxiliary.assignees).toHaveBeenCalledWith(project, [current.assignedTo]);
+  auxiliary.usage.mockClear(); auxiliary.colors.mockClear(); auxiliary.assignees.mockClear();
+  view.rerender(tree(false));
+  expect(auxiliary.usage.mock.calls.every(call => call[2] === false)).toBe(true);
+  expect(auxiliary.colors.mock.calls.every(call => call[1].length === 0)).toBe(true);
+  expect(auxiliary.assignees).not.toHaveBeenCalled();
+  auxiliary.usage.mockClear(); auxiliary.colors.mockClear();
+  act(() => { gate.revoked = true; gate.possible = false; for (const listener of [...gate.listeners]) listener({ projectId: project, accessRevoked: true }); });
+  expect(screen.queryByRole('link', { name: current.title })).toBeNull();
+  expect(auxiliary.usage).not.toHaveBeenCalled(); expect(auxiliary.colors).not.toHaveBeenCalled(); expect(auxiliary.assignees).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('provides an explicit %s graph clock for timed child rows outside an inherited clock', async observed => {
+  const current = { ...child(2, 'in_progress'), startedAt: '2026-10-22T09:00:00Z' };
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [current], nextCursor: null });
+  renderWithLocale(<OrdinaryTaskRelations projectId={project} detail={parent} history={1} active snapshot={observed ? snapshotFixture([parent]) : null} onRefreshGraph={vi.fn()} />, { locale: 'en' });
+  const row = (await screen.findByRole('link', { name: current.title })).closest('.task-row')!;
+  if (observed) expect(row.querySelector('.task-row-execution')).toBeVisible();
+  else { expect(row.querySelector('.task-row-execution')).toBeNull(); expect(row).toHaveTextContent('Duration unknown'); }
 });
 
 it('distinguishes empty, read failure and retry, and pages by the server cursor', async () => {
@@ -61,7 +148,7 @@ it('submits the fixed ordinary parent and assignee exactly once; uncertain resul
   renderWithLocale(panel(), { locale: 'en', container: root }); await screen.findByText('No subtasks');
   const opener = screen.getByRole('button', { name: 'New subtask' }); opener.focus(); fireEvent.click(opener);
   fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Fix' } });
-  fireEvent.click(screen.getByRole('button', { name: 'viewer' })); fireEvent.change(screen.getByRole('combobox', { name: 'Status' }), { target: { value: 'todo' } }); fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Assignee: viewer' })); fireEvent.change(screen.getByRole('combobox', { name: 'Status' }), { target: { value: 'todo' } }); fireEvent.click(screen.getByRole('button', { name: 'Create' }));
   await screen.findByText(/creation outcome is unknown/i);
   expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ title: 'Fix', parentTaskId: parentId, status: 'todo', assignedTo: 'another' });
   expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled(); fireEvent.click(screen.getByRole('button', { name: 'Refresh subtasks' }));

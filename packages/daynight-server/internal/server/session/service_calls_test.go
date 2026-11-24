@@ -25,6 +25,8 @@ func TestCallsFromServiceKeepsDirectBindings(t *testing.T) {
 		}
 	}
 	expected := map[string]any{
+		"ReadBotHistoryWindow":         service.ReadBotHistoryWindow,
+		"CommitBotHistoryCheckpoint":   service.CommitBotHistoryCheckpoint,
 		"ArchiveStatus":                service.ArchiveStatus,
 		"AuthenticateController":       service.AuthenticateController,
 		"AuthenticateControllerOnline": service.AuthenticateControllerOnline,

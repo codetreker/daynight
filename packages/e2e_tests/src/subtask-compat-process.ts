@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { classifyMigrationLedger, migrationManifestHash, parseMigrationManifest, requireMigrationPlan } from './subtask-compat-recovery-migrations.ts';
+import { fallbackBaseline, fallbackPatchSHA256 } from './subtask-compat-recovery-provenance.ts';
 
 export type CombinationResult = { exitCode: number | null; signal: NodeJS.Signals | null; interrupted: boolean; cleanupUnconfirmed: boolean };
 export type WorkerVariant = 'candidate' | 'npm-0.72.0';
@@ -88,14 +89,14 @@ export const workerCombinationPassed = (result: CombinationResult, manifest: Com
 export type RecoveryReceipt = {
   schemaVersion?: number; status?: string; candidate?: string; baseline?: string; repair?: string;
   cleanup?: { verified?: boolean; quiescent?: boolean; originQuiescent?: boolean; usersStopped?: boolean; pendingDocker?: number; pendingProcesses?: number };
-  artifacts?: { candidate?: string; candidateOrigin?: string; candidateWeb?: string; baselineWeb?: string; repairWeb?: string; repair?: string; repairRevision?: string; repairSuppliedSHA256?: string; repairReproducedSHA256?: string; controlledWebhook?: string; baselineCli?: { version?: string; gitHead?: string; integrity?: string } };
+  artifacts?: { candidate?: string; candidateOrigin?: string; candidateWeb?: string; baselineWeb?: string; repairWeb?: string; repair?: string; repairRevision?: string; repairSuppliedSHA256?: string; repairReproducedSHA256?: string; controlledWebhook?: string; fallback?: { baseline?: string; patchSHA256?: string; baselineLedgerSHA256?: string; fallbackLedgerSHA256?: string; webSHA256?: string; reproducedWebSHA256?: string; serverSHA256?: string; reproducedServerSHA256?: string }; baselineCli?: { version?: string; gitHead?: string; integrity?: string } };
   acceptance?: { authentication?: string; execution?: string };
   fixtureVerification?: { verified?: boolean; mode?: string };
-  fixture?: { project?: string; goal?: string; child?: string; hiddenGoal?: string; hiddenChild?: string };
-  recovery?: { baselineVersion?: number; candidateVersion?: number; migrationManifests?: { baselineRevision?: string; candidateRevision?: string; repairRevision?: string; sourceFingerprints?: { baseline?: string; candidate?: string; repair?: string }; probeSHA256?: string; baseline?: unknown; candidate?: unknown; repair?: unknown; baselineSHA256?: string; candidateSHA256?: string; repairSHA256?: string }; candidateLedgerState?: string; candidateLedgerSettled?: boolean; precommitLedgerUnchanged?: boolean; candidateLedger?: string; snapshotSHA256?: string; storageSHA256?: string; historicalProjectionPreserved?: boolean; receiverBefore?: number; receiverAfter?: number; receiverHashes?: unknown; restoredLedger?: boolean; attachmentRestored?: boolean; postUpgradeWriteRemoved?: boolean; epochRotated?: boolean; endpointReconciled?: boolean };
+  fixture?: { user?: string; project?: string; goal?: string; child?: string; hiddenGoal?: string; hiddenChild?: string };
+  recovery?: { baselineVersion?: number; candidateVersion?: number; migrationManifests?: { baselineRevision?: string; candidateRevision?: string; repairRevision?: string; sourceFingerprints?: { baseline?: string; candidate?: string; repair?: string }; probeSHA256?: string; probes?: Record<string, { registry?: string; sha256?: string }>; baseline?: unknown; candidate?: unknown; repair?: unknown; baselineSHA256?: string; candidateSHA256?: string; repairSHA256?: string }; candidateLedgerState?: string; candidateLedgerSettled?: boolean; precommitLedgerUnchanged?: boolean; candidateLedger?: string; snapshotSHA256?: string; storageSHA256?: string; historicalProjectionPreserved?: boolean; receiverBefore?: number; receiverAfter?: number; receiverHashes?: unknown; restoredLedger?: boolean; attachmentRestored?: boolean; postUpgradeWriteRemoved?: boolean; epochRotated?: boolean; endpointReconciled?: boolean; browser?: { originalCacheDigest?: string; servedWebFiles?: number; baselineSchema?: number; restoredEpoch?: string; restored?: { epoch?: string; user?: string; project?: string; child?: string; hiddenChild?: string; originalCacheDigest?: string; sameContext?: boolean; candidateTabRetired?: boolean; attachment?: string; history?: string; deletedStatus?: number }; failures?: { denied?: boolean; offline?: boolean; storage?: boolean; storageInjected?: boolean; blocked?: boolean }; storageFailure?: { errorName?: string; namespace?: string }; restart?: { epoch?: string; user?: string; kind?: string; sameProfile?: boolean } } };
 };
 export type RepairIdentity = { revision: string; artifact: string; sha256: string };
-export type RecoveryFingerprints = { candidate: string; baseline: string; repair: string };
+export type RecoveryFingerprints = { candidate: string; baseline: string; repair: string; templateSHA256: string; probes: Record<'baseline' | 'candidate' | 'repair', { registry: string; sha256: string }> };
 export const recoveryCleanupConfirmed = (result: CombinationResult | undefined, receipt: RecoveryReceipt | null): boolean =>
   result !== undefined && !result.cleanupUnconfirmed && receipt?.cleanup?.verified === true && receipt.cleanup.quiescent === true &&
   receipt.cleanup.originQuiescent === true && receipt.cleanup.usersStopped === true && receipt.cleanup.pendingDocker === 0 && receipt.cleanup.pendingProcesses === 0;
@@ -109,6 +110,7 @@ const validRecoveryLedger = (recovery: RecoveryReceipt['recovery'], candidateSha
     if (!manifests || manifests.baselineRevision !== baselineSha || manifests.candidateRevision !== candidateSha || manifests.repairRevision !== repairSha ||
       ![fingerprints.candidate, fingerprints.baseline, fingerprints.repair].every(value => /^[a-f0-9]{64}$/.test(value)) ||
       manifests.sourceFingerprints?.candidate !== fingerprints.candidate || manifests.sourceFingerprints.baseline !== fingerprints.baseline || manifests.sourceFingerprints.repair !== fingerprints.repair || !/^[a-f0-9]{64}$/.test(manifests.probeSHA256 ?? '') ||
+      manifests.probeSHA256 !== fingerprints.templateSHA256 || !(['baseline', 'candidate', 'repair'] as const).every(name => manifests.probes?.[name]?.registry === fingerprints.probes[name].registry && manifests.probes?.[name]?.sha256 === fingerprints.probes[name].sha256 && /^[a-f0-9]{64}$/.test(fingerprints.probes[name].sha256)) ||
       recovery?.candidateLedgerState !== 'candidate' || recovery.candidateLedgerSettled !== true || typeof recovery.candidateLedger !== 'string') return false;
     const baseline = parseMigrationManifest(manifests.baseline), candidate = parseMigrationManifest(manifests.candidate), repair = parseMigrationManifest(manifests.repair);
     requireMigrationPlan(baseline, candidate, repair);
@@ -126,8 +128,21 @@ const validRecoveryLedger = (recovery: RecoveryReceipt['recovery'], candidateSha
   } catch { return false; }
 };
 const validFixture = (fixture: RecoveryReceipt['fixture']): boolean => {
-  const ids = [fixture?.project, fixture?.goal, fixture?.child, fixture?.hiddenGoal, fixture?.hiddenChild];
+  const ids = [fixture?.user, fixture?.project, fixture?.goal, fixture?.child, fixture?.hiddenGoal, fixture?.hiddenChild];
   return ids.every(value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)) && new Set(ids).size === ids.length;
+};
+const validFallback = (receipt: RecoveryReceipt): boolean => {
+  const artifact = receipt.artifacts?.fallback, browser = receipt.recovery?.browser, fixture = receipt.fixture;
+  const digest = (value: string | undefined): boolean => /^[a-f0-9]{64}$/.test(value ?? '');
+  const epoch = browser?.restoredEpoch;
+  if (!browser?.restored || !browser.restart) return false;
+  return receipt.baseline === fallbackBaseline && artifact?.baseline === fallbackBaseline && artifact.patchSHA256 === fallbackPatchSHA256 &&
+    digest(artifact.baselineLedgerSHA256) && artifact.baselineLedgerSHA256 === receipt.recovery?.migrationManifests?.baselineSHA256 && artifact.fallbackLedgerSHA256 === artifact.baselineLedgerSHA256 &&
+    digest(artifact.webSHA256) && artifact.webSHA256 === artifact.reproducedWebSHA256 && digest(artifact.serverSHA256) && artifact.serverSHA256 === artifact.reproducedServerSHA256 &&
+    Number.isSafeInteger(browser.servedWebFiles) && (browser.servedWebFiles ?? 0) > 1 && browser.baselineSchema === 13 && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(epoch ?? '') &&
+    browser.restored?.epoch === epoch && browser.restored.user === fixture?.user && browser.restored.project === fixture?.project && browser.restored.child === fixture?.child && browser.restored.hiddenChild === fixture?.hiddenChild &&
+    digest(browser.originalCacheDigest) && browser.restored.originalCacheDigest === browser.originalCacheDigest && browser.restored.sameContext === true && browser.restored.candidateTabRetired === true && browser.restored.attachment === 'paired122' && browser.restored.history === 'baseline-only' && browser.restored.deletedStatus === 410 &&
+    browser.failures?.denied === true && browser.failures.offline === true && browser.failures.storage === true && browser.failures.storageInjected === true && browser.failures.blocked === true && browser.storageFailure?.errorName === 'VersionError' && browser.storageFailure.namespace === 'daynight-task-cache-recovery-12ebdd08' && browser.restart?.epoch === epoch && browser.restart.user === fixture?.user && browser.restart.kind === 'persistent-browser-process' && browser.restart.sameProfile === true;
 };
 export const recoveryPassed = (result: CombinationResult, receipt: RecoveryReceipt | null, candidate: string, baseline: string, candidateServer: string | undefined, repair: RepairIdentity, fingerprints: RecoveryFingerprints): boolean =>
   result.exitCode === 0 && result.signal === null && !result.interrupted && !result.cleanupUnconfirmed && receipt?.schemaVersion === 4 &&
@@ -139,7 +154,7 @@ export const recoveryPassed = (result: CombinationResult, receipt: RecoveryRecei
   receipt.artifacts.candidateWeb === 'production' && receipt.artifacts.baselineWeb === 'production' && receipt.artifacts.controlledWebhook === 'test transport' &&
   receipt.artifacts.baselineCli?.version === '0.72.0' && receipt.artifacts.baselineCli.gitHead === 'f5d73f3275c8e2774a588967a0fbdcd2a261c379' && receipt.artifacts.baselineCli.integrity === 'sha512-T85y9vOcRHjHvjFImEoDpOs25JxQkfSOLkSbmwUgVZi8S/KsQnVx3EJ5+r6Q/vwoGEP64HIPKdNHdUOVxpDe9w==' &&
   receipt.fixtureVerification?.verified === true && receipt.fixtureVerification.mode === 'normal-login-baseline-container' && receipt.acceptance?.authentication === 'normal' && receipt.acceptance.execution === 'dedicated-container' &&
-  validFixture(receipt.fixture) &&
+  validFixture(receipt.fixture) && validFallback(receipt) &&
   validRecoveryLedger(receipt.recovery, candidate, baseline, repair.revision, fingerprints) && receipt.recovery?.precommitLedgerUnchanged === true &&
   /^[a-f0-9]{64}$/.test(receipt.recovery.snapshotSHA256 ?? '') && /^[a-f0-9]{64}$/.test(receipt.recovery.storageSHA256 ?? '') &&
   receipt.recovery.historicalProjectionPreserved === true && receipt.recovery.receiverBefore === 0 && receipt.recovery.receiverAfter === 1 && Array.isArray(receipt.recovery.receiverHashes) && receipt.recovery.receiverHashes.length === 1 && /^[a-f0-9]{64}$/.test(receipt.recovery.receiverHashes[0]) &&

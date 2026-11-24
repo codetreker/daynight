@@ -167,11 +167,12 @@ type Reconciliation struct {
 // ControllerMessage is a decoded inbound union. Only fields belonging to Type
 // are populated; Raw preserves the exact validated union for durable hashing.
 type ControllerMessage struct {
-	ContentRevision int             `json:"contentRevision,omitempty"`
-	Action          string          `json:"action,omitempty"`
-	MediaBody       json.RawMessage `json:"-"`
-	MediaResult     json.RawMessage `json:"-"`
-	MediaError      *ImageError     `json:"-"`
+	BotHistoryWindowVersion int             `json:"botHistoryWindowVersion,omitempty"`
+	ContentRevision         int             `json:"contentRevision,omitempty"`
+	Action                  string          `json:"action,omitempty"`
+	MediaBody               json.RawMessage `json:"-"`
+	MediaResult             json.RawMessage `json:"-"`
+	MediaError              *ImageError     `json:"-"`
 	ControllerFence
 	Type                 string           `json:"type"`
 	Protocol             string           `json:"protocol"`
@@ -208,6 +209,9 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 		fields["testExecutionId"] = m.TestExecutionID
 	}
 	if m.Type == "hello" {
+		if m.BotHistoryWindowVersion != 0 {
+			fields["botHistoryWindowVersion"] = m.BotHistoryWindowVersion
+		}
 		if m.ContentRevision != 0 {
 			fields["contentRevision"] = m.ContentRevision
 		}

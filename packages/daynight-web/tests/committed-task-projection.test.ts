@@ -46,3 +46,21 @@ it('lets the confirmed same-version sync replace edges after a Goal detail edit'
   expect(result).toEqual({ snapshot: original, error: null });
   expect(result.snapshot.summaries.get(goal.id)?.dependsOn).toEqual([]);
 });
+
+it('preserves known parent facts and unrelated legacy observations across detail receipts', () => {
+  const child: TaskSummary = { ...goal, type: 'task', parentTaskId: id(8), dependsOn: [], allowAgents: true };
+  const { parentTaskId: _parent, ...withoutParent } = child;
+  const legacy: TaskSummary = { ...withoutParent, id: id(5) };
+  const states = new Map([child, legacy].map(task => [task.id, { taskVersion: task.version, ready: true, blockedBy: [] }]));
+  const projection = projectSummaries(project, [child, legacy], states, time);
+  const original: GraphSnapshot = { ...projection, index: { ...projection.index, legacyTaskParentIds: new Set([legacy.id]) },
+    summaries: new Map([[child.id, child], [legacy.id, legacy]]), observedAt: time, receivedMonotonic: 1, receivedAt: 1, revision: 1 };
+  const { parentTaskId: _detailParent, ...beforeFields } = detail(child);
+  const before = { ...beforeFields, ready: true };
+  const updated = { ...before, version: 2n, title: 'Updated' };
+  const result = projectCommittedTasks(original, receipt(before, updated), fence);
+  expect(result.error).toBeNull();
+  expect(result.snapshot.index.nodes.get(child.id)?.parentTaskId).toBe(id(8));
+  expect(result.snapshot.index.legacyTaskParentIds?.has(legacy.id)).toBe(true);
+  expect(projectCommittedTasks(original, receipt(before, { ...updated, parentTaskId: null }), fence).error?.kind).toBe('protocol');
+});

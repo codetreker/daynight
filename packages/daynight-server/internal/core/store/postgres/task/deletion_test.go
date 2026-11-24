@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -144,6 +145,28 @@ func testSubtreeDeletion(t *testing.T, db *postgres.Store, goal bool) {
 			t.Fatalf("explicit detach: version=%d references=%d", sourceVersion, references)
 		}
 	}
+	mustOK(t, db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
+		ids, err := snapshot.TaskDAO().TaskSyncDeletedTaskIDs(t.Context(), project.ID, &tombstone.DeletedAt)
+		if err != nil {
+			return err
+		}
+		want := make([]string, 0, len(tree))
+		for _, row := range tree {
+			want = append(want, row.ID)
+		}
+		slices.Sort(want)
+		if !slices.Equal(ids, want) {
+			t.Fatalf("subtree deletion window: got %v want %v", ids, want)
+		}
+		coverage, err := snapshot.TaskDAO().TaskSyncCoverageUpdatedAt(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		if coverage == nil || coverage.Before(tombstone.DeletedAt) {
+			t.Fatalf("subtree deletion exceeds coverage: %v, %v", coverage, tombstone.DeletedAt)
+		}
+		return nil
+	}))
 	mustOK(t, db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
 		for _, row := range tree {
 			if _, err := snapshot.TaskDAO().Task(t.Context(), project.ID, row.ID); !errors.Is(err, model.ErrTaskDeleted) {

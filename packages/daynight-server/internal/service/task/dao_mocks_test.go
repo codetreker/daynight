@@ -247,25 +247,27 @@ var _ store.ThreadScope = (*taskThreadScopeMock)(nil)
 
 type taskReaderMock struct {
 	taskMockBase
-	TaskFn                     func(context.Context, string, string) (model.Task, error)
-	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
-	GoalProgressesFn           func(context.Context, string, []string) (map[string]model.GoalProgress, error)
-	TasksFn                    func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
-	TaskListFenceFn            func(context.Context, string) (store.TaskListFence, error)
-	TaskPriorityListFn         func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
-	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
-	TaskHeaderFn               func(context.Context, string, string) (model.TaskHeader, error)
-	ThreadMessageFn            func(context.Context, string, string) (model.ThreadMessage, error)
-	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
-	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
-	TaskAssigneesFn            func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	ResolveTaskAssigneesFn     func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-	TaskCacheEpochFn           func(context.Context, string) (string, error)
-	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
-	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
-	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
+	TaskFn                      func(context.Context, string, string) (model.Task, error)
+	TaskBodiesFn                func(context.Context, string, []string) ([]model.Task, error)
+	GoalProgressesFn            func(context.Context, string, []string) (map[string]model.GoalProgress, error)
+	TasksFn                     func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
+	TaskListFenceFn             func(context.Context, string) (store.TaskListFence, error)
+	TaskPriorityListFn          func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
+	TaskPresenceFn              func(context.Context, string, string) (store.TaskPresence, error)
+	TaskHeaderFn                func(context.Context, string, string) (model.TaskHeader, error)
+	ThreadMessageFn             func(context.Context, string, string) (model.ThreadMessage, error)
+	ThreadCandidatesFn          func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
+	ThreadSidesFn               func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
+	TaskAssigneesFn             func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	ResolveTaskAssigneesFn      func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
+	TaskGraphTasksFn            func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	TaskCacheEpochFn            func(context.Context, string) (string, error)
+	TaskSyncCoverageUpdatedAtFn func(context.Context, string) (*time.Time, error)
+	TaskSyncDeletedTaskIDsFn    func(context.Context, string, *time.Time) ([]string, error)
+	TaskSyncTasksFn             func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn     func(context.Context, string, []string) (map[string][]string, error)
+	TaskSyncActiveTasksFn       func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
+	TaskSyncDependencyStatesFn  func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
 func (mock *taskReaderMock) TaskBodies(ctx context.Context, project string, ids []string) ([]model.Task, error) {
@@ -340,6 +342,15 @@ func (mock *taskReaderMock) TaskGraphTasks(p0 context.Context, p1 string, p2 str
 func (mock *taskReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (string, error) {
 	mock.need("TaskCacheEpoch", mock.TaskCacheEpochFn != nil)
 	return mock.TaskCacheEpochFn(p0, p1)
+}
+
+func (mock *taskReaderMock) TaskSyncCoverageUpdatedAt(ctx context.Context, id string) (*time.Time, error) {
+	mock.need("TaskSyncCoverageUpdatedAt", mock.TaskSyncCoverageUpdatedAtFn != nil)
+	return mock.TaskSyncCoverageUpdatedAtFn(ctx, id)
+}
+func (mock *taskReaderMock) TaskSyncDeletedTaskIDs(ctx context.Context, id string, lower *time.Time) ([]string, error) {
+	mock.need("TaskSyncDeletedTaskIDs", mock.TaskSyncDeletedTaskIDsFn != nil)
+	return mock.TaskSyncDeletedTaskIDsFn(ctx, id, lower)
 }
 
 func (mock *taskReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {

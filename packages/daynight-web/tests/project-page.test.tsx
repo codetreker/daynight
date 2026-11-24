@@ -81,7 +81,7 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { type: 'task', parentId: null, parentTaskId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
@@ -155,6 +155,29 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it('uses only eligible members for chain filtering and locates a mixed chain from the overview', async () => {
+    const source = graph([
+      { id: A, title: '普通子任务根', status: 'done', dependsOn: [] },
+      { id: B, title: '可见任务', status: 'todo', dependsOn: [A] },
+      { id: C, title: '纯子任务根', status: 'done', dependsOn: [] },
+      { id: D, title: '纯子任务后续', status: 'todo', dependsOn: [C] },
+      { id: E, title: '独立任务', status: 'todo', dependsOn: [] },
+    ]);
+    graphRequest.mockResolvedValue({ ...source, tasks: source.tasks.map(item => [A, C, D].includes(item.id) ? { ...item, parentTaskId: F } : item) });
+    const scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    try {
+      render(<ProjectPage projectId={projectId} />); selectTasks();
+      await findListButton('普通子任务根');
+      expect(chainList().queryByRole('button', { name: '纯子任务根' })).toBeNull();
+      selectStatus('done');
+      expect(chainList().queryByRole('button', { name: '普通子任务根' })).toBeNull();
+      fireEvent.click(sectionTabs().getByRole('tab', { name: '概览' }));
+      fireEvent.click(within(document.getElementById('project-overview-progress')!).getByRole('button', { name: /普通子任务根.*前往任务列表/ }));
+      await waitFor(() => expect(listButton('普通子任务根')).toHaveFocus());
+      expect(statusTrigger()).toHaveTextContent(statusLabel('all'));
+    } finally { HTMLElement.prototype.scrollIntoView = scroll; }
+  });
   it('restarts chain usage only after the new history snapshot and keeps the selected member when the anchor disappears', async () => {
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const subscribe = scope.subscribe.bind(scope);
@@ -1106,6 +1129,45 @@ describe("project dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试刷新" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.getByTestId(`chain-${C}`)).toBeTruthy();
+  });
+
+  it.each(['failure', 'child'] as const)('opens an old cached task fragment when synchronization ends in %s', async (outcome) => {
+    const source = graph([seeds[0]!]);
+    const cached = { ...source, tasks: source.tasks.map(({ parentTaskId: _parentTaskId, ...task }) => task) };
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(cached).mockReturnValueOnce(pending.promise);
+    const first = render(<ProjectPage projectId={projectId} />);
+    await waitForGraph();
+    first.unmount();
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks#task=${A}`);
+    dispatchEvent(new PopStateEvent('popstate'));
+    render(<ProjectPage projectId={projectId} />);
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+    expect(screen.getByTestId('observation-kind')).toHaveTextContent('direct');
+    expect(location.hash).toBe('');
+    await act(async () => {
+      if (outcome === 'failure') pending.reject(new ApiError('network'));
+      else pending.resolve({ ...source, tasks: source.tasks.map(task => ({ ...task, parentTaskId: F })) });
+    });
+    expect(screen.getByTestId('selected-task')).toHaveTextContent(A);
+    expect(screen.queryByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeNull();
+  });
+
+  it('keeps Goal navigation for a cached Goal member with no ordinary-parent field', async () => {
+    const source = graph([{ id: A, title: 'Goal member', status: 'todo', dependsOn: [] }, { id: B, title: 'Goal owner', status: 'todo', dependsOn: [] }]);
+    const cached = { ...source, tasks: source.tasks.map(({ parentTaskId: _parentTaskId, ...task }) => task.id === A ? { ...task, parentId: B } : { ...task, type: 'goal' as const }) };
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(cached).mockReturnValueOnce(pending.promise);
+    const first = render(<ProjectPage projectId={projectId} />);
+    await waitForGraph();
+    first.unmount();
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks#task=${A}`);
+    dispatchEvent(new PopStateEvent('popstate'));
+    render(<ProjectPage projectId={projectId} />);
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await act(async () => pending.resolve(cached));
+    expect(await screen.findByTestId('selected-task')).toHaveTextContent(B);
   });
 
   it("reopens durable task data before background sync and admits details only after its live receipt", async () => {

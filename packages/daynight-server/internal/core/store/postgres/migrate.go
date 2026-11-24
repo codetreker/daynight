@@ -93,6 +93,12 @@ var sourceRecoverySQL string
 //go:embed schema/migrations/126_drop_worker_lifecycle.sql
 var dropWorkerLifecycleSQL string
 
+//go:embed schema/migrations/128_bot_history_windows.sql
+var botHistoryWindowsSQL string
+
+//go:embed schema/migrations/129_task_sync_deletions.sql
+var taskSyncDeletionsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -130,6 +136,8 @@ var schemaMigrations = []migration{
 	{version: 125, sql: workerInstanceIdentitySQL},
 	{version: 126, sql: dropWorkerLifecycleSQL},
 	{version: 127, sql: sourceRecoverySQL},
+	{version: 128, sql: botHistoryWindowsSQL},
+	{version: 129, sql: taskSyncDeletionsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

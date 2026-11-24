@@ -48,3 +48,25 @@ export const verifyCandidateBuild = (input: { revision: string; architecture: 'a
     throw new Error('Candidate artifact build settings do not match registry extraction.');
   }
 };
+
+export const fallbackBaseline = '12ebdd08f63c9e09f64937b096d4f9390987be7a';
+export const fallbackPatchSHA256 = '24e455741839ee94a814437c89a83655b866fe2b20b8fab4b370da2b8d7f1740';
+
+// A fallback is a patched baseline, not the original binary. Compare independent
+// production builds and their embedded Web trees before starting either artifact.
+export const verifyFallbackArtifact = (input: {
+  baseline: string; patchSHA256: string; baselineLedgerSHA256: string; fallbackLedgerSHA256: string;
+  webSHA256: string; reproducedWebSHA256: string; serverSHA256: string; reproducedServerSHA256: string; buildInfo: string;
+}): void => {
+  const digest = (value: string): boolean => /^[a-f0-9]{64}$/.test(value);
+  if (input.baseline !== fallbackBaseline || input.patchSHA256 !== fallbackPatchSHA256 ||
+    !digest(input.baselineLedgerSHA256) || input.baselineLedgerSHA256 !== input.fallbackLedgerSHA256 ||
+    !digest(input.webSHA256) || input.webSHA256 !== input.reproducedWebSHA256 ||
+    !digest(input.serverSHA256) || input.serverSHA256 !== input.reproducedServerSHA256 ||
+    !input.buildInfo.includes('\tpath\tgithub.com/codetreker/daynight/packages/daynight-server/cmd/daynight-server\n') ||
+    !input.buildInfo.includes(`\tbuild\tvcs.revision=${fallbackBaseline}\n`) || !input.buildInfo.includes('\tbuild\tvcs.modified=true\n') ||
+    !input.buildInfo.includes('\tbuild\t-trimpath=true\n') || !input.buildInfo.includes('\tbuild\tCGO_ENABLED=0\n') ||
+    !/: go1\.27\.2\n/.test(input.buildInfo) || /^\t=>/m.test(input.buildInfo)) {
+    throw new Error('Fallback artifact provenance or reproducible build mismatch.');
+  }
+};

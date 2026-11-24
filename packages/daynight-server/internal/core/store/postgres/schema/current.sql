@@ -1,4 +1,4 @@
--- Schema snapshot version: 127
+-- Schema snapshot version: 129
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -241,6 +241,16 @@ CREATE TABLE "bot_effort_preferences" (
     CONSTRAINT "bot_effort_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
     CONSTRAINT "bot_effort_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"]))),
     CONSTRAINT "bot_effort_preferences_reasoning_effort_check" CHECK ((("octet_length"("reasoning_effort") >= 1) AND ("octet_length"("reasoning_effort") <= 64)))
+);
+
+CREATE TABLE "bot_history_reclaims" (
+    "session_id" "uuid" NOT NULL,
+    "resource_id" "uuid" NOT NULL
+);
+
+CREATE TABLE "bot_history_windows" (
+    "session_id" "uuid" NOT NULL,
+    "checkpoint" "jsonb" NOT NULL
 );
 
 CREATE TABLE "bot_model_preferences" (
@@ -1737,6 +1747,12 @@ ALTER TABLE ONLY "bot_configuration_preferences"
 ALTER TABLE ONLY "bot_effort_preferences"
     ADD CONSTRAINT "bot_effort_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider", "model");
 
+ALTER TABLE ONLY "bot_history_reclaims"
+    ADD CONSTRAINT "bot_history_reclaims_pkey" PRIMARY KEY ("session_id", "resource_id");
+
+ALTER TABLE ONLY "bot_history_windows"
+    ADD CONSTRAINT "bot_history_windows_pkey" PRIMARY KEY ("session_id");
+
 ALTER TABLE ONLY "bot_model_preferences"
     ADD CONSTRAINT "bot_model_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider");
 
@@ -2283,6 +2299,8 @@ CREATE INDEX "tasks_project_assigned_to_created_id" ON "tasks" USING "btree" ("p
 CREATE INDEX "tasks_project_assigned_to_created_id_all" ON "tasks" USING "btree" ("project_id", "assigned_to", "created_at", "id");
 
 CREATE INDEX "tasks_project_created_id" ON "tasks" USING "btree" ("project_id", "created_at", "id");
+
+CREATE INDEX "tasks_project_effective_deleted_id" ON "tasks" USING "btree" ("project_id", COALESCE("deleted_at", "ancestor_deleted_at"), "id") WHERE (COALESCE("deleted_at", "ancestor_deleted_at") IS NOT NULL);
 
 CREATE INDEX "tasks_project_id_id_idx" ON "tasks" USING "btree" ("project_id", "id");
 

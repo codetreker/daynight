@@ -20,7 +20,7 @@ func (a *App) assembleArchiveCleanup(database store.Transactions, files filestor
 	cleanup := session.NewArchiveCleanup(db, files)
 	cleanup.SetReleasedUploadRecovery(a.releasedUploadRecovery(db))
 	a.archiveCleanup = session.NewArchiveCleanupRunner(cleanup, logger)
-	return nil
+	return a.archiveCleanup.SetBotHistorySweep(a.Sessions.SweepBotHistoryReclaims)
 }
 
 func (a *App) releasedUploadRecovery(db store.ArchiveCleanupStore) func(context.Context, store.ArchiveCleanupTarget) error {

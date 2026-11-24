@@ -25,9 +25,67 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
+// Each case owns its Project and identities. The parent stops reuse after a
+// failed case and checks the pool after child cleanup has completed.
+func TestProjectDeletionSnapshotsAndRetirement(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, actor, _, project := membershipFixture(t)
+	database := isolatedStore(t)
+	cases := []struct {
+		name string
+		run  func(*testing.T, *Store)
+	}{
+		{"WorkerSnapshotAndCompletion", projectDeletionWorkerSnapshotAndCompletion},
+		{"ObservationAndTransactionBoundRetirement", projectDeletionObservationAndTransactionBoundRetirement},
+		{"MarkPreservesDatabaseFailureAndRejectsSecondMark", projectDeletionMarkPreservesDatabaseFailureAndRejectsSecondMark},
+		{"PreservesHistoricalRowsAndCommitsRetirement", projectDeletionPreservesHistoricalRowsAndCommitsRetirement},
+		{"AuthorizationAfterTransferAndReturn", projectDeletionAuthorizationAfterTransferAndReturn},
+	}
+	for _, tc := range cases {
+		ok := t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+				defer cancel()
+				if _, err := database.Pool.Exec(ctx, `DROP TRIGGER IF EXISTS fail_project_mark ON projects; DROP FUNCTION IF EXISTS fail_project_mark()`); err != nil {
+					t.Errorf("remove mark fault: %v", err)
+					return
+				}
+				if err := checkFaultTriggerRemoved(ctx, database, "fail_project_mark", "projects"); err != nil {
+					t.Error(err)
+				}
+			})
+			tc.run(t, database)
+		})
+		testutil.AssertPoolReusable(t, database.Pool)
+		if !ok {
+			return
+		}
+	}
+}
+
+func TestProjectDeletionLocking(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	cases := []struct {
+		name string
+		run  func(*testing.T, *Store)
+	}{
+		{"WaitsForDeletedTask", projectDeletionWaitsForDeletedTask},
+		{"TaskLockCancellationRollsBack", projectDeletionTaskLockCancellationRollsBack},
+		{"WaitingStatementUsesOldProjectSnapshot", projectDeletionWaitingStatementUsesOldProjectSnapshot},
+		{"OrdersClaimAndThread", projectDeletionOrdersClaimAndThread},
+	}
+	for _, tc := range cases {
+		ok := t.Run(tc.name, func(t *testing.T) { tc.run(t, database) })
+		testutil.AssertPoolReusable(t, database.Pool)
+		if !ok {
+			return
+		}
+	}
+}
+
+func projectDeletionWorkerSnapshotAndCompletion(t *testing.T, database *Store) {
+	s := database
+	actor, _, project := testutil.ProjectMembershipFixture(t, s)
 	ctx := context.Background()
 	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: actor.UserID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), Phase: model.WorkerExecuting, State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
 	raw, err := taskproperty.EncodeWorker(&claim)
@@ -36,11 +94,11 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 	}
 	lastSeen := time.Now().UTC().Truncate(time.Microsecond)
 	mustQueryExec(t, s, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,$3,$3,'{}','{}')`, actor.UserID, claim.WorkerID, lastSeen)
-	for i := 1; i <= 130; i++ {
-		id := queryID(i)
-		mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,$3,'todo',CASE WHEN $4 THEN now() END)`, id, project.ID, fmt.Sprintf("Task %d", i), i == 130)
-		mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
-	}
+	mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title,status,deleted_at)
+ SELECT ('00000000-0000-4000-8000-' || lpad(i::text,12,'0'))::uuid,
+ $1,'Task ' || i,'todo',CASE WHEN i=130 THEN now() END FROM generate_series(1,130) AS i`, project.ID)
+	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value)
+ SELECT id,'worker',$2 FROM tasks WHERE project_id=$1`, project.ID, string(raw))
 	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, queryID(130))
 	mustQueryExec(t, s, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, queryID(1), queryID(130))
 	err = s.ReadProjectDeletion(ctx, project.ID, func(snapshot store.ProjectDeletionSnapshot) error {
@@ -148,9 +206,9 @@ func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	s, _, _, project := membershipFixture(t)
+func projectDeletionWaitsForDeletedTask(t *testing.T, database *Store) {
+	s := database
+	_, _, project := testutil.ProjectMembershipFixture(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	id := uuid.NewString()
@@ -159,11 +217,27 @@ func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	done := make(chan error, 1)
+	launched, drained := false, false
+	defer func() {
+		cancel()
+		cleanup, stop := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer stop()
+		if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("release historical Task lock: %v", err)
+		}
+		if launched && !drained {
+			select {
+			case <-done:
+			case <-cleanup.Done():
+				t.Errorf("drain deletion: %v", cleanup.Err())
+			}
+		}
+	}()
 	if _, err = tx.Exec(ctx, `SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, id); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
+	launched = true
 	go func() {
 		_, err := s.WriteProjectDeletion(ctx, project.ID, func(store.ProjectDeletionScope) error { return nil })
 		done <- err
@@ -172,14 +246,20 @@ func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = receiveQueryResult(t, ctx, done); err != nil {
-		t.Fatal(err)
+	select {
+	case err = <-done:
+		drained = true
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("deletion did not finish: %v", ctx.Err())
 	}
 }
 
-func TestProjectDeletionObservationAndTransactionBoundRetirement(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	db, owner, _, project := membershipFixture(t)
+func projectDeletionObservationAndTransactionBoundRetirement(t *testing.T, database *Store) {
+	db := database
+	owner, _, project := testutil.ProjectMembershipFixture(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	before := time.Now().UTC().Add(-time.Second)
@@ -203,7 +283,7 @@ func TestProjectDeletionObservationAndTransactionBoundRetirement(t *testing.T) {
 		t.Fatalf("closed observation lost driver error: %v", err)
 	}
 
-	task := queryTask(t, db, project.ID, 10, model.TaskTodo)
+	task := queryTask(t, db, project.ID, 1000, model.TaskTodo)
 	sessionID := uuid.NewString()
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot)
  VALUES($1,$2,$3,$4,$5,$6,'{}','{"lifecycle":"active"}')`, sessionID, project.ID, task.ID, uuid.NewString(), owner.UserID, uuid.NewString())
@@ -233,9 +313,9 @@ func TestProjectDeletionObservationAndTransactionBoundRetirement(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionMarkPreservesDatabaseFailureAndRejectsSecondMark(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	db, _, _, project := membershipFixture(t)
+func projectDeletionMarkPreservesDatabaseFailureAndRejectsSecondMark(t *testing.T, database *Store) {
+	db := database
+	_, _, project := testutil.ProjectMembershipFixture(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var originalEpoch string
@@ -465,9 +545,9 @@ func TestPrivateTransferProjectLifecycleSerializesProjectDeletion(t *testing.T) 
 
 // A real server-side cancellation while the historical Task lock is pending
 // exercises the row stream failure after Project and graph locks are acquired.
-func TestProjectDeletionTaskLockCancellationRollsBack(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	db, _, _, project := membershipFixture(t)
+func projectDeletionTaskLockCancellationRollsBack(t *testing.T, database *Store) {
+	db := database
+	_, _, project := testutil.ProjectMembershipFixture(t, db)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	taskID := uuid.NewString()
@@ -560,9 +640,9 @@ func TestProjectDeletionTaskLockCancellationRollsBack(t *testing.T) {
 	testutil.AssertPoolReusable(t, db.Pool)
 }
 
-func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	db, owner, _, project := membershipFixture(t)
+func projectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T, database *Store) {
+	db := database
+	owner, _, project := testutil.ProjectMembershipFixture(t, db)
 	ctx := t.Context()
 	otherID := uuid.NewString()
 	mustQueryExec(t, db, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Unrelated','host:other')`, otherID)
@@ -682,10 +762,8 @@ func waitProjectDeletionWitnessBlock(t *testing.T, ctx context.Context, database
 	}
 }
 
-func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	database := isolatedStore(t)
-	taskNumber := 10
+func projectDeletionOrdersClaimAndThread(t *testing.T, database *Store) {
+	taskNumber := 2000
 	for _, operation := range []string{"claim", "thread"} {
 		for _, deletionFirst := range []bool{false, true} {
 			for _, taskDeleted := range []bool{false, true} {
@@ -708,6 +786,17 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 						table, event, column, id = "task_thread_messages", "INSERT", "task_id", task.ID
 					}
 					const trigger = "block_project_deletion_witness"
+					t.Cleanup(func() {
+						cleanup, stop := context.WithTimeout(context.Background(), cleanupTimeout)
+						defer stop()
+						if _, err := database.Pool.Exec(cleanup, "DROP TRIGGER IF EXISTS "+trigger+" ON "+table+"; DROP FUNCTION IF EXISTS "+trigger+"()"); err != nil {
+							t.Errorf("remove deletion witness fault: %v", err)
+							return
+						}
+						if err := checkFaultTriggerRemoved(cleanup, database, trigger, table); err != nil {
+							t.Error(err)
+						}
+					})
 					target := fmt.Sprintf("BEFORE %s ON %s FOR EACH ROW WHEN (NEW.%s='%s'::uuid)", event, table, column, id)
 					mustQueryExec(t, database, `CREATE FUNCTION block_project_deletion_witness() RETURNS trigger LANGUAGE plpgsql AS $$
  BEGIN PERFORM pg_advisory_xact_lock(13629020); RETURN NEW; END $$;
@@ -724,7 +813,13 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 						if err := locker.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 							t.Errorf("release deletion witness lock: %v", err)
 						}
-						writers.Wait()
+						finished := make(chan struct{})
+						go func() { writers.Wait(); close(finished) }()
+						select {
+						case <-finished:
+						case <-cleanup.Done():
+							t.Errorf("drain deletion witnesses: %v", cleanup.Err())
+						}
 					}()
 					if _, err := locker.Exec(ctx, `SELECT pg_advisory_xact_lock(13629020)`); err != nil {
 						t.Fatal(err)
@@ -835,28 +930,49 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	database, _, _, project := membershipFixture(t)
-	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+func projectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T, database *Store) {
+	_, _, project := testutil.ProjectMembershipFixture(t, database)
+	task := queryTask(t, database, project.ID, 1000, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	deletion, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer deletion.Rollback(context.Background())
+	var waiter pgx.Tx
+	var launched, drained bool
+	result := make(chan error, 1)
+	defer func() {
+		cancel()
+		cleanup, stop := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer stop()
+		if err := deletion.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("release deletion transaction: %v", err)
+		}
+		if launched && !drained {
+			select {
+			case <-result:
+			case <-cleanup.Done():
+				t.Errorf("drain waiting statement: %v", cleanup.Err())
+				return
+			}
+		}
+		if waiter != nil {
+			if err := waiter.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				t.Errorf("release waiting transaction: %v", err)
+			}
+		}
+	}()
 	for _, sql := range []string{`SELECT id FROM projects WHERE id=$1 FOR UPDATE`, `SELECT id FROM tasks WHERE project_id=$1 FOR UPDATE`, `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`} {
 		if _, err := deletion.Exec(ctx, sql, project.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	waiter, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	waiter, err = database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer waiter.Rollback(context.Background())
-	result := make(chan error, 1)
+	launched = true
 	go func() {
 		var selected bool
 		err := waiter.QueryRow(ctx, `SELECT p.deleted_at IS NULL FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.deleted_at IS NULL FOR SHARE OF t`, task.ID).Scan(&selected)
@@ -869,8 +985,14 @@ func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
 	if err := deletion.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := receiveQueryResult(t, ctx, result); err != nil {
-		t.Fatalf("waiting statement: %v", err)
+	select {
+	case err := <-result:
+		drained = true
+		if err != nil {
+			t.Fatalf("waiting statement: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("waiting statement did not finish: %v", ctx.Err())
 	}
 	var live bool
 	if err := waiter.QueryRow(ctx, `SELECT deleted_at IS NULL FROM projects WHERE id=$1`, project.ID).Scan(&live); err != nil || live {
@@ -878,16 +1000,15 @@ func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionAuthorizationAfterTransferAndReturn(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	database, original, other, project := membershipFixture(t)
+func projectDeletionAuthorizationAfterTransferAndReturn(t *testing.T, database *Store) {
+	original, other, project := testutil.ProjectMembershipFixture(t, database)
 	ctx := t.Context()
 	target, err := testCreateTeam(database, ctx, other.UserID, uuid.NewString(), "Destination")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, other.UserID)
-	reference := setSnapshotTaskClaim(t, database, project.ID, 10, original.UserID, uuid.NewString())
+	reference := setSnapshotTaskClaim(t, database, project.ID, 2000, original.UserID, uuid.NewString())
 	check := func(actor model.Principal, transferable bool) {
 		t.Helper()
 		completion, err := database.WriteProjectDeletion(ctx, project.ID, func(scope store.ProjectDeletionScope) error {

@@ -14,7 +14,10 @@ external effect.
 
 New Codex Bot tickets bind `bots/<botId>/native/codex` to the original Bot and
 Session. CODEX_HOME and its configuration resolution stay unchanged. The adapter
-explicitly creates legacy rollout history on the verified 0.169.0 runtime.
+explicitly creates legacy rollout history. The initial implementation restricted
+admission to 0.169.0, the runtime used to validate the recovery profile. That
+version restriction is superseded by [material-based compatibility](2026-11-24-codex-recovery-capabilities.md);
+the storage and unknown-operation guarantees below remain in force.
 Ordinary Tasks and existing tickets retain their previous behavior.
 It names a new native thread `Daynight assistant` to materialize the otherwise
 lazy empty rollout without submitting a conversation turn. Resume preserves the
@@ -38,7 +41,7 @@ That failure independently terminates the provider and retains the dirty barrier
 so an earlier setting receipt cannot conceal loss of automatic recovery.
 
 Recovery requires the original execution's stop proof and storage ownership.
-It verifies the same-version profile, identity and digest, marks the attempt
+It verifies the supported rollout format, identity and digest, marks the attempt
 dirty, and copies the snapshot to a separate active file. Native thread/resume
 receives the original ID and path; its returned ID, cwd and path must match.
 Native resume appends to that path, so the immutable point is never its writable
@@ -48,7 +51,7 @@ input.
 The profile owns one legacy rollout. Forks, child-thread dependencies, external
 media and unknown record formats fail protection explicitly and retain the prior
 point. Embedded image bytes remain part of the checked file. It does not claim
-paginated SQLite history or cross-version compatibility. The
+paginated SQLite history or compatibility with arbitrary native formats. The
 [Worker runtime design](../../../../docs/design/worker-bot-runtime.md#codex-原生恢复点)
 owns lifecycle and deletion boundaries.
 
@@ -78,7 +81,7 @@ preserves that distinction by refusing automatic recovery until reconciliation.
 
 ## Consequences
 
-Protected same-version legacy threads survive loss of shared conversation files
+Protected compatible legacy threads survive loss of shared conversation files
 without changing credential lookup. Each protection reads and writes the rollout,
 so its cost grows with native history. Parsing streams bounded chunks and rejects
 records over 32 MiB without truncating them. Successful replacement removes the

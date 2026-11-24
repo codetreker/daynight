@@ -40,14 +40,22 @@ export const projectCommittedTasks = (snapshot: GraphSnapshot, receipts: Readonl
     }
     if (current.version === receipt.before.version && !sameDetailSummary(current, summaryOf(receipt.before))) return { snapshot, error: new ApiError('protocol') };
     if (current.version > receipt.before.version) continue;
+    if (current.parentTaskId !== undefined && (received.parentTaskId !== undefined && current.parentTaskId !== received.parentTaskId ||
+      current.parentTaskId !== null && received.parentId !== null)) return { snapshot, error: new ApiError('protocol') };
     if (received.type === 'task' && (!snapshot.index.nodes.has(id) || received.parentId !== null && snapshot.summaries.get(received.parentId)?.type !== 'goal')) continue;
     summaries ??= new Map(snapshot.summaries);
-    summaries.set(id, received.type === 'goal' ? { ...received, dependsOn: current.dependsOn, externalDependsOn: current.externalDependsOn } : received);
+    const withParent = current.parentTaskId !== undefined && received.parentTaskId === undefined ? { ...received, parentTaskId: current.parentTaskId } : received;
+    summaries.set(id, received.type === 'goal' ? { ...withParent, dependsOn: current.dependsOn, externalDependsOn: current.externalDependsOn } : withParent);
     if (received.type === 'task') states.set(id, { taskVersion: received.version, ready: receipt.detail.ready, blockedBy: receipt.detail.blockedBy });
   }
   if (summaries === null) return { snapshot, error: null };
   try {
     const projected = projectSummaries(snapshot.graph.project, [...summaries.values()], states, snapshot.graph.observedAt);
-    return { snapshot: { ...snapshot, graph: projected.graph, index: projected.index, summaries, pausedTaskIds: projected.pausedTaskIds, workerMachines: projected.workerMachines }, error: null };
+    const legacyTaskParentIds = new Set([...snapshot.index.legacyTaskParentIds ?? []].filter(id => {
+      const current = snapshot.summaries.get(id), next = summaries.get(id);
+      return next !== undefined && next.parentTaskId === undefined && current?.version === next.version;
+    }));
+    const index = legacyTaskParentIds.size === 0 ? projected.index : { ...projected.index, legacyTaskParentIds };
+    return { snapshot: { ...snapshot, graph: projected.graph, index, summaries, pausedTaskIds: projected.pausedTaskIds, workerMachines: projected.workerMachines }, error: null };
   } catch (error) { return { snapshot, error: new ApiError('protocol', null, 'protocol', null, error) }; }
 };

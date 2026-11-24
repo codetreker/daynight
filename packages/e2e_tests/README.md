@@ -51,6 +51,26 @@ artifacts for comparison, and records the selected identities for each run. The
 repair artifact must be reproducible from its declared commit and accept the
 candidate's complete migration ledger.
 
+For paired restoration to the fixed baseline
+`12ebdd08f63c9e09f64937b096d4f9390987be7a`, build the patched fallback Server
+and its manifest on Linux after installing the workspace dependencies:
+
+```bash
+node packages/e2e_tests/src/subtask-compat-fallback-build.ts --output "$PWD/.tmp/fallback-artifact"
+```
+
+The output directory must not already exist. The command builds twice from full
+historical source, verifies the fixed Web patch, migration registry and matching
+Web and Server digests, and writes `daynight-server-fallback` and `manifest.json`.
+This is a patched recovery artifact, not the original historical Server. Stop
+writes and restore the database and attachment storage together, then rotate
+each affected Project's task cache epoch before starting it. The original Server
+still refuses the newer ledger. The compatibility recovery checks the Web bytes
+served by the fallback and verifies the same upgraded browser profile, its
+authorization, restored epoch, restart and failure behavior.
+Run `pnpm --filter @codetreker/daynight-e2e test:fallback-cache` to validate the
+patched historical cache and controlled synchronization interleavings separately.
+
 ```bash
 pnpm --filter @codetreker/daynight-e2e test:subtask-compat \
   --candidate "$PWD" --candidate-sha "$(git rev-parse HEAD)" \
@@ -85,6 +105,12 @@ a missing or unresolved Docker mutation completed. It joins a recorded Docker
 signal client before forcing a still-running container to stop. A definite bind
 refusal and a confirmed absent container permit fixture cleanup; other uncertain
 creation outcomes remain unconfirmed.
+
+The Worker scenario re-reads the same Task within a bounded deadline when a
+Session observation reports a recoverable execution change or temporary
+unavailability. It checks the original Worker and claim identities and requires
+a complete observation before proceeding. Other errors and exhausted retries
+fail the scenario with the last observation diagnostics.
 
 The recovery control client addresses the socket in its private run directory
 through an open directory descriptor, avoiding Unix socket path-length limits
@@ -358,3 +384,11 @@ replay or treating a temporarily absent resource as final absence.
 The framework does not touch an existing deployment or use its database. A
 passing local run establishes only the recorded source and scenarios; it does
 not establish hosted CI or live third-party authentication behavior.
+
+The explicit `test:recovery-registries` test compiles the production registry
+from full-history historical and candidate revisions in private clones. Set
+`RECOVERY_REGISTRY_BASELINE`, `RECOVERY_REGISTRY_CANDIDATE`, and
+`RECOVERY_REGISTRY_REPAIR` to complete commit IDs available locally. It compares
+the actual 099 frozen history and requires the old registry to be a strict
+candidate prefix and the repair registry to match. It does not run the recovery
+scenario or replace the isolated database evidence.

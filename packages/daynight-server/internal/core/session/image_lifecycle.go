@@ -3,7 +3,9 @@ package session
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
@@ -67,6 +69,15 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 		}
 		close(w.done)
 		s.mediaWork.Unlock()
+		if err == nil && s.botHistoryReclaimRun != nil {
+			cleanup, finish := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+			if reclaimErr := s.botHistoryReclaimRun(cleanup, id); reclaimErr != nil {
+				// This queue can belong to another resource. Its failure retains
+				// maintenance responsibility without changing this I/O result.
+				slog.ErrorContext(cleanup, "Bot history resource reclamation remains pending", "sessionId", id)
+			}
+			finish()
+		}
 		op.Close()
 		return err
 	}, nil

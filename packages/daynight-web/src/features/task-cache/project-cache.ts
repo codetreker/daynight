@@ -23,6 +23,7 @@ export type SyncTicket = {
 export type TaskSyncTicket = SyncTicket & {
   readonly taskBindings: ReadonlyMap<string, TaskExecutionBinding>;
   readonly taskVersions: ReadonlyMap<string, bigint>;
+  readonly parentTaskFullSync: boolean;
 };
 export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
@@ -90,6 +91,8 @@ const mergeProject = (current: Project, incoming: Project): Project => {
 
 export class TaskCacheScope {
   readonly userId: string;
+  // Old-service compatibility is an online observation, never a persisted parent fact.
+  private readonly legacyParents = new Map<string, { generation: string; epoch: string; versions: Map<string, bigint> }>();
   private readonly database: TaskCacheDatabase;
   private readonly channel: BroadcastChannel | null;
   private readonly lifetime = new AbortController();
@@ -990,18 +993,26 @@ export class TaskCacheScope {
   private materialize(manifest: ProjectRecord, stored: StoredTasks, assigneeVersions?: readonly ProjectPersonVersion[], install = true): CachedProject {
     const { tasks, dependencyStates } = stored;
     const previous = this.projections.get(manifest.projectId);
+    const legacy = this.legacyParents.get(manifest.projectId);
+    const legacyIds = new Set(legacy?.generation === manifest.cacheGeneration && legacy.epoch === manifest.epoch
+      ? tasks.filter(task => task.parentTaskId === undefined && legacy.versions.get(task.id) === task.version).map(task => task.id) : []);
+    const previousLegacyIds = previous?.index.legacyTaskParentIds;
+    const sameLegacy = (previousLegacyIds?.size ?? 0) === legacyIds.size && [...legacyIds].every(id => previousLegacyIds?.has(id));
     const sameTasks = previous !== undefined && previous.manifest.cacheGeneration === manifest.cacheGeneration &&
       previous.summaries.size === tasks.length && tasks.every((task) => {
         const existing = previous.summaries.get(task.id);
-        return existing !== undefined && sameSummary(existing, task) && sameDependencyState(previous.dependencyStates.get(task.id), dependencyStates.get(task.id));
+        return existing !== undefined && existing.parentTaskId === task.parentTaskId && sameSummary(existing, task) && sameDependencyState(previous.dependencyStates.get(task.id), dependencyStates.get(task.id));
       });
     const project = manifest.project!;
     let projection: TaskProjection;
-    if (sameTasks) {
+    if (sameTasks && sameLegacy) {
       projection = sameProject(previous.graph.project, project) ? previous : {
         graph: { ...previous.graph, project }, index: previous.index, versions: previous.versions, pausedTaskIds: previous.pausedTaskIds, workerMachines: previous.workerMachines,
       };
-    } else projection = projectSummaries(project, tasks, dependencyStates, project.updatedAt);
+    } else {
+      const next = projectSummaries(project, tasks, dependencyStates, project.updatedAt);
+      projection = legacyIds.size === 0 ? next : { ...next, index: { ...next.index, legacyTaskParentIds: legacyIds } };
+    }
     const result: CachedProject = {
       ...projection, manifest,
       summaries: sameTasks ? previous.summaries : new Map(tasks.map((task) => [task.id, task])),
@@ -1111,7 +1122,10 @@ export class TaskCacheScope {
           await transaction.objectStore("projects").put(manifest);
         }
         const tasks = manifest.state === "active" ? (await this.stored(transaction, manifest)).tasks : [];
-        return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
+        const legacy = this.legacyParents.get(projectId);
+        const parentTaskFullSync = tasks.some(task => task.type === "task" && task.parentTaskId === undefined &&
+          !(legacy?.generation === manifest.cacheGeneration && legacy.epoch === manifest.epoch && legacy.versions.get(task.id) === task.version));
+        return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt, parentTaskFullSync,
           generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision,
           taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])), taskVersions: new Map(tasks.map((task) => [task.id, task.version])) };
       }, signal);
@@ -1338,7 +1352,7 @@ export class TaskCacheScope {
     this.historyPurges.set(projectId, purge);
     return purge;
   }
-  async applySync(ticket: SyncTicket, response: TaskSync, signal: AbortSignal): Promise<{ readonly project: CachedProject; readonly changed: boolean; readonly changedTaskIds: readonly string[] }> {
+  async applySync(ticket: SyncTicket, response: TaskSync, signal: AbortSignal, full = response.mode === "snapshot"): Promise<{ readonly project: CachedProject; readonly changed: boolean; readonly changedTaskIds: readonly string[] }> {
     await this.ready(signal);
     if (response.project.id !== ticket.projectId || ticket.userId !== this.userId) return protocol();
     if (this.uncertainHistories.has(ticket.projectId)) return released();
@@ -1364,9 +1378,14 @@ export class TaskCacheScope {
           if (existing !== undefined && existing.version > task.version) continue;
           if (existing !== undefined && existing.version === task.version) {
             if (!sameSummary(existing, task)) return protocol();
+            if (existing.parentTaskId === undefined && task.parentTaskId !== undefined) {
+              merged.set(task.id, task); changedTaskIds.add(task.id);
+            }
             continue;
           }
-          merged.set(task.id, task); changedTaskIds.add(task.id); intrinsicChanged.add(task.id);
+          if (existing?.parentTaskId !== undefined && (task.parentTaskId !== undefined && existing.parentTaskId !== task.parentTaskId ||
+            existing.parentTaskId !== null && task.parentId !== null)) return protocol();
+          merged.set(task.id, existing?.parentTaskId !== undefined && task.parentTaskId === undefined ? { ...task, parentTaskId: existing.parentTaskId } : task); changedTaskIds.add(task.id); intrinsicChanged.add(task.id);
           states.delete(task.id);
         }
         for (const [taskId, state] of Object.entries(response.dependencyStates)) {
@@ -1416,6 +1435,21 @@ export class TaskCacheScope {
       this.onlineGenerations.set(ticket.projectId, result.manifest.cacheGeneration);
     }
     this.authorizedProjects.add(ticket.projectId);
+    const ordinary = response.tasks.filter(task => task.type === "task");
+    const previousLegacy = this.legacyParents.get(ticket.projectId);
+    const matchesLegacy = previousLegacy?.generation === result.manifest.cacheGeneration && previousLegacy.epoch === response.epoch;
+    if (full || matchesLegacy) {
+      const oldService = ordinary.length > 0 && ordinary.every(task => task.parentTaskId === undefined);
+      if (oldService && (full || matchesLegacy)) {
+        const versions = full ? new Map<string, bigint>() : new Map(previousLegacy!.versions);
+        const currentTasks = new Map(result.stored.tasks.map(task => [task.id, task]));
+        for (const task of ordinary) {
+          const current = currentTasks.get(task.id);
+          if (current?.version === task.version && current.parentTaskId === undefined) versions.set(task.id, task.version);
+        }
+        this.legacyParents.set(ticket.projectId, { generation: result.manifest.cacheGeneration, epoch: response.epoch, versions });
+      } else if (ordinary.some(task => task.parentTaskId !== undefined) || full) this.legacyParents.delete(ticket.projectId);
+    }
     const project = this.materialize(result.manifest, result.stored, response.assigneeVersions);
     if (!this.isDirectProjectBlocked(ticket.projectId)) this.emitTagColors(ticket.projectId, true);
     if (result.changed) this.hint(ticket.projectId);

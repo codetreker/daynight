@@ -74,7 +74,7 @@ export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, taskObservati
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
-    id: task.id, type: task.type, parentId: task.parentId, version: versionForTask(task).toString(), properties: propertiesForTask(task), tags: tagsForTask(task), title: fixtureTitles.get(task) ?? task.titlePreview, titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
+    id: task.id, type: task.type, parentId: task.parentId, ...(task.parentTaskId === undefined ? {} : { parentTaskId: task.parentTaskId }), version: versionForTask(task).toString(), properties: propertiesForTask(task), tags: tagsForTask(task), title: fixtureTitles.get(task) ?? task.titlePreview, titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
     allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,

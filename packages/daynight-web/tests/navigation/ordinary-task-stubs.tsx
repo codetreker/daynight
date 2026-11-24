@@ -3,7 +3,9 @@ const scope = { userId: '30000000-0000-4000-8000-000000000001', signal: new Abor
 const sessions = { captureDirectQualification: () => ({}), verifyDirectQualificationHistory: async () => true, isDirectQualificationHistoryCurrent: () => true, verifyDirectQualification: async () => true };
 export const useTaskCacheScope = () => scope;
 export const useTaskDetailSessions = () => sessions;
-export const useProjectAccess = () => ({ ready: true, status: 'ready', session: { waitForFreshAccess: async () => ({}) } });
+export const useProjectAccess = () => ({ ready: true, status: 'ready', session: { waitForFreshAccess: async () => ({}), snapshot: () => ({ status: 'ready', refreshing: false }) } });
 export const AssigneePicker = ({ children }: { children: ReactNode }) => <button type="button">{children}</button>;
-export const TaskAssigneeIdentity = () => <span>Current user</span>;
+export const useTaskAssigneeDemand = () => ({ people: new Map([['30000000-0000-4000-8000-000000000001', { name: 'Current user', avatarUrl: null, hasProjectAccess: true }]]) });
+export const useTaskUsage = () => ({ summary: null, error: null, pending: false });
+export const useTagColors = () => ({ items: new Map(), loading: false, error: null, retry: () => {} });
 export const TagPicker = () => null;

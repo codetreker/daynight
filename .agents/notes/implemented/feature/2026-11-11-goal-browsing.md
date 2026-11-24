@@ -24,10 +24,11 @@ Details opens its Task under that Goal, while Expand opens the complete chain
 for a multi-member target or Task details for a single member. The Goal and
 corresponding child or graph are selected together. Shared scoped chain,
 member and standalone rows accept explicit presentation identities; their list
-owners retain navigation, pagination and expansion control. A scoped chain uses
-only its explicit members for progress, while the full component supplies worker
-indication, the representative supplies its title and a scoped member supplies
-the graph witness.
+owners retain navigation, pagination and expansion control. A scoped chain uses only its explicit members for progress. The original project
+projection used the full component for Worker indication and the representative
+for its title. The [ordinary subtask list decision](../bug-fix/2026-11-24-project-list-ordinary-subtasks.md)
+narrows those project-list rules while preserving cross-Goal context and a real
+graph witness.
 Instance identities also separate DOM associations and Session visibility keys,
 without starting Session reads where no provider exists. Project Goal rows share
 the same projection between summary and inline contents. The [flat Goal list

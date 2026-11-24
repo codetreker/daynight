@@ -21,7 +21,8 @@ import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { GoalCreate } from "../goal-detail/GoalCreate";
 import { GoalAcceptanceHost } from "../goal-acceptance-graph/GoalAcceptanceHost";
 import { GoalAcceptanceProvider } from "../goal-acceptance-graph/GoalAcceptanceProvider";
-import { projectTaskScope } from "../task-graph/scope";
+import { isProjectListTask, projectTaskScope } from "../task-graph/scope";
+import { scopedChainProgress } from "../task-graph/scoped-chain-progress";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
 import { useOverviewProgress } from "./useOverviewProgress";
@@ -320,7 +321,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
       matchesTaskStatus(statusFilter, task.status) && !tagFilter.invalid &&
       matchesTaskTags(snapshot, task, tagFilter.value) && matchesPlatform(task, platformFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid, platformFilter]);
-  const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
+  const scopedChainIds = snapshot === null ? [] : snapshot.index.representativeIds.toReversed()
+    .filter((id) => scopedMembers.has(id))
+    .sort((left, right) => compareTaskStatus(scopedChainProgress(snapshot.index, scopedMembers.get(left)!).status, scopedChainProgress(snapshot.index, scopedMembers.get(right)!).status));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
   const unfinishedMatches = (id: string) => {
     const task = snapshot!.index.nodes.get(id)!;
@@ -573,6 +576,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     if (detailSelection === null) pausedOrigin.current = null;
+    if (task.parentId === null && (task.parentTaskId != null || (task.parentTaskId === undefined && snapshot.index.legacyTaskParentIds?.has(id) !== true))) {
+      const insideProjectGraph = openGraphTarget !== null && (detailSelection?.insideProjectGraph === true || trigger.closest(".task-chain-dialog") !== null);
+      const unknownParent = task.parentTaskId === undefined && snapshot.index.legacyTaskParentIds?.has(id) !== true;
+      select({ ...selection, detail: { id, source: unknownParent && !insideProjectGraph ? "direct" : "summary", insideProjectGraph,
+        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+      });
+      return;
+    }
     if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openGraphTarget !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
@@ -596,7 +609,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     }
     const representative = snapshot.index.componentByTask.get(id)!;
     const members = [...snapshot.index.components.get(representative)!.memberIds]
-      .map((member) => snapshot.index.nodes.get(member)!).filter((member) => member.parentId === null);
+      .map((member) => snapshot.index.nodes.get(member)!).filter((member) => isProjectListTask(snapshot.index, member.id));
     if (detailSelection !== null && (tagFilter.invalid || !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value)))) {
       select({ ...selection, detail: { id, source: "summary", insideProjectGraph: detailSelection.insideProjectGraph && openGraphTarget !== null,
         navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
@@ -673,9 +686,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     const view = target.kind === "chain" ? "chains" : "standalone";
-    const ids = snapshot === null ? [] : target.kind === "standalone" ? progress.recentStandaloneIds
-      : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
-    const tasks = snapshot === null ? [] : ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
+    const representative = target.kind === "chain" ? snapshot?.index.componentByTask.get(target.taskId) : undefined;
+    const members = representative === undefined ? undefined : scopedMembers.get(representative);
+    const component = representative === undefined ? undefined : snapshot?.index.components.get(representative);
+    if (target.kind === "chain" && members === undefined && component !== undefined && component.memberIds.size > 1) {
+      onNavigateExternalChain(target.taskId, document.activeElement instanceof HTMLElement ? document.activeElement : heading.current!);
+      return;
+    }
+    const ids = target.kind === "standalone" ? progress.recentStandaloneIds : members ?? [];
+    const tasks = snapshot === null ? [] : ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && isProjectListTask(snapshot.index, task.id));
     const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
     const matches = (task: GraphTask) => snapshot !== null && matchesAssignee(task.assignedTo, filters.assignee, viewer.userId) &&
       matchesTaskStatus(filters.status, task.status) && matchesTaskTags(snapshot, task, tagFilter.value);
@@ -729,7 +748,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
       navigateToTarget(verified, missing);
     })();
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, cancelRestore, onSectionChange]);
+  }, [history.select, selection, snapshot, scopedMembers, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, onNavigateExternalChain, activeView, onViewChange, section, cancelRestore, onSectionChange]);
 
   const goalUrl = parseGoalGraphUrl(location.pathname, location.search);
   useEffect(() => {

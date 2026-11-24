@@ -29,6 +29,71 @@ type syncProjectionFixture struct {
 	stateCalls int
 }
 
+type deletionSyncFixture struct {
+	projectionFixture
+	coverage                 *time.Time
+	ids                      []string
+	coverageErr, deletionErr error
+	deletionCalls            int
+	lower                    *time.Time
+}
+
+func (f *deletionSyncFixture) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	return f.coverage, f.coverageErr
+}
+func (f *deletionSyncFixture) TaskSyncDeletedTaskIDs(_ context.Context, _ string, lower *time.Time) ([]string, error) {
+	f.deletionCalls++
+	f.lower = lower
+	return f.ids, f.deletionErr
+}
+
+func TestReadSyncDeletionCoverageAndFailures(t *testing.T) {
+	stamp := time.Date(2026, 11, 24, 12, 0, 0, 123456000, time.UTC)
+	id := "00000000-0000-4000-8000-000000000001"
+	clock := func(context.Context) (time.Time, error) { return stamp, nil }
+	for _, tc := range []struct {
+		name, epoch string
+		since       *time.Time
+		wantCalls   int
+		wantLower   *time.Time
+	}{
+		{"snapshot", "old", &stamp, 0, nil},
+		{"unbounded delta", "epoch", nil, 1, nil},
+		{"bounded delta", "epoch", &stamp, 1, ptr(stamp.Add(-time.Second))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &deletionSyncFixture{projectionFixture: projectionFixture{epoch: "epoch"}, coverage: &stamp, ids: []string{id}}
+			got, fault, err := ReadSync(t.Context(), f, clock, "project", tc.epoch, tc.since, time.Second, model.TaskSync{})
+			if err != nil || fault != nil || f.deletionCalls != tc.wantCalls || !reflect.DeepEqual(f.lower, tc.wantLower) || got.CoverageUpdatedAt == nil || !got.CoverageUpdatedAt.Equal(stamp) || got.DeletedTaskIDs == nil || len(got.DeletedTaskIDs) != tc.wantCalls {
+				t.Fatalf("result=%+v fault=%v err=%v fixture=%+v", got, fault, err, f)
+			}
+		})
+	}
+	sentinel := errors.New("read failed")
+	for _, tc := range []struct {
+		name, phase string
+		fixture     deletionSyncFixture
+	}{
+		{"coverage error", "coverage_read", deletionSyncFixture{coverageErr: sentinel}},
+		{"deletion error", "deletion_read", deletionSyncFixture{coverage: &stamp, deletionErr: sentinel}},
+		{"nil deletions", "projection_validation", deletionSyncFixture{coverage: &stamp}},
+		{"duplicate", "projection_validation", deletionSyncFixture{coverage: &stamp, ids: []string{id, id}}},
+		{"malformed", "projection_validation", deletionSyncFixture{coverage: &stamp, ids: []string{"bad"}}},
+		{"overlap", "projection_validation", deletionSyncFixture{coverage: &stamp, ids: []string{id}, projectionFixture: projectionFixture{records: []model.TaskViewRecord{{ID: id, UpdatedAt: stamp}}}}},
+		{"missing coverage", "projection_validation", deletionSyncFixture{ids: []string{}, projectionFixture: projectionFixture{records: []model.TaskViewRecord{{ID: id, UpdatedAt: stamp}}}}},
+		{"coverage behind", "projection_validation", deletionSyncFixture{coverage: ptr(stamp.Add(-time.Second)), ids: []string{}, projectionFixture: projectionFixture{records: []model.TaskViewRecord{{ID: id, UpdatedAt: stamp}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.fixture
+			f.epoch = "epoch"
+			got, fault, err := ReadSync(t.Context(), &f, clock, "project", "epoch", nil, time.Second, model.TaskSync{})
+			if err == nil || SyncFailurePhase(err) != tc.phase || fault != nil || !reflect.DeepEqual(got, model.TaskSync{}) || ((tc.name == "coverage error" || tc.name == "deletion error") && !errors.Is(err, sentinel)) {
+				t.Fatalf("partial result=%+v fault=%v err=%v", got, fault, err)
+			}
+		})
+	}
+}
+
 func (f *syncProjectionFixture) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, _ int) ([]model.TaskViewRecord, error) {
 	if ctx != f.wantCtx || id != f.wantID {
 		f.t.Fatalf("unexpected task request: %v %q", ctx, id)

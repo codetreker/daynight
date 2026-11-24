@@ -398,6 +398,44 @@ it("rejects contradictions at the same business version without a partial write"
   expect((await cache.readProject(projectId, signal()))!.manifest).toEqual(initial.project.manifest); expect([...counts]).toEqual([]);
 });
 
+it("fills missing parent facts at the same version without losing details or accepting stale peers", async () => {
+  const cache = scope(); const initial = await seed(cache, [task(1), task(2)]);
+  const peer = scope(); const stale = await peer.beginSync(projectId, signal());
+  const ticket = await cache.beginSync(projectId, signal());
+  const detail: TaskIntrinsicDetail = { ...task(1), projectId, description: "Body" };
+  await cache.detailTransaction(ticket, signal(), async (details, manifest) => {
+    await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
+  });
+  const filled = await cache.applySync(ticket, response([task(1, { parentTaskId: taskId(2) }), task(2, { parentTaskId: null })]), signal(), true);
+  expect(filled.project.graph.tasks.map(item => item.parentTaskId)).toEqual([taskId(2), null]);
+  expect(filled.project.index).not.toBe(initial.project.index);
+  expect(filled.project.manifest.cacheGeneration).toBe(initial.project.manifest.cacheGeneration);
+  await expect((await inspect()).getAll("details")).resolves.toHaveLength(1);
+  const ignored = await peer.applySync(stale, response([task(1), task(2)]), signal());
+  expect(ignored.project.graph.tasks.map(item => item.parentTaskId)).toEqual([taskId(2), null]);
+  await expect(delta(cache, [task(1, { parentTaskId: null })])).rejects.toMatchObject({ kind: "protocol" });
+  const newer = await delta(cache, [task(1, { version: 2n })]);
+  expect(newer.project.summaries.get(taskId(1))?.parentTaskId).toBe(taskId(2));
+});
+
+it("requires a fresh full read for unknown cached parents and bounds old-service compatibility to observed versions", async () => {
+  const original = scope(); await seed(original, [task(1), task(2)]); original.dispose();
+  const cache = scope(); const ticket = await cache.beginSync(projectId, signal());
+  expect(ticket.parentTaskFullSync).toBe(true);
+  expect((await cache.readProject(projectId, signal()))!.index.legacyTaskParentIds?.size ?? 0).toBe(0);
+  const old = await cache.applySync(ticket, response([task(1), task(2)]), signal(), true);
+  expect([...old.project.index.legacyTaskParentIds!]).toEqual([taskId(1), taskId(2)]);
+  expect((await cache.beginSync(projectId, signal())).parentTaskFullSync).toBe(false);
+  const peer = scope(); await delta(peer, [task(2, { version: 2n })]);
+  const next = await cache.beginSync(projectId, signal());
+  expect(next.parentTaskFullSync).toBe(true);
+  const preview = await cache.readProject(projectId, signal());
+  expect(preview!.index.legacyTaskParentIds?.has(taskId(2))).toBe(false);
+  const modern = await cache.applySync(next, response([task(1, { parentTaskId: null }), task(2, { version: 2n, parentTaskId: taskId(1) })]), signal(), true);
+  expect(modern.project.index.legacyTaskParentIds?.size ?? 0).toBe(0);
+  expect((await cache.beginSync(projectId, signal())).parentTaskFullSync).toBe(false);
+});
+
 it("keeps settings monotonic and settings-only changes reuse the task index", async () => {
   const cache = scope(); const initial = await seed(cache);
   const changed = await delta(cache, [], { project: { ...project, updatedAt: later, settings: { version: 2n, executionWarningMinutes: 5 } } });

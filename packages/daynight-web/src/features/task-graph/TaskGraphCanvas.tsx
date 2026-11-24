@@ -57,9 +57,14 @@ const InitialViewport = ({ viewportFactory, revision, onReset, framingReady, onS
     const wasApplied = applied.current;
     applied.current = true;
     if (reset) resetSequence.current = revision;
-    void setViewport(viewportFactory(width, height), { duration: 0 });
+    // React Flow's store dimensions can round fractional CSS pixels up, which
+    // would place a card just outside the actual clipped canvas edge.
+    const bounds = domNode?.getBoundingClientRect();
+    const canvasWidth = bounds && bounds.width > 0 ? bounds.width : width;
+    const canvasHeight = bounds && bounds.height > 0 ? bounds.height : height;
+    void setViewport(viewportFactory(canvasWidth, canvasHeight), { duration: 0 });
     if (reset && wasApplied) onReset();
-  }, [viewportFactory, revision, onReset, framingReady, viewportInitialized, width, height, setViewport]);
+  }, [viewportFactory, revision, onReset, framingReady, viewportInitialized, width, height, domNode, setViewport]);
   return null;
 };
 

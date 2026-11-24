@@ -1,0 +1,179 @@
+diff --git a/packages/daynight-web/src/features/projects/ProjectAccess.tsx b/packages/daynight-web/src/features/projects/ProjectAccess.tsx
+index 454f055cb..c05b0f469 100644
+--- a/packages/daynight-web/src/features/projects/ProjectAccess.tsx
++++ b/packages/daynight-web/src/features/projects/ProjectAccess.tsx
+@@ -189,0 +190,5 @@ export class ProjectAccessSession {
++        if (!denied) {
++          this.scope.withdrawRecoveryProject(this.projectId, error);
++          this.update({ access: null, status: 'error', refreshing: false, error, projectReadAvailable: false });
++          return null;
++        }
+diff --git a/packages/daynight-web/src/features/projects/useTaskGraph.ts b/packages/daynight-web/src/features/projects/useTaskGraph.ts
+index 9b393606b..7cc0c4514 100644
+--- a/packages/daynight-web/src/features/projects/useTaskGraph.ts
++++ b/packages/daynight-web/src/features/projects/useTaskGraph.ts
+@@ -2 +2 @@ import { useProjectAccessSession, type ProjectAccessSession } from "./ProjectAcc
+-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
++import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+@@ -9 +9 @@ import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
+-import type { CachedProject, TaskSyncTicket, TaskCacheScope } from "../task-cache/project-cache";
++import { isRetryableTaskCacheLifecycleChange, type CachedProject, type TaskSyncTicket, type TaskCacheScope } from "../task-cache/project-cache";
+@@ -65 +64,0 @@ export const useTaskGraph = (projectId: string) => {
+-  const displayed = useRef<{ projectId: string; scope: TaskCacheScope; access: ProjectAccessSession | null; snapshot: GraphSnapshot | null } | null>(null);
+@@ -150 +149,6 @@ export const useTaskGraph = (projectId: string) => {
+-      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch || isAbortError(error)) return;
++      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
++      if (isRetryableTaskCacheLifecycleChange(error)) {
++        if (!confirmationRetry) { void request("reconcile", historyRetry, true); return; }
++        error = new ApiError("protocol");
++      }
++      if (isAbortError(error)) return;
+@@ -168,7 +172,2 @@ export const useTaskGraph = (projectId: string) => {
+-      if (!missing) { sessionStore.clear(); observationStore.fail(); }
+-      setState((previous) => {
+-        const current = previous.projectId === projectId && previous.scope === scope && previous.access === access;
+-        const snapshot = missing || !current ? null : previous.snapshot;
+-        const displaySnapshot = missing || !current ? null : previous.displaySnapshot;
+-        return { projectId, scope, access, snapshot, displaySnapshot, status: displaySnapshot === null ? "error" : "ready", refreshing: false, error };
+-      });
++      if (!missing) { sessionStore.clear(); observationStore.fail(); scope.withdrawRecoveryProject(projectId, error); }
++      setState({ projectId, scope, access, snapshot: null, displaySnapshot: null, status: "error", refreshing: false, error });
+@@ -192,8 +191 @@ export const useTaskGraph = (projectId: string) => {
+-        const lastDisplay = displayed.current;
+-        setState(previous => {
+-          const current = previous.projectId === projectId && previous.scope === scope && previous.access === access;
+-          const displaySnapshot = current && previous.displaySnapshot !== null && lastDisplay?.projectId === projectId && lastDisplay.scope === scope && lastDisplay.access === access
+-            ? lastDisplay.snapshot ?? previous.displaySnapshot : current ? previous.displaySnapshot : null;
+-          const error = current ? previous.error : null;
+-          return { projectId, scope, access, snapshot: null, displaySnapshot, status: displaySnapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: false, error };
+-        });
++        setState({ projectId, scope, access, snapshot: null, displaySnapshot: null, status: "loading", refreshing: false, error: null });
+@@ -206 +198,2 @@ export const useTaskGraph = (projectId: string) => {
+-        setState((previous) => ({ ...previous, error: event.error, refreshing: false }));
++        liveAccess.current = false; receipt.current = null;
++        setState({ projectId, scope, access, snapshot: null, displaySnapshot: null, status: "error", refreshing: false, error: event.error });
+@@ -240 +232,0 @@ export const useTaskGraph = (projectId: string) => {
+-  useLayoutEffect(() => { displayed.current = { projectId, scope, access, snapshot: displaySnapshot }; }, [projectId, scope, access, displaySnapshot]);
+diff --git a/packages/daynight-web/src/features/task-agent-session/TaskSessionHost.tsx b/packages/daynight-web/src/features/task-agent-session/TaskSessionHost.tsx
+index 9ef6a2cf5..89126f3db 100644
+--- a/packages/daynight-web/src/features/task-agent-session/TaskSessionHost.tsx
++++ b/packages/daynight-web/src/features/task-agent-session/TaskSessionHost.tsx
+@@ -239 +239 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
+-              retryPending.current = false; update(old => ({ ...old, checking: false, loading: false, error: new Error('Session history refresh failed.') })); return;
++              retryPending.current = false; scope.withdrawRecoveryProject(projectId, new Error('Session history refresh failed.')); return;
+@@ -387,0 +388 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
++        scope.withdrawRecoveryProject(projectId, error);
+diff --git a/packages/daynight-web/src/features/task-cache/database.ts b/packages/daynight-web/src/features/task-cache/database.ts
+index dcbbcc98d..7874d7627 100644
+--- a/packages/daynight-web/src/features/task-cache/database.ts
++++ b/packages/daynight-web/src/features/task-cache/database.ts
+@@ -6 +6 @@ import type { SessionHistoryItem } from "../../api/terminal-sessions";
+-export const TASK_CACHE_DATABASE = "daynight-task-cache";
++export const TASK_CACHE_DATABASE = "daynight-task-cache-recovery-12ebdd08";
+diff --git a/packages/daynight-web/src/features/task-cache/project-cache.ts b/packages/daynight-web/src/features/task-cache/project-cache.ts
+index 3c1c0306d..88a798fe8 100644
+--- a/packages/daynight-web/src/features/task-cache/project-cache.ts
++++ b/packages/daynight-web/src/features/task-cache/project-cache.ts
+@@ -2 +2 @@ import type { IDBPObjectStore, IDBPTransaction } from "idb";
+-import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, requestId, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
++import { ApiError, getTaskSync, authRequestsPaused, authRequestsPauseRevision, isAbortError, requestId, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
+@@ -102,0 +103 @@ export class TaskCacheScope {
++  private readonly recoveryFailures = new Set<string>();
+@@ -165 +166 @@ export class TaskCacheScope {
+-      for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
++      for (const projectId of [...this.authorizedProjects]) this.withdrawRecoveryProject(projectId, error);
+@@ -170 +171 @@ export class TaskCacheScope {
+-    try { if (typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel("daynight-task-cache"); } catch { /* Local cache remains available without hints. */ }
++    try { if (typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel("daynight-task-cache-recovery-12ebdd08"); } catch { /* Local cache remains available without hints. */ }
+@@ -885,0 +887,7 @@ export class TaskCacheScope {
++    try { return await this.recoveryTransaction(work, signal, allowInvalidated); }
++    catch (error) {
++      if (!allowInvalidated && error instanceof TaskCacheError) for (const projectId of [...this.authorizedProjects]) this.withdrawRecoveryProject(projectId, error);
++      throw error;
++    }
++  }
++  private async recoveryTransaction<T>(work: (transaction: Transaction) => Promise<T>, signal?: AbortSignal, allowInvalidated = false): Promise<T> {
+@@ -1106,2 +1114,5 @@ export class TaskCacheScope {
+-        const tasks = manifest.state === "active" ? (await this.stored(transaction, manifest)).tasks : [];
+-        return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
++        // Each scope must observe an authorized full snapshot before using the
++        // persistent recovery cache, including after a later paired restore.
++        const admitted = this.authorizedProjects.has(projectId);
++        const tasks = admitted && manifest.state === "active" ? (await this.stored(transaction, manifest)).tasks : [];
++        return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: admitted ? manifest.epoch : null, maxUpdatedAt: admitted ? manifest.maxUpdatedAt : null,
+@@ -1134,0 +1146,11 @@ export class TaskCacheScope {
++    while (!this.authorizedProjects.has(projectId)) {
++      try {
++        const ticket = await this.beginSync(projectId, signal);
++        const { sync } = await getTaskSync(projectId, {}, this.userId, signal, this.principalMismatch);
++        if (sync.mode !== "snapshot") return protocol();
++        if (await this.observeHistory(ticket, sync.epoch, signal) !== "current") return released();
++        await this.applySync(ticket, sync, signal);
++      } catch (error) {
++        if (!isRetryableTaskCacheLifecycleChange(error) || signal.aborted || this.isInvalidated) throw error;
++      }
++    }
+@@ -1245,0 +1268 @@ export class TaskCacheScope {
++    if (!this.authorizedProjects.has(fence.projectId)) return null;
+@@ -1335,0 +1359 @@ export class TaskCacheScope {
++    if (!this.authorizedProjects.has(ticket.projectId) && (ticket.epoch !== null || response.mode !== "snapshot")) return protocol();
+@@ -1414,0 +1439,6 @@ export class TaskCacheScope {
++    if (this.recoveryFailures.delete(ticket.projectId)) {
++      setTimeout(() => {
++        if (this.authorizedProjects.has(ticket.projectId) && !this.recoveryFailures.has(ticket.projectId))
++          this.emit({ projectId: ticket.projectId, accessRestored: true, directAccessRecheck: true });
++      }, 0);
++    }
+@@ -1417,0 +1448 @@ export class TaskCacheScope {
++    if (!this.authorizedProjects.has(requestId(projectId))) return null;
+@@ -1444 +1475 @@ export class TaskCacheScope {
+-    if (ticket.userId !== this.userId) return released();
++    if (ticket.userId !== this.userId || !this.authorizedProjects.has(ticket.projectId)) return released();
+@@ -1462 +1493 @@ export class TaskCacheScope {
+-    if (ticket.userId !== this.userId) return released();
++    if (ticket.userId !== this.userId || !this.authorizedProjects.has(ticket.projectId)) return released();
+@@ -1803,0 +1835,9 @@ export class TaskCacheScope {
++  withdrawRecoveryProject(projectId: string, error: unknown): void {
++    projectId = requestId(projectId);
++    if (this.isInvalidated || this.recoveryFailures.has(projectId)) return;
++    this.recoveryFailures.add(projectId);
++    this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
++    this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
++    this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId);
++    this.emit({ projectId, accessRevoked: true, directAccessUncertain: true, error });
++  }
+@@ -1807 +1847 @@ export class TaskCacheScope {
+-    return !this.uncertainHistories.has(projectId) && !this.isProjectSuspended(projectId) && (!this.withdrawnProjects.has(projectId) || this.authorizedProjects.has(projectId));
++    return this.authorizedProjects.has(projectId) && !this.uncertainHistories.has(projectId) && !this.isProjectSuspended(projectId) && (!this.withdrawnProjects.has(projectId) || this.authorizedProjects.has(projectId));
+diff --git a/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx b/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx
+index 2045476af..d90518ad9 100644
+--- a/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx
++++ b/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx
+@@ -158 +158 @@ export class TaskDetailSessions {
+-          this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "loading" });
++          this.publish(entry, { ...initialState(), revision: entry.state.revision, status: event.error === undefined ? "loading" : "error", error: event.error ?? null });
+@@ -546,0 +547 @@ export class TaskDetailSessions {
++    this.scope.withdrawRecoveryProject(entry.projectId, error);
+@@ -549 +550 @@ export class TaskDetailSessions {
+-    const detail = missing ? null : entry.state.detail;
++    const detail = null;
+@@ -744 +745 @@ export class TaskDetailSessions {
+-      if (!negative) { try { await this.scope.ready(signal); } catch { return; } }
++      if (!negative) { try { await this.scope.ready(signal); } catch (cause) { this.scope.withdrawRecoveryProject(projectId, cause); return; } }
+diff --git a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
+index ab7906fdc..d72189301 100644
+--- a/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
++++ b/packages/daynight-web/src/features/task-thread/TaskDiscussion.tsx
+@@ -25 +25,2 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
+-  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch, captureNavigation: () => {
++  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch,
++    onReadFailure: (error) => cacheScope.withdrawRecoveryProject(projectId, error), captureNavigation: () => {
+diff --git a/packages/daynight-web/src/features/task-thread/controller.ts b/packages/daynight-web/src/features/task-thread/controller.ts
+index 10949ff4c..d83f02a37 100644
+--- a/packages/daynight-web/src/features/task-thread/controller.ts
++++ b/packages/daynight-web/src/features/task-thread/controller.ts
+@@ -55,0 +56 @@ export type ThreadControllerOptions = {
++  readonly onReadFailure?: (error: unknown) => void;
+@@ -252,0 +254,2 @@ export class ThreadController {
++    if (kind !== 'post') this.options.onReadFailure?.(error);
++    if (this.retired) return;
