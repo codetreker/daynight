@@ -23,14 +23,7 @@ cleanup outcome. Its host control client opens the private run directory and
 connects through its short `/proc/self/fd` path, retaining that descriptor until
 the exchange finishes. The socket remains in the same private directory used
 by the container. Compatibility Workers use the dedicated container boundary in
-the [Worker fixture decision](2026-11-24-compat-worker-container.md). Recovery
-readback diagnostics identify the failed Web, CLI or comparison stage and use
-allowlisted status and error categories without retaining private browser data.
-The paired restore retains the original browser profile and records its actual
-old-page readback or newer-cache downgrade refusal. A separate profile signs in as the
-same user for restored Web, CLI and attachment readback. An authenticated
-task-sync request reuses the pre-restore epoch and observation time and verifies
-the new epoch and the complete original visible Task set.
+the [Worker fixture decision](2026-11-24-compat-worker-container.md).
 
 The [product E2E decision](2026-11-08-self-contained-product-e2e.md) owns the
 normal same-revision runtime and authentication fixture. Version compatibility
@@ -50,9 +43,6 @@ actual historical artifacts, authentication, browser cache and persistent data.
 Unix socket address length, so a valid private directory under a long checkout
 path cannot be addressed that way even though the container can bind it.
 
-**Clear the original browser cache for the old Web.** Deleting browser data would
-hide the observed downgrade limitation and destroy the original profile's state.
-
 ## Consequences
 
 The matrix requires multiple builds and isolated runtime resources. A result is
@@ -61,5 +51,3 @@ unexamined historical versions. Failed or interrupted runs retain any
 unconfirmed ownership evidence instead of treating absent observations as a
 confirmed cleanup. An unconfirmed cleanup stops the matrix before another
 combination starts, preserving the original run for reconciliation.
-The separate restored profile proves its own readback; it does not establish
-that the original profile can open the older Web cache.

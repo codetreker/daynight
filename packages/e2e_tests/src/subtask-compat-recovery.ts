@@ -38,7 +38,7 @@ const prefix = `daynight-compat-recovery-${runId}`;
 const basicResources = { network: `${prefix}-network`, volume: `${prefix}-postgres-data`, postgres: `${prefix}-postgres`, redis: `${prefix}-redis` };
 const extendedResources = { ...basicResources, ingress: `${prefix}-ingress`, auth: `${prefix}-auth`, old: `${prefix}-old`, candidate: `${prefix}-candidate`, repair: `${prefix}-repair`, controlled: `${prefix}-controlled`, image: `${prefix}-image:latest` };
 const resources = existing?.schemaVersion === 2 ? basicResources : extendedResources;
-if (existing && (![2, 3, 4, 5].includes(existing.schemaVersion as number) || JSON.stringify(existing.resources) !== JSON.stringify(resources) || !Array.isArray(existing.pendingDocker) || typeof existing.originQuiescent !== 'boolean')) throw new Error('Recovery receipt identity or state is invalid.');
+if (existing && (![2, 3, 4].includes(existing.schemaVersion as number) || JSON.stringify(existing.resources) !== JSON.stringify(resources) || !Array.isArray(existing.pendingDocker) || typeof existing.originQuiescent !== 'boolean')) throw new Error('Recovery receipt identity or state is invalid.');
 if (existing && existing.pendingProcesses === undefined) {
   existing.pendingProcesses = existing.originQuiescent === true ? [] : [{ id: randomUUID(), operation: 'prior command lifecycle unavailable', proof: null }];
 }
@@ -52,7 +52,7 @@ if (!args.cleanup) {
   await mkdir(path.join(runtime, 'bin'), { recursive: true, mode: 0o700 });
   await mkdir(path.join(runtime, 'storage'), { mode: 0o700 });
 }
-const receipt: Record<string, unknown> = existing ?? { schemaVersion: 5, runId, candidate: args.candidate, baseline: args.baseline, repair: args['legacy-diagnostic'] ? legacyRepairRevision : args['repair-revision'] ?? null, resources, status: 'running', phase: 'prepare', originQuiescent: false, pendingDocker: [], pendingProcesses: [], cleanup: { verified: false }, compensation: 'Run this script with --cleanup, --repository and --directory for this receipt; unresolved operations remain unverified.' };
+const receipt: Record<string, unknown> = existing ?? { schemaVersion: 4, runId, candidate: args.candidate, baseline: args.baseline, repair: args['legacy-diagnostic'] ? legacyRepairRevision : args['repair-revision'] ?? null, resources, status: 'running', phase: 'prepare', originQuiescent: false, pendingDocker: [], pendingProcesses: [], cleanup: { verified: false }, compensation: 'Run this script with --cleanup, --repository and --directory for this receipt; unresolved operations remain unverified.' };
 let saveQueue: Promise<void> = Promise.resolve();
 const save = async (): Promise<void> => {
   const data = `${JSON.stringify(receipt, null, 2)}\n`;
