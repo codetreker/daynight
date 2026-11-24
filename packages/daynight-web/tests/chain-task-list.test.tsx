@@ -30,7 +30,7 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({
 
 const renderLocale = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
-const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null,
+const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, parentTaskId: null, assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
   requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
@@ -167,6 +167,22 @@ describe('Goal task lists', () => {
     expect(rows[0]).toHaveTextContent('Inside');
     fireEvent.click(rows[0]!);
     expect(onOpenTask).toHaveBeenCalledWith('Inside', rows[0]);
+  });
+
+  it('does not expose an unknown root title until legacy support is confirmed', () => {
+    const { parentTaskId: _parentTaskId, ...unknown } = task('Unknown root', 'done');
+    const visible = task('Visible member', 'todo', ['Unknown root']);
+    const index = indexOf([unknown, visible]);
+    const tree = (value: GraphIndex) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value} summaries={summariesForIndex(value)} representativeIds={['Unknown root']} allRepresentativeIds={['Unknown root']} scopedMembers={new Map([['Unknown root', ['Visible member']]])} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
+    const view = render(tree(index));
+    const header = document.getElementById('task-root-Unknown root')!;
+    expect(header).toHaveTextContent('Visible member');
+    expect(header).not.toHaveTextContent('Unknown root');
+    const goalRoot = indexOf([{ ...unknown, parentId: 'goal' }, visible]);
+    view.rerender(tree(goalRoot));
+    expect(header).toHaveTextContent('Unknown root');
+    view.rerender(tree({ ...index, legacyTaskParentIds: new Set(['Unknown root']) }));
+    expect(header).toHaveTextContent('Unknown root');
   });
 
   it('uses the entire scoped member set, excluding the outside representative and external prerequisite', () => {

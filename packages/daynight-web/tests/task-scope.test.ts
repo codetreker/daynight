@@ -5,7 +5,7 @@ import { projectTaskScope } from '../src/features/task-graph/scope';
 
 const time = '2026-10-20T12:00:00Z';
 const task = (id: string, parentId: string | null, status: GraphTask['status'], dependsOn: string[] = []): GraphTask => ({
-  type: 'task', parentId, id, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
+  type: 'task', parentId, parentTaskId: null, id, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
   dependsOn, externalDependsOn: [], blockedBy: [], ready: status === 'todo', startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 
@@ -61,4 +61,31 @@ it('retains all five states and deduplicates a converging chain with external co
   expect(members.map(id => index.nodes.get(id)!).toSorted(compareTaskMembers).map(item => item.id)).toEqual(['join', 'two', 'one', 'cancelled', 'done']);
   expect(result.progress).toEqual({ total: 6, done: 1, cancelled: 1, unfinished: 4 });
   expect(result.taskIds.map(id => index.nodes.get(id)!).toSorted(compareTaskMembers).map(item => item.id)).toEqual(['join', 'two', 'alone', 'one', 'cancelled', 'done']);
+});
+
+it('excludes ordinary descendants without changing dependency components or Goal membership', async () => {
+  const { projectChain } = await import('../src/features/task-graph/model');
+  const child = (id: string, parentTaskId: string, dependsOn: string[] = []) => ({ ...task(id, null, 'todo', dependsOn), parentTaskId });
+  const { parentTaskId: _parentTaskId, ...unknown } = task('unknown', null, 'todo');
+  const tasks = [task('parent', null, 'done'), child('independent-child', 'parent'), child('deep', 'independent-child'),
+    child('pure-root', 'parent'), child('pure-next', 'parent', ['pure-root']),
+    child('mixed-root', 'parent'), task('mixed-visible', null, 'todo', ['mixed-root']),
+    task('visible-root', null, 'done'), child('mixed-child', 'parent', ['visible-root']),
+    task('standalone', null, 'todo'), task('goal-member', 'goal', 'done'),
+    task('cross-goal', null, 'todo', ['goal-member']),
+    unknown];
+  const graph: TaskGraph = { observedAt: time, project: { id: 'p', name: 'p', repoUrl: 'https://example.test/p', ownership: { teamId: 't', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }, tasks,
+    summary: { total: tasks.length, proposed: 0, todo: 10, inProgress: 0, done: 3, cancelled: 0, ready: 10, blocked: 0 } };
+  const index = buildGraphIndex(graph);
+  const result = projectTaskScope(index, null);
+  expect(result.standaloneIds).toEqual(['parent', 'standalone']);
+  expect(result.chains).toEqual([
+    { representativeId: 'mixed-root', memberIds: ['mixed-visible'] },
+    { representativeId: 'visible-root', memberIds: ['visible-root'] },
+    { representativeId: 'goal-member', memberIds: ['cross-goal'] },
+  ]);
+  expect(result.progress).toEqual({ total: 5, done: 2, cancelled: 0, unfinished: 3 });
+  expect(projectTaskScope(index, 'goal').taskIds).toEqual(['goal-member']);
+  expect(projectChain(index, 'mixed-root').edges).toContainEqual({ source: 'mixed-root', target: 'mixed-visible', external: false });
+  expect(projectTaskScope({ ...index, legacyTaskParentIds: new Set(['unknown']) }, null).standaloneIds).toContain('unknown');
 });

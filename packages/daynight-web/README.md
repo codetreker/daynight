@@ -932,8 +932,11 @@ numbers. Missing contract fields do not acquire defaults.
 Project synchronization merges intrinsic summaries by ID and exact business
 version in the current durable collection, then merges authoritative dependency
 states whose taskVersion matches the current Task. These states supply readiness
-and statistics to the ordinary-task GraphIndex. Unchanged summaries and states
-retain task and index references;
+and statistics to the ordinary-task GraphIndex. Missing ordinary-parent fields in older persisted summaries remain unknown. A full
+online delta at the current epoch fills same-version UUID or null facts without
+rotating the cache generation; known values cannot be downgraded or conflict.
+A supported older server retains its legacy projection behavior after a complete
+read. Unchanged summaries and states retain task and index references;
 settings and ownership merge independently by their exact versions within one
 epoch. Equal ownership versions must identify the same Team; contradictions fail
 synchronization. Metadata-only changes preserve task projection. A new epoch
@@ -1252,7 +1255,10 @@ Assignee supports All, Assigned to me, Unassigned and a person; status supports
 all five Task statuses. Platform uses the synchronized requirement without extra
 requests. Project conditions must match the same task before
 pagination. Standalone rows match directly; a chain with any matching ordinary
-member retains its real representative and all ordinary children. Changing
+eligible member retains the chain and all eligible members. Ordinary subtasks
+do not enter project standalone or chain lists; the full dependency graph remains
+available. A subtask representative uses the earliest eligible member as the
+list title while retaining the real graph identity. Changing
 assignee, status or tag filters resets the task lists to page one; changing
 platform resets only the two ordinary lists. Full-chain progress, readiness,
 dependencies, statistics and graph use the complete index. Child filtering also
@@ -1715,7 +1721,7 @@ Overview displays 20 top-level entries per page; Task chains and Standalone
 tasks each display 15. A whole Goal is one entry regardless of expanded children; the single
 standalone aggregate is one Overview entry. All display sequences sort by
 `in_progress`, `todo`, then terminal outcomes before pagination, using individual status for
-standalone tasks and complete component status for chains. Within a status,
+standalone tasks and eligible scoped status for project chains; Overview retains complete component status. Within a status,
 exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
 Pagination shows the current item range and filtered total with previous/next

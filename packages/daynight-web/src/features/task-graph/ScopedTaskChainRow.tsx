@@ -9,6 +9,8 @@ import { compareTaskMembers } from '../projects/task-order';
 import { SessionStatus } from '../task-session-summary/SessionStatus';
 import { useChainSessionSummary, useSessionChainVisibility } from '../task-session-summary/TaskSessionSummaryProvider';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
+import { TaskPauseCount, usePausedTaskIds } from '../task-pause/TaskPause';
+import { pausedSummaryTaskIds } from '../task-pause/paused-summary';
 import { TaskMemberRow } from './TaskMemberRow';
 import { ChainUsageButton } from './ChainUsageButton';
 import type { GraphIndex } from './model';
@@ -35,11 +37,19 @@ export type ScopedTaskChainRowProps = {
 export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChainRowProps>(function ScopedTaskChainRow({ projectId, index, summaries, rootId, memberIds, progress, workerMachines, instanceId, expanded, onExpandedChange, open, onOpenChain, onOpenChainUsage, onOpenTask, onOpenSession }, ref) {
   const { messages: { graph: m } } = useI18n();
   const displayProgress = completionProgress(progress);
-  const label = index.nodes.get(rootId)!;
+  const root = index.nodes.get(rootId)!;
+  // Preserve cross-Goal labels only when the root is known not to be a child.
+  const knownRoot = root.parentId !== null || root.parentTaskId === null || (root.parentTaskId === undefined && index.legacyTaskParentIds?.has(rootId) === true);
+  const label = knownRoot ? root : index.nodes.get(memberIds[0]!)!;
   const completion = useCompletionTime(latestScopedCompletion(index, memberIds));
   const title = `${label.titlePreview}${label.titleTruncated ? '…' : ''}`;
   const tasks = useMemo(() => memberIds.map((id) => index.nodes.get(id)!).toSorted(compareTaskMembers), [index, memberIds]);
   const memberSet = useMemo(() => new Set(memberIds), [memberIds]);
+  const pausedTaskIds = usePausedTaskIds();
+  const pausedCount = pausedSummaryTaskIds(tasks, pausedTaskIds).size;
+  const workerMembers = useMemo(() => new Set([...index.components.get(rootId)!.memberIds]
+    .filter((id) => index.nodes.get(id)!.parentId !== null || index.nodes.get(id)!.parentTaskId === null ||
+      (index.nodes.get(id)!.parentTaskId === undefined && index.legacyTaskParentIds?.has(id) === true))), [index, rootId]);
   const sessionIndicator = useChainSessionSummary(memberSet);
   const observeVisibility = useSessionChainVisibility(instanceId, memberSet);
   const setRef = useCallback((element: HTMLLIElement | null) => {
@@ -54,9 +64,9 @@ export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChain
       <div className="chain-summary">
         <button className="root-toggle goal-toggle" type="button" id={`task-root-${instanceId}`} aria-expanded={expanded} aria-controls={childrenId} aria-labelledby={`chain-title-${instanceId} chain-meta-${instanceId} chain-progress-${instanceId}`} onClick={() => onExpandedChange(!expanded)}>
           <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-          <span className="goal-title-line" id={`chain-title-${instanceId}`}><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: progress.inProgress })}</span></span>
+          <span className="goal-title-line" id={`chain-title-${instanceId}`}><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: progress.inProgress })}</span><TaskPauseCount count={pausedCount} /></span>
         </button>
-        <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${instanceId}`}><span className="root-meta">{m.childTasks({ count: memberIds.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
+        <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${instanceId}`}><span className="root-meta">{m.childTasks({ count: memberIds.length })}</span><ActiveWorkerIndicator memberIds={workerMembers} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
       </div>
       <span className="root-progress" id={`chain-progress-${instanceId}`}><span className="root-progress-label">{m.progress({ done: displayProgress.displayDone, total: displayProgress.displayTotal })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${displayProgress.widthPercent}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId} {...(sessionIndicator === null ? {} : { onActivate: () => onExpandedChange(true) })} />
