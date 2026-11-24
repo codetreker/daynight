@@ -729,10 +729,11 @@ real preparation, recovery or refusal, and cleanup assertions stay inside the
 case budget. The
 [recovery and origin budget decision](../.agents/notes/implemented/testing/2026-11-10-worker-recovery-origin-budget.md)
 records these two workflows. The Coordinator integration case for a released
-prelaunch claim also uses a local 30-second watchdog for its real Git setup,
+prelaunch claim uses a local 45-second watchdog for its real Git setup,
 interrupted worktree removal and SQLite/Coordinator restart cleanup. Its Git
-fixture commands retain their 10-second deadlines and eventually checks retain
-3.5-second deadlines. The
+fixture commands retain their 10-second deadlines; the wait for the removal
+failure allows 20 seconds and reports Coordinator events, while other waits
+retain 3.5-second deadlines. The
 [restart cleanup budget decision](../.agents/notes/implemented/testing/2026-11-24-coordinator-restart-cleanup-budget.md)
 records the observed Windows variation. Other cases without an explicit budget retain the
 runner's five-second default. Direct mutation checks verify

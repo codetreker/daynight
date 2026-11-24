@@ -15,11 +15,13 @@ production defect.
 
 ## Decision
 
-The released-prelaunch restart cleanup case uses a local 30,000 ms Vitest
+The released-prelaunch restart cleanup case uses a local 45,000 ms Vitest
 timeout. Its real Git, SQLite and Coordinator workflow retains every state,
-registration, removal and restart assertion. Each Git fixture command retains
-its 10,000 ms deadline, and each eventually check retains its 3,500 ms deadline.
-Production deadlines and the global test timeout retain their existing limits.
+registration, removal and restart assertion. The wait for the removal failure
+allows 20,000 ms and reports Coordinator events on failure: it spans several
+real Git operations and asynchronous cleanup. The Git fixture commands each
+retain their 10,000 ms deadline; other eventually checks retain their 3,500 ms
+limit. Production deadlines and the global test timeout retain their existing limits.
 
 ## Alternatives
 
@@ -32,8 +34,12 @@ command or await, so it cannot support a targeted optimization.
 ## Consequences
 
 The finite outer deadline accommodates native Git and filesystem variation
-across the complete recovery workflow. A stalled case can take longer to report;
+across the complete recovery workflow. A later Windows CI failure observed the
+schedule still at `observation` when the 3,500 ms wait expired; it did not
+identify which asynchronous phase was slow or establish a production defect.
+The longer local wait allows more time for this chain and emits events
+if the expected state remains absent. A stalled case can take longer to report;
 its narrower operation deadlines still apply. This establishes no performance
-improvement and does not identify the cause of the observed delay. The
+improvement or root cause for that failure. The
 [retired Web cleanup decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
 owns the production recovery behavior.
