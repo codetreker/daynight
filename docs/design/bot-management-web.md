@@ -10,7 +10,7 @@
 
 工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板是有界的外层滚动区，承载创建入口、搜索、助手列表和助手任务；直属内容不受 flex 收缩。`.bot-list` 使用 `flex: 0 0 auto` 和 `max-height: clamp(144px, 40dvh, 288px)`，按实际内容占高，任务块增长不改变其可用行高，空列表也不保留最小高度。长列表内部滚动，保留默认滚动链，使触控或滚轮到达边界后可继续滚动外侧面板访问任务。外层面板保留 `overscroll-behavior: contain`，限制滚动传播到工作区之外。[高度分配决策](../../.agents/notes/implemented/bug-fix/2026-11-20-bot-list-height-budget.md)记录空间预算的取舍。创建弹窗使用独立的可见视口约束，不占用列表高度。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
 
-列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。刷新用 busy/disabled 表达状态，读取失败保留实际错误。列表沿用服务返回顺序，行内保留头像标记、名称、关注计数、Bot 观测状态及机器名；路径和完整诊断在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
+列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。显式刷新用 refreshing 驱动按钮 busy/disabled，后台读取不切换按钮视觉状态，读取失败保留实际错误。列表沿用服务返回顺序，行内保留头像标记、名称、关注计数、Bot 观测状态及机器名；路径和完整诊断在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
 
 ## API 与准入
 
@@ -66,7 +66,7 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 ## 读取与展示
 
-`useBotRead` 分别管理列表、defaults 和助手任务的普通读取。资源 key 与账号 scope 共同约束结果；`useBotDetail` 另按 Bot ID 和选择代次隔离详情。两个 hook 各自管理读取周期：`enabled`、可见性和有效 scope 允许周期启动，详情还要求非空 Bot ID。启动时立即读取并只持有一个五秒 interval；停用、隐藏、scope abort、资源变化或卸载时撤销入口、清除 interval 并取消当前 GET 或详情 ticket。提交后的布局阶段撤销旧周期，setup 才建立新的网络资源。恢复可读时建立新周期并立即读取，手动 refresh 只运行已有入口，不增加 timer 或并发请求。
+`useBotRead` 分别管理列表、defaults 和助手任务的普通读取。资源 key 与账号 scope 共同约束结果；`useBotDetail` 另按 Bot ID 和选择代次隔离详情。两个 hook 各自管理读取周期：`enabled`、可见性和有效 scope 允许周期启动，详情还要求非空 Bot ID。启动时立即读取并只持有一个五秒 interval；停用、隐藏、scope abort、资源变化或卸载时撤销入口、清除 interval 并取消当前 GET 或详情 ticket。提交后的布局阶段撤销旧周期，setup 才建立新的网络资源。恢复可读时建立新周期并立即读取，后台 refresh 只运行已有入口，不增加 timer 或并发请求。`useBotRead` 的 busy 表示传输在途，refreshExplicit 单独设置 refreshing，并可加入当前请求；结果、失败或取消清除相应反馈。创建成功与关注计数核对继续使用后台 refresh，只有用户刷新和重试调用显式入口。
 
 每次读取在等待 `scope.ready` 后、调用 loader 前及发布结果前重新检查生命周期和 signal；旧请求只收尾自己的 controller 或 ticket，不干扰新周期。`authRequestsPaused` 仍控制实际读取准入，恢复由父级 `readEnabled` 和页面生命周期驱动。正常取消不记为失败；空闲取消不重复发布相同状态。同 scope、同 key 已确认的值在临时停用时保留，实际失败保留上次值并标记 stale。读取生命周期的取舍见[决策记录](../../.agents/notes/implemented/bug-fix/2026-11-17-bot-read-poll-lifecycle.md)。
 
@@ -82,15 +82,15 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 `BotsPage` 将搜索结果与当前选中 Bot 合成去重集合，以较新定义版本交给唯一的 `useBotObservations`。同一 Bot 的列表、`BotConversationTarget` 标题及详情接收同一个观测条目。hook 按账号 scope 与 Bot ID 隔离记录，未包含的 Bot 不参与轮询；搜索变化不使另一 Bot 取得其状态。列表和详情仍拥有各自的定义读取，不由观测改写 Session binding。
 
-观测读取每五秒刷新，最多四个并发请求，同 Bot 的手动、轮询和到期刷新共用在途保护。每次读取等待 `scope.ready`，请求和发布分别核对准入、signal、原请求及 scope。隐藏、读取暂停和身份暂停取消当前请求；scope 失效清除记录。Bot 集合或定义版本变化退休旧周期，迟到返回只能完成自己的清理。Bot 版本和 hostingGeneration 各自不能倒退；同 Session 已知的 executionGeneration 不能倒退，同执行代次已知的 connectionEpoch 不能倒退。合法缺失 Session 的异常观测保留 null。observedAt 比较保留纳秒精度，旧时间和低于已知定义版本的观测同样无效。401、403、404、410 清除该 Bot 观测，普通网络、能力或协议失败保留旧事实并标记 stale。
+观测读取每五秒刷新，最多四个并发请求，同 Bot 的手动、轮询和到期刷新共用在途保护。refreshExplicit 为本次目标（含已在途及排队项）设置 refreshing，条目完成、失败或取消后清除；页面聚合当前目标的反馈，与列表及 defaults 的显式反馈共同驱动列表刷新按钮。详情只使用自身条目的显式反馈。每次读取等待 `scope.ready`，请求和发布分别核对准入、signal、原请求及 scope。隐藏、读取暂停和身份暂停取消当前请求；scope 失效清除记录。Bot 集合或定义版本变化退休旧周期，迟到返回只能完成自己的清理。Bot 版本和 hostingGeneration 各自不能倒退；同 Session 已知的 executionGeneration 不能倒退，同执行代次已知的 connectionEpoch 不能倒退。合法缺失 Session 的异常观测保留 null。observedAt 比较保留纳秒精度，旧时间和低于已知定义版本的观测同样无效。401、403、404、410 清除该 Bot 观测，普通网络、能力或协议失败保留旧事实并标记 stale。
 
 每个条目独立保存截止时间。有效预算取服务端 `freshUntil-observedAt` 的纳秒差并向下取整到毫秒，从本次实际请求开始的 `performance.now()` 起算，整个请求及发布等待都消耗预算，避免将慢响应重新计为完整有效期，也不依赖浏览器与服务端墙钟一致或本地校时。相同 observedAt 的重复响应只能保留或缩短已有截止。offline 的 null 期限只给予五秒最近离线读取窗口，其它 null 期限无实时资格。最近截止时间驱动独立 timer，到期立即标 stale 并在准入允许时刷新；隐藏及暂停仍保留过期判断。读取停用或身份暂停时，当前投影不具有实时资格；准入恢复立即刷新。普通五秒轮询、可见性恢复及读取结果也检查截止，不能因尚未收到下一份响应而延长实时显示。记录只保留于当前页面内存，不加入 Session 显示快照持久化。
 
 有绑定时，`BotSessionHost` 将 `variant: 'assistant'` 和 `renderHeader` 透传给原 `SessionView`，`BotConversationHeader` 在共享标题元素内组合 Provider、`BotStatus`、显示、专注和刷新控件；无绑定时渲染页面后备标题，同样使用 `BotStatus`。详情使用独立按钮，更多 popover 容纳共享刷新与关闭聊天链接。显示和专注控件仍由共享 Session 创建和控制，不复制其状态机。
 
-`BotStatus` 仅将新鲜观测的 state 作为实时状态。无观测显示未知，stale 显示观测过期与 observedAt，不回退到持久 ready 或 defaults。列表机器标签以观测 workerId 查询别名，并保留已确认主机名；未知机器不从其它读取补全。详情另呈现完整原始机器名及 ID、Worker ID、Provider、平台与原生 Session ID、观测与最后上报时间、原因码和补救；历史观测单独标上次状态。中英文状态与原因由 `observation-messages.ts` 拥有，未知原因码原样保留。离线提示在对应机器运行 `daynight worker run`；Provider、原生记录、身份冲突、目录和同步问题各有相应检查建议，过期原因不继续提供当前补救判断。
+`BotStatus` 仅将新鲜观测的 state 作为实时状态。无观测显示未知，stale 显示观测过期，不回退到持久 ready 或 defaults。compact 使用独立状态与机器槽位，状态文本单行省略，过期短文案原位替换；observedAt 的 time 保留为不占布局空间的无障碍文本，非紧凑呈现和详情保留可见时间。机器名称保持可换行，避免状态文案长度改变其可用宽度。列表机器标签以观测 workerId 查询别名，并保留已确认主机名；未知机器不从其它读取补全。详情另呈现完整原始机器名及 ID、Worker ID、Provider、平台与原生 Session ID、观测与最后上报时间、原因码和补救；历史观测单独标上次状态。中英文状态与原因由 `observation-messages.ts` 拥有，未知原因码原样保留。离线提示在对应机器运行 `daynight worker run`；Provider、原生记录、身份冲突、目录和同步问题各有相应检查建议，过期原因不继续提供当前补救判断。
 
-自定义标题只替换标题内容。共享视图继续渲染连接错误、启动与恢复原因、历史、审批、命令回执及输入能力，详情的 Session 区域仍订阅原 pane。刷新观测只发 GET，补救文案不启动 Provider，不接管执行或重发操作；可读事实不赋予输入权限。临时身份核对保留已确认展示并暂停业务准入，但继续消耗观测有效期。客户端策略与替代成本见[Web 观测决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-web-observation.md)。
+自定义标题只替换标题内容。共享视图继续渲染连接错误、启动与恢复原因、历史、审批、命令回执及输入能力，详情的 Session 区域仍订阅原 pane。刷新观测只发 GET，补救文案不启动 Provider，不接管执行或重发操作；可读事实不赋予输入权限。临时身份核对保留已确认展示并暂停业务准入，但继续消耗观测有效期。后台与显式反馈的取舍见[界面连续性决策](../../.agents/notes/implemented/bug-fix/2026-11-24-assistant-background-stability.md)。客户端策略与替代成本见[Web 观测决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-web-observation.md)。
 
 `.bot-conversation` 是标题的 inline-size 查询容器。名称默认 17px 单行省略，完整名称从详情读取。可用宽度不超过 600px 时，名称为 15px，返回、名称和操作形成三列，状态独占下一行，关键按钮为 44px；不超过 300px 时再允许操作换行。名称区域可收缩，控件保留自身空间，状态原因允许断行。这些规则不参与 Session 或详情模式选择，标题也不依赖主机名撑开宽度。
 

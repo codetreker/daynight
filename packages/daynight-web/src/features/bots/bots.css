@@ -31,7 +31,9 @@
 .bot-list-label strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-sm); font-weight: 600; }
 .bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--text-sm); line-height: 1.5; color: #556176; overflow-wrap: anywhere; }
 .bot-status > * { min-width: 0; }
-.bot-status-compact { gap: 3px 8px; }
+.bot-status-compact { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
+.bot-status-compact > span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.bot-status-compact .bot-observation-time-description { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bot-observation-machine, .bot-status time { font-size: var(--text-xs); }
 .bot-status time { flex-basis: 100%; }
 .bot-observation-working > span:first-child { color: #285b9f; }

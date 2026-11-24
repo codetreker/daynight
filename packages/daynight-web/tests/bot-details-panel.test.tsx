@@ -180,7 +180,7 @@ it('retains confirmed details and focus during identity checks, then removes the
 
 it('uses the matching Bot observation and retains stale machine facts without claiming live availability', () => {
   const props = { id: 'details', bot: botDefinition(), worker: botWorkerDefaults(), stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
-  const observation = { value: botObservation(1, { machine: props.worker.machine, state: 'idle', reason: 'idle' }), stale: false, busy: false, error: null, refresh: vi.fn() };
+  const observation = { value: botObservation(1, { machine: props.worker.machine, state: 'idle', reason: 'idle' }), stale: false, busy: false, refreshing: false, error: null, refresh: vi.fn(), refreshExplicit: vi.fn() };
   const view = renderWithLocale(<BotDetailsPanel {...props} observation={observation} />, { locale: 'en' });
   expect(screen.getByText('Machine 20')).toBeVisible();
   expect(screen.getByText('Online · idle')).toBeVisible();

@@ -26,6 +26,9 @@ the request's start on the browser's monotonic clock, including transport and
 publication waits. A repeated observation cannot renew its old deadline.
 Expiry removes live status even without another successful response; retained
 location, identity and reason remain explicitly dated historical facts.
+The [background stability decision](../bug-fix/2026-11-24-assistant-background-stability.md)
+keeps compact expiry in its existing slot and separates explicit refresh feedback
+from transport activity; details retain visible observation times.
 An offline response has no online deadline and receives only the short polling
 window for its most recent confirmed offline result.
 

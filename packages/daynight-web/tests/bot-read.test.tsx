@@ -233,3 +233,55 @@ it('clears busy on authentication pause and continues polling after the parent r
  await act(async () => pending.resolve('obsolete')); expect(result.current.value).toBe('recovered');
  unmount(); expect(vi.getTimerCount()).toBe(0);
 });
+
+it('keeps polling silent and joins an in-flight read for explicit refresh feedback', async () => {
+ vi.useFakeTimers({toFake:['setInterval','clearInterval']});
+ const next = Promise.withResolvers<string>(), retry = Promise.withResolvers<string>();
+ const load = vi.fn().mockResolvedValueOnce('confirmed').mockReturnValueOnce(next.promise).mockReturnValueOnce(retry.promise);
+ const {result, unmount} = renderHook(() => useBotRead('a', true, load), wrap());
+ expect(result.current.busy).toBe(true); expect(result.current.refreshing).toBe(false);
+ await act(async () => {});
+ act(() => vi.advanceTimersByTime(5_000)); await act(async () => {});
+ expect(result.current.busy).toBe(true); expect(result.current.refreshing).toBe(false);
+ act(() => { result.current.refresh(); result.current.refreshExplicit(); result.current.refreshExplicit(); });
+ expect(load).toHaveBeenCalledTimes(2); expect(result.current.refreshing).toBe(true);
+ expect(result.current.value).toBe('confirmed'); expect(result.current.stale).toBe(false);
+ await act(async () => next.reject(Error('offline')));
+ expect(result.current.refreshing).toBe(false); expect(result.current.busy).toBe(false);
+ expect(result.current.error).toBeInstanceOf(Error); expect(result.current.value).toBe('confirmed');
+ act(() => result.current.refreshExplicit()); await act(async () => {});
+ expect(result.current.refreshing).toBe(true); expect(load).toHaveBeenCalledTimes(3);
+ await act(async () => retry.resolve('recovered'));
+ expect(result.current.refreshing).toBe(false); expect(result.current.error).toBeNull();
+ expect(result.current.value).toBe('recovered'); unmount(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it('ends explicit feedback on cancellation and keeps late completions out of a replacement request', async () => {
+ vi.useFakeTimers({toFake:['setInterval','clearInterval']});
+ let visible: DocumentVisibilityState = 'visible';
+ vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible);
+ const pending: {signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<string>>}[] = [];
+ const load = vi.fn((_scope: TaskCacheScope, signal: AbortSignal) => {
+   const result = Promise.withResolvers<string>(); pending.push({signal, result}); return result.promise;
+ });
+ const f = wrap();
+ const {result, rerender, unmount} = renderHook(({key}) => useBotRead(key, true, load), {...f, initialProps: {key: 'a'}});
+ await act(async () => {}); act(() => result.current.refreshExplicit());
+ expect(result.current.refreshing).toBe(true);
+ act(() => { visible = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+ expect(result.current.refreshing).toBe(false); expect(pending[0]!.signal.aborted).toBe(true);
+ act(() => result.current.refreshExplicit()); expect(result.current.refreshing).toBe(false);
+ await act(async () => { visible = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+ act(() => result.current.refreshExplicit());
+ await act(async () => pending[0]!.result.resolve('obsolete'));
+ expect(result.current.refreshing).toBe(true); expect(result.current.value).toBeNull();
+ rerender({key: 'b'}); await act(async () => {});
+ expect(result.current.refreshing).toBe(false); expect(pending[1]!.signal.aborted).toBe(true);
+ act(() => result.current.refreshExplicit());
+ await act(async () => pending[1]!.result.reject(Error('old target')));
+ expect(result.current.refreshing).toBe(true); expect(result.current.error).toBeNull();
+ await act(async () => f.scope.invalidateScope());
+ expect(result.current.refreshing).toBe(false); expect(pending[2]!.signal.aborted).toBe(true);
+ await act(async () => pending[2]!.result.resolve('private'));
+ expect(result.current.value).toBeNull(); unmount(); expect(vi.getTimerCount()).toBe(0);
+});
