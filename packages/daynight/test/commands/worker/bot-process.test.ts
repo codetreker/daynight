@@ -24,6 +24,8 @@ import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 import { writeUnreleasedLaunch } from "../../../src/commands/controller/unreleased-launch.js";
+import * as unreleasedLaunch from "../../../src/commands/controller/unreleased-launch.js";
+import * as durableDirectory from "../../../src/platform/durable-directory.js";
 import { hasNeverStartedDeletionEvidence } from "../../../src/commands/worker/bots/execution-store.js";
 
 afterEach(cleanupBotProcesses);
@@ -1101,6 +1103,138 @@ const submittedLinuxBot = async () => {
   expect(f.prepareEnvironment).toHaveBeenCalledOnce();
   return { ...f, signal, manager, execution, saved, reconcileLaunch, stopBootstrap, stopProcesses, confirmStopped, request, recordStopped };
 };
+
+test.skipIf(process.platform !== "linux")("receipt EIO is retained while authenticated stop and native cleanup complete", async () => {
+  const f = await submittedLinuxBot(), failure = Object.assign(new Error("receipt read failed"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBe(failure); expect(receipt).toHaveBeenCalledTimes(2);
+    expect(f.request).toHaveBeenCalledOnce(); expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["conflict", "mixed read and close"] as const)("receipt EIO followed by %s refuses signals", async kind => {
+  const f = await submittedLinuxBot(), failure = Object.assign(new Error("receipt read failed"), { code: "EIO" });
+  const conflict = new Error("receipt conflicts with original identity"), close = Object.assign(new Error("close failed"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(kind === "conflict" ? conflict : new AggregateError([conflict, close], "read and close failed"));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(failure);
+    expect(receipt).toHaveBeenCalledTimes(2); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("a visible receipt with failed durability does not authorize stopping", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  await writeUnreleasedLaunch(f.home, ticket, 124);
+  const syncFailure = Object.assign(new Error("receipt sync EIO"), { code: "EIO" });
+  const sync = vi.spyOn(durableDirectory, "syncDurableDirectory").mockImplementation(() => { throw syncFailure; });
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(unreleasedLaunch.UnreleasedLaunchReceiptDurabilityError); expect(error.cause).toBe(syncFailure);
+    expect(sync).toHaveBeenCalledOnce(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { sync.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("a present unreadable receipt prevents signals even with acknowledged process proofs", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  await writeUnreleasedLaunch(f.home, ticket, 124);
+  const failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValue(failure);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].errors).toEqual([failure, failure]);
+    expect(error.errors[1].message).toMatch(/exists but could not be read/);
+    expect(f.request).not.toHaveBeenCalled(); expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("a stalled receipt presence probe cannot exceed the cleanup deadline or signal processes", async () => {
+  const f = await submittedLinuxBot(), failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockImplementation(async () => { time += 4_900; throw failure; });
+  const inspectUnreleasedPath = vi.fn(() => new Promise<never>(() => {}));
+  const manager = f.createProcess({ inspectUnreleasedPath, stopBootstrap: f.stopBootstrap, stopProcesses: f.stopProcesses, request: f.request });
+  try {
+    const error = await manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].errors).toEqual([failure, failure]);
+    expect(inspectUnreleasedPath).toHaveBeenCalledOnce(); expect(f.stopBootstrap).not.toHaveBeenCalled();
+    expect(f.request).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); clock.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("a stalled receipt read cannot exceed the cleanup deadline or signal processes", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockImplementationOnce(async () => { time += 9_800; return ticket; });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockImplementation(() => new Promise<never>(() => {}));
+  try {
+    await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow();
+    expect(receipt).toHaveBeenCalledOnce(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); readTicket.mockRestore(); clock.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("persistent receipt EIO and journal EIO retain errors while stopping original processes", async () => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValue(first);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const io = () => new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error("journal EIO"), { code: "EIO" }));
+  f.reconcileLaunch.mockRejectedValueOnce(io()).mockRejectedValueOnce(io());
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].errors).toEqual([first, first]);
+    expect(receipt).toHaveBeenCalledTimes(2); expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("receipt EIO after an initial ticket EIO still stops an authenticated original execution", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const ticketFailure = Object.assign(new Error("ticket EIO"), { code: "EIO" });
+  const receiptFailure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockRejectedValueOnce(ticketFailure).mockResolvedValueOnce(ticket);
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValueOnce(receiptFailure).mockResolvedValueOnce(undefined);
+  const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toContain(ticketFailure); expect(error.errors).toContain(receiptFailure);
+    expect(f.request).toHaveBeenCalledOnce(); expect(f.stopBootstrap).toHaveBeenCalledOnce(); expect(f.stopProcesses).toHaveBeenCalledOnce();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { readTicket.mockRestore(); receipt.mockRestore(); history.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("persistent receipt EIO without acknowledged snapshot refuses signals", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned({ kind: "linux-controller-launch", pid: 123, launchId: options.ticket.launchId });
+    throw new Error("launch observation unavailable");
+  });
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("launch observation unavailable");
+  const failure = Object.assign(new Error("receipt EIO"), { code: "EIO" });
+  const receipt = vi.spyOn(unreleasedLaunch, "readUnreleasedLaunch").mockRejectedValue(failure);
+  const stopBootstrap = vi.fn(async () => {}), stopProcesses = vi.fn(async () => {});
+  try {
+    const error = await f.createProcess({ stopBootstrap, stopProcesses }).shutdown(f.current(), signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([failure, failure]);
+    expect(stopBootstrap).not.toHaveBeenCalled(); expect(stopProcesses).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { receipt.mockRestore(); }
+});
 
 test.skipIf(process.platform !== "linux")("historical stop read I/O failure stops the bootstrap and retained native tree when later journal I/O fails", async () => {
   const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });

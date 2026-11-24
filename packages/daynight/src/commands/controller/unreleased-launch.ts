@@ -6,6 +6,10 @@ import { syncDurableDirectory } from "../../platform/durable-directory.js";
 import { controllerPayloadHash, controllerTicketPath, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 
 export type UnreleasedLaunchReceipt = { readonly kind: "controller-unreleased"; readonly ticketHash: string; readonly pid: number };
+/** A parsed receipt whose durability or handle close is unconfirmed is not an absent receipt. */
+export class UnreleasedLaunchReceiptDurabilityError extends Error {
+  constructor(cause: unknown) { super(`Unreleased launch receipt durability is unconfirmed.${cause instanceof Error ? ` ${cause.message}` : ""}`, { cause }); }
+}
 const MAX_RECEIPT_BYTES = 1024;
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT";
 
@@ -31,6 +35,7 @@ export const readUnreleasedLaunch = async (home: string, ticket: ControllerLaunc
   // the receipt unconfirmed rather than treating visibility as durability.
   try { handle = await open(file, process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if (missing(error)) return undefined; throw error; }
+  let failure: unknown, parsed = false;
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > MAX_RECEIPT_BYTES || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) throw new Error("Unreleased launch receipt must be a private regular file within its size limit.");
@@ -48,11 +53,19 @@ export const readUnreleasedLaunch = async (home: string, ticket: ControllerLaunc
     const keys = [...text.matchAll(/"(?:\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\\u0000-\u001f])*"\s*:/g)]
       .map(match => JSON.parse(match[0].slice(0, match[0].lastIndexOf(":"))) as string);
     if (keys.length !== 3 || new Set(keys).size !== 3) throw new Error("Unreleased launch receipt has duplicate fields.");
+    parsed = true;
     // A prior publisher may have linked the file but failed before syncing it.
     await handle.sync();
     syncDurableDirectory(path.dirname(file));
     return receipt;
-  } finally { await handle.close(); }
+  } catch (error) { failure = parsed ? new UnreleasedLaunchReceiptDurabilityError(error) : error; throw failure; }
+  finally {
+    try { await handle.close(); }
+    catch (closeError) {
+      const error = failure === undefined ? closeError : new AggregateError([failure, closeError], "Unreleased launch receipt read and close failed.", { cause: failure });
+      throw parsed ? new UnreleasedLaunchReceiptDurabilityError(error) : error;
+    }
+  }
 };
 
 /** Call only after the original child exited and its gate was never released. */

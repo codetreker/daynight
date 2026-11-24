@@ -60,6 +60,16 @@ and a reread exposes a recovered identity conflict before signaling. A pure read
 does not bypass normal authenticated stop, and remains reported even if later
 observation succeeds; unclassified or conflicting evidence cannot authorize the
 retained-proof fallback.
+Receipt read I/O is rechecked separately from receipt validation; a recovered
+conflict blocks signaling. Persistent receipt I/O permits bounded cleanup only
+with an acknowledged, matching saved Controller snapshot and an independently
+confirmed absent receipt path, and never settles the
+receipt or hides the original failure. A close error cannot replace a prior
+malformed or conflicting receipt error.
+Receipt reads and presence probes use the cleanup deadline. A timed-out
+observation retains responsibility; it does not cancel the underlying file call.
+Once a receipt has been parsed, an I/O failure during synchronization or close
+keeps that evidence unconfirmed and cannot authorize the read-I/O fallback.
 
 A Windows Job name can be reused after the original name or object disappears.
 The Controller retains its Job handle for its lifetime. An observer acquires a

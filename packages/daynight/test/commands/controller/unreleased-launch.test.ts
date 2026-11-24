@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import * as durableDirectory from "../../../src/platform/durable-directory.js";
 import { controllerPayloadHash, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { readUnreleasedLaunch, unreleasedLaunchPath, writeUnreleasedLaunch } from "../../../src/commands/controller/unreleased-launch.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -113,4 +119,20 @@ it("does not report success when directory durability is unknown and permits an 
   expect((await readUnreleasedLaunch(root, ticket))?.pid).toBe(99);
   expect(await writeUnreleasedLaunch(root, ticket, 99)).toMatchObject({ pid: 99 });
   expect(sync).toHaveBeenCalledTimes(4);
+});
+
+it("preserves a malformed receipt error when closing its file also fails", async () => {
+  const { root, ticket, file } = await fixture();
+  await writeFile(file, "{}", { mode: 0o600 });
+  const { open: actualOpen } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const closeFailure = Object.assign(new Error("close EIO"), { code: "EIO" });
+  vi.mocked(fsPromises.open).mockImplementationOnce(async (...args) => {
+    const handle = await actualOpen(...args);
+    const close = handle.close.bind(handle);
+    handle.close = async () => { await close(); throw closeFailure; };
+    return handle;
+  });
+  const error = await readUnreleasedLaunch(root, ticket).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toMatch(/invalid|conflicts/);
+  expect(error.errors[1]).toBe(closeFailure);
 });
