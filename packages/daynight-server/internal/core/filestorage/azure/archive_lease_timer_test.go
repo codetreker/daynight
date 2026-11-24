@@ -94,7 +94,9 @@ func TestArchiveLeaseDefaultTimer(t *testing.T) {
 			t.Fatal(err)
 		}
 		lease := stage.leases[name]
+		lease.mu.Lock()
 		initialDeadline := lease.until
+		lease.mu.Unlock()
 		synctest.Wait() // Ensure the production goroutine has started its ticker.
 		time.Sleep(20 * time.Second)
 		synctest.Wait() // The SDK response and deadline update have completed.
