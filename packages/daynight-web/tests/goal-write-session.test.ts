@@ -6,7 +6,7 @@ import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSessio
 import { projectTaskScope } from '../src/features/task-graph/scope';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
-import { fixtureTaskEpoch, TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { fixtureTaskEpoch, taskSyncFromGraph, TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
 const project = '10000000-0000-4000-8000-000000000001';
@@ -99,7 +99,7 @@ it('publishes the moved Task and both Goal progress values from the same project
   } finally { sessions.dispose(); world.dispose(); }
 });
 
-it('retires Goal and child history as soon as deletion is confirmed, even if refresh fails and an old response arrives', async () => {
+it('withdraws the deleted Goal and pending child while rejecting a pre-hint response', async () => {
   const goalDetail = detailFixture(project, task, { type: 'goal', ready: false });
   const child = detailFixture(project, goal, { parentId: task, title: 'Private child' });
   let deleted = false; let delayChild = false; let resolveOld!: (value: Response) => void;
@@ -124,7 +124,7 @@ it('retires Goal and child history as soon as deletion is confirmed, even if ref
   expect(sessions.snapshot(project, goal).detail).toBeNull();
 });
 
-it('fences the deleted Goal history in another tab without waiting for project sync', async () => {
+it('revalidates a peer child after the deletion recheck commits its baseline', async () => {
   class Channel {
     static peers = new Set<Channel>();
     onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
@@ -138,6 +138,11 @@ it('fences the deleted Goal history in another tab without waiting for project s
   let deleted = false;
   vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => {
     if (init.method === 'DELETE') { deleted = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) })); }
+    if (url.includes('/task-sync')) {
+      const requestedEpoch = new URL(url, 'https://daynight.test').searchParams.get('epoch');
+      const sync = taskSyncFromGraph({ ...graphFixture([goalDetail]), tasks: [] }, { epoch, query: requestedEpoch === null ? {} : { epoch: requestedEpoch }, versionForTask: () => 1n });
+      return Promise.resolve(wireResponse({ ...sync, deletedTaskIds: sync.mode === 'delta' ? [task, goal] : [] }, { headers: viewerHeaders(TEST_VIEWER_ID) }));
+    }
     return deleted ? Promise.reject(new Error('offline')) : Promise.resolve(response(url.endsWith(goal) ? child : goalDetail));
   }));
   const owner = world(), peer = world(); peer.subscribe(project, goal, () => {});
@@ -148,7 +153,7 @@ it('fences the deleted Goal history in another tab without waiting for project s
   await waitFor(() => expect(peer.snapshot(project, goal).detail).toBeNull());
 });
 
-it.each(['same', 'new'] as const)('fences a newer observed epoch until a read after the late deletion receipt: %s', async (outcome) => {
+it.each(['same', 'new'] as const)('preserves a newer observed epoch after an old deletion receipt: %s', async (outcome) => {
   const nextEpoch = '40000000-0000-4000-8000-000000000002';
   const deletionEpoch = '40000000-0000-4000-8000-000000000003';
   const goalDetail = detailFixture(project, task, { type: 'goal', ready: false });
@@ -166,10 +171,13 @@ it.each(['same', 'new'] as const)('fences a newer observed epoch until a read af
   const newFence = await scope.beginTaskRead(project, goal, 2, 2, scope.signal);
   expect(await scope.observeHistory(newFence, nextEpoch, scope.signal)).toBe('current');
   const generation = scope.getHistoryGeneration(project);
+  const previewAllowed = scope.canPreviewProject(project);
   finishDelete(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
-  await waitFor(() => expect(scope.isTaskReadCurrent(newFence)).toBe(false));
+  await pending; await new Promise(resolve => setTimeout(resolve, 0));
+  expect(sessions.snapshot(project, task).mutation.phase).toBe('idle');
+  expect(scope.isTaskReadCurrent(newFence)).toBe(true);
   expect(scope.getHistoryGeneration(project)).toBe(generation);
-  expect(scope.canPreviewProject(project)).toBe(false);
+  expect(scope.canPreviewProject(project)).toBe(previewAllowed);
   const later = await scope.beginTaskRead(project, goal, 3, 3, scope.signal);
   const observed = outcome === 'same' ? nextEpoch : deletionEpoch;
   expect(await scope.observeHistory(later, observed, scope.signal)).toBe(outcome === 'same' ? 'current' : 'retired');
@@ -179,7 +187,7 @@ it.each(['same', 'new'] as const)('fences a newer observed epoch until a read af
   }
 });
 
-it.each([false, true])('withdraws replacement summary history after a trusted paused DELETE with failed recovery and another pause=%s', async (anotherPause) => {
+it.each([false, true])('preserves replacement summary history after an old paused DELETE with failed recovery and another pause=%s', async (anotherPause) => {
   const nextEpoch = '40000000-0000-4000-8000-000000000002';
   const parent = detailFixture(project, task);
   const child = detailFixture(project, goal, { parentId: task, title: 'Deleted subtree' });
@@ -229,15 +237,17 @@ it.each([false, true])('withdraws replacement summary history after a trusted pa
       expect(fixture.scope.isTaskReadCurrent(replacementFence, true)).toBe(true);
       resumeSecond();
     }
-    await waitFor(() => expect(fixture.scope.canPreviewProject(project)).toBe(false));
-    expect(fixture.scope.getAuthorizedProject(project)).toBeNull();
-    expect(sessions.snapshot(project, goal).detail).toBeNull();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('unknown'));
+    expect(fixture.scope.canPreviewProject(project)).toBe(true);
+    expect(fixture.scope.getAuthorizedProject(project)?.manifest.cacheGeneration).toBe(replacement.manifest.cacheGeneration);
+    expect(fixture.scope.getAuthorizedProject(project)?.index.nodes.has(goal)).toBe(true);
+    expect(fixture.scope.isTaskReadCurrent(replacementFence)).toBe(true);
     expect(sessions.snapshot(project, task).status).not.toBe('deleted');
     expect(fetcher.mock.calls.filter(([, init]) => init.method === 'DELETE')).toHaveLength(1);
   } finally { resume(); resumeSecond(); sessions.dispose(); fixture.dispose(); }
 });
 
-it('retires old Goal history after an unknown deletion is observed as task_deleted without claiming write success', async () => {
+it('withdraws the deleted Goal after an unknown deletion is observed without claiming write success', async () => {
   const goalDetail = detailFixture(project, task, { type: 'goal', ready: false });
   const child = detailFixture(project, goal, { parentId: task, title: 'Private child' });
   let deleted = false; let writes = 0;
@@ -254,7 +264,7 @@ it('retires old Goal history after an unknown deletion is observed as task_delet
   sessions.deleteTask(project, task, goalDetail.version, false);
   await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'deleted', mutation: { phase: 'reconciled', error: { kind: 'network' } } }));
   expect(sessions.snapshot(project, goal).detail).toBeNull(); expect(writes).toBe(1);
-  expect(scope.canPreviewProject(project)).toBe(false);
+  expect(scope.canPreviewProject(project)).toBe(true); expect(scope.getHistoryGeneration(project)).toBe(0);
   const after = await scope.beginTaskRead(project, goal, 3, 3, scope.signal);
   expect(await scope.observeHistory(after, epoch, scope.signal)).toBe('current');
 });

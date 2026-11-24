@@ -62,16 +62,16 @@ describe('subtree soft-delete ownership', () => {
   it('reconciles a lost deletion response by GET410 without revoking project access', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const revoke = vi.spyOn(world.scope, 'revokeProject'); const refresh = vi.fn(); sessions.subscribeProject(project, refresh);
     writes.mockRejectedValueOnce(new ApiError('network')); reads.mockRejectedValueOnce(deleted()); remove(sessions); await expectDeleted(sessions);
-    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(refresh).toHaveBeenCalled();
+    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(refresh).toHaveBeenCalled();
   });
-  it('treats an explicit already-deleted response as subtree history retirement', async () => {
+  it('withdraws an already-deleted target while retaining its project baseline', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const revoke = vi.spyOn(world.scope, 'revokeProject'); writes.mockRejectedValueOnce(deleted()); remove(sessions); await expectDeleted(sessions);
-    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
   });
-  it('clears a remotely deleted task during ordinary refresh withdraws unproven sibling data', async () => {
+  it('withdraws a remotely deleted target and retains the complete baseline until sync', async () => {
     const sessions = createSessions(); const world = worlds.get(sessions)!; const surviving = detailFixture(project, sibling, { title: 'Surviving task' }); await world.sync([surviving]); await open(sessions);
     const revoke = vi.spyOn(world.scope, 'revokeProject'); reads.mockRejectedValueOnce(deleted()); sessions.load(project, task, 2); await expectDeleted(sessions);
-    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).not.toHaveBeenCalled();
   });
   it('retains both uncertain failures and prevents mutation until a deliberate GET succeeds', async () => {
     const sessions = createSessions(); await open(sessions); const writeFailure = new ApiError('network'); const readFailure = new ApiError('network'); writes.mockRejectedValueOnce(writeFailure); reads.mockRejectedValueOnce(readFailure); remove(sessions);
@@ -95,7 +95,7 @@ describe('subtree soft-delete ownership', () => {
     sessions.observe(project, task, undefined); sessions.load(project, task, 2, 'automatic');
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
     reads.mockRejectedValueOnce(deleted()); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open'); await expectDeleted(sessions);
-    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledTimes(2); expect(world.scope.getAuthorizedProject(project)).toBeNull();
+    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledTimes(2); expect(world.scope.getAuthorizedProject(project)).not.toBeNull();
   });
   it('settles an unknown deletion from the replacement snapshot while its GET is in flight', async () => {
     const sessions = createSessions(); await open(sessions); const probe = deferred<TaskDetail>();

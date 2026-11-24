@@ -13,7 +13,9 @@ const page = (id: string, nextCursor: string | null, total = 2): TaskSearchPage 
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const world = () => {
   const listeners = new Set<(event: CacheEvent) => void>(); const lifetime = new AbortController(); let revision = 0;
-  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), getProjectRevision: () => revision, markProjectReadable: vi.fn(), notifyTagColors: vi.fn(), revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
+  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), prepareProjection: vi.fn(async () => new Map()),
+    registerProjectionProjects: vi.fn(() => () => {}), qualifyProjection: vi.fn(async (_snapshot, candidates: readonly { projectId: string; id: string }[]) => new Set(candidates.map(item => `${item.projectId}/${item.id}`))),
+    getProjectRevision: () => revision, markProjectReadable: vi.fn(), notifyTagColors: vi.fn(), revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
   return { scope, abort: () => lifetime.abort(), bump: () => { revision++; }, emit: (event: CacheEvent) => { revision++; for (const listener of listeners) listener(event); } };
 };
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });
@@ -26,6 +28,29 @@ it('invalidates colors on successful repeated search reads without a task graph'
   act(() => result.current.retry());
   await waitFor(() => expect(scope.notifyTagColors).toHaveBeenCalledTimes(2));
   expect(scope.notifyTagColors).toHaveBeenCalledWith(project);
+});
+
+it('withdraws only a deleted search result and retires its cursors while retaining the query and survivors', async () => {
+  const pending = deferred<TaskSearchPage>(), { scope, emit } = world();
+  vi.mocked(searchTasks).mockResolvedValueOnce({ projectId: project, items: [item('a'), item('b')], total: 3, nextCursor: 'next' }).mockImplementationOnce(() => pending.promise);
+  const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setDraft('query'); result.current.submit(); });
+  await waitFor(() => expect(result.current.items).toHaveLength(2));
+  act(() => emit({ projectId: project, deletedTaskIds: ['a'] }));
+  expect(result.current.items.map(item => item.id)).toEqual(['b']);
+  expect(result.current.applied).toBe('query'); expect(result.current.total).toBeNull(); expect(result.current.canNext).toBe(false);
+  pending.resolve(page('b', null, 1)); await waitFor(() => expect(result.current.total).toBe(1));
+});
+
+it('qualifies late search candidates against stored removals even when no event was delivered', async () => {
+  const { scope } = world();
+  vi.mocked(scope.qualifyProjection).mockResolvedValueOnce(new Set([`${project}/b`]));
+  vi.mocked(searchTasks).mockResolvedValueOnce({ projectId: project, items: [item('a'), item('b')], total: 2, nextCursor: null }).mockResolvedValueOnce(page('b', null, 1));
+  const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setDraft('query'); result.current.submit(); });
+  await waitFor(() => expect(result.current.total).toBe(1));
+  expect(result.current.items.map(item => item.id)).toEqual(['b']);
+  expect(scope.qualifyProjection).toHaveBeenCalledWith(expect.any(Map), [{ projectId: project, id: 'a' }, { projectId: project, id: 'b' }], expect.any(AbortSignal));
 });
 
 it('separates draft, filters and cursors, and retires later cursors after reading page one again', async () => {

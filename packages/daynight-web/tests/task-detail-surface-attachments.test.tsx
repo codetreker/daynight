@@ -183,10 +183,12 @@ describe('full-detail attachment surface', () => {
 
   it('loads all inventory pages before rendering authoritative metadata and shared Markdown', async () => {
     const next = deferred<Page>();
+    const previewRequested = deferred<void>();
+    const previewResponse = deferred<string>();
     const item = file('docs/readme.md', 'text/markdown');
     const api = fixture([item]);
     vi.mocked(api.list).mockResolvedValueOnce({ items: [item], nextCursor: 'next' }).mockReturnValueOnce(next.promise);
-    vi.mocked(api.readText).mockResolvedValue('# Full document\n\n| File | State |\n| --- | --- |\n| UI | Ready |\n\n![Figure](../images/a%20b.svg)\n\n<script>unsafe()</script>');
+    vi.mocked(api.readText).mockImplementationOnce(() => { previewRequested.resolve(); return previewResponse.promise; });
     render(page(api));
     expect(screen.getByRole('main')).toHaveFocus();
     await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
@@ -194,6 +196,11 @@ describe('full-detail attachment surface', () => {
     expect(api.readText).not.toHaveBeenCalled();
     expect(screen.queryByText('找不到此附件，文件可能已被删除。')).toBeNull();
     await act(async () => next.resolve({ items: [], nextCursor: null }));
+    await previewRequested.promise;
+    expect(api.readText).toHaveBeenCalledExactlyOnceWith(projectId, taskId, item.path, expect.any(AbortSignal));
+    expect(preview().getByRole('status')).toHaveTextContent('正在加载预览');
+    expect(screen.queryByRole('heading', { name: 'Full document' })).toBeNull();
+    await act(async () => previewResponse.resolve('# Full document\n\n| File | State |\n| --- | --- |\n| UI | Ready |\n\n![Figure](../images/a%20b.svg)\n\n<script>unsafe()</script>'));
     await screen.findByRole('heading', { name: 'Full document' });
     expect(screen.getByRole('table')).toHaveTextContent('UIReady');
     expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);
@@ -224,11 +231,19 @@ describe('full-detail attachment surface', () => {
   it('shows an initial service failure separately from preview errors and retries each owner', async () => {
     const api = fixture([file('docs/readme.md')]);
     vi.mocked(api.list).mockRejectedValueOnce(new Error('private inventory error'));
-    vi.mocked(api.readText).mockRejectedValueOnce(new ApiError('server', 500, 'server_error', 'preview-7'));
+    const previewResponse = deferred<string>();
+    const previewRequested = deferred<void>();
+    vi.mocked(api.readText).mockImplementationOnce(() => { previewRequested.resolve(); return previewResponse.promise; });
     render(page(api));
     expect(await (await readyPreview()).findByRole('alert')).toHaveTextContent('附件列表加载失败');
     expect(preview().getByRole('alert')).not.toHaveTextContent('private');
     fireEvent.click(preview().getByRole('button', { name: '重试附件' }));
+    await previewRequested.promise;
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(api.readText).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'docs/readme.md', expect.any(AbortSignal));
+    expect(preview().getByRole('status')).toHaveTextContent('正在加载预览');
+    expect(screen.queryByRole('button', { name: '重试预览' })).toBeNull();
+    await act(async () => { previewResponse.reject(new ApiError('server', 500, 'server_error', 'preview-7')); });
     await screen.findByRole('button', { name: '重试预览' });
     expect(preview().getByRole('alert')).toHaveTextContent('无法读取文件预览');
     expect(preview().getByRole('alert')).toHaveTextContent('preview-7');
@@ -253,9 +268,11 @@ describe('full-detail attachment surface', () => {
     expect(screen.queryByText('Late old document')).toBeNull();
     const pending = deferred<Page>();
     vi.mocked(api.list).mockReturnValueOnce(pending.promise);
+    const inventoryReads = vi.mocked(api.list).mock.calls.length;
     view.rerender(page(api, 'next.txt', '00000000-0000-4000-8000-000000000002'));
     expect(screen.queryByText('Contents of next.txt')).toBeNull();
     expect(await (await readyPreview()).findByRole('status')).toHaveTextContent('正在加载附件');
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(inventoryReads + 1));
     const request = vi.mocked(api.list).mock.calls.at(-1)![3];
     view.unmount();
     expect(request.aborted).toBe(true);

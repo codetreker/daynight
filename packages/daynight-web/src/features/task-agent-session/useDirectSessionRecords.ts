@@ -35,41 +35,69 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
 
   // Remain subscribed while a tab is hidden: a peer's negative observation must
   // withdraw its retained page before the tab can be shown again.
-  useEffect(() => scope.subscribe(event => {
-    if (event.projectId !== projectId || event.sessionHistoryUncertain?.origin === denialOrigin.current || event.sessionHistoryCleared?.origin === denialOrigin.current ||
-      blocked.current && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
-    if (event.directAccessUncertain) {
-      activeRead.current?.abort(); setRetryInactive(false); blocked.current = true; directAccessPending.current = 'uncertain';
-      setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
-      setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
-      return;
-    }
-    if (event.directAccessRecheck) {
-      activeRead.current?.abort();
-      directAccessPending.current = event.error !== undefined ? 'failed' : null;
-      blocked.current = event.error !== undefined;
-      setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
-      // Keep selection withdrawn until a new first page is actually admitted,
-      // even when the uncertainty and recheck are batched in one render.
-      setState({ page: null, error: event.error ?? null, loading: false, checking: event.error === undefined, denied: true });
-      return;
-    }
-    if (event.accessRevoked || event.scopeSuspended || event.historyChanged || event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId) {
-      activeRead.current?.abort();
-      setRetryInactive(false);
-      if (event.historyChanged || event.accessRevoked && !event.scopeSuspended) {
-        // A confirmed withdrawal or retired history ends the old uncertainty,
-        // but the replacement must still obtain a fresh direct receipt.
-        directAccessPending.current = 'failed';
-        blocked.current = true;
+  useEffect(() => {
+    let live = true;
+    const unsubscribe = scope.subscribe(event => {
+      if (event.projectId !== projectId || event.sessionHistoryUncertain?.origin === denialOrigin.current || event.sessionHistoryCleared?.origin === denialOrigin.current ||
+        blocked.current && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
+      if (event.deletedTaskIds?.includes(taskId) || event.taskDeletionHint?.taskId === taskId) {
+        activeRead.current?.abort(); setRetryInactive(false); blocked.current = true;
         setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
-      } else blocked.current = true;
-      setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
-    } else if (event.accessRestored) {
-      blocked.current = directAccessPending.current !== null;
-      setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
-    }
-  }), [scope, projectId, taskId]);
+        setState({ page: null, error: null, loading: false, checking: false, denied: true });
+        return;
+      }
+      if (event.baselineRebuilt) {
+        void scope.taskReadQualification(projectId, taskId, scope.signal).then(eligibility => {
+          if (!live || eligibility.inBaseline && !eligibility.removed) return;
+          activeRead.current?.abort(); setRetryInactive(false);
+          blocked.current = eligibility.removed; directAccessPending.current = null;
+          setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+          setState({ page: null, error: null, loading: false, checking: !eligibility.removed, denied: true });
+        }).catch(error => {
+          if (live && !isAbortError(error)) setState(old => ({ ...old, error, loading: false }));
+        });
+        return;
+      }
+      if (event.taskDeletionHint?.pendingTaskIds.includes(taskId)) {
+        activeRead.current?.abort(); blocked.current = true; directAccessPending.current = 'failed';
+        setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+        setState({ page: null, error: null, loading: false, checking: true, denied: true });
+        return;
+      }
+      if (event.directAccessUncertain) {
+        activeRead.current?.abort(); setRetryInactive(false); blocked.current = true; directAccessPending.current = 'uncertain';
+        setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+        setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
+        return;
+      }
+      if (event.directAccessRecheck) {
+        activeRead.current?.abort();
+        directAccessPending.current = event.error !== undefined ? 'failed' : null;
+        blocked.current = event.error !== undefined;
+        setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+        // Keep selection withdrawn until a new first page is actually admitted,
+        // even when the uncertainty and recheck are batched in one render.
+        setState({ page: null, error: event.error ?? null, loading: false, checking: event.error === undefined, denied: true });
+        return;
+      }
+      if (event.accessRevoked || event.scopeSuspended || event.historyChanged || event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId) {
+        activeRead.current?.abort();
+        setRetryInactive(false);
+        if (event.historyChanged || event.accessRevoked && !event.scopeSuspended) {
+          // A confirmed withdrawal or retired history ends the old uncertainty,
+          // but the replacement must still obtain a fresh direct receipt.
+          directAccessPending.current = 'failed';
+          blocked.current = true;
+          setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+        } else blocked.current = true;
+        setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
+      } else if (event.accessRestored) {
+        blocked.current = directAccessPending.current !== null;
+        setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+      }
+    });
+    return () => { live = false; unsubscribe(); };
+  }, [scope, projectId, taskId]);
 
   useEffect(() => {
     // A fresh Task observation can recover a failed access check, withdrawal,
@@ -144,6 +172,9 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
         else {
           try { await scope.ready(signal); } catch { return; }
           if (!current()) return;
+        }
+        if (error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') {
+          sessions.reportDirectTaskDeleted(projectId, taskId, qualification);
         }
         if (denied) blocked.current = true;
         setState(old => ({ ...old, page: denied ? null : old.page, error, loading: false, checking: false, denied }));

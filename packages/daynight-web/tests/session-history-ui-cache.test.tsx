@@ -778,6 +778,31 @@ it('allows network fallback for an uncertain scope when persistent storage is fu
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
+it.each(['candidate', 'target'] as const)('withholds an unreserved Session response after a %s hint even when ownership metadata remains present', async hint => {
+  const scope = await seed(); const api = fixture(); const signal = sig();
+  const ticket = await scope.beginSync(projectId, signal);
+  const lease = await beginSessionHistoryRefresh(scope, ticket, taskId, signal);
+  if (lease === null || lease.kind !== 'lease') throw new Error('Expected a session refresh lease.');
+  expect(await saveSessionHistory(scope, ticket, taskId, { items: [second], nextCursor: null }, lease.token, signal)).toBe(true);
+  vi.spyOn(scope, 'beginSync').mockRejectedValue(new Error('Injected cache opening failure'));
+  const ownership = vi.spyOn(historyCache, 'readSessionHistoryOwnership');
+  let finishOld!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  api.history.mockImplementation(() => new Promise(() => {})).mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  vi.stubGlobal('fetch', vi.fn((_url: unknown, init: RequestInit) => new Promise<Response>((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true }))));
+  render(surface(scope, 'reader'));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(1));
+  expect(await ownership.mock.results[0]!.value).toMatchObject({ kind: 'present', token: lease.token });
+  const target = hint === 'target' ? taskId : '20000000-0000-4000-8000-000000000002';
+  const fence = await scope.beginTaskRead(projectId, target, 0, 0, signal);
+  await act(async () => { expect(scope.reportTaskDeleted(fence, ticket.epoch)).toBe(true); });
+  expect(await historyCache.readSessionHistoryOwnership(scope, ticket, taskId, signal)).toMatchObject({ kind: 'present', token: lease.token });
+  expect(await historyCache.readCachedSessionHistory(scope, ticket, taskId, signal)).toBeNull();
+  vi.spyOn(scope, 'sessionHistoryTransaction').mockRejectedValue(new Error('Injected cache reading failure'));
+  await act(async () => finishOld({ items: [item], nextCursor: null }));
+  expect(screen.queryByRole('button', { name: /2026-11-03.*Herdr/ })).toBeNull();
+  expect(api.history.mock.calls[0]![1].aborted).toBe(true);
+});
+
 it('rejects an old unreserved success after storage recovers and another scope saves a newer page', async () => {
   channelSetup(); TestChannel.suspended = true;
   const first = await seed(); const other = await anotherScope(); const api = fixture();

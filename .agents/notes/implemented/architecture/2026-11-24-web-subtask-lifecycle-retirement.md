@@ -24,29 +24,24 @@ dismissal sends no request. Unknown outcomes retain GET-only reconciliation.
 Validated `ApiError.taskIds` feed shared `TaskLifecycleBlockers` links to real
 Task detail URLs, with localized reasons and no fabricated inaccessible titles.
 
-A current trusted delete receipt or `410 task_deleted` retires the entire old
-project presentation because the persisted relation graph cannot prove unaffected
-rows. `retireTaskHistory` and `fenceTaskHistory` withdraw graph/list
-`displaySnapshot`, search, detail and attachment readers, and My Tasks rows before
-a new epoch is observed. `historyChanged` stays distinct from access revocation
-and reaches independent projection listeners and peer tabs. Captured per-project
-read revisions reject delayed personal-inventory pages, preserving other projects.
-New evidence must pass current admission before the affected project returns.
+At adoption, a trusted delete receipt or `410 task_deleted` retired the entire
+old project presentation because persisted relations could not prove unaffected
+rows. `retireTaskHistory` and `fenceTaskHistory` withdrew graphs, lists, details,
+attachments and personal-inventory rows before a new epoch was observed. The
+same-account late-204 rule also fenced replacement presentation independently
+of the original target's outcome admission. This avoided hidden descendants
+remaining visible when refresh failed, but interrupted unrelated reading and
+could not associate a late receipt with the replacement history.
 
-A trusted same-account `204` also fences project presentation when it arrives
-after the reviewed Task history has been replaced. Marking that Task deleted
-still requires the original operation and read ticket to be current. The receipt
-proves a committed deletion, but cannot identify the replacement history's safe
-rows; the existing epoch fence therefore withdraws its unproven presentation and
-requires new reads. Authentication pauses retain the trusted receipt. Once the
-same-account gate resumes, project retirement runs independently before admission
-of the original Task outcome, even when its read ticket has expired during an
-epoch replacement. Summary and direct Task owners share this obligation; another
-pause retains the receipt, and identity retirement rejects publication. Deleted detail state
-survives its own retirement notification until a new authorized opening or summary
-establishes that the Task is present.
+The [targeted read-admission decision](2026-11-24-task-removal-read-admission.md)
+supersedes those deletion-driven project retirement rules. Current trusted
+resource hints withdraw the exact target and require fresh reads for potentially
+affected resources. The complete graph remains until an authoritative atomic
+sync updates it. Real epoch, access, identity and scope retirement still
+withdraw old project presentation. Old-history receipts do not affect a new
+history, and local display never grants resource or write admission.
 
-This replaces the cross-history display retention in the
+The original project retirement replaced cross-history display retention in the
 [stable Goal reconciliation decision](../bug-fix/2026-11-16-goal-graph-stable-reconciliation.md).
 Ordinary refresh failure within a still-admitted history continues to preserve
 valid content and interaction state. Project retirement does not remove the user's
@@ -68,8 +63,10 @@ incorrectly deny later authorized reads of unaffected resources in that project.
 
 ## Consequences
 
-The affected project's old content disappears immediately even when the next read
-fails; other projects retain their rows and navigation. Recovery incurs fresh
-authorized reads and can rebuild the affected graph rather than preserving its
-old viewport across retirement. Confirmation and unknown-result behavior share
-the existing mutation owner, and late reads cannot resurrect a retired subtree.
+Cancellation and unknown-result behavior share the existing mutation owner.
+The original immediate project withdrawal protected incomplete cached ancestry
+at the cost of graph interruption; targeted authoritative removals now preserve
+unrelated same-history content while requiring potentially affected direct
+readers to revalidate. Real history replacement still requires new authorized
+reading and retires old graph navigation. Late results cannot resurrect a
+retired subtree or qualify a prepared write.

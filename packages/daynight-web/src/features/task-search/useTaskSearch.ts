@@ -25,10 +25,12 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
   const retryPage = useRef<number | null>(null);
   const stoppedOnChange = useRef(false);
   const removedWhileInvalid = useRef(false);
+  const publishedFence = useRef<ReadonlyMap<string, string> | null>(null);
   const assignee = useRef(initialAssignee); assignee.current = initialAssignee;
   if (current.current.projectId !== projectId || current.current.scope !== scope) {
     current.current = { projectId, scope, state: initial(initialAssignee) };
     generation.current++; controller.current?.abort(); controller.current = null; pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false; removedWhileInvalid.current = false;
+    publishedFence.current = null;
   }
   const update = useCallback((change: (state: State) => State) => {
     const next = { projectId, scope, state: change(current.current.state) };
@@ -51,8 +53,20 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
     try {
       await scope.ready(signal);
       const revision = scope.getProjectRevision(projectId);
+      const projectionFence = await scope.prepareProjection(signal);
+      if (publishedFence.current !== null && snapshot.items.length !== 0) {
+        const retained = await scope.qualifyProjection(publishedFence.current, snapshot.items.map(item => ({ projectId, id: item.id })), signal);
+        if (!stillCurrent()) return;
+        const items = snapshot.items.filter(item => retained.has(`${projectId}/${item.id}`));
+        if (items.length !== snapshot.items.length) {
+          pages.current.clear(); retryPage.current = null;
+          update(state => ({ ...state, items, total: null, page: 1, cursors: [null], nextCursor: null }));
+          if (page > 1) { queueMicrotask(() => { void load(1, true); }); return; }
+        }
+      }
       const result = await searchTasks(projectId, query, filters, cursor, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }, { requestId: cycleId, onResponseId: id => { requestId = id; } });
       await scope.ready(signal);
+      const qualified = await scope.qualifyProjection(projectionFence, result.items.map(item => ({ projectId, id: item.id })), signal);
       if (!stillCurrent()) return;
       if (revision !== scope.getProjectRevision(projectId)) {
         pages.current.clear(); retryPage.current = null;
@@ -78,7 +92,15 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
       for (const index of pages.current.keys()) if (index > page) pages.current.delete(index);
       const keepFailure = preserveFailure && retryPage.current !== null && retryPage.current <= cursors.length;
       if (!keepFailure) retryPage.current = null;
-      update(state => ({ ...state, items: result.items, total: result.total, page, cursors, nextCursor: result.nextCursor, busy: false,
+      const items = result.items.filter(item => qualified.has(`${projectId}/${item.id}`));
+      publishedFence.current = projectionFence;
+      if (items.length !== result.items.length) {
+        pages.current.clear(); retryPage.current = null;
+        update(state => ({ ...state, items, total: null, page: 1, cursors: [null], nextCursor: null, busy: false }));
+        if (!revisionRetry) queueMicrotask(() => { void load(1, true, recovering, true); });
+        return;
+      }
+      update(state => ({ ...state, items, total: result.total, page, cursors, nextCursor: result.nextCursor, busy: false,
         error: keepFailure ? state.error : null, errorQuery: keepFailure ? state.errorQuery : null }));
     } catch (error) {
       if (!stillCurrent()) return;
@@ -150,12 +172,21 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
   const next = useCallback(() => { const state = current.current.state; if (state.nextCursor !== null) void load(state.page + 1); }, [load]);
   const retry = useCallback(() => { void load(retryPage.current ?? current.current.state.page); }, [load]);
   useEffect(() => {
+    const unregister = scope.registerProjectionProjects([projectId]);
     const unsubscribe = scope.subscribe(event => {
       if (event.projectId !== projectId) return;
       if (event.historyChanged || event.cacheGenerationChanged || event.accessRevoked) {
         cancel(); pages.current.clear(); retryPage.current = null;
         update(state => ({ ...state, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: event.accessRevoked && state.applied !== null ? event.error ?? new ApiError('server', 404, 'not_found') : stoppedOnChange.current || state.tagFilterInvalid ? state.error : null, errorQuery: event.accessRevoked ? state.applied : stoppedOnChange.current || state.tagFilterInvalid ? state.errorQuery : null }));
         if (!event.accessRevoked && !stoppedOnChange.current) void load(1);
+      } else if (event.deletedTaskIds !== undefined || event.baselineRebuilt || event.taskDeletionHint !== undefined) {
+        if (event.deletedTaskIds?.length === 0 && !event.baselineRebuilt && event.taskDeletionHint === undefined) return;
+        const removed = new Set(event.deletedTaskIds ?? (event.taskDeletionHint === undefined ? [] : [event.taskDeletionHint.taskId]));
+        const state = current.current.state;
+        if (state.applied === null || !event.baselineRebuilt && !event.taskDeletionHint && !state.items.some(item => removed.has(item.id)) && ![...pages.current.values()].some(page => page.ids.some(id => removed.has(id)))) return;
+        cancel(); pages.current.clear(); retryPage.current = null;
+        update(state => ({ ...state, items: state.items.filter(item => !removed.has(item.id)), total: null, page: 1, cursors: [null], nextCursor: null, busy: false }));
+        if (!stoppedOnChange.current) void load(1, true);
       } else if (event.accessRestored && !stoppedOnChange.current && current.current.state.applied !== null) void load(1);
     });
     const retireScope = () => { cancel(); pages.current.clear(); retryPage.current = null; removedWhileInvalid.current = false; update(() => initial(assignee.current)); };
@@ -166,7 +197,7 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
     const resume = () => { pause(); if (document.visibilityState !== 'hidden') timer = setInterval(() => { void load(current.current.state.page, true); }, pollingInterval('taskSync')); };
     const visibility = () => { resume(); if (document.visibilityState !== 'hidden') void load(current.current.state.page, true); };
     resume(); document.addEventListener('visibilitychange', visibility);
-    return () => { pause(); unsubscribe(); scope.signal.removeEventListener('abort', retireScope); document.removeEventListener('visibilitychange', visibility); cancel(); };
+    return () => { pause(); unsubscribe(); unregister(); scope.signal.removeEventListener('abort', retireScope); document.removeEventListener('visibilitychange', visibility); cancel(); };
   }, [scope, projectId, cancel, load, update]);
   const state = stored.projectId === projectId && stored.scope === scope ? stored.state : initial(initialAssignee);
   return { draft: state.draft, setDraft, applied: state.applied, filters: state.filters, setFilters, setTagFilterInvalid, tagFilterInvalid: state.tagFilterInvalid, serverInvalidRevision: state.serverInvalidRevision, submit, clear,

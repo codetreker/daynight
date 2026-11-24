@@ -26,8 +26,8 @@ The shared single-pass executor owns request, history observation and apply.
 The graph hook owns polling, finite retries and page Session observations, and
 checks the current durable revision before publishing. Scoped broadcasts are
 hints: recipients re-read the manifest and removals under their existing access
-before emitting targeted project/task events. Stored qualification and commit
-checks are available to independent readers. Unbounded parent metadata deltas
+before emitting targeted project/task events. Independent readers use shared stored qualification and commit
+checks through the [targeted read-admission owner](2026-11-24-task-removal-read-admission.md). Unbounded parent metadata deltas
 remain merges; they do not replace the complete baseline.
 
 A cold sync placeholder is a user baseline reset, not observed access denial.
@@ -37,11 +37,16 @@ that placeholder is established; explicit denial still retires it.
 Schema upgrade rebuilds refetchable task baselines while preserving account,
 profile and compatible Session lifecycles. Same-epoch explicit replacement keeps
 history generation and removal identities and records the difference from the
-previous complete authorized set. A persisted rebuild revision survives later deltas, so delayed hints still expose that replacement. Real history replacement clears old removals.
+previous complete authorized set. Every snapshot establishes a persisted rebuild revision and emits a post-commit
+baseline-rebuilt event, including the first baseline. The marker survives later
+same-history deltas, so delayed hints and independent readers without a prior
+local manifest still detect that complete baseline. Real history replacement
+clears old removals and keeps its existing history fences.
 The [sync design](../../../../docs/design/daynight-task-sync.md) owns mechanisms,
 and the [deletion data decision](2026-11-24-task-sync-deletion-data.md) owns the
 server snapshot. Deletion callers and the server still use their epoch rotation
-contract; independent reader retirement and the settings UI have separate owners.
+contract; the [targeted read-admission decision](2026-11-24-task-removal-read-admission.md)
+owns independent reader withdrawal, and the settings UI has a separate owner.
 
 ## Alternatives
 

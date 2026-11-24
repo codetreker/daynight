@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
+import { useOptionalTaskCacheScope } from "../../task-cache/TaskCacheProvider";
+import { TaskCacheLifecycleChanged, type TaskReadFence } from "../../task-cache/project-cache";
 import type { Attachment } from "../../../api/types";
 import type { NativePreviewSource } from "./AttachmentPreview";
 import { attachmentKind, attachmentTree } from "./model";
@@ -35,7 +37,19 @@ const initialPreview = (scope: string, path: string | null): PreviewState => ({ 
 type AttachmentOptions = { readonly requireCompleteInventory?: boolean; readonly enabled?: boolean };
 
 export const useAttachments = (projectId: string, taskId: string, api: AttachmentApi = attachmentApi, options: AttachmentOptions = {}) => {
-  const enabled = options.enabled !== false;
+  const cache = useOptionalTaskCacheScope();
+  const [withdrawn, setWithdrawn] = useState(false);
+  const [resourceRevision, setResourceRevision] = useState(0);
+  const enabled = options.enabled !== false && !withdrawn;
+  const beginRead = useCallback(async (signal: AbortSignal): Promise<TaskReadFence | null> =>
+    cache === null ? null : cache.beginTaskRead(projectId, taskId, 0, resourceRevision, signal), [cache, projectId, taskId, resourceRevision]);
+  const verifyRead = useCallback(async (fence: TaskReadFence | null, signal: AbortSignal): Promise<boolean> =>
+    cache === null || fence !== null && await cache.verifyTaskRead(fence, signal), [cache]);
+  const reportDeleted = useCallback((fence: TaskReadFence | null, error: unknown) => {
+    if (cache !== null && fence !== null && error instanceof ApiError && error.status === 410 && error.code === "task_deleted")
+      cache.reportTaskDeleted(fence, null);
+  }, [cache]);
+  useEffect(() => { setWithdrawn(false); }, [cache, projectId, taskId]);
   const scope = `${projectId}/${taskId}`;
   const currentScope = useRef(enabled ? scope : "");
   currentScope.current = enabled ? scope : "";
@@ -55,6 +69,41 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
+
+  useEffect(() => {
+    if (cache === null) return;
+    let live = true;
+    const withdraw = (removed: boolean, historyChanged = false) => {
+      if (!live) return;
+      listRequest.current?.abort(); previewRequest.current?.abort();
+      ++listGeneration.current;
+      setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
+      if (removed || historyChanged) {
+        writeRequest.current?.abort(); ++writeGeneration.current;
+        writeRequest.current = null;
+        setWrite({ scope, status: "idle", error: null });
+      }
+      if (removed) setWithdrawn(true);
+      else {
+        if (historyChanged) setWithdrawn(false);
+        setResourceRevision(value => value + 1);
+      }
+    };
+    const unsubscribe = cache.subscribe(event => {
+      if (event.projectId !== projectId) return;
+      const removed = event.deletedTaskIds?.includes(taskId) === true || event.taskDeletionHint?.taskId === taskId;
+      if (removed || event.historyChanged || event.taskDeletionHint?.pendingTaskIds.includes(taskId)) {
+        withdraw(removed, event.historyChanged);
+      } else if (event.baselineRebuilt) {
+        void cache.taskReadQualification(projectId, taskId, cache.signal).then(eligibility => {
+          if (!eligibility.inBaseline || eligibility.removed) withdraw(eligibility.removed);
+        }).catch(error => {
+          if (live && !isAbortError(error)) setList(prior => ({ ...prior, loading: false, error }));
+        });
+      }
+    });
+    return () => { live = false; unsubscribe(); };
+  }, [cache, projectId, taskId, scope]);
 
   useEffect(() => {
     const lifetime = new AbortController();
@@ -94,10 +143,12 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       const items: Attachment[] = [];
       const cursors = new Set<string>();
       let cursor: string | undefined;
+      let fence: TaskReadFence | null = null;
       try {
+        fence = cache === null ? null : await beginRead(controller.signal);
         do {
           const page = await api.list(projectId, taskId, cursor === undefined ? { limit: 100 } : { limit: 100, cursor }, controller.signal);
-          if (!owns()) return;
+          if (!owns() || cache !== null && !await verifyRead(fence, controller.signal) || !owns()) return;
           items.push(...page.items);
           attachmentTree(items);
           if (page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
@@ -107,12 +158,13 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
         } while (cursor !== undefined);
       } catch (error) {
         if (!owns() || isAbortError(error)) return;
+        reportDeleted(fence, error);
         setList((prior) => ({ ...prior, loading: false, complete: false, error }));
       } finally {
         if (generation === listGeneration.current) listRequest.current = null;
       }
     })();
-  }, [api, projectId, taskId, scope, enabled]);
+  }, [api, projectId, taskId, scope, enabled, cache, beginRead, verifyRead, reportDeleted]);
 
   const reload = useCallback(() => load(false), [load]);
 
@@ -132,13 +184,13 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     }
     return () => {
       ++listGeneration.current;
-      ++writeGeneration.current;
       listRequest.current?.abort();
-      writeRequest.current?.abort();
       listRequest.current = null;
-      writeRequest.current = null;
     };
   }, [load, reload, enabled, paused, resumeRevision, scope]);
+  useEffect(() => () => {
+    ++writeGeneration.current; writeRequest.current?.abort(); writeRequest.current = null;
+  }, [scope]);
 
   const selectedPath = selection.scope === scope ? selection.path : null;
   const visibleList = list.scope === scope ? list : initialList(scope);
@@ -167,21 +219,30 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     if (!enabled || path === null || selectedKind === undefined) return cleanup;
     const pauseRevision = authRequestsPauseRevision();
     const usesText = selectedKind === "text" || selectedKind === "markdown";
-    if (!usesText) {
+    if (!usesText && cache === null) {
       const nativeSource = selectedKind === "html" || selectedKind === "pdf" ? { updatedAt: selectedUpdatedAt!, reloadRevision: previewRevision } : undefined;
       setPreview({ scope, path, status: "ready", text: null, error: null, ...(nativeSource === undefined ? {} : { nativeSource }) });
       return cleanup;
     }
     void (async () => {
+      let fence: TaskReadFence | null = null;
       try {
+        fence = cache === null ? null : await beginRead(controller.signal);
+        if (!usesText) {
+          if (!await verifyRead(fence, controller.signal) || controller.signal.aborted) return;
+          const nativeSource = selectedKind === "html" || selectedKind === "pdf" ? { updatedAt: selectedUpdatedAt!, reloadRevision: previewRevision } : undefined;
+          setPreview({ scope, path, status: "ready", text: null, error: null, ...(nativeSource === undefined ? {} : { nativeSource }) });
+          return;
+        }
         const text = await api.readText(projectId, taskId, path, controller.signal);
-        if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
+        if ((cache === null || await verifyRead(fence, controller.signal)) && !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
       } catch (error) {
+        reportDeleted(fence, error);
         if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope && !isAbortError(error)) setPreview({ scope, path, status: "error", text: null, error });
       }
     })();
     return cleanup;
-  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled, paused, resumeRevision]);
+  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled, paused, resumeRevision, cache, beginRead, verifyRead, reportDeleted]);
 
   const select = useCallback((path: string | null) => setSelection({ scope, path }), [scope]);
   const retryPreview = useCallback(() => { if (!authRequestsPaused()) setPreviewRevision((value) => value + 1); }, []);
@@ -193,8 +254,16 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     const pauseRevision = authRequestsPauseRevision();
     const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === writeGeneration.current && currentScope.current === scope;
     setWrite({ scope, status: file === null ? "deleting" : "saving", error: null });
+    let fence: TaskReadFence | null = null;
     try {
+      fence = cache === null ? null : await beginRead(controller.signal);
+      if (cache !== null && !await verifyRead(fence, controller.signal) || !owns()) return false;
       const attachment = file === null ? (await api.remove(projectId, taskId, path, controller.signal), null) : await api.put(projectId, taskId, path, file, controller.signal);
+      if (!owns()) return false;
+      if (cache !== null && !await verifyRead(fence, controller.signal)) {
+        if (owns()) setWrite({ scope, status: "idle", error: new TaskCacheLifecycleChanged() });
+        return false;
+      }
       if (!owns()) return false;
       if (attachment !== null) {
         if (selectedMetadata.current.scope === scope && selectedMetadata.current.path === path && selectedMetadata.current.attachment !== undefined) {
@@ -212,13 +281,14 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       reload();
       return true;
     } catch (error) {
+      reportDeleted(fence, error);
       if (!owns()) return false;
       setWrite({ scope, status: "idle", error: isAbortError(error) ? null : error });
       return false;
     } finally {
-      if (generation === writeGeneration.current) writeRequest.current = null;
+      if (writeRequest.current === controller) writeRequest.current = null;
     }
-  }, [api, projectId, taskId, scope, reload, enabled]);
+  }, [api, projectId, taskId, scope, reload, enabled, cache, beginRead, verifyRead, reportDeleted]);
   const put = useCallback((path: string, file: File) => mutate(path, file), [mutate]);
   const remove = useCallback((path: string) => mutate(path, null), [mutate]);
   const visiblePreview = preview.scope === scope && preview.path === selectedPath ? preview : paused ? { ...initialPreview(scope, selectedPath), status: "idle" as const } : initialPreview(scope, selectedPath);

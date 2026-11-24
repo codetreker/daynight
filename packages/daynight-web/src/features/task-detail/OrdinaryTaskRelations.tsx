@@ -64,6 +64,18 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
   const retry = useCallback(() => setAttempt(value => value + 1), []);
   const reset = useCallback(() => { setCursor(null); setPrevious([]); retry(); }, [retry]);
   useEffect(() => { setCursor(null); setPrevious([]); setCreating(null); }, [owner]);
+  useEffect(() => scope.subscribe(event => {
+    if (event.projectId !== projectId || (event.deletedTaskIds?.length ?? 0) === 0 && !event.baselineRebuilt && event.taskDeletionHint === undefined) return;
+    const removed = new Set(event.deletedTaskIds ?? []);
+    if (event.taskDeletionHint !== undefined) { removed.add(event.taskDeletionHint.taskId); for (const id of event.taskDeletionHint.pendingTaskIds) removed.add(id); }
+    setView(old => {
+      if (old.owner !== owner) return old;
+      if (removed.has(taskId)) return { ...old, page: null, parent: null, current: null, pending: false };
+      return { ...old, parent: old.parent !== null && removed.has(old.parent.id) ? null : old.parent,
+        page: old.page === null ? null : { ...old.page, items: old.page.items.filter(item => !removed.has(item.id)) } };
+    });
+    setCursor(null); setPrevious([]); setAttempt(value => value + 1);
+  }), [scope, projectId, taskId, owner]);
   useEffect(() => {
     if (!active) return;
     const refresh = () => { if (document.visibilityState !== 'hidden') setAttempt(value => value + 1); };
@@ -83,6 +95,7 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
         await scope.ready(signal);
         fence = await scope.beginTaskRead(projectId, detail.id, 0, 0, signal);
         const generation = scope.getHistoryGeneration(projectId), revision = scope.getProjectRevision(projectId);
+        const projectionFence = await scope.prepareProjection(signal);
         const admission = { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch };
         // A fresh epoch-bearing Task observation qualifies both summary and direct readers.
         const observation = await getTaskObservation(projectId, detail.id, signal, admission);
@@ -101,10 +114,19 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
         const read = async (slot: 'parent' | 'children') => {
           try {
             if (slot === 'parent') {
-              const parent = current.parentTaskId ? await getTask(projectId, current.parentTaskId, signal, admission) : null;
+              const parentFence = current.parentTaskId ? await scope.beginTaskRead(projectId, current.parentTaskId, 0, 0, signal) : null;
+              let parent: TaskDetail | null = null;
+              try { parent = current.parentTaskId ? await getTask(projectId, current.parentTaskId, signal, admission) : null; }
+              catch (error) {
+                if (parentFence !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') scope.reportTaskDeleted(parentFence, observation.epoch);
+                throw error;
+              }
+              if (parentFence !== null && !await scope.verifyTaskRead(parentFence, signal)) return;
               if (await qualified()) setView(old => ({ ...old, owner, parent, parentError: null, current, fence }));
             } else {
-              const page = await listTaskChildren(projectId, detail.id, cursor, signal, admission);
+              const received = await listTaskChildren(projectId, detail.id, cursor, signal, admission);
+              const accepted = await scope.qualifyProjection(projectionFence, received.items.map(item => ({ projectId, id: item.id })), signal);
+              const page = { ...received, items: received.items.filter(item => accepted.has(`${projectId}/${item.id}`)) };
               if (await qualified()) setView(old => {
                 const prior = old.owner === owner && old.page !== null ? new Map(old.page.items.map(item => [item.id, item])) : new Map<string, TaskDetail>();
                 return { ...old, owner, page: { ...page, items: page.items.map(item => { const earlier = prior.get(item.id); return earlier !== undefined && earlier.version > item.version ? earlier : item; }) }, current, fence, error: null, pending: false };
@@ -112,7 +134,7 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
             }
           } catch (error) {
             if (!live || signal.aborted || isAbortError(error)) return;
-            if (fence !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') { scope.fenceTaskHistory(projectId, null); return; }
+            if (slot === 'children' && fence !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') { scope.reportTaskDeleted(fence, observation.epoch); return; }
             if (!await qualified()) return;
             setView(old => slot === 'parent'
               ? { ...old, parent: denied(error) ? null : old.parent, parentError: error }
@@ -125,7 +147,7 @@ export const OrdinaryTaskRelations = ({ projectId, detail, taskId: explicitTaskI
         if (!denied(error)) { try { await scope.ready(signal); } catch { return; } }
         if (!live || signal.aborted || fence !== null && !scope.isTaskReadCurrent(fence, true)) return;
         if (fence !== null && error instanceof ApiError && error.status === 410 && error.code === 'task_deleted') {
-          scope.fenceTaskHistory(projectId, null);
+          scope.reportTaskDeleted(fence, null);
           return;
         }
         setView(old => old.owner === owner ? { ...old, page: denied(error) ? null : old.page, parent: denied(error) ? null : old.parent, fence: denied(error) ? null : old.fence, current: denied(error) ? null : old.current, error, pending: false } : { owner, page: null, parent: null, error, parentError: null, pending: false, fence: null, current: null });

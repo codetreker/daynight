@@ -175,6 +175,6 @@ describe('assignment admission through authentication and project histories', ()
   it('accepts a trusted deletion receipt without replaying the assignment or revoking the parent project', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; writes.mockRejectedValueOnce(new ApiError('server', 410, 'task_deleted'));
     sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
-    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(world.scope.getHistoryGeneration(project)).toBe(0); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
   });
 });

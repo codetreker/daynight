@@ -25,6 +25,7 @@ const incomplete = (state: State, items: readonly PersonalTaskItem[], error: unk
 export const useMyTasks = (readEnabled: boolean) => {
   const scope = useTaskCacheScope();
   const [state, setState] = useState<State>(() => initial(scope));
+  const published = useRef(state); published.current = state;
   const refreshAction = useRef<() => void>(() => {});
   const history = useRef<{ scope: TaskCacheScope; fence: Fence; hasComplete: boolean; errors: Map<string, unknown> }>({ scope, fence: null, hasComplete: false, errors: new Map() });
   if (history.current.scope !== scope) history.current = { scope, fence: null, hasComplete: false, errors: new Map() };
@@ -35,6 +36,15 @@ export const useMyTasks = (readEnabled: boolean) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const projection = history.current;
     const cleanupErrors = projection.errors;
+    const registrations = new Map<string, () => void>();
+    const register = (projectIds: readonly string[]) => {
+      for (const projectId of projectIds) if (!registrations.has(projectId)) registrations.set(projectId, scope.registerProjectionProjects([projectId]));
+    };
+    register(published.current.scope === scope ? published.current.items.map(item => item.project.id) : []);
+    const qualify = async (fence: ReadonlyMap<string, string>, items: readonly PersonalTaskItem[], signal: AbortSignal) => {
+      const allowed = await scope.qualifyProjection(fence, items.map(item => ({ projectId: item.project.id, id: item.task.id })), signal);
+      return visible(scope, fence, items).filter(item => allowed.has(`${item.project.id}/${item.task.id}`));
+    };
     const allowed = () => active && readEnabled && !scope.isInvalidated;
     const schedule = () => {
       if (timer !== null) clearTimeout(timer);
@@ -54,10 +64,12 @@ export const useMyTasks = (readEnabled: boolean) => {
         requestFence = fence;
         const prepared = fence;
         await scope.ready(signal);
+        const previous = published.current;
+        const previousItems = previous.scope === scope && previous.fence !== null ? await qualify(previous.fence, previous.items, signal) : [];
         if (!current()) return;
         setState(old => {
           if (old.scope !== scope || !current()) return old;
-          const filtered = old.fence === null ? [] : visible(scope, old.fence, old.items);
+          const filtered = old === previous ? previousItems : old.fence === null ? [] : visible(scope, old.fence, old.items);
           const denied = scope.projectionSnapshotHasDenials(prepared) || filtered.length !== old.items.length;
           return denied ? incomplete(old, filtered, scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? old.error) : old;
         });
@@ -71,6 +83,7 @@ export const useMyTasks = (readEnabled: boolean) => {
           const page = await listPersonalTasks(cursor, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch });
           const received = page.receivedMonotonic;
           if (!current()) return;
+          register(page.items.map(item => item.project.id));
           if (revision === null) { revision = page.inventoryRevision; totalTasks = page.totalTaskCount; totalProjects = page.totalProjectCount; }
           else if (revision !== page.inventoryRevision || totalTasks !== page.totalTaskCount || totalProjects !== page.totalProjectCount) throw new ApiError('protocol');
           for (const item of page.items) {
@@ -89,7 +102,8 @@ export const useMyTasks = (readEnabled: boolean) => {
           await scope.ready(signal);
           if (!current()) return;
           if (cursor !== null && !projection.hasComplete) {
-            const partial = visible(scope, prepared, items);
+            const partial = await qualify(prepared, items, signal);
+            if (!current()) return;
             projection.fence = prepared;
             setState(old => old.scope !== scope || !current() || old.loaded ? old : { ...old, fence: prepared, items: partial,
               observedAt: lastObservedAt, receivedMonotonic: lastReceived, sessionPartial, loading: true,
@@ -100,7 +114,8 @@ export const useMyTasks = (readEnabled: boolean) => {
         await scope.ready(signal);
         if (!current()) return;
         for (const projectId of cleanupErrors.keys()) if (!scope.isProjectionDenied(projectId)) cleanupErrors.delete(projectId);
-        const filtered = visible(scope, prepared, items), denied = scope.projectionSnapshotHasDenials(prepared) || filtered.length !== items.length;
+        const filtered = await qualify(prepared, items, signal), denied = scope.projectionSnapshotHasDenials(prepared) || filtered.length !== items.length;
+        if (!current()) return;
         const error = scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? null;
         for (const projectId of new Set(filtered.map(item => item.project.id))) scope.notifyTagColors(projectId);
         projection.fence = prepared;
@@ -117,9 +132,16 @@ export const useMyTasks = (readEnabled: boolean) => {
         try { await scope.ready(signal); } catch (readyError) { error = readyError; readinessFailed = true; }
         if (!current()) return;
         const failedFence = fence;
+        const previous = published.current;
+        let previousItems: readonly PersonalTaskItem[] = [];
+        if (failedFence !== null && !readinessFailed && previous.scope === scope && previous.fence !== null) {
+          try { previousItems = await qualify(previous.fence, previous.items, signal); }
+          catch (qualificationError) { error = qualificationError; readinessFailed = true; }
+        }
+        if (!current()) return;
         setState(old => {
           if (old.scope !== scope || !current()) return old;
-          const filtered = failedFence === null || readinessFailed || old.fence === null ? [] : visible(scope, old.fence, old.items);
+          const filtered = failedFence === null || readinessFailed || old.fence === null ? [] : old === previous ? previousItems : visible(scope, old.fence, old.items);
           const failure = failedFence === null ? scope.projectionError ?? error : scope.projectionSnapshotError(failedFence) ?? cleanupErrors.values().next().value ?? error;
           const denied = failedFence === null || readinessFailed || scope.projectionSnapshotHasDenials(failedFence) || filtered.length !== old.items.length;
           const base = { ...old, loading: false, stale: true, error: failure };
@@ -135,6 +157,23 @@ export const useMyTasks = (readEnabled: boolean) => {
     const cancel = () => { ++generation; controller?.abort(); controller = null; requestFence = null; };
     const unsubscribe = scope.subscribeProjection(event => {
       if (event.accessRestored) { cancel(); queued = false; void load(); return; }
+      if (event.deletedTaskIds !== undefined || event.baselineRebuilt || event.taskDeletionHint !== undefined) {
+        if (event.deletedTaskIds?.length === 0 && !event.baselineRebuilt && event.taskDeletionHint === undefined) return;
+        const removed = new Set(event.deletedTaskIds ?? (event.taskDeletionHint === undefined ? [] : [event.taskDeletionHint.taskId]));
+        if (!registrations.has(event.projectId)) return;
+        if (!event.baselineRebuilt && !event.taskDeletionHint && !published.current.items.some(item => item.project.id === event.projectId && removed.has(item.task.id))) return;
+        cancel(); queued = false;
+        setState(old => old.scope !== scope ? old : { ...incomplete(old, old.items.filter(item => item.project.id !== event.projectId || !removed.has(item.task.id)), old.error), loading: false });
+        if (event.baselineRebuilt && projection.fence !== null) {
+          const fence = projection.fence;
+          void qualify(fence, published.current.scope === scope ? published.current.items : [], scope.signal).then(items => {
+            if (!allowed() || projection.fence !== fence) return;
+            const allowedIds = new Set(items.map(item => `${item.project.id}/${item.task.id}`));
+            setState(old => old.scope !== scope ? old : incomplete(old, old.items.filter(item => allowedIds.has(`${item.project.id}/${item.task.id}`)), old.error));
+          }).catch(error => { if (allowed()) setState(old => old.scope !== scope ? old : incomplete(old, old.items, error)); });
+        }
+        void load(); return;
+      }
       if (!event.accessRevoked && !event.scopeSuspended && !event.historyChanged) {
         if (scope.getAuthorizedProject(event.projectId) !== null) cleanupErrors.delete(event.projectId);
         return;
@@ -158,7 +197,7 @@ export const useMyTasks = (readEnabled: boolean) => {
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     void load(); schedule();
-    return () => { active = false; cancel(); if (timer !== null) clearTimeout(timer); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); unsubscribe(); refreshAction.current = () => {}; };
+    return () => { active = false; cancel(); if (timer !== null) clearTimeout(timer); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); unsubscribe(); for (const unregister of registrations.values()) unregister(); refreshAction.current = () => {}; };
   }, [scope, readEnabled]);
   const current = state.scope === scope && !scope.isInvalidated ? state : initial(scope);
   return { items: current.items, totalTaskCount: current.totalTaskCount, totalProjectCount: current.totalProjectCount,

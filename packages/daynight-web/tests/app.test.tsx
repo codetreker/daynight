@@ -82,8 +82,21 @@ describe('application navigation', () => {
     const taskId = '00000000-0000-4000-8000-000000000002';
     window.history.replaceState(null, '', `/projects/${projectId}/tasks/${taskId}/attachments/docs/guide.md`);
     const list = { items: [{ path: 'docs/guide.md', contentType: 'text/markdown', sizeBytes: 12, createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' }], nextCursor: null };
-    vi.stubGlobal('fetch', vi.fn(withDetailResources(projectId, taskId, async (url: string) => url.includes('/attachments?') ? new Response(JSON.stringify(list), { headers: { 'Content-Type': 'application/json' } }) : new Response('# Standalone document'))));
+    const documentUrl = `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`;
+    let requested!: () => void; let releaseDocument!: (response: Response) => void;
+    const documentRequested = new Promise<void>(resolve => { requested = resolve; });
+    const documentResponse = new Promise<Response>(resolve => { releaseDocument = resolve; });
+    vi.stubGlobal('fetch', vi.fn(withDetailResources(projectId, taskId, async (url: string) => {
+      if (url.includes('/attachments?')) return new Response(JSON.stringify(list), { headers: { 'Content-Type': 'application/json' } });
+      if (url === documentUrl) { requested(); return documentResponse; }
+      return new Response('# Standalone document');
+    })));
     render(<App />);
+    await documentRequested;
+    expect(fetch).toHaveBeenCalledWith(documentUrl, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(screen.getByText('正在加载预览…')).toHaveAttribute('role', 'status');
+    expect(screen.queryByRole('heading', { name: 'Standalone document' })).toBeNull();
+    await act(async () => { releaseDocument(new Response('# Standalone document')); });
     await screen.findByRole('heading', { name: 'Standalone document' });
     expect(document.title).toBe('任务详情 · Daynight');
     expect(screen.getByRole('main')).toHaveFocus();

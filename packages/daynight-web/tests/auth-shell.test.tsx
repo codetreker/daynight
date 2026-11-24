@@ -966,12 +966,27 @@ describe("authenticated standalone attachment reader", () => {
   it("checks the session before opening a deep link outside workspace chrome and keeps the reader on a locale change", async () => {
     window.history.replaceState(null, "", location("docs/guide.md"));
     let identify!: (response: Response) => void;
-    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string) => url === "/api/v1/me" ? new Promise<Response>((done) => { identify = done; })
-      : Promise.resolve(url.includes("/attachments?") ? inventory("docs/guide.md") : new Response("# Authenticated document"))));
+    let requestedPreview!: () => void;
+    const previewRequested = new Promise<void>(resolve => { requestedPreview = resolve; });
+    let finishPreview!: (response: Response) => void;
+    const previewResponse = new Promise<Response>(resolve => { finishPreview = resolve; });
+    const previewUrl = `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`;
+    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string) => {
+      if (url === "/api/v1/me") return new Promise<Response>((done) => { identify = done; });
+      if (url.includes("/attachments?")) return Promise.resolve(inventory("docs/guide.md"));
+      if (url === previewUrl) { requestedPreview(); return previewResponse; }
+      throw new Error(`Unexpected request ${url}`);
+    }));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/v1/me");
     await act(async () => identify(json(user())));
+    await previewRequested;
+    expect(fetcher.mock.calls.filter(([url]) => url === previewUrl)).toHaveLength(1);
+    expect(within(screen.getByRole("group", { name: "附件预览" })).getByRole("status")).toHaveTextContent("正在加载预览");
+    expect(screen.queryByRole("heading", { name: "Authenticated document" })).toBeNull();
+    await act(async () => finishPreview(new Response("# Authenticated document")));
     await screen.findByRole("heading", { name: "Authenticated document" });
     expect(document.querySelector(".shell")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -983,6 +998,7 @@ describe("authenticated standalone attachment reader", () => {
     expect(screen.getByRole("main")).toBe(reader);
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`);
     expect(fetcher.mock.calls.filter(([url]) => url.includes("/sessions?"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
   });
 
   it("keeps the authenticated attachment controller and panel mounted through same-task history", async () => {
