@@ -55,6 +55,10 @@ type archiveLease struct {
 }
 
 func newArchiveLease(ctx context.Context, client *blob.Client) (*archiveLease, error) {
+	return newArchiveLeaseWithTicks(ctx, client, nil, nil)
+}
+
+func newArchiveLeaseWithTicks(ctx context.Context, client *blob.Client, ticks <-chan time.Time, renewed func()) (*archiveLease, error) {
 	lc, err := lease.NewBlobClient(client, nil)
 	if err != nil {
 		return nil, err
@@ -77,7 +81,15 @@ func newArchiveLease(ctx context.Context, client *blob.Client) (*archiveLease, e
 	}
 	leaseCtx, cancel := context.WithCancelCause(context.Background())
 	l := &archiveLease{client: lc, ctx: leaseCtx, cancel: cancel, done: make(chan struct{}), until: started.Add(50 * time.Second)}
-	go l.renew()
+	go func() {
+		defer close(l.done)
+		if ticks == nil {
+			ticker := time.NewTicker(20 * time.Second)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
+		l.renew(ticks, renewed)
+	}()
 	if err := l.check(); err != nil {
 		return nil, errors.Join(err, l.close(false))
 	}
@@ -94,15 +106,12 @@ func (l *archiveLease) check() error {
 	return context.Cause(l.ctx)
 }
 
-func (l *archiveLease) renew() {
-	defer close(l.done)
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
+func (l *archiveLease) renew(ticks <-chan time.Time, renewed func()) {
 	for {
 		select {
 		case <-l.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			if l.check() != nil {
 				return
 			}
@@ -122,6 +131,9 @@ func (l *archiveLease) renew() {
 			l.mu.Unlock()
 			if l.check() != nil {
 				return
+			}
+			if renewed != nil {
+				renewed()
 			}
 		}
 	}
