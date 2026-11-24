@@ -1,7 +1,5 @@
 name: checks
 
-# Mainline-equivalent control measurement.
-
 on:
   pull_request:
   push:
@@ -357,16 +355,29 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Create the Store root test database
+      - name: Create isolated test databases
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           docker exec "$POSTGRES_CONTAINER" sh -ec 'test "$(stat -f -c %T "$PGDATA")" = tmpfs; df -h "$PGDATA"'
           docker exec "$POSTGRES_CONTAINER" createdb -U daynight daynight_store_root
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            for database in daynight_pg_task daynight_pg_github daynight_pg_identity daynight_pg_session daynight_pg_worker daynight_service_project daynight_service_session daynight_service_mcpdownload; do
+              docker exec "$POSTGRES_CONTAINER" createdb -U daynight "$database"
+            done
+          fi
       - name: Validate Go module tests and coverage
         id: server-validation
         env:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
+          DAYNIGHT_TEST_POSTGRES_TASK_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_pg_task?sslmode=disable
+          DAYNIGHT_TEST_POSTGRES_GITHUB_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_pg_github?sslmode=disable
+          DAYNIGHT_TEST_POSTGRES_IDENTITY_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_pg_identity?sslmode=disable
+          DAYNIGHT_TEST_POSTGRES_SESSION_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_pg_session?sslmode=disable
+          DAYNIGHT_TEST_POSTGRES_WORKER_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_pg_worker?sslmode=disable
+          DAYNIGHT_TEST_SERVICE_PROJECT_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_service_project?sslmode=disable
+          DAYNIGHT_TEST_SERVICE_SESSION_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_service_session?sslmode=disable
+          DAYNIGHT_TEST_SERVICE_MCPDOWNLOAD_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_service_mcpdownload?sslmode=disable
         run: |
           rm -rf .tmp/go-test-evidence/module
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
