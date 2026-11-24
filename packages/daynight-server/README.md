@@ -3047,14 +3047,14 @@ build and verifies it in the binary; other process tests may differ. The explici
 
 ### Coverage
 
-`scripts/check.sh` and `scripts/startup-shutdown.sh` invoke `go-cov` v0.1.4 with
-one checked-in configuration. Package and function thresholds remain 85% and
+`scripts/check.sh`, the CI module coverage job, and `scripts/startup-shutdown.sh`
+use `go-cov` v0.1.4 with one checked-in configuration. Package and function thresholds are 85% and
 80%. `critical_blocks.fail` is false, so critical-block analysis is disabled.
 Each raw profile passes an exact statement comparison strictly greater than
 90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
 coverage blocks without loading the complete profile into one string.
 
-Each coverage invocation also retains the original `go test -json` bytes under
+Each local module and lifecycle coverage invocation retains the original `go test -json` bytes under
 `.tmp/go-test-evidence/module/run-*/` or
 `.tmp/go-test-evidence/startup-shutdown/run-*/`. Inspect `go-test.jsonl` when the
 coverage summary omits a test's failure detail. `go-test.complete.json` records
@@ -3063,8 +3063,9 @@ complete capture, including a failed test run, rather than a passing result.
 A missing marker means the log may be partial. `go-test.failed.json` records a
 capture failure and prevents success even if another invocation publishes a
 completion marker afterward. Later invocations use new
-directories, preserving earlier evidence. The corresponding CI artifacts include
-these files even when validation fails.
+directories, preserving earlier evidence. CI module shards retain the same
+capture and marker files under `.tmp/go-shard/<shard>/`. Their artifacts retain
+available diagnostics even when shard validation fails.
 
 Capture preserves the same Go invocation, parameters and coverage calculation.
 File or forwarding errors fail validation. The existing command supervisor owns
@@ -3106,12 +3107,19 @@ The [Task fixture decision](../../.agents/notes/implemented/testing/2026-11-10-t
 records reset ownership and isolation limits.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
-module's `.tmp/`. The `verify-server` and `verify-server-startup-shutdown` jobs
-use independent PostgreSQL services and upload their profiles separately.
-Selected jobs must both actually succeed. Inspect results for the tested
-revision; a local result does not establish a hosted result. The
-[lifecycle decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-startup-shutdown.md)
-records the partition and scheduling rationale.
+module's `.tmp/`. In CI, `verify-server-shards` assigns the Store root, two
+groups of PostgreSQL DAO packages, and the remaining module packages to
+independent runners with PostgreSQL and Redis. A parallel preflight runs vet,
+test tooling and fixture checks, and the explicit Azure tests. Each test shard
+uses the full module coverage universe and forces test execution. The
+`verify-server` job verifies the source, package assignments and successful
+test captures, then applies the same `go-cov` gates to their combined profile.
+`verify-server-startup-shutdown` keeps its own database and command coverage
+profile. Selected jobs must succeed. Inspect results for the tested revision.
+See the
+[module shard decision](../../.agents/notes/implemented/testing/2026-11-24-go-module-shards.md)
+and the
+[lifecycle decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-startup-shutdown.md).
 
 Ordinary discovery excludes stress-tagged files. With an isolated database,
 `bash scripts/stress.sh` runs its explicit stress workloads with race detection

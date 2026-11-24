@@ -1443,13 +1443,15 @@ Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
 Windows and macOS ARM64, plus Node compatibility. Completion unit tests remain
-in the ordinary CLI suite. The Go module job runs its PostgreSQL-backed module
-gate and uploads coverage. The independent
+in the ordinary CLI suite. Four Go module test shards run against independent
+databases, alongside the module preflight. The `verify-server` job checks
+complete package execution and enforces the module coverage policy on their
+combined profile. The independent
 `verify-server-startup-shutdown` job uses the same server selection, waits only
 for detection, and owns its PostgreSQL-backed command lifecycle tests and
-command-package coverage. Both coverage jobs provide isolated Azurite to execute
-offline migration mechanisms and command paths. Selected Go module and startup/shutdown jobs must both
-actually succeed. The independent Linux `verify-api-integration` job waits only
+command-package coverage. Go module preflight and startup/shutdown provide
+isolated Azurite for the storage checks. The module gate and startup/shutdown
+must both succeed when selected. The independent Linux `verify-api-integration` job waits only
 for detection, prepares its own Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
 unit tests before production Web preparation and the explicit normal API suite. Its always-run
 reconciliation step retains original command and cleanup failures; it uploads

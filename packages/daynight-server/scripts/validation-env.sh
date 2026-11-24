@@ -2,7 +2,9 @@
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd -- "$DAYNIGHT_MODULE_ROOT"
-: "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to an isolated PostgreSQL test database}"
+if [[ "${1:-}" != --coverage-report ]]; then
+  : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to an isolated PostgreSQL test database}"
+fi
 
 unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \
   THRESHOLD_PACKAGE THRESHOLD_PRINT THRESHOLD_TOTAL UNCOVERED_LIMIT \

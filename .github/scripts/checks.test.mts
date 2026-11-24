@@ -39,12 +39,6 @@ test("workflow concurrency protects running main runs and isolates PR refs", () 
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"]]) {
-    const job = jobs.get(name!)!;
-    assert.match(job, /^    needs: detect-changes$/m);
-    assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
-    assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-  }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
 
@@ -72,7 +66,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-mobile", "verify-e2e"]) {
+for (const name of required.filter((name) => name !== "detect-changes")) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -649,6 +643,7 @@ test("Web jobs validate the current checkout without restoring retired acceptanc
 });
 
 const server = jobs.get("verify-server")!;
+const serverShards = jobs.get("verify-server-shards")!;
 const startupShutdown = jobs.get("verify-server-startup-shutdown")!;
 const apiIntegration = jobs.get("verify-api-integration")!;
 const selectedServerStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go server jobs to succeed\n"))!;
@@ -657,17 +652,17 @@ const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Requir
 const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
 
 test("Go coverage partitions provide isolated Azure migration storage", () => {
-  for (const stage of [server, startupShutdown]) {
+  for (const stage of [serverShards, startupShutdown]) {
     assert.match(stage, /^      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=[^;]+;BlobEndpoint=http:\/\/127\.0\.0\.1:10000\/daynight;'$/m);
     assert.match(stage, /^      azurite:\n        image: mcr\.microsoft\.com\/azure-storage\/azurite:3\.35\.0@sha256:/m);
     assert.match(stage, /^          AZURITE_ACCOUNTS: daynight:/m);
   }
 });
 
-test("Go module coverage and API integration prepare independent runners", () => {
+test("Go module shards, lifecycle and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
-  for (const stage of [server, startupShutdown, apiIntegration]) {
+  for (const stage of [serverShards, startupShutdown, apiIntegration]) {
     assert.match(stage, /^    runs-on: ubuntu-latest$/m);
     assert.match(stage, /uses: actions\/checkout@/);
     assert.match(stage, /^          persist-credentials: false$/m);
@@ -677,21 +672,88 @@ test("Go module coverage and API integration prepare independent runners", () =>
     assert.match(stage, /^        image: postgres:18\.6-bookworm@sha256:/m);
     assert.doesNotMatch(stage, /download-artifact|continue-on-error|pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
   }
-  assert.doesNotMatch(server, /pnpm|integration\.sh|integration-runtime\.test\.mts|server-integration|integration-results/);
+  assert.doesNotMatch(serverShards, /pnpm|integration\.sh|integration-runtime\.test\.mts|server-integration|integration-results/);
   const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
   assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
-  const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
-  assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
-  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
-  assert.deepEqual(artifactPaths(coverage), [
-    "packages/daynight-server/coverage.out",
-    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.jsonl",
-    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.complete.json",
-    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.failed.json",
-  ]);
-  assert.doesNotMatch(apiIntegration, /scripts\/check\.sh|server-validation|coverage\.out/);
+  assert.doesNotMatch(apiIntegration, /scripts\/check(?:-go-shards?)?\.sh|coverage\.out/);
   assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
+
+const goSuiteShards = ["root", "store-a", "store-b", "other"];
+const goShardSteps = stepsOf(serverShards);
+const serverSteps = stepsOf(server);
+const goShardsGuard = serverSteps.find((entry) => entry.includes("name: Require each Go server shard to succeed\n"))!;
+const goShardsGuardCommand = goShardsGuard.match(/^        run: (.+)$/m)![1]!;
+
+test("Go module validation runs all assigned shards and preflight", () => {
+  assert.match(serverShards, /^    needs: detect-changes$/m);
+  assert.match(serverShards, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
+  assert.match(serverShards, /^      fail-fast: false$/m);
+  assert.deepEqual(serverShards.match(/^        shard: \[([^\]]+)\]$/m)![1]!.split(", "), [...goSuiteShards, "preflight"]);
+
+  const validation = goShardSteps.find((entry) => entry.includes("id: server-shard\n"))!;
+  assert.match(validation, /^        run: bash scripts\/check-go-shard\.sh "\$SHARD"$/m);
+  assert.match(validation, /^          SHARD: \$\{\{ matrix.shard \}\}$/m);
+  assert.doesNotMatch(validation, /continue-on-error|^        if:/m);
+
+  const database = goShardSteps.find((entry) => entry.includes("name: Create the Store root test database\n"))!;
+  assert.match(database, /^        if: matrix.shard == 'root'$/m);
+  assert.match(database, /createdb -U daynight daynight_store_root/);
+  assert.match(validation, /^          DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: \$\{\{ matrix.shard == 'root' && '[^']+\/daynight_store_root\?sslmode=disable' \|\| '' \}\}$/m);
+  assert.ok(goShardSteps.indexOf(database) < goShardSteps.indexOf(validation));
+
+  const azure = goShardSteps.find((entry) => entry.includes("name: Validate Azure storage and startup\n"))!;
+  assert.match(azure, /^        if: matrix.shard == 'preflight'$/m);
+  assert.match(azure, /TestAzurite\(ArchiveStaging\)\?/);
+  assert.match(azure, /TestAzureStartupWithAzurite/);
+  assert.match(azure, /-run '\^TestAzure' \.\/internal\/service\/mcpdownload \.\/internal\/core\/session/);
+});
+
+test("Go module aggregate consumes each suite artifact under the required check", () => {
+  assert.match(server, /^    name: verify \(Go server\)$/m);
+  assert.match(server, /^    needs: \[detect-changes, verify-server-shards\]$/m);
+  assert.match(server, /^    if: \$\{\{ always\(\) && needs.detect-changes.outputs.server == 'true' \}\}$/m);
+  assert.match(server, /^    runs-on: ubuntu-latest$/m);
+  assert.match(server, /^          go-version: 1\.27\.2$/m);
+  assert.match(server, /^          node-version: 24$/m);
+  assert.doesNotMatch(server, /continue-on-error|^    services:|DAYNIGHT_TEST_DATABASE_URL/m);
+  assert.equal(serverSteps[0], goShardsGuard);
+  assert.match(goShardsGuard, /^          SHARDS_RESULT: \$\{\{ needs.verify-server-shards.result \}\}$/m);
+
+  const shardUploads = uploadSteps(serverShards);
+  assert.equal(shardUploads.length, 1);
+  const shardUpload = shardUploads[0]!;
+  assert.equal(artifactName(shardUpload), "daynight-server-shard-${{ matrix.shard }}");
+  assert.match(shardUpload, /^        if: \$\{\{ always\(\) && matrix.shard != 'preflight' && steps.server-shard.outcome != 'skipped' \}\}$/m);
+  assert.match(shardUpload, /^          if-no-files-found: \$\{\{ steps.server-shard.outcome == 'success' && 'error' \|\| 'ignore' \}\}$/m);
+  assert.match(shardUpload, /^          include-hidden-files: true$/m);
+  assert.deepEqual(artifactPaths(shardUpload), ["coverage.out", "receipt.json", "go-test.jsonl", "go-test.complete.json", "go-test.failed.json"]
+    .map((file) => "packages/daynight-server/.tmp/go-shard/${{ matrix.shard }}/" + file));
+
+  const downloads = serverSteps.filter((entry) => entry.includes("uses: actions/download-artifact@"));
+  const report = serverSteps.find((entry) => entry.includes("run: bash scripts/check-go-shards.sh\n"))!;
+  assert.deepEqual(downloads.map(artifactName), goSuiteShards.map((shard) => `daynight-server-shard-${shard}`));
+  assert.deepEqual(downloads.flatMap(artifactPaths), goSuiteShards.map((shard) => `packages/daynight-server/.tmp/go-shard/${shard}`));
+  assert.ok(downloads.every((step) => serverSteps.indexOf(step) < serverSteps.indexOf(report)));
+  assert.doesNotMatch(report, /^        if:/m);
+
+  const outputs = uploadSteps(server);
+  assert.equal(outputs.length, 1);
+  assert.equal(artifactName(outputs[0]!), "daynight-server-acceptance");
+  assert.deepEqual(artifactPaths(outputs[0]!), ["packages/daynight-server/coverage.out"]);
+  assert.ok(serverSteps.indexOf(report) < serverSteps.indexOf(outputs[0]!));
+});
+
+for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
+  test(`Go module aggregate requires all shard jobs to succeed: ${outcome}`, () => {
+    const result = spawnSync("bash", ["-e", "-c", goShardsGuardCommand], {
+      env: { ...process.env, SHARDS_RESULT: outcome }, encoding: "utf8", timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, outcome === "success");
+  });
+}
 
 test("startup and shutdown uses an independent selected runner and coverage artifact", () => {
   assert.match(startupShutdown, /^    name: verify \(Go server startup & shutdown\)$/m);
