@@ -14,6 +14,7 @@ import (
 type ArchiveCleanupRunner struct {
 	mu       sync.Mutex
 	sweep    func(context.Context, string) (string, error)
+	botSweep func(context.Context, string) (string, error)
 	logger   *slog.Logger
 	interval time.Duration
 	cancel   context.CancelFunc
@@ -22,6 +23,18 @@ type ArchiveCleanupRunner struct {
 
 func NewArchiveCleanupRunner(cleanup *ArchiveCleanup, logger *slog.Logger) *ArchiveCleanupRunner {
 	return &ArchiveCleanupRunner{sweep: cleanup.Sweep, logger: logger, interval: time.Minute}
+}
+
+// SetBotHistorySweep shares shutdown ownership while retaining an independent
+// cursor and deadline for Bot resources that have no Task archive lifetime.
+func (r *ArchiveCleanupRunner) SetBotHistorySweep(sweep func(context.Context, string) (string, error)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done != nil || sweep == nil {
+		return errors.New("Bot history cleanup must be configured before startup")
+	}
+	r.botSweep = sweep
+	return nil
 }
 
 func (r *ArchiveCleanupRunner) Start(root context.Context) error {
@@ -41,7 +54,7 @@ func (r *ArchiveCleanupRunner) Start(root context.Context) error {
 
 func (r *ArchiveCleanupRunner) run(ctx context.Context) {
 	defer close(r.done)
-	var cursor string
+	var cursor, botCursor string
 	for {
 		if ctx.Err() != nil {
 			return
@@ -52,6 +65,15 @@ func (r *ArchiveCleanupRunner) run(ctx context.Context) {
 		cursor = next
 		if err != nil && ctx.Err() == nil && r.logger != nil {
 			r.logger.Error("archive cleanup pass failed", "component", "session_archive", "operation", "cleanup", "error", err)
+		}
+		if r.botSweep != nil && ctx.Err() == nil {
+			pass, cancel := context.WithTimeout(ctx, time.Minute)
+			next, err := r.botSweep(pass, botCursor)
+			cancel()
+			botCursor = next
+			if err != nil && ctx.Err() == nil && r.logger != nil {
+				r.logger.Error("Bot history cleanup pass failed", "component", "bot_history", "operation", "cleanup", "error", err)
+			}
 		}
 		timer := time.NewTimer(r.interval)
 		select {

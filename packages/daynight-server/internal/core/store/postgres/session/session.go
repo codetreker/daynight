@@ -401,7 +401,7 @@ func (tx *DAO) LockBotSessionStop(ctx context.Context, id, botID, owner string) 
 
 func (tx *DAO) DeleteBotSession(ctx context.Context, id, botID string) error {
 	// Session deletion owns metadata cleanup explicitly, after its file and lease barriers.
-	for _, table := range []string{"session_archive_chunks", "session_archive_files", "session_archive_bundles", "session_archive_migrations", "session_operation_intents", "session_resource_references", "session_image_chunks", "session_image_uploads", "session_image_captures", "session_resource_leases", "session_resource_state", "session_media_requests", "session_source_hashes", "session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"} {
+	for _, table := range []string{"bot_history_reclaims", "bot_history_windows", "session_archive_chunks", "session_archive_files", "session_archive_bundles", "session_archive_migrations", "session_operation_intents", "session_resource_references", "session_image_chunks", "session_image_uploads", "session_image_captures", "session_resource_leases", "session_resource_state", "session_media_requests", "session_source_hashes", "session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"} {
 		if _, err := tx.tx.Exec(ctx, `DELETE FROM `+table+` WHERE session_id=$1`, id); err != nil {
 			return pginternal.QueryError("delete bot session children", err)
 		}

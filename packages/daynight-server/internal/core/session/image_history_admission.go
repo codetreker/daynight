@@ -11,6 +11,10 @@ import (
 // Captures may settle the image occurrences of an already complete metadata
 // checkpoint. New input requires its full sealable resource closure as well.
 func requireImageHistoryLedger(ctx context.Context, tx *operationTx, r *record, capture bool) error {
+	if r.Live != nil && r.Live.BotHistoryWindowVersion == 1 {
+		_, err := readBotHistoryCheckpoint(ctx, tx, r)
+		return err
+	}
 	if r.OnlineMode == "relay" {
 		return nil
 	}

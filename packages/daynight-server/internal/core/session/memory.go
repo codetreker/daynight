@@ -22,21 +22,22 @@ type timelineVersion struct {
 	Hash     [32]byte
 }
 type liveSession struct {
-	ContentReadVersion  int
-	LastSeen            *time.Time
-	Snapshot            sp.Snapshot
-	Events              []json.RawMessage
-	EventBytes          int
-	MinEventSeq         int64
-	Commands            map[string]sp.Command
-	PendingInteractions map[string]sp.TimelineEntry
-	SourceHashes        map[int64][32]byte
-	SourceOrder         []int64
-	BatchHashes         map[string][32]byte
-	BatchOrder          []string
-	Synced              bool
-	TimelineVersions    map[string]timelineVersion
-	TimelineOrder       []string
+	ContentReadVersion      int
+	BotHistoryWindowVersion int
+	LastSeen                *time.Time
+	Snapshot                sp.Snapshot
+	Events                  []json.RawMessage
+	EventBytes              int
+	MinEventSeq             int64
+	Commands                map[string]sp.Command
+	PendingInteractions     map[string]sp.TimelineEntry
+	SourceHashes            map[int64][32]byte
+	SourceOrder             []int64
+	BatchHashes             map[string][32]byte
+	BatchOrder              []string
+	Synced                  bool
+	TimelineVersions        map[string]timelineVersion
+	TimelineOrder           []string
 }
 type liveCell struct {
 	mu    sync.Mutex
