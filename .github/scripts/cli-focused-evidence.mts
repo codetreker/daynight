@@ -124,13 +124,14 @@ export function verifyFocusedEvidence(evidence: Record<string, Evidence>, expect
       const module = obj(entry, "module"), file = canonical(m.packageRoot, module.name, platform);
       add(files, file, "executed file"); assert.ok(found.has(file), `Undiscovered file: ${file}`);
       assert.equal(module.status, "passed", `Failed module: ${file}`); assert.equal(module.message, "", `Module error: ${file}`);
-      const cases: string[] = [], passing = new Set<string>();
+      const cases: string[] = [], passing = new Set<string>(), identities = new Set<string>();
       for (const raw of arr(module.assertionResults, "assertions")) {
         const a = obj(raw, "assertion"), state = a.status;
         assert.ok(state === "passed" || state === "skipped" || state === "todo", `Invalid assertion: ${file}`);
         assert.ok(typeof a.title === "string" && a.title.length && Array.isArray(a.ancestorTitles) && a.ancestorTitles.every((title: unknown) => typeof title === "string"), `Missing test identity: ${file}`);
         assert.deepEqual(a.failureMessages, []); counts[state as keyof typeof counts]++;
         const identity = JSON.stringify([a.ancestorTitles, a.title]);
+        if (portable.has(file) && (label === "linux-full" || label === "macos-full")) add(identities, identity, `portable test identity in ${label} ${file}`);
         cases.push(JSON.stringify([identity, state])); if (state === "passed") passing.add(identity);
       }
       assertions.set(file, cases.sort()); passed.set(file, passing);
@@ -142,7 +143,11 @@ export function verifyFocusedEvidence(evidence: Record<string, Evidence>, expect
   const full = discovery!;
   for (const file of portable) {
     assert.ok(full.has(file), `Stale portable path: ${file}`);
-    assert.ok(runs.get("linux-full")!.passed.get(file)?.size, `Portable file did not pass on Linux: ${file}`);
+    const macPassed = runs.get("macos-full")!.passed.get(file);
+    const linuxPassed = runs.get("linux-full")!.passed.get(file);
+    assert.ok(macPassed?.size, `Portable file did not pass on macOS: ${file}`);
+    assert.ok(linuxPassed?.size, `Portable file did not pass on Linux: ${file}`);
+    for (const identity of macPassed) assert.ok(linuxPassed.has(identity), `Portable case did not pass on Linux: ${file} ${identity}`);
   }
   const focused = focusedFiles(full, portable);
   same(runs.get("linux-full")!.files, full, "Linux full execution differs");
