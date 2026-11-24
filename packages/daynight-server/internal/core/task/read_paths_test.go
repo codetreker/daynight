@@ -31,6 +31,13 @@ type projectionFixture struct {
 func (f projectionFixture) TaskCacheEpoch(context.Context, string) (string, error) {
 	return f.epoch, f.err
 }
+func (f projectionFixture) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	stamp := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &stamp, f.err
+}
+func (f projectionFixture) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	return []string{}, f.err
+}
 func (f projectionFixture) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return f.records, f.err
 }

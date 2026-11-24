@@ -39,6 +39,8 @@ type TaskReader interface {
 	ResolveTaskAssignees(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
 	TaskGraphTasks(context.Context, string, string, TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpoch(context.Context, string) (string, error)
+	TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error)
+	TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
 	// TaskSyncGoalDependsOn returns sorted same-project Goal prerequisites for
 	// selected live Goals in this snapshot. Each selected live Goal has an entry,

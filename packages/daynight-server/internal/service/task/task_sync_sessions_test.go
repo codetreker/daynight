@@ -104,6 +104,18 @@ func (f *syncFixture) Credential(ctx context.Context, p model.Principal) (store.
 func (f *syncFixture) TaskCacheEpoch(context.Context, string) (string, error) {
 	return syncEpoch, f.phase("epoch")
 }
+func (f *syncFixture) TaskSyncCoverageUpdatedAt(ctx context.Context, project string) (*time.Time, error) {
+	if !f.active || f.snapshot != 1 || ctx != f.ctx || project != syncProjectID {
+		f.t.Fatal("coverage snapshot changed")
+	}
+	return nil, f.phase("coverage")
+}
+func (f *syncFixture) TaskSyncDeletedTaskIDs(ctx context.Context, project string, lower *time.Time) ([]string, error) {
+	if !f.active || f.snapshot != 1 || ctx != f.ctx || project != syncProjectID || lower == nil {
+		f.t.Fatal("deletion snapshot or window changed")
+	}
+	return []string{}, f.phase("deletions")
+}
 func (f *syncFixture) TaskSyncTasks(_ context.Context, _ string, lower *time.Time, _ int) ([]model.TaskViewRecord, error) {
 	if lower == nil {
 		f.t.Fatal("delta window missing")
@@ -197,7 +209,7 @@ func TestTaskSyncBatchRecheckAndSeparateClocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"begin1", "access1", "project", "epoch", "tasks", "dependencies", "people", "dbclock1", "inventory", "sources1:200", "sources1:1", "end1", "sample:200", "sample:1", "begin2", "credential", "access2", "sources2:200", "sources2:1", "dbclock2", "end2", "sessionclock"}
+	want := []string{"begin1", "access1", "project", "epoch", "coverage", "deletions", "tasks", "dependencies", "people", "dbclock1", "inventory", "sources1:200", "sources1:1", "end1", "sample:200", "sample:1", "begin2", "credential", "access2", "sources2:200", "sources2:1", "dbclock2", "end2", "sessionclock"}
 	if !slices.Equal(f.calls, want) {
 		t.Fatalf("phase order: %v", f.calls)
 	}
@@ -259,7 +271,7 @@ func TestTaskSyncInvalidatesChangedBinding(t *testing.T) {
 
 func TestTaskSyncFailuresAndCancellation(t *testing.T) {
 	cause := errors.New("storage failure")
-	for _, phase := range []string{"begin1", "access1", "project", "epoch", "tasks", "dependencies", "people", "dbclock1", "inventory", "sources1:2", "end1", "begin2", "credential", "access2", "sources2:2", "dbclock2", "end2", "sessionclock"} {
+	for _, phase := range []string{"begin1", "access1", "project", "epoch", "coverage", "deletions", "tasks", "dependencies", "people", "dbclock1", "inventory", "sources1:2", "end1", "begin2", "credential", "access2", "sources2:2", "dbclock2", "end2", "sessionclock"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newSyncFixture(t, 2)
 			f.failureStage, f.failure = phase, cause

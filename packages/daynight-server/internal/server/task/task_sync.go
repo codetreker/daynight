@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -55,6 +56,11 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 
 func TaskSyncResponse(sync model.TaskSync, relations ...bool) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), DependencyStates: make(map[string]api.TaskDependencyState, len(sync.DependencyStates)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	if sync.CoverageUpdatedAt != nil {
+		coverage := sync.CoverageUpdatedAt.UTC()
+		result.CoverageUpdatedAt = &coverage
+	}
+	result.DeletedTaskIDs = append([]string{}, sync.DeletedTaskIDs...)
 	result.TaskObservations = make(map[string]api.TaskSyncObservation, len(sync.TaskObservations))
 	result.SessionPartial = sync.SessionPartial
 	result.ResponseTaskAt = sync.ResponseTaskAt.UTC()
@@ -87,23 +93,27 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
-		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		httpx.WriteError(w, request, logger.With("duration", time.Since(start)), "task_sync", "get", err)
 		return
 	}
 	input, err := taskSyncRequest(request)
 	if err != nil {
-		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		httpx.WriteError(w, request, logger.With("duration", time.Since(start)), "task_sync", "get", err)
 		return
 	}
 	logger = logger.With("since", input.Since, "window", h.window)
 	result, err := h.sync(request.Context(), principal, projectID, input)
 	if err != nil {
-
-		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		phase := "get"
+		if syncPhase := taskcore.SyncFailurePhase(err); syncPhase != "" {
+			phase = syncPhase
+			request = request.WithContext(httpx.WithRedactedOperationDiagnostics(request.Context()))
+		}
+		httpx.WriteError(w, request, logger.With("duration", time.Since(start)), "task_sync", phase, err)
 		return
 	}
 	response := TaskSyncResponse(result, taskParentView(request))
 	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
-		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks), "deleted_task_count", len(result.DeletedTaskIDs))
+	httpx.WriteJSON(w, request, logger.With("duration", time.Since(start)), http.StatusOK, response)
 }

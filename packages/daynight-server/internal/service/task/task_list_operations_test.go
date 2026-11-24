@@ -328,6 +328,12 @@ func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []sto
 func (c *listOperationCapability) TaskCacheEpoch(context.Context, string) (string, error) {
 	return "", c.fail("TaskCacheEpoch")
 }
+func (c *listOperationCapability) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	return nil, c.fail("TaskSyncCoverageUpdatedAt")
+}
+func (c *listOperationCapability) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	return nil, c.fail("TaskSyncDeletedTaskIDs")
+}
 
 func (c *listOperationCapability) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return nil, c.fail("TaskSyncTasks")

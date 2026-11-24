@@ -282,21 +282,23 @@ func (mock *taskHTTPProjectScopeMock) SessionDAO() store.ProjectSessionDAO {
 type taskHTTPReaderMock struct {
 	TaskHeaderFn func(context.Context, string, string) (model.TaskHeader, error)
 	taskHTTPMockBase
-	TaskFn                     func(context.Context, string, string) (model.Task, error)
-	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
-	GoalProgressesFn           func(context.Context, string, []string) (map[string]model.GoalProgress, error)
-	TasksFn                    func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
-	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
-	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
-	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
-	TaskAssigneesFn            func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	ResolveTaskAssigneesFn     func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-	TaskCacheEpochFn           func(context.Context, string) (string, error)
-	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
-	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
-	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
+	TaskFn                      func(context.Context, string, string) (model.Task, error)
+	TaskBodiesFn                func(context.Context, string, []string) ([]model.Task, error)
+	GoalProgressesFn            func(context.Context, string, []string) (map[string]model.GoalProgress, error)
+	TasksFn                     func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
+	TaskPresenceFn              func(context.Context, string, string) (store.TaskPresence, error)
+	ThreadCandidatesFn          func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
+	ThreadSidesFn               func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
+	TaskAssigneesFn             func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	ResolveTaskAssigneesFn      func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
+	TaskGraphTasksFn            func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	TaskCacheEpochFn            func(context.Context, string) (string, error)
+	TaskSyncCoverageUpdatedAtFn func(context.Context, string) (*time.Time, error)
+	TaskSyncDeletedTaskIDsFn    func(context.Context, string, *time.Time) ([]string, error)
+	TaskSyncTasksFn             func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn     func(context.Context, string, []string) (map[string][]string, error)
+	TaskSyncActiveTasksFn       func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
+	TaskSyncDependencyStatesFn  func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
 func (mock *taskHTTPReaderMock) Task(p0 context.Context, p1 string, p2 string) (model.Task, error) {
@@ -372,6 +374,16 @@ func (mock *taskHTTPReaderMock) TaskGraphTasks(p0 context.Context, p1 string, p2
 func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (string, error) {
 	mock.need("TaskCacheEpoch", mock.TaskCacheEpochFn != nil)
 	return mock.TaskCacheEpochFn(p0, p1)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncCoverageUpdatedAt(ctx context.Context, project string) (*time.Time, error) {
+	mock.need("TaskSyncCoverageUpdatedAt", mock.TaskSyncCoverageUpdatedAtFn != nil)
+	return mock.TaskSyncCoverageUpdatedAtFn(ctx, project)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncDeletedTaskIDs(ctx context.Context, project string, lower *time.Time) ([]string, error) {
+	mock.need("TaskSyncDeletedTaskIDs", mock.TaskSyncDeletedTaskIDsFn != nil)
+	return mock.TaskSyncDeletedTaskIDsFn(ctx, project, lower)
 }
 
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
@@ -1044,11 +1056,35 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, states map[str
 		}
 	}
 	batchCount := (len(active) + 199) / 200
-	f.expectSnapshot(map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 2, "active": 1, "sessions": 2 * batchCount, "credential": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	want := map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "coverage": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 2, "active": 1, "sessions": 2 * batchCount, "credential": 1}
+	if lower != nil {
+		want["deleted"] = 1
+	}
+	f.expectSnapshot(want, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
 			return taskHTTPEpoch, nil
+		}
+		reader.TaskSyncCoverageUpdatedAtFn = func(ctx context.Context, id string) (*time.Time, error) {
+			f.require(ctx, id)
+			plan.Called("coverage")
+			var latest *time.Time
+			for _, row := range rows {
+				if latest == nil || row.UpdatedAt.After(*latest) {
+					stamp := row.UpdatedAt
+					latest = &stamp
+				}
+			}
+			return latest, nil
+		}
+		reader.TaskSyncDeletedTaskIDsFn = func(ctx context.Context, id string, since *time.Time) ([]string, error) {
+			f.require(ctx, id)
+			plan.Called("deleted")
+			if !reflect.DeepEqual(since, lower) {
+				unexpectedHTTPCall(f.t, "TaskSync deletion arguments")
+			}
+			return []string{}, nil
 		}
 		reader.TaskSyncTasksFn = func(ctx context.Context, id string, since *time.Time, preview int) ([]model.TaskViewRecord, error) {
 			f.require(ctx, id)

@@ -635,6 +635,14 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 	mock.need("TaskCacheEpoch", mock.TaskCacheEpochFn != nil)
 	return mock.TaskCacheEpochFn(p0, p1)
 }
+func (mock *taskHTTPReaderMock) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	mock.need("TaskSyncCoverageUpdatedAt", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPReaderMock) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	mock.need("TaskSyncDeletedTaskIDs", false)
+	panic("unreachable")
+}
 
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)

@@ -283,6 +283,13 @@ type accessHTTPTaskReader struct {
 func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
 	return d.epoch(ctx, id)
 }
+func (d accessHTTPTaskReader) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	stamp := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &stamp, nil
+}
+func (d accessHTTPTaskReader) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	return []string{}, nil
+}
 func (d accessHTTPTaskReader) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 	return d.sync(ctx, id, lower, preview)
 }

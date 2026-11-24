@@ -1,4 +1,4 @@
--- Schema snapshot version: 128
+-- Schema snapshot version: 129
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -2299,6 +2299,8 @@ CREATE INDEX "tasks_project_assigned_to_created_id" ON "tasks" USING "btree" ("p
 CREATE INDEX "tasks_project_assigned_to_created_id_all" ON "tasks" USING "btree" ("project_id", "assigned_to", "created_at", "id");
 
 CREATE INDEX "tasks_project_created_id" ON "tasks" USING "btree" ("project_id", "created_at", "id");
+
+CREATE INDEX "tasks_project_effective_deleted_id" ON "tasks" USING "btree" ("project_id", COALESCE("deleted_at", "ancestor_deleted_at"), "id") WHERE (COALESCE("deleted_at", "ancestor_deleted_at") IS NOT NULL);
 
 CREATE INDEX "tasks_project_id_id_idx" ON "tasks" USING "btree" ("project_id", "id");
 
