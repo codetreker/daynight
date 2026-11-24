@@ -19,6 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
@@ -29,6 +30,44 @@ func syncModel() model.TaskSync {
 	stamp := testTime.Add(time.Hour)
 	return model.TaskSync{Mode: "snapshot", Epoch: testEpoch, Project: testProject(), ActorAccess: model.ProjectAccess{Role: model.ProjectAdmin}, ObservedAt: stamp,
 		Tasks: []model.TaskViewRecord{}, AssigneeVersions: []model.TaskAssigneeVersion{}, Sessions: map[string]model.SessionListState{}}
+}
+
+func TestTaskSyncHTTPDeletionWireAndLogs(t *testing.T) {
+	stamp := time.Date(2026, 11, 24, 13, 30, 0, 123456000, time.FixedZone("offset", 3600))
+	deleted := "99999999-9999-4999-8999-999999999999"
+	for _, tc := range []struct {
+		name, mode, coverage, ids string
+		time                      *time.Time
+		deleted                   []string
+	}{
+		{name: "empty snapshot", mode: "snapshot", coverage: "null", ids: "[]"},
+		{name: "delta", mode: "delta", time: &stamp, coverage: `"2026-11-24T12:30:00.123456Z"`, deleted: []string{deleted}, ids: `["` + deleted + `"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := newHTTPFixture(t, &logs)
+			result := syncModel()
+			result.Mode, result.CoverageUpdatedAt, result.DeletedTaskIDs = tc.mode, tc.time, tc.deleted
+			handler.ExpectCalls("Sync", 1)
+			handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+				return result, nil
+			}
+			response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if string(body["coverageUpdatedAt"]) != tc.coverage || string(body["deletedTaskIds"]) != tc.ids {
+				t.Fatalf("coverage=%s deleted=%s", body["coverageUpdatedAt"], body["deletedTaskIds"])
+			}
+			if !strings.Contains(logs.String(), fmt.Sprintf(`"deleted_task_count":%d`, len(tc.deleted))) || strings.Contains(logs.String(), deleted) {
+				t.Fatalf("deletion log=%s", &logs)
+			}
+		})
+	}
 }
 
 func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
@@ -269,6 +308,57 @@ func TestTaskSyncHTTPDatabaseFailureDoesNotSendPartialTasks(t *testing.T) {
 	}
 }
 
+func TestTaskSyncHTTPFailureStagesAreRedacted(t *testing.T) {
+	stamp := testTime
+	for _, phase := range []string{"coverage_read", "deletion_read", "projection_validation"} {
+		t.Run(phase, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := newHTTPFixture(t, &logs)
+			handler.ExpectCalls("Sync", 1)
+			handler.Sync = func(ctx context.Context, _ model.Principal, project string, _ taskservice.TaskSyncRequest) (model.TaskSync, error) {
+				reader := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "failure stage")}
+				reader.TaskCacheEpochFn = func(context.Context, string) (string, error) { return testEpoch, nil }
+				reader.TaskSyncCoverageUpdatedAtFn = func(context.Context, string) (*time.Time, error) {
+					if phase == "coverage_read" {
+						return nil, &store.Error{Phase: "query", DatabaseFailure: true, Cause: fmt.Errorf("private database value")}
+					}
+					return &stamp, nil
+				}
+				reader.TaskSyncDeletedTaskIDsFn = func(context.Context, string, *time.Time) ([]string, error) {
+					if phase == "deletion_read" {
+						return nil, fmt.Errorf("private deletion ID")
+					}
+					return []string{"private malformed ID"}, nil
+				}
+				reader.TaskSyncTasksFn = func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
+					return []model.TaskViewRecord{}, nil
+				}
+				result, _, err := taskcore.ReadSync(ctx, reader, nil, project, testEpoch, nil, time.Second, model.TaskSync{})
+				return result, fmt.Errorf("snapshot: %w", err)
+			}
+			response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+			assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+			if !strings.Contains(logs.String(), `"phase":"`+phase+`"`) || !strings.Contains(logs.String(), `"request_id":"project-test"`) || !strings.Contains(logs.String(), `"duration":`) || strings.Contains(logs.String(), "private") || strings.Contains(response.Body.String(), "private") {
+				t.Fatalf("unsafe failure: response=%s logs=%s", response.Body, &logs)
+			}
+		})
+	}
+}
+
+func TestTaskSyncHTTPInputFailuresLogDuration(t *testing.T) {
+	for _, path := range []string{syncPath("invalid"), syncPath(testProjectID) + "?since=invalid"} {
+		t.Run(path, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := newHTTPFixture(t, &logs)
+			response := projectRequest(handler, http.MethodGet, path, "")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+			if !strings.Contains(logs.String(), `"component":"task_sync"`) || !strings.Contains(logs.String(), `"duration":`) || !strings.Contains(logs.String(), `"request_id":"project-test"`) {
+				t.Fatalf("input failure log=%s", &logs)
+			}
+		})
+	}
+}
+
 func TestTaskSyncDTOUTCAndExactVersion(t *testing.T) {
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456789, time.FixedZone("offset", 8*60*60))
 	got := taskhttp.TaskSyncResponse(model.TaskSync{ObservedAt: stamp, Project: model.Project{CreatedAt: stamp, UpdatedAt: stamp}, ActorAccess: model.ProjectAccess{Role: model.ProjectAdmin, DirectGrant: &model.ProjectGrant{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp}}, Tasks: []model.TaskViewRecord{{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp}}})
@@ -313,7 +403,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	assertProjectError(t, projectRequest(outsideHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 2, "active": 1, "credential": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "coverage": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 2, "active": 1, "credential": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -340,6 +430,11 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 		plan.Called("epoch")
 		requireProject(id)
 		return "cccccc99-9999-4999-8999-999999999999", nil
+	}
+	tasks.TaskSyncCoverageUpdatedAtFn = func(_ context.Context, id string) (*time.Time, error) {
+		plan.Called("coverage")
+		requireProject(id)
+		return nil, nil
 	}
 	tasks.TaskSyncTasksFn = func(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 		plan.Called("tasks")
@@ -393,7 +488,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 func TestTaskSyncHTTPRevokedCredentialDuringRecheck(t *testing.T) {
 	project, _, principal := taskHTTPMockModels()
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "active": 1, "credential": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 1, "project": 1, "epoch": 1, "coverage": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "active": 1, "credential": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(_ context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -405,6 +500,7 @@ func TestTaskSyncHTTPRevokedCredentialDuringRecheck(t *testing.T) {
 	projects.ProjectFn = func(context.Context, string) (model.Project, error) { plan.Called("project"); return project, nil }
 	tasks := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync task")}
 	tasks.TaskCacheEpochFn = func(context.Context, string) (string, error) { plan.Called("epoch"); return testEpoch, nil }
+	tasks.TaskSyncCoverageUpdatedAtFn = func(context.Context, string) (*time.Time, error) { plan.Called("coverage"); return nil, nil }
 	tasks.TaskSyncTasksFn = func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 		plan.Called("tasks")
 		return []model.TaskViewRecord{}, nil

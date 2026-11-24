@@ -44,6 +44,8 @@ type TaskDependencyState struct {
 type TaskSync struct {
 	Mode              string
 	Epoch             string
+	CoverageUpdatedAt *time.Time
+	DeletedTaskIDs    []string
 	Project           Project
 	ActorAccess       ProjectAccess
 	ObservedAt        time.Time

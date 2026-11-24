@@ -656,6 +656,14 @@ func (s *unexpectedTaskReader) TaskCacheEpoch(context.Context, string) (string, 
 	s.reject("TaskCacheEpoch")
 	panic("unreachable")
 }
+func (s *unexpectedTaskReader) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	s.reject("TaskSyncCoverageUpdatedAt")
+	panic("unreachable")
+}
+func (s *unexpectedTaskReader) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	s.reject("TaskSyncDeletedTaskIDs")
+	panic("unreachable")
+}
 func (s *unexpectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	s.reject("TaskSyncTasks")
 	panic("unreachable")

@@ -1,8 +1,8 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 14、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口、覆盖水位与删除 ID、完整属性、10s 配置、项目 epoch、认证响应归属、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 14、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
-[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍；[完整标题决策](../../.agents/notes/implemented/architecture/2026-11-15-task-sync-full-titles.md)记录标题传输及缓存重建的权衡。
+[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍；[完整标题决策](../../.agents/notes/implemented/architecture/2026-11-15-task-sync-full-titles.md)记录标题传输及缓存重建的权衡；[删除数据决策](../../.agents/notes/implemented/architecture/2026-11-24-task-sync-deletion-data.md)记录覆盖水位和有效删除事实的取舍。
 
 ## 1. 总体方案
 
@@ -53,6 +53,8 @@ M 原样保存，不预先减窗口。服务端每次应用当前 W。边界使�
 
 `core/task.ReadSync` 先通过 `TaskSyncTasks` 读取 snapshot 或更新时间窗口内的摘要，再从实际返回的摘要收集 Goal ID，以同一个 `SyncReader` 调用 `TaskSyncGoalDependsOn`，将返回的完整项目内直接验收前置写入对应 Goal 的 `dependsOn`。没有选中 Goal 时不执行该查询。摘要与边共享已有读取快照；前置目标无需进入更新时间窗口，有效孤点明确返回 `[]`，Goal 的 `externalDependsOn` 保持 `[]`。查询或快照完成失败使整个同步失败。普通 Task 依赖、`dependencyStates` 和执行图继续只处理普通执行边。查询范围和职责由[Goal 关系设计](goal-dependencies.md#项目内前置批量读取)拥有。
 
+服务端另在相同只读快照取得 `coverageUpdatedAt`：对项目物理 `tasks` 行沿 `tasks_project_updated_id` 逆序取最大 `updated_at`，包括软删行和继承隐藏后代，没有行时为 null。delta 按 `COALESCE(deleted_at, ancestor_deleted_at)` 查询有效删除时间，使用与摘要一致的含边界下限；无下限时读取全部有效删除 ID。查询显式包含有效删除时间非空谓词，利用 `(project_id, COALESCE(deleted_at, ancestor_deleted_at), id)` 部分表达式索引限定项目和时间，并按 ID 排序。snapshot 返回空 ID 数组。删除根的更新与后代隐藏时间原子提交，因此覆盖水位包含该删除批次；读取和完整性校验失败使整个同步失败。当前 Web 未消费这两个字段，仍按摘要计算 M，删除也继续轮换 epoch。服务端日志关联请求 ID 与模式、摘要数和删除 ID 数；覆盖读取、删除读取和投影校验失败使用固定阶段标识并隐藏原始错误内容。
+
 只从项目同步接口成功接受的摘要计算 M。单任务 GET 或写响应即使包含更大的 updatedAt，也不能推进 M：例如未读的任务 A 更新于 10:01，单独打开 B 得到 10:05；若把 B 的时间作为项目水位，就会跳过 A。
 
 响应时间、请求开始时间、浏览器时间、Project.updatedAt 和显示 observedAt 均不作为水位。空响应和只有重复版本的响应不推进 M。正常时间下 M 随新任务数据前进；它不是额外的单调版本序列。
@@ -72,8 +74,11 @@ server README 的环境表与 localhost/dev-ci 部署配置共同公开该项。
 ```sql
 ALTER TABLE projects ADD COLUMN task_cache_epoch uuid
   NOT NULL DEFAULT gen_random_uuid();
-CREATE INDEX tasks_project_updated_at_id
+CREATE INDEX tasks_project_updated_id
   ON tasks (project_id, updated_at, id);
+CREATE INDEX tasks_project_effective_deleted_id
+  ON tasks (project_id, (COALESCE(deleted_at, ancestor_deleted_at)), id)
+  WHERE COALESCE(deleted_at, ancestor_deleted_at) IS NOT NULL;
 ```
 
 epoch 标识需要完整替换的项目任务集合；受支持的数据历史替换和 Task 软删除轮换它，其他普通任务修改和服务重启不更新它；已有任务 updated_at、version 不增加另一组同步列。新建与旧项目由迁移/default 获得各自 epoch，不添加 foreign key。
@@ -113,6 +118,8 @@ type TaskViewRecord = {
 type TaskSync = {
   mode: "snapshot" | "delta";
   epoch: string;
+  coverageUpdatedAt: string | null; // 同快照物理任务行最大更新时间
+  deletedTaskIds: string[]; // delta 的有效删除 ID；snapshot 为空
   project: Project;
   actorAccess: ProjectAccess; // 当前主体的真实归属、owner Team 与完整权限来源
   assigneeVersions: { userId: string; version: string; hasProjectAccess: boolean }[];
@@ -147,7 +154,7 @@ type TaskSync = {
 
 在一次现有只读 REPEATABLE READ 快照中计算当前主体准入，将现有
 `RequireProjectRead` 返回值保存在必填 `actorAccess`，再读取 Project/epoch、
-匹配摘要、完整属性、完整 assigneeVersions 和 observedAt。GET access 与该字段共用
+匹配摘要、覆盖水位、删除 ID、完整属性、完整 assigneeVersions 和 observedAt。GET access 与该字段共用
 [本人权限投影](daynight-auth.md)；即使空 delta 也返回同一快照的实际角色与 grant，
 同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。title 与 titlePreview、titleTruncated 从同一快照内的同一标题生成；预览保留前 160 个 Unicode 字符和截断标记，完整 title 不按写入限制截断历史记录。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 关闭匹配任务 rows 后，以全部选中 task IDs 的一次 `ANY` 查询批量加载完整属性，空属性为 {}。选定任务的标签引用也在关闭结果集后一次批量加载，空集合编码为 `[]`。任务、属性和标签属于同一快照，查询次数不随命中任务、属性或标签数量线性增长；授权先于这些读取。标签改名与删除 touch 关联条目的版本和时间，沿用普通增量及任务水位，不轮换 epoch。
 

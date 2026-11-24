@@ -81,6 +81,12 @@ func (s readRouteTasks) Task(context.Context, string, string) (model.Task, error
 func (s readRouteTasks) TaskCacheEpoch(context.Context, string) (string, error) {
 	return testEpoch, nil
 }
+func (s readRouteTasks) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	return &s.task.UpdatedAt, nil
+}
+func (s readRouteTasks) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	return []string{}, nil
+}
 func (s readRouteTasks) Tasks(context.Context, string, store.TaskQuery) (store.TaskPage, error) {
 	return store.TaskPage{Items: []model.Task{s.task}, HasMore: true}, nil
 }

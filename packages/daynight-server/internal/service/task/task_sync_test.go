@@ -38,6 +38,15 @@ func (r taskReadSessionStates) TaskSyncObservedAt(ctx context.Context) (time.Tim
 
 func (f *taskReadFixture) sync(epoch string, rows func(*time.Time) ([]model.TaskViewRecord, error), people []model.TaskAssigneeFact, overlap time.Duration) *taskservice.TaskSync {
 	f.reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) { f.requireProject(ctx, id); return epoch, nil }
+	f.reader.TaskSyncCoverageUpdatedAtFn = func(ctx context.Context, id string) (*time.Time, error) {
+		f.requireProject(ctx, id)
+		stamp := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+		return &stamp, nil
+	}
+	f.reader.TaskSyncDeletedTaskIDsFn = func(ctx context.Context, id string, _ *time.Time) ([]string, error) {
+		f.requireProject(ctx, id)
+		return []string{}, nil
+	}
 	f.reader.TaskSyncTasksFn = nil
 	f.reader.TaskSyncDependencyStatesFn = nil
 	f.reader.TaskAssigneesFn = nil

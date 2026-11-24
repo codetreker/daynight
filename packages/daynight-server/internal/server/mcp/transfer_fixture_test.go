@@ -490,6 +490,14 @@ func (d *mcpAttachmentTaskReader) TaskCacheEpoch(p0 context.Context, p1 string) 
 	unexpectedHTTPCall(d.t, "TaskReader.TaskCacheEpoch")
 	panic("unreachable")
 }
+func (d *mcpAttachmentTaskReader) TaskSyncCoverageUpdatedAt(context.Context, string) (*time.Time, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncCoverageUpdatedAt")
+	panic("unreachable")
+}
+func (d *mcpAttachmentTaskReader) TaskSyncDeletedTaskIDs(context.Context, string, *time.Time) ([]string, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncDeletedTaskIDs")
+	panic("unreachable")
+}
 func (d *mcpAttachmentTaskReader) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncTasks")
 	panic("unreachable")
