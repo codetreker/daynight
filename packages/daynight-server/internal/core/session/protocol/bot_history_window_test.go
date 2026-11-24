@@ -222,6 +222,37 @@ func TestBotWindowCheckpointClosureAndRequest(t *testing.T) {
 	}
 }
 
+func TestBotWindowCheckpointReceiptRequiresCompleteCommitFacts(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceThrough: "9007199254740997", CleanupPending: pending}
+		parsed, err := DecodeBotHistoryCheckpointReceipt(windowJSON(t, receipt))
+		if err != nil || !reflect.DeepEqual(parsed, receipt) {
+			t.Fatalf("cleanup pending %v: %#v %v", pending, parsed, err)
+		}
+	}
+	tests := map[string]func(map[string]any){
+		"missing cleanup outcome":            func(v map[string]any) { delete(v, "cleanupPending") },
+		"unknown cleanup outcome":            func(v map[string]any) { v["cleanupPending"] = nil },
+		"rounded source watermark":           func(v map[string]any) { v["sourceThrough"] = float64(9007199254740997) },
+		"reversed retained boundary":         func(v map[string]any) { v["retainedFromSeq"] = "9007199254740996" },
+		"eviction reported as initial empty": func(v map[string]any) { v["retainedFromSeq"] = nil; v["earlierHistoryUnavailable"] = false },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			receipt := BotHistoryCheckpointReceipt{BotHistoryWindowBoundary: windowBoundary(), SourceThrough: "9007199254740997", CleanupPending: true}
+			var input map[string]any
+			if err := json.Unmarshal(windowJSON(t, receipt), &input); err != nil {
+				t.Fatal(err)
+			}
+			mutate(input)
+			parsed, err := DecodeBotHistoryCheckpointReceipt(windowJSON(t, input))
+			if err == nil || !reflect.DeepEqual(parsed, BotHistoryCheckpointReceipt{}) {
+				t.Fatalf("unusable receipt exposed commit facts: %#v %v", parsed, err)
+			}
+		})
+	}
+}
+
 func TestBotWindowHelloCapabilityIsExplicitAndOptional(t *testing.T) {
 	hello := map[string]any{"type": "hello", "protocol": Protocol, "schemaVersion": 1, "projectionVersion": 1, "sessionId": relayID, "testExecutionId": relayID, "executionGeneration": "1", "controllerId": relayID, "controllerInstanceId": relayID, "provider": "codex", "sourceEpoch": relayID, "lastAckedSourceSeq": "0"}
 	legacy, err := DecodeController(windowJSON(t, hello))

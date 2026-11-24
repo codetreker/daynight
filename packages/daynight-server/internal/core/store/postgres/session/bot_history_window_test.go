@@ -9,6 +9,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
@@ -155,6 +156,13 @@ func TestBotHistoryWindowReferencesKeepSharedResourcesAndReadLeases(t *testing.T
 				return err
 			}
 		}
+		refs, err := base.(store.BotHistoryWindowDAO).SessionResourceReferences(ctx, id, "bot_window")
+		if err != nil {
+			return err
+		}
+		if len(refs) != 1 || refs[0] != window {
+			t.Fatalf("window ownership query mixed independent owners or lost identity: %v", refs)
+		}
 		visible, err := d.SessionResourceReadableBy(ctx, id, resource, actor.UserID)
 		if err != nil {
 			return err
@@ -208,4 +216,19 @@ func TestBotHistoryWindowReferencesKeepSharedResourcesAndReadLeases(t *testing.T
 		}
 		return nil
 	})
+}
+
+func TestBotHistoryWindowReferenceQueryPreservesDatabaseFailure(t *testing.T) {
+	db := isolatedStore(t)
+	tx, err := db.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackSessionTestTransaction(t, tx)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	refs, err := pgsession.New(tx).(store.BotHistoryWindowDAO).SessionResourceReferences(ctx, uuid.NewString(), "bot_window")
+	if !errors.Is(err, context.Canceled) || refs != nil {
+		t.Fatal("cancelled database read appeared to confirm an empty resource closure", refs, err)
+	}
 }

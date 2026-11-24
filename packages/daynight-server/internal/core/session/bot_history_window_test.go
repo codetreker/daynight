@@ -237,6 +237,38 @@ func TestBotWindowPageBudgetUsesActualWireEncoding(t *testing.T) {
 	}
 }
 
+func TestBotWindowBeforePagePreservesCoveredRangeAfterAdvance(t *testing.T) {
+	cp, entries := windowReadFixture(t)
+	previous := cp.BotHistoryWindowBoundary
+	previous.WindowRevision = "4"
+	position, err := parseBotWindowCursor(botWindowCursor(previous, "before", "30"), cp.BotHistoryWindowBoundary, "before")
+	if err != nil {
+		t.Fatal("covered continuation was reset", err)
+	}
+	in := BotHistoryWindowRequest{Mode: "before", Limit: 1}
+	page := windowReadPage(cp, entries[1])
+	if err := validateBotHistoryWindowPage(cp, page, in, position); err != nil {
+		t.Fatal("wrong covered page", err)
+	}
+	setBotWindowCursors(&page, cp, in, position)
+	if !page.HasEarlierHistory || page.BeforeCursor == nil {
+		t.Fatal("omitted retained older page")
+	}
+	position, err = parseBotWindowCursor(*page.BeforeCursor, cp.BotHistoryWindowBoundary, "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = windowReadPage(cp, entries[0])
+	if err := validateBotHistoryWindowPage(cp, page, in, position); err != nil {
+		t.Fatal(err)
+	}
+	setBotWindowCursors(&page, cp, in, position)
+	if page.HasEarlierHistory || page.BeforeCursor != nil || !page.EarlierHistoryUnavailable {
+		t.Fatal("retained beginning lost the separate eviction boundary")
+	}
+	botFault(t, validateBotHistoryWindowPage(cp, windowReadPage(cp, entries[2]), in, position), "content_changed")
+}
+
 type windowReadDAO struct {
 	store.SessionDAO
 	store.BotHistoryWindowDAO
