@@ -178,7 +178,7 @@ export class TaskDetailSessions {
             if (qualification.removed) {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(entry.projectId, entry.taskId, generation, null, "reconciled");
-            } else if (entry.source === "direct" && entry.receipt === null && entry.read !== null) {
+            } else if (qualification.inBaseline && entry.source === "direct" && entry.receipt === null && entry.read !== null) {
               // The in-flight response owns a fence; check that fence when the
               // response arrives before deciding whether another read is needed.
               return;
