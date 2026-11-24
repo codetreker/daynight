@@ -865,7 +865,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       if (kind === "marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{");
       if (kind === "unknown-marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{}");
       if (kind === "commondir") { await rm(path.join(admin, "commondir")); await mkdir(path.join(admin, "commondir")); }
-      if (kind === "pointer") await writeFile(path.join(binding.worktreePath, ".git"), "invalid reverse pointer\n");
+      if (kind === "pointer") {
+        const pointer = path.join(binding.worktreePath, ".git");
+        // Git marks this file hidden on Windows, where opening it with truncation fails.
+        await rm(pointer);
+        await writeFile(pointer, "invalid reverse pointer\n");
+      }
       if (kind === "duplicate") cpSync(admin, `${admin}-duplicate`, { recursive: true });
       if (kind === "unreadable") { await rm(path.join(admin, "gitdir")); await mkdir(path.join(admin, "gitdir")); }
       const result = await adapter.scanWorktrees(f.project, operation());
