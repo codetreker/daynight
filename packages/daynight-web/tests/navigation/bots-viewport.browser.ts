@@ -125,7 +125,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.waitForTimeout(150);
       const retained = await anchor(page);
       await closeBotConversation(page);
-      const list = page.locator('.bot-list');
+      const list = page.locator('.bot-list-content');
       await expect(list).toBeVisible();
       expect(await list.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
       await list.hover(); await page.mouse.wheel(0, 700);
