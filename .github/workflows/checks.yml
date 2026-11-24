@@ -291,7 +291,7 @@ jobs:
     name: verify (Go server)
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.server == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GOCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-cache
