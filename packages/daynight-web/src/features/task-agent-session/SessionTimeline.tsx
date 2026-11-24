@@ -149,8 +149,10 @@ function compactToolName(name: string): string {
 }
 const BotWindowEntry = memo(function BotWindowEntry({ entry, disclosures }: { readonly entry: BotHistoryWindowEntry; readonly disclosures: Map<string, boolean> }) {
   const m = useSessionMessages(), labels = useTimelineMessages(), { format } = useI18n();
+  const unavailableResource = entry.resourceIds.length > 0 ? <p className="session-history-omission">{m.resourceUnavailable}</p> : null;
   if (entry.kind !== 'tool_call') return <div className={`session-message ${entry.kind} markdown-content`}>
     <SessionMarkdown text={entry.preview} resourceAccess="none" />
+    {unavailableResource}
     {entry.truncated ? <p className="session-history-omission" data-bot-history-omission="message">{m.messagePreviewOmitted}</p> : null}
   </div>;
 
@@ -173,6 +175,7 @@ const BotWindowEntry = memo(function BotWindowEntry({ entry, disclosures }: { re
         <dt>{m.toolPreviewExitCode}</dt><dd><code>{tool?.exitCode ?? m.toolPreviewUnknown}</code></dd>
       </dl>
       {entry.preview ? <><h5>{m.toolPreviewOutput}</h5><pre className="session-tool-output" tabIndex={0}>{entry.preview}</pre></> : null}
+      {unavailableResource}
     </LazyDetails>
     {entry.truncated ? <p className="session-history-omission" data-bot-history-omission="tool">{entry.omittedEntryCount ? omitted : m.toolPreviewOmitted}</p> : null}
   </>;
