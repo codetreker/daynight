@@ -1012,7 +1012,7 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValue(graph());
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
     const item = { tags: [], type: "task" as const, parentId: null, id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
-    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
+    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `20000000-0000-0000-0000-${String(100 + index).padStart(12, '0')}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });

@@ -603,9 +603,11 @@ export class TaskDetailSessions {
   }
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
+    // A sent write survives view release, but its admission must not overwrite a read started while storage is being checked.
+    const publicationGeneration = entry.generation;
     const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && !this.scope.hasIdentityMismatch && entry.state.status !== "deleted" &&
       entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
-      (generation === null || generation === entry.generation);
+      (generation === null || generation === entry.generation) && (writeGeneration === null || publicationGeneration === entry.generation);
     if (!current()) return;
     if (detail.projectId !== projectId || detail.id !== taskId) throw new ApiError("protocol");
     if (entry.committedVersion !== null && detail.version < entry.committedVersion) {

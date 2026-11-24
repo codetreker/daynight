@@ -158,6 +158,7 @@ describe('status in shared production task details', () => {
     await userEvent.setup().upload(input, file);
     fireEvent.change(path, { target: { value: 'drafts/new.txt' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Upload file' }));
+    await waitFor(() => expect(putAttachment).toHaveBeenCalledOnce());
     const signal = vi.mocked(putAttachment).mock.calls[0]![4];
     tab.focus();
     const prior = records.get(standalone)!;
