@@ -10,7 +10,8 @@
     "test:auth-interruption": "node --test tests/subtask-compat-auth-browser-check.ts tests/subtask-compat-auth-browser-success-check.ts",
     "test": "node src/run.ts",
     "test:subtask-compat": "node src/subtask-compat.ts",
-    "cleanup": "node src/ci-cleanup.ts"
+    "cleanup": "node src/ci-cleanup.ts",
+    "test:recovery-registries": "node --test tests/subtask-compat-registry-real.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

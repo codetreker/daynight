@@ -51,3 +51,10 @@ unexamined historical versions. Failed or interrupted runs retain any
 unconfirmed ownership evidence instead of treating absent observations as a
 confirmed cleanup. An unconfirmed cleanup stops the matrix before another
 combination starts, preserving the original run for reconciliation.
+
+The recovery manifest probe compiles the source revision's production checksum
+registry. Sources with the 099 baseline include the frozen historical checksums;
+older sources calculate checksums from their executable migrations. The receipt
+binds each generated probe and ordered manifest to the source fingerprint. A
+baseline predating 099 is rejected because the current Server requires the 099
+upgrade bridge. Historical numbering gaps are retained rather than filled.
