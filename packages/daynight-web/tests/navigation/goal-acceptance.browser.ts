@@ -836,3 +836,38 @@ test('removing synchronized local prerequisites cancels abandoned inspections an
   await expect(dialog.locator('.goal-acceptance-node')).toHaveCount(2);
   expect(state.syncRequests).toEqual(requests);
 });
+
+test('an expanded foreign successor cannot retain a withdrawn local terminal Goal while its root refresh fails', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.changeEdges([doneId]);
+  const completedForeign = { ...state.externalGoal, status: 'done' as const };
+  state.sourceReply(activeId, () => ({ goalId: activeId, canEdit: false, completionBlocked: false,
+    prerequisites: [{ target: state.relatedGoal(doneId) }, { target: completedForeign }], successors: [], nextCursor: null }));
+  state.sourceReply(externalId, () => ({ goalId: externalId, canEdit: false, completionBlocked: false, prerequisites: [],
+    successors: [state.relatedGoal(activeId, externalProjectId), state.relatedGoal(doneId, externalProjectId)], nextCursor: null }));
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await frameBranch(page, dialog);
+  await expandRelations(dialog, 'External authentication').click();
+  await expect(sourceStatus(dialog, externalId)).toHaveAttribute('data-phase', 'ready');
+  await expect(card(dialog, externalId)).toHaveAttribute('data-goal-status', 'done');
+  await card(dialog, doneId).locator('.task-node-body').click();
+  await expect(sourceStatus(dialog, doneId)).toHaveAttribute('data-mode', 'inspection');
+  await expect(sourceStatus(dialog, doneId)).toHaveAttribute('data-phase', 'ready');
+  state.failSource(activeId, true);
+  state.changeEdges([]);
+  await page.clock.runFor(30_000);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  await expect(sourceStatus(dialog, doneId)).toHaveCount(0);
+  await expect(card(dialog, doneId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, doneId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, activeId)).toHaveCount(1);
+  const requests = [...state.syncRequests];
+  await card(dialog, externalId).locator('.task-node-body').click();
+  await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('External authentication');
+  await card(dialog, activeId).locator('.task-node-body').click();
+  await expect(dialog.locator('.goal-acceptance-inspection h3')).toHaveText('Release client');
+  await expect(dialog.locator('.goal-acceptance-inspection')).toContainText('External authentication');
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  expect(state.syncRequests).toEqual(requests);
+});

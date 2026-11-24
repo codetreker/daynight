@@ -44,12 +44,18 @@ results and in-flight request. Inspection contributions describe direct
 relationships; explicit expansion promotes the source's contribution into the
 canvas without repeating an already covered read. Source modes distinguish roots,
 inspection and expansion. Reachability starts from synchronized roots and visible
-prerequisites and follows legal root/expanded external contributions. Raw
-relationships whose source and target both belong to the graph's Project cannot
-establish ownership; TaskSync alone determines those local paths. An external
-source can still reach a synchronized local target through a real cross-project
-relationship. Rendering filters disconnected inspection and expansion sources,
-and session reconciliation removes them and synchronously cancels queued or
+prerequisites and follows legal root/expanded external contributions. Canvas
+eligibility, source discovery and external edge inclusion share the same Project
+boundary policy. Raw relationships whose source and target both belong to the
+graph's Project cannot establish ownership or canvas eligibility; TaskSync alone
+determines those local paths. Otherwise a stale local prerequisite could qualify
+a removed terminal Goal for another foreign source's successor edge, rendering a
+card after its reader has been pruned. Genuine cross-project prerequisites can
+qualify terminal Goals; successors qualify only active Goals unless independently
+included by synchronized scope or a legal prerequisite. An external source can
+still reach a known synchronized local target, using its synchronized status,
+and real relations within one foreign Project remain eligible. Rendering filters
+disconnected inspection and expansion sources, and session reconciliation removes them and synchronously cancels queued or
 in-flight reads. Request finalizers release slots and dispatch eligible roots
 without waiting for an abandoned response. Otherwise a cached local edge can retain
 a removed terminal inspection source and consume the four available read slots.

@@ -298,6 +298,41 @@ describe('Goal graph relationship session', () => {
     expect(canvas(session, input).goals.has(id(2))).toBe(false);
   });
 
+  it('keeps a removed local terminal prerequisite out of expanded foreign successors when the root refresh fails', async () => {
+    const input = roots(2), local = (n: number, status: RelatedGoal['status']): RelatedGoal => ({
+      ...related(n, status), projectId, projectName: 'Local', kind: 'internal',
+    });
+    input.set(id(1), { ...input.get(id(1))!, dependsOn: [id(2)] });
+    input.set(id(2), { ...input.get(id(2))!, status: 'done' });
+    let failing = false, inspectionSignal!: AbortSignal;
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal) => {
+      if (goalId === id(2)) return new Promise<GoalDependenciesRead>((_resolve, reject) => {
+        inspectionSignal = signal;
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+      if (goalId === id(1) && failing) return Promise.reject(new ApiError('network'));
+      return Promise.resolve(page(goalId, goalId === id(1)
+        ? { prerequisites: [{ target: local(2, 'done') }, { target: related(10, 'done') }] }
+        : { successors: [{ ...local(1, 'todo'), kind: 'external' }, { ...local(2, 'done'), kind: 'external' }] }));
+    });
+    const { session } = await prepare(read);
+    session.setRoots(input); await settled(session);
+    session.expand(id(10)); await settled(session, id(10));
+    session.inspect(id(2)); await waitFor(() => expect(inspectionSignal).toBeDefined());
+    expect(canvas(session, input).goals.has(id(2))).toBe(true);
+    failing = true;
+    input.set(id(1), { ...input.get(id(1))!, dependsOn: [], version: 2n });
+    session.setRoots(new Map(input)); await settled(session, id(1), 'failed');
+    expect(session.snapshot().sources.get(id(1))?.contribution?.prerequisites[0]?.target?.goalId).toBe(id(2));
+    expect(inspectionSignal.aborted).toBe(true);
+    expect(session.snapshot().sources.has(id(2))).toBe(false);
+    expect(canvas(session, input).goals.has(id(2))).toBe(false);
+    expect(canvas(session, input).goals.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(10))?.mode).toBe('expanded');
+    session.inspect(id(2));
+    expect(session.snapshot().sources.has(id(2))).toBe(false);
+  });
+
   it('retains terminal local and same-foreign-Project inspection sources reached through an expanded foreign source', async () => {
     const input = roots(2);
     input.set(id(2), { ...input.get(id(2))!, status: 'done' });

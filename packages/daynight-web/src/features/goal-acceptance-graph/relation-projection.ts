@@ -1,6 +1,7 @@
 import type { RelatedGoal, GoalDependencies } from '../../api/goal-dependencies';
 import type { GoalAcceptanceGoal, GoalAcceptanceProjection } from './model';
 import type { ProjectionEdge } from '../task-graph/model';
+import { canDiscoverGoalRelation, isGraphExternalGoalRelation } from './relation-discovery';
 
 export type GoalRelationContribution = {
   readonly sourceId: string;
@@ -14,16 +15,14 @@ export const externalRelations = (projectId: string, baseline: GoalAcceptancePro
   const sources = [...contributions], eligible = new Set(baseline.goals.keys());
   for (const contribution of sources) {
     if (denied.has(contribution.sourceId)) continue;
-    for (const relation of contribution.prerequisites) if (relation.target !== null) eligible.add(relation.target.goalId);
-    for (const goal of contribution.successors) {
-      const status = goal.projectId === projectId ? baseline.availableGoals.get(goal.goalId)?.status : goal.status;
-      if (status === 'todo' || status === 'in_progress') eligible.add(goal.goalId);
-    }
+    for (const relation of contribution.prerequisites) if (relation.target !== null &&
+      canDiscoverGoalRelation(projectId, baseline, contribution.sourceProjectId, relation.target, 'prerequisite')) eligible.add(relation.target.goalId);
+    for (const goal of contribution.successors) if (canDiscoverGoalRelation(projectId, baseline, contribution.sourceProjectId, goal, 'successor')) eligible.add(goal.goalId);
   }
   for (const contribution of sources) {
     if (denied.has(contribution.sourceId)) continue;
     const include = (goal: RelatedGoal, source: string, target: string) => {
-      if (denied.has(goal.goalId) || !eligible.has(goal.goalId) || goal.projectId === projectId && contribution.sourceProjectId === projectId) return;
+      if (denied.has(goal.goalId) || !eligible.has(goal.goalId) || !isGraphExternalGoalRelation(projectId, contribution.sourceProjectId, goal.projectId)) return;
       goals.set(goal.goalId, goal);
       edges.set(`${source}:${target}`, { source, target, external: true });
     };
