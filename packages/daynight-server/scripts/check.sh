@@ -14,11 +14,13 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
 rm -f coverage.out
 
 module_go_flags="$unit_go_flags"
+capture_scope=module
 if [[ -n "${CI:-}" && "${GITHUB_EVENT_NAME:-}" == pull_request ]]; then
   module_go_flags+=" -p=4"
+  capture_scope=module-pr
 fi
 
-node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts
+node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts scripts/go-test-database-exec.test.mts
 
 # The coverage invocation vets its full package set. The untagged command
 # package is outside that set and still needs its ordinary vet pass.
@@ -43,6 +45,6 @@ packages="$(GOFLAGS="$unit_go_flags" go list -f '{{if or .GoFiles .CgoFiles}}{{.
 GOFLAGS= go install github.com/codetreker/go-cov/cmd/go-cov@v0.1.4
 started=$SECONDS
 node scripts/command-timeout.mts 1800000 5000 env GOFLAGS="$module_go_flags -vet=all -coverpkg=$packages" \
-  node scripts/go-cov-capture.mts module "$(command -v go)" "$GOBIN/go-cov" --race="$race" --exclude-packages="$command_package"
+  node scripts/go-cov-capture.mts "$capture_scope" "$(command -v go)" "$GOBIN/go-cov" --race="$race" --exclude-packages="$command_package"
 node scripts/coverage.mts coverage.out
 printf 'Module vet, tests and coverage completed in %ss\n' "$((SECONDS - started))"

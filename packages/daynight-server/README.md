@@ -3070,8 +3070,23 @@ The module command runs all standard Go vet analyzers in its coverage
 invocation. A separate command-only vet pass checks the ordinary build of
 `cmd/daynight-server`, outside the module coverage package list.
 
-Capture preserves the same Go invocation, parameters and coverage calculation.
-File or forwarding errors fail validation. The existing command supervisor owns
+The PR module CI coverage invocation routes eight database-heavy packages to
+separate empty databases in the job's PostgreSQL service. Go runs the test
+launcher in each package's working directory; the launcher matches the five
+`internal/core/store/postgres/{task,github,identity,session,worker}` and three
+`internal/service/{project,session,mcpdownload}` directories exactly. It requires
+the corresponding job-provided URL and fails when it is absent. Other packages
+keep the shared URL, including the Store root, whose existing TestMain selects
+its dedicated database. The test binary receives the original arguments, output
+streams, exit status, signals and Go environment. The launcher is attached only
+to the PR module coverage invocation; nested Go commands, local and main checks,
+other CI jobs, and the separate Azure tests keep their existing behavior. The
+service and all databases are removed with the job. The
+[database routing decision](../../.agents/notes/implemented/testing/2026-11-24-go-pr-package-databases.md)
+records the trade-offs.
+
+Capture preserves the test selection and coverage calculation. File or forwarding
+errors fail validation. The existing command supervisor owns
 the coverage process group, with a 30-minute module bound and the existing
 12-minute lifecycle bound; per-package test and CI job limits still apply.
 The [failure evidence decision](../../.agents/notes/implemented/testing/2026-11-11-go-test-failure-evidence.md)
