@@ -3067,8 +3067,8 @@ directories, preserving earlier evidence. The corresponding CI artifacts include
 these files even when validation fails.
 
 The module command runs all standard Go vet analyzers in its coverage
-invocation. A separate command-only vet pass checks the ordinary build of
-`cmd/daynight-server`, outside the module coverage package list.
+invocation. The lifecycle entry separately vets both the ordinary and tagged
+builds of `cmd/daynight-server`, outside the module coverage package list.
 
 The PR module CI coverage invocation routes eight database-heavy packages to
 separate empty databases in the job's PostgreSQL service. Go runs the test
@@ -3104,7 +3104,7 @@ functions are exempt. Requiring both partitions to exceed 90% also requires
 their combined statement coverage to exceed 90%. The module entry selects all
 of its production packages for `-coverpkg`, preserving cross-package coverage
 within that partition. The lifecycle entry measures the command package from
-its own directory and vets its tagged tests. Neither entry relies on coverage
+its own directory and vets both command variants. Neither entry relies on coverage
 of its production code from the other job.
 
 `scripts/validation-env.sh` supplies the common race policy and an absolute-path
@@ -3117,8 +3117,9 @@ them. Preparation failures fail validation. In PR CI the single module job
 runs up to four Go packages concurrently with a bounded in-memory data
 directory for its PostgreSQL service. The Store root retains its dedicated
 database, and PostgreSQL keeps its transaction and sync settings. Local,
-main, and lifecycle validation keep package concurrency at two. Both
-coverage entries clear cached test results before running.
+main, and lifecycle coverage validation keep package concurrency at two; the
+ordinary command vet uses four in PR CI. Both coverage entries clear cached test
+results before running.
 The [module throughput decision](../../.agents/notes/implemented/testing/2026-11-24-go-module-ci-throughput.md)
 records the resource and vet boundaries.
 

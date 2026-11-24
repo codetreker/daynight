@@ -418,8 +418,13 @@ func TestCredentialUsageCommitCancellationRemainsUnknown(t *testing.T) {
 	if !attempted || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || !failure.CommitAttempted || completion.Outcome != store.TransactionUnknown {
 		t.Fatalf("commit outcome: attempted=%t completion=%+v error=%v", attempted, completion, err)
 	}
-	// The unknown operation is not called a rollback; retrying only the idempotent
-	// metadata write converges whether the original committed or not.
+	// A canceled COMMIT can return before PostgreSQL releases the row lock.
+	// Wait on the row in an implicit transaction before exercising the NOWAIT retry.
+	var lockedID string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM personal_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user).Scan(&lockedID); err != nil {
+		t.Fatalf("wait for usage row lock to be released: %v", err)
+	}
+	// The idempotent metadata write converges whether the original commit took effect.
 	usageWrite(t, ctx, db, event)
 	usageAssert(t, usageRead(t, ctx, db, "personal_access_tokens", id), &now)
 }

@@ -1,10 +1,19 @@
 import { imageQualificationFingerprint } from "./image-qualification.js";
-import { parseImageCapabilities, parseValidatedImage, type ImageCapabilities, type ProviderImageCapabilities } from "../../../session/image-values.js";
+import { IMAGE_LIMITS, parseImageCapabilities, parseValidatedImage, type ImageCapabilities, type ProviderImageCapabilities } from "../../../session/image-values.js";
 import { NativeRpcError } from "./native-rpc.js";
 import { validateNativeInput } from "./native-input.js";
 import type { NativeInput } from "./types.js";
 
 type Capabilities = Omit<ProviderImageCapabilities, "revision">;
+
+export const applicationImageLimits = {
+  inputMediaTypes: ["image/png", "image/jpeg", "image/webp"],
+  maxImageBytes: String(IMAGE_LIMITS.imageBytes),
+  maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes),
+  maxImagesPerMessage: IMAGE_LIMITS.images,
+  geometry: { version: 1, known: true, maxWidth: IMAGE_LIMITS.maxWidth, maxHeight: IMAGE_LIMITS.maxHeight, maxPixels: IMAGE_LIMITS.maxPixels, maxFrames: IMAGE_LIMITS.maxFrames },
+} as const satisfies Pick<Capabilities, "inputMediaTypes" | "maxImageBytes" | "maxMessageImageBytes" | "maxImagesPerMessage" | "geometry">;
+
 const authorizations = new WeakMap<NativeInput, { capabilities: ImageCapabilities; qualificationFingerprint: string | null; verify(): void }>();
 const denied = (): never => { throw new NativeRpcError(-32602, "Image authorization, qualification or effective input limits changed before dispatch."); };
 

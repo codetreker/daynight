@@ -37,33 +37,36 @@ test("macOS Codex 0.170.0 is recognized exactly and stays unqualified without a 
     controls.seed({ model: "gpt-6-astra", modelProvider: "copilot_gateway" }); await controls.refresh();
     const profile = codexImageProfile(native, { model: "gpt-6-astra", modelProvider: "copilot_gateway" }, "darwin", "a".repeat(64), { kind: "native_declared_config_v1", nativeSessionId: "thread", model: "gpt-6-astra", modelProvider: "copilot_gateway", backendIdentity: "b".repeat(64), generation: 1 });
     expect(profile).toMatchObject({ modelId: "gpt-6-astra", qualification: null, geometry: { known: false } });
-    expect(controls.imageCapabilities(profile)).toMatchObject({ send: "unknown", steer: "unknown", reasonCode: "capability_unknown" });
+    expect(controls.imageCapabilities(profile)).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null });
   } finally { controls.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test("an image modality without exact backend geometry stays unknown and satisfies the public capability protocol", async () => {
+test("unqualified send publishes application geometry through the public capability protocol", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-image-controls-"));
   const controls = new CodexControls({ request: async method => method === "model/list" ? { data: [{ model: "gpt-6-astra", inputModalities: ["text", "image"] }], nextCursor: null } : method === "skills/list" ? { data: [] } : { requirements: null } }, () => "thread", () => null, root, root, () => {});
   try {
     controls.seed({ model: "gpt-6-astra", modelProvider: "copilot_gateway" }); await controls.refresh();
     const capability = controls.imageCapabilities(codexImageProfile(initialized, { model: "gpt-6-astra", modelProvider: "copilot_gateway" }, "darwin"));
     expect(() => parseProviderImageCapabilities({ ...capability, revision: "1" })).not.toThrow();
-    expect(capability).toMatchObject({ send: "unknown", steer: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
+    expect(capability).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null, geometry: { known: true, maxFrames: 256 } });
   } finally { controls.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test("image capability requires the exact model's complete catalog modality and a known native profile", async () => {
+test("only the current Provider catalog can narrow default send and qualified steer remains independent", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-image-controls-")), calls: unknown[] = [];
   const controls = new CodexControls({ request: async (method, params) => { calls.push({ method, params }); if (method === "model/list") return (params as any).cursor ? { data: [{ id: "vision", model: "vision", inputModalities: ["text", "image"], hidden: true }], nextCursor: null } : { data: [{ model: "text", inputModalities: ["text"] }], nextCursor: "second" }; return method === "skills/list" ? { data: [] } : { requirements: null }; } }, () => "thread", () => null, root, root, () => {});
   try {
     const profile = controlledProfile("vision");
-    controls.seed({ model: "vision", modelProvider: "controlled" }); expect(controls.imageCapabilities(profile).send).toBe("unknown");
-    await controls.refresh();
+    controls.seed({ model: "vision", modelProvider: "controlled" }); expect(controls.imageCapabilities(profile)).toMatchObject({ send: "supported", steer: "unknown" });
+    await controls.refresh("controlled");
     expect(controls.imageCapabilities(profile)).toMatchObject({ modelId: "vision", send: "supported", steer: "supported" });
-    expect(controls.imageCapabilities(null)).toMatchObject({ send: "unknown", reasonCode: "profile_disabled" });
-    controls.observe({ modelProvider: "other" }); expect(controls.imageCapabilities(profile)).toMatchObject({ send: "unknown", geometry: { known: false } });
-    controls.observe({ modelProvider: "controlled", model: "text" }); expect(controls.imageCapabilities(profile)).toMatchObject({ send: "unsupported", reasonCode: "model_unsupported" });
-    controls.observe({ model: "absent" }); expect(controls.imageCapabilities(profile)).toMatchObject({ send: "unknown", reasonCode: "capability_unknown" });
+    expect(controls.imageCapabilities(null)).toMatchObject({ send: "supported", reasonCode: null });
+    controls.observe({ modelProvider: "other", model: "text" });
+    expect(controls.imageCapabilities(null, true, "other")).toMatchObject({ send: "supported", steer: "unknown" });
+    controls.observe({ modelProvider: "controlled" });
+    expect(controls.imageCapabilities(null, true, "controlled")).toMatchObject({ send: "unsupported", reasonCode: "model_unsupported" });
+    controls.observe({ model: "absent" });
+    expect(controls.imageCapabilities(profile)).toMatchObject({ send: "supported", steer: "unknown" });
     expect(calls.filter((call: any) => call.method === "model/list")).toHaveLength(2);
   } finally { controls.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -81,8 +84,8 @@ test("an unconfirmed live model change withdraws image admission before native m
     const setting = controls.set("model", "second", "setting", controls.store.value.revision);
     try { expect(controls.imageCapabilities(controlledProfile("first"))).toMatchObject({ steer: "unknown", reasonCode: "capability_unknown" }); }
     finally { live!(); await setting; }
-    expect(controls.imageCapabilities(controlledProfile("first"))).toMatchObject({ modelId: "second", send: "unknown", geometry: { known: false } });
+    expect(controls.imageCapabilities(controlledProfile("first"))).toMatchObject({ modelId: "second", send: "supported", geometry: { known: true } });
     expect(controls.imageCapabilities(controlledProfile("second"))).toMatchObject({ modelId: "second", steer: "supported" });
-    controls.observe({ model: "first" }); expect(controls.imageCapabilities(controlledProfile("first"))).toMatchObject({ steer: "unknown", reasonCode: "capability_unknown" });
+    controls.observe({ model: "first" }); expect(controls.imageCapabilities(controlledProfile("first"))).toMatchObject({ send: "supported", steer: "unknown" });
   } finally { controls.close(); await rm(root, { recursive: true, force: true }); }
 });

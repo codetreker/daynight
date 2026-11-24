@@ -90,7 +90,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const approvalItems = new Map<string, NativeObject>();
   const errors = new CodexErrors(options.onTimeline);
   const capabilities = { send: true, steer: true, cancel: true, respond: true };
-  const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value, images: controls.imageCapabilities(!nativeExited && !closed && !closing && !transportFailed && !observingConfig && !settingsBusy ? imageProfile : null) } : {}), capabilities: nativeExited || closed || transportFailed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
+  const imageCapabilities = () => controls.imageCapabilities(imageProfile, Boolean(options.imageRuntime) && ready && !nativeExited && !closed && !closing && !transportFailed && !observingConfig && !settingsBusy, configObservation?.modelProvider ?? null);
+  const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value, images: imageCapabilities() } : {}), capabilities: nativeExited || closed || transportFailed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
   const reportFatal = (error: Error) => { if (!closing && !fatalReported) { fatalReported = true; options.onFatalError?.(error); } };
   const showInteraction = (value: Pending) => options.onTimeline({ entryId: value.interaction.interactionId, revision: value.interaction.revision, kind: "interaction", interaction: value.interaction });
   const expire = () => { for (const p of pending.values()) { p.interaction = { ...p.interaction, state: "expired", revision: "2" }; showInteraction(p); p.rejected?.(new Error("Native interaction expired before confirmation.")); } pending.clear(); approvalItems.clear(); };
@@ -374,7 +375,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     configObservation = await configObserver?.bind(nativeId, { ...response, cwd: string(thread.cwd) }) ?? null;
     imageProfile = configObservation ? codexImageProfile(initialized, response, process.platform, executableSha256, configObservation) : null;
     controls.seed({ ...response, cwd: string(thread.cwd), ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}) });
-    await controls.refresh();
+    await controls.refresh(configObservation?.modelProvider ?? null);
     if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) });
     imageInputs = new CodexImageInputs(options, nativeId);
     imageProjection = new CodexImageProjection(nativeId, options, imageInputs, imageProjector);
@@ -444,11 +445,11 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       try {
       if (images.length) {
         await refreshImages();
-        const capability = controls.imageCapabilities(imageProfile);
+        const capability = imageCapabilities();
         if ((expectedTurnId ? capability.steer : capability.send) !== "supported") throw new NativeRpcError(-32602, "Native image capability is unknown or unsupported.");
         await verifyNativeImageFiles(images);
-        if (nativeExited || closed || closing || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision || (expectedTurnId ? controls.imageCapabilities(imageProfile).steer : controls.imageCapabilities(imageProfile).send) !== "supported") throw new NativeRpcError(-32602, "Native image admission changed before dispatch.");
-        assertNativeImageAdmission(inputValue, controls.imageCapabilities(imageProfile), expectedTurnId);
+        if (nativeExited || closed || closing || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision || (expectedTurnId ? imageCapabilities().steer : imageCapabilities().send) !== "supported") throw new NativeRpcError(-32602, "Native image admission changed before dispatch.");
+        assertNativeImageAdmission(inputValue, imageCapabilities(), expectedTurnId);
         imageInputs.prepare(inputValue, operationId, expectedTurnId);
       } else interruptions.submitting(operationId, text, expectedTurnId);
       const observeReceipt = (value: unknown) => {
@@ -462,8 +463,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (images.length) {
         const observation = configObservation;
         imageDispatch = { operationId, verify: () => {
-          if (!configObserver?.matches(observation) || configObservation !== observation || nativeExited || closed || closing || transportFailed || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision) throw new NativeRpcError(-32602, "Native image configuration changed or interaction pending before dispatch.");
-          assertNativeImageAdmission(inputValue, controls.imageCapabilities(imageProfile), expectedTurnId);
+          if (configObservation !== observation || (observation !== null && !configObserver?.matches(observation)) || nativeExited || closed || closing || transportFailed || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision) throw new NativeRpcError(-32602, "Native image configuration changed or interaction pending before dispatch.");
+          assertNativeImageAdmission(inputValue, imageCapabilities(), expectedTurnId);
           dispatched = true;
         } };
       }
@@ -486,7 +487,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   };
   return {
     nativeSessionId: nativeId, send, acknowledgeImageOccurrences: () => imageProjector.acknowledged(),
-    async refreshControls() { if (sending || settingsBusy || observingConfig) throw new NativeRpcError(-32602, "Native controls are busy."); observingConfig = true; state(); try { await controls.refresh(); await refreshImages(); return { disposition: "handled" }; } finally { observingConfig = false; state(); recoverImages(); } },
+    async refreshControls() { if (sending || settingsBusy || observingConfig) throw new NativeRpcError(-32602, "Native controls are busy."); observingConfig = true; state(); try { await refreshImages(); await controls.refresh(configObservation?.modelProvider ?? null); return { disposition: "handled" }; } finally { observingConfig = false; state(); recoverImages(); } },
     async setSetting(id, value, operationId, revision) {
       if (nativeExited || closed || transportFailed || sending || settingsBusy || observingConfig || protecting) throw new NativeRpcError(-32602, "Native controls are busy.");
       settingsBusy = true; invalidateImages();

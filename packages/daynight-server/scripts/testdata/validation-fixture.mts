@@ -34,7 +34,9 @@ case "$1" in
     elif [[ -z "\${EMPTY_PACKAGES-}" ]]; then printf '%s\\n' example/api example/cmd/daynight-server example/internal/server
     fi ;;
   build) exit "\${BUILD_EXIT:-0}" ;;
-  vet) exit "\${VET_EXIT:-0}" ;;
+  vet)
+    if [[ " \${GOFLAGS-} " == *' -tags=startupshutdown '* ]]; then exit "\${TAGGED_VET_EXIT:-0}"; fi
+    exit "\${ORDINARY_VET_EXIT:-0}" ;;
   test)
     if [[ "$*" == *TestWebhookRunnerAbruptProcessRecovery* ]]; then exit "\${PROCESS_EXIT:-0}"; fi
     if [[ "$*" == *./testdata/testauth* ]]; then exit "\${TESTAUTH_EXIT:-0}"; fi

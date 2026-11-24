@@ -857,10 +857,11 @@ test("an explicit control refresh recovers a failed route observation with the s
     expect(fixture.states.at(-1)?.images?.send).toBe("supported");
     sdk.observeRoute.mockResolvedValueOnce(null);
     await provider.refreshControls!();
-    expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+    expect(fixture.states.at(-1)?.images?.send).toBe("supported");
+    expect(fingerprints.at(-1)).toBeNull();
     await provider.refreshControls!();
     expect(fixture.states.at(-1)?.images?.send).toBe("supported");
-    expect(fingerprints[0]).not.toBeNull(); expect(new Set(fingerprints).size).toBe(1);
+    expect(fingerprints[0]).not.toBeNull(); expect(fingerprints.at(-1)).toBe(fingerprints[0]);
   } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -898,7 +899,7 @@ test.each([
     await vi.waitFor(() => expect(releaseFresh).toBeTypeOf("function"));
     expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
     releaseFresh(prior);
-    await vi.waitFor(() => expect(fixture.states.at(-1)?.images?.send).toBe(qualified ? "supported" : "unknown"));
+    await vi.waitFor(() => expect(fixture.states.at(-1)?.images?.send).toBe("supported"));
   } finally { release?.(null); releaseFresh?.(null); await provider.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -936,6 +937,7 @@ test("a model event at final image admission prevents native dispatch", async ()
     sdk.beforeImageVerify = () => fixture.emit(event("session.model_change", { newModel: "vision-model" }));
     await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("observation changed");
     expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)).toMatchObject({ currentTurnId: null, activity: "idle" });
   } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -947,7 +949,7 @@ test("second image validation failure and changed model evidence both prevent th
     await expect(provider.send({ content: [...f.input.content, changed] }, f.operationId, null)).rejects.toThrow("integrity");
     expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
     f.model.getCurrent.mockResolvedValue({ modelId: "unknown-model" });
-    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability"); expect(sdk.imageSend).not.toHaveBeenCalled();
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("changed before dispatch"); expect(sdk.imageSend).not.toHaveBeenCalled();
     expect(fixture.states.at(-1)?.currentTurnId).toBeNull();
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });
@@ -971,7 +973,9 @@ test("Copilot image acceptance remains unknown if its durable callback does not 
   try {
     provider = await openCopilotProvider(f.options);
     await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("durably");
-    expect(sdk.imageSend).toHaveBeenCalledOnce(); expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+    expect(sdk.imageSend).toHaveBeenCalledOnce();
+    expect(f.observed).toHaveBeenCalledOnce();
+    expect([...f.states.values()]).toContainEqual(expect.objectContaining({ operationId: f.operationId, messageId: "native-image-message" }));
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -1008,15 +1012,15 @@ test("a timed-out Copilot image send keeps its original Promise and appends late
 });
 
 
-test("the installed Copilot profile refuses image input without a proven geometry envelope while text stays available", async () => {
+test("Copilot sends an authorized image with application geometry when the route has no qualification", async () => {
   const f = await imageFixture(true, false); let provider;
   try {
+    sdk.observeRoute.mockResolvedValue(null);
     provider = await openCopilotProvider(f.options);
-    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
-    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability");
-    expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
-    await provider.send(textNativeInput("Still text"), randomUUID(), null);
-    expect(fixture.native.send).toHaveBeenCalledOnce();
+    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null, geometry: { known: true, maxFrames: 256 } });
+    await expect(provider.send(f.input, f.operationId, null)).resolves.toMatchObject({ disposition: "started" });
+    expect(sdk.imageSend).toHaveBeenCalledOnce(); expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(f.observed).toHaveBeenCalledWith(expect.objectContaining({ operationId: f.operationId, nativeMessageId: "native-image-message" }));
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 

@@ -6,13 +6,14 @@ import type { CopilotClient, CopilotSession, SessionConfig } from "@github/copil
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import type { CopilotBridgeImageInput, CopilotBridgeExport } from "./copilot-bridge-media.js";
 import { parseCopilotRouteObservation, type CopilotRouteObservation } from "./copilot-route-observation.js";
+import { NativeDispatchRejectedError } from "./native-rpc.js";
 
 export type CopilotBridgeSpool = { readonly path: string; write(bytes: Uint8Array): void; seal(): void; remove(): void };
 export type CopilotBridgeMediaOptions = { createSpool(maxBytes: number): CopilotBridgeSpool };
 export type CopilotBridgeImage = Readonly<{ kind: "copilot_bridge_image"; path: string; byteLength: string; sha256: string; mediaType: string }>;
 type ImageOwnership = { spool: CopilotBridgeSpool; owner: boolean; readers: number; removed: boolean; retired(): void };
 const images = new WeakMap<object, ImageOwnership>();
-const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null) => Promise<string>>();
+const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null, modelId: string | null) => Promise<string>>();
 const routeSessions = new WeakMap<object, () => Promise<CopilotRouteObservation | null>>();
 export const observeCopilotBridgeRoute = async (session: CopilotSession): Promise<CopilotRouteObservation | null> => routeSessions.get(session)?.() ?? null;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -25,12 +26,13 @@ export const retainCopilotBridgeImage = (image: CopilotBridgeImage): (() => void
   return () => { if (!released) { released = true; entry.readers--; } retire(entry); };
 };
 export const releaseCopilotBridgeImage = (image: CopilotBridgeImage): void => { const entry = images.get(image); if (!entry) throw new Error("Copilot image has no controlled bridge lease."); entry.owner = false; retire(entry); };
-export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null = null): Promise<string> => {
-  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify, observation);
+export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null = null, modelId: string | null = null): Promise<string> => {
+  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify, observation, modelId);
 };
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 const remoteError = (raw: unknown): Error => {
   const error = object(raw), message = typeof error.message === "string" ? error.message : "Copilot bridge operation failed; outcome is unknown.";
+  if (error.kind === "native_dispatch_rejected") return new NativeDispatchRejectedError(message);
   return error.kind === "response" && typeof error.code === "number" ? new ResponseError(error.code, message) : new Error(message);
 };
 type Transfer = { spool: CopilotBridgeSpool; length: number; offset: number; mime: string; hash: ReturnType<typeof createHash>; marker?: CopilotBridgeImage; claimed: boolean };
@@ -196,11 +198,11 @@ export const startCopilotBridge = (options: {
       return (...args: unknown[]) => request("call", [sessionId, [name], args]);
     } }) as CopilotSession;
     routeSessions.set(value, async () => parseCopilotRouteObservation(await request("observeRoute", [sessionId]), sessionId));
-    imageSessions.set(value, async (input, verify, observation) => {
+    imageSessions.set(value, async (input, verify, observation, modelId) => {
       if (closed || closing || failed || admissions.size) throw new Error("Copilot image admission is unavailable.");
       const admissionId = randomUUID(), admission = { sessionId, verify, consumed: false, error: undefined as Error | undefined };
       admissions.set(admissionId, admission);
-      try { return await request("sendImages", [sessionId, input, admissionId, observation]) as string; }
+      try { return await request("sendImages", [sessionId, input, admissionId, observation, modelId]) as string; }
       catch (error) { throw admission.error ?? error; }
       finally { admissions.delete(admissionId); }
     });
