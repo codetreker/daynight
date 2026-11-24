@@ -140,16 +140,16 @@ for (const width of [1440, 390]) {
     let documents = 0;
     page.on('request', request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documents++; });
     await page.clock.install({ time: new Date(BOT_TIME) }); await page.clock.pauseAt(new Date(BOT_TIME));
-    await page.setViewportSize({ width, height: 900 }); await page.goto('/bots');
+    await page.setViewportSize({ width, height: 600 }); await page.goto('/bots');
     const rows = page.locator('.bot-list-item'), status = rows.first().locator('.bot-status > span').first();
     const refresh = page.locator('.bot-list-section .bot-refresh'), search = page.locator('.bot-search input');
     await expect(rows).toHaveCount(4); await expect(status).toHaveText('Offline');
     await search.fill('Observed assistant');
     await rows.nth(1).locator('.bot-more').click();
     await expect(page.getByRole('menu')).toBeVisible();
-    await page.locator('.bot-list').evaluate(node => { node.scrollTop = 30; });
+    await page.locator('.bot-list-content').evaluate(node => { node.scrollTop = 30; });
     const retainedList = await page.evaluateHandle(() => ({
-      rows: [...document.querySelectorAll('.bot-list-item')], list: document.querySelector('.bot-list')!,
+      rows: [...document.querySelectorAll('.bot-list-item')], list: document.querySelector('.bot-list-content')!,
       search: document.querySelector<HTMLInputElement>('.bot-search input')!, menu: document.querySelector('[role="menu"]')!,
       focus: document.activeElement,
     }));

@@ -1,11 +1,12 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import type { AssistantTask } from '../../src/api/assistant-tasks';
 import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import { botObservation } from '../helpers/bot-observation';
 import { botConversationBack, focusBotControl } from '../helpers/bot-heading';
 import type {} from './bots-viewport-session';
 
-const viewports = [{ width: 320, height: 640 }, { width: 375, height: 667 }, { width: 390, height: 844 }, { width: 768, height: 900 }, { width: 1360, height: 900 }];
+const viewports = [{ width: 320, height: 640 }, { width: 375, height: 667 }, { width: 390, height: 844 }, { width: 768, height: 900 }, { width: 1280, height: 900 }];
 const definition = (index: number) => ({
   ...botDefinition(index), name: index === 1 ? 'Ready assistant' : index === 2 ? 'Abnormal assistant' : `Assistant ${index} ${'LongName中文'.repeat(3)}`.slice(0, 40),
   roleConfiguration: { instructions: 'Fixture only.', revision: '1', digest: 'a'.repeat(64) },
@@ -17,7 +18,7 @@ const assistantTask = (index: number): AssistantTask => ({
   version: '1', manualVersion: '1', claimGeneration: '1', claimState: 'active', holderBotId: botId(1), credentialOperationId: botId(index + 700),
   claimedAt: BOT_TIME, renewedAt: BOT_TIME, leaseUntil: '2099-01-01T00:00:00Z', observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME,
 });
-const install = async (page: Page, count = 2, initialTasks: number | 'loading' = 'loading') => {
+const install = async (page: Page, count = 2, initialTasks: number | 'loading' = 'loading', machine = 'Office') => {
   const personalId = botId(100), personal = { id: personalId, kind: 'personal', name: null };
   const bots = Array.from({ length: count }, (_, index) => definition(index + 1));
   let taskCount = initialTasks === 'loading' ? 0 : initialTasks, taskError = false;
@@ -51,7 +52,7 @@ const install = async (page: Page, count = 2, initialTasks: number | 'loading' =
     const bot = bots.find(value => path === `/api/v1/me/bots/${value.id}` || path === `/api/v1/me/bots/${value.id}/observation`);
     if (bot && path.endsWith('/observation')) return send(botObservation(1, {
       botId: bot.id, sessionId: bot.sessionId, testExecutionId: bot.testExecutionId,
-      machine: { id: botId(120), name: 'Office' }, state: bot.id === botId(2) ? 'abnormal' : 'idle', reason: bot.id === botId(2) ? 'provider_unavailable' : 'idle',
+      machine: { id: botId(120), name: machine }, state: bot.id === botId(2) ? 'abnormal' : 'idle', reason: bot.id === botId(2) ? 'provider_unavailable' : 'idle',
       observedAt: new Date().toISOString(), freshUntil: new Date(Date.now() + 60_000).toISOString(),
     }));
     if (bot) return send(bot);
@@ -63,18 +64,20 @@ const install = async (page: Page, count = 2, initialTasks: number | 'loading' =
   };
 };
 const geometry = (page: Page) => page.locator('.bot-list').evaluate(list => {
-  const panel = list.closest<HTMLElement>('.bot-list-panel')!, tasks = panel.querySelector<HTMLElement>('.assistant-task-section')!;
+  const panel = list.closest<HTMLElement>('.bot-list-panel')!, content = list.closest<HTMLElement>('.bot-list-content')!, tasks = panel.querySelector<HTMLElement>('.assistant-task-section')!;
   const bounds = list.getBoundingClientRect();
   return {
     height: bounds.height, rowsHeight: [...list.children].reduce((sum, row) => sum + row.getBoundingClientRect().height + parseFloat(getComputedStyle(row).marginBottom), 0),
-    scrollHeight: list.scrollHeight, panelHeight: panel.clientHeight, panelScrollHeight: panel.scrollHeight, panelScrollTop: panel.scrollTop,
+    scrollHeight: list.scrollHeight, contentHeight: content.clientHeight, contentScrollHeight: content.scrollHeight, contentScrollTop: content.scrollTop,
+    panelHeight: panel.clientHeight, panelScrollHeight: panel.scrollHeight, panelScrollTop: panel.scrollTop,
     gap: tasks.getBoundingClientRect().top - bounds.bottom, documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth,
     listWidth: list.clientWidth, listScrollWidth: list.scrollWidth, panelWidth: panel.clientWidth, panelScrollWidth: panel.scrollWidth,
+    workspaceWidth: panel.closest('.bots-page')!.getBoundingClientRect().width,
   };
 });
 const assertNaturalRows = async (page: Page) => {
   const value = await geometry(page);
-  expect(value.height).toBeGreaterThanOrEqual(144);
+  expect(value.height).toBeGreaterThan(0);
   expect(Math.abs(value.height - value.rowsHeight)).toBeLessThanOrEqual(1);
   expect(value.gap).toBeLessThanOrEqual(21);
   expect(value.documentWidth).toBeLessThanOrEqual(value.viewportWidth);
@@ -83,10 +86,58 @@ const assertNaturalRows = async (page: Page) => {
   return value;
 };
 const save = async (info: TestInfo, value: unknown) => {
-  await info.attach('sidebar-geometry', { body: JSON.stringify({ boundary: 'Production Web app with controlled HTTP and Session API responses; no backend or physical-device acceptance.', value }, null, 2), contentType: 'application/json' });
+  const path = info.outputPath('sidebar-geometry.json');
+  await writeFile(path, JSON.stringify({ boundary: 'Production Web app with controlled HTTP and Session API responses; no backend or physical-device acceptance.', value }, null, 2));
+  await info.attach('sidebar-geometry', { path, contentType: 'application/json' });
 };
 
-test.describe('assistant list height budget', () => {
+test.describe('continuous assistant sidebar', () => {
+  for (const locale of ['en', 'zh-CN']) for (const viewport of viewports) {
+    test(`shows four assistants without reserving empty task space at ${viewport.width}px in ${locale}`, async ({ page }, info) => {
+      const machine = locale === 'en' ? 'Office-release-validation-workstation' : '办公室跨平台验收设备';
+      const fixture = await install(page, 4, 0, machine);
+      await page.setViewportSize(viewport); await page.goto('/bots');
+      await page.locator('.locale-control select').selectOption(locale);
+      const rows = page.locator('.bot-list-item');
+      await expect(rows).toHaveCount(4);
+      await expect(rows.first().locator('.bot-observation-machine')).toHaveText(machine);
+      const value = await assertNaturalRows(page);
+      if (viewport.width === 1280) {
+        for (const row of await rows.all()) await expect(row).toBeInViewport({ ratio: 1 });
+        expect(value.height).toBeGreaterThan(288);
+      }
+      for (const row of await rows.all()) {
+        await row.scrollIntoViewIfNeeded();
+        for (const selector of ['strong', '.bot-status > span:first-child', '.bot-observation-machine']) {
+          expect(await row.locator(selector).evaluate(node => node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight)).toBe(true);
+        }
+        const more = row.locator('.bot-more');
+        const box = (await more.boundingBox())!;
+        expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      await page.locator('.bot-list-content').evaluate(node => { node.scrollTop = 0; });
+      await page.screenshot({ path: info.outputPath(`four-assistants-${locale}-${viewport.width}.png`) });
+      await save(info, { viewport, locale, value, rows: await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON())) });
+      expect(fixture.writes).toEqual([]); expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  for (const count of [0, 1]) {
+    test(`uses natural space for ${count} assistants with an empty task group`, async ({ page }, info) => {
+      const fixture = await install(page, count, 0);
+      await page.setViewportSize({ width: 1280, height: 900 }); await page.goto('/bots');
+      await expect(page.locator('.bot-list a')).toHaveCount(count);
+      await expect(page.locator('.assistant-task-section .bot-empty')).toBeVisible();
+      const value = await geometry(page);
+      expect(Math.abs(value.height - value.rowsHeight)).toBeLessThanOrEqual(1);
+      if (count === 0) expect(value.height).toBe(0);
+      expect(value.contentScrollHeight).toBe(value.contentHeight);
+      expect(value.gap).toBeLessThanOrEqual(21);
+      expect(fixture.writes).toEqual([]); expect(fixture.errors).toEqual([]);
+      await save(info, { count, value });
+    });
+  }
+
   for (const locale of ['en', 'zh-CN']) for (const viewport of viewports) {
     test(`retains two natural rows across task states at ${viewport.width}px in ${locale}`, async ({ page }, info) => {
       const fixture = await install(page);
@@ -115,11 +166,11 @@ test.describe('assistant list height budget', () => {
         await row.scrollIntoViewIfNeeded(); await row.click();
         await expect(page.locator('.bot-conversation-title h2:visible')).toHaveText(index === 0 ? 'Ready assistant' : 'Abnormal assistant');
         expect(await page.locator('.bot-conversation').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
-        if (viewport.width === 1360) { await expect(page.locator('.bot-list-panel')).toBeVisible(); await expect(page.locator('.bot-conversation')).toBeVisible(); }
+        if (viewport.width === 1280) { await expect(page.locator('.bot-list-panel')).toBeVisible(); await expect(page.locator('.bot-conversation')).toBeVisible(); }
         await botConversationBack(page).click();
         await expect(page.locator('.bot-list-panel')).toBeVisible();
       }
-      await page.locator('.bot-list-panel').evaluate(node => { node.scrollTop = 0; });
+      await page.locator('.bot-list-content').evaluate(node => { node.scrollTop = 0; });
       await focusBotControl(page, page.locator('.bot-list a').first());
       await page.keyboard.press('Enter');
       await expect(page.locator('.bot-conversation-title h2:visible')).toHaveText('Ready assistant');
@@ -127,31 +178,33 @@ test.describe('assistant list height budget', () => {
       const more = page.locator('.bot-more').first(); await more.focus(); await page.keyboard.press('Enter');
       await page.keyboard.press('Escape'); await expect(more).toBeFocused();
       expect(fixture.writes).toEqual([]); expect(fixture.errors).toEqual([]);
-      await page.locator('.bot-list-panel').evaluate(node => { node.scrollTop = 0; });
+      await page.locator('.bot-list-content').evaluate(node => { node.scrollTop = 0; });
       await page.screenshot({ path: info.outputPath(`sidebar-${locale}-${viewport.width}.png`) });
       await save(info, { viewport, locale, states });
     });
   }
 
   for (const locale of ['en', 'zh-CN']) {
-    test(`bounds dense rows and leaves no blank list for zero matches in ${locale}`, async ({ page }, info) => {
+    test(`keeps dense rows reachable and leaves no blank list for zero matches in ${locale}`, async ({ page }, info) => {
       const fixture = await install(page, 14, 6);
       await page.setViewportSize({ width: 320, height: 400 }); await page.goto('/bots');
       await page.locator('.locale-control select').selectOption(locale);
       const list = page.locator('.bot-list'), tasks = page.locator('.assistant-task-list a');
       await expect(list.locator('a')).toHaveCount(14); await expect(tasks).toHaveCount(6);
-      const initial = await geometry(page);
-      expect(initial.height).toBeGreaterThanOrEqual(144);
-      expect(initial.height).toBeLessThanOrEqual(161);
-      expect(initial.scrollHeight).toBeGreaterThan(initial.height);
+      const initial = await assertNaturalRows(page), tools = await page.locator('.bot-search').boundingBox();
+      expect(initial.height).toBeGreaterThan(initial.contentHeight);
+      expect(initial.contentScrollHeight).toBeGreaterThan(initial.contentHeight);
+      expect(initial.panelScrollHeight).toBe(initial.panelHeight);
       expect(initial.documentWidth).toBe(320);
       expect(initial.panelScrollWidth).toBeLessThanOrEqual(initial.panelWidth);
       await list.locator('a').first().focus();
       await focusBotControl(page, list.locator('a').last());
-      expect(await list.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+      expect((await geometry(page)).contentScrollTop).toBeGreaterThan(0);
+      await expect(list.locator('a').last()).toBeInViewport();
       await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await expect(tasks.first()).toBeFocused();
-      expect((await geometry(page)).panelScrollTop).toBeGreaterThan(0);
-      await tasks.last().focus(); await expect(tasks.last()).toBeInViewport();
+      await focusBotControl(page, tasks.last()); await expect(tasks.last()).toBeInViewport();
+      await page.keyboard.press('Tab'); await expect(page.locator('.assistant-task-list-actions button').first()).toBeFocused();
+      expect(await page.locator('.bot-search').boundingBox()).toEqual(tools);
       const search = page.locator('.bot-search input'); await search.fill('Ready assistant');
       await expect(list.locator('a')).toHaveCount(1);
       const one = await geometry(page);
@@ -164,26 +217,25 @@ test.describe('assistant list height budget', () => {
     });
   }
 
-  test.describe('touch scroll handoff', () => {
+  test.describe('touch scrolling', () => {
     test.use({ hasTouch: true });
-    test('chains a gesture from the dense assistant list to its task section', async ({ page }, info) => {
+    test('scrolls both groups through the same region and retains touch navigation', async ({ page }, info) => {
       const fixture = await install(page, 14, 6);
       await page.setViewportSize({ width: 320, height: 640 }); await page.goto('/bots');
       const list = page.locator('.bot-list'); await expect(list.locator('a')).toHaveCount(14);
       await expect(page.locator('.assistant-task-list a')).toHaveCount(6);
-      await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
-      const bounds = (await list.boundingBox())!, x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height - 30;
+      const content = page.locator('.bot-list-content');
+      const bounds = (await content.boundingBox())!, x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height - 30;
       const before = await geometry(page), cdp = await page.context().newCDPSession(page);
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
       for (let distance = 20; distance <= 160; distance += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - distance }] });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await expect.poll(async () => (await geometry(page)).panelScrollTop).toBeGreaterThan(before.panelScrollTop);
+      await expect.poll(async () => (await geometry(page)).contentScrollTop).toBeGreaterThan(before.contentScrollTop);
       await cdp.detach();
-      const task = page.locator('.assistant-task-list a').first(); await task.scrollIntoViewIfNeeded(); await expect(task).toBeInViewport();
+      const task = page.locator('.assistant-task-list a').last(); await task.scrollIntoViewIfNeeded(); await expect(task).toBeInViewport();
       expect(fixture.writes).toEqual([]); expect(fixture.errors).toEqual([]);
       await page.screenshot({ path: info.outputPath('touch-sidebar.png') }); await save(info, { before, after: await geometry(page) });
-      await page.locator('.bot-list-panel').evaluate(node => { node.scrollTop = 0; });
-      await list.evaluate(node => { node.scrollTop = 0; });
+      await content.evaluate(node => { node.scrollTop = 0; });
       await list.locator('a').first().tap();
       await expect(page.locator('.bot-conversation-title h2:visible')).toHaveText('Ready assistant');
       await botConversationBack(page).tap(); await expect(list).toBeVisible();
