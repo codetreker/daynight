@@ -296,7 +296,7 @@ it("preserves each distinct cleanup failure without accumulating repeated cached
   await expect(stopped).rejects.toMatchObject({ errors: [codex, copilot] });
 });
 
-it.each(["direct", "nested"] as const)("finishes after the original child confirms a retained %s cleanup timeout", async (kind) => {
+it.each(["direct", "nested"] as const)("classifies a retained %s cleanup timeout after the original child closes", async (kind) => {
   const f = fixture(), probe = await timedOutProbe();
   const failure = kind === "direct" ? probe.error : new Error("Version collection failed", {
     cause: new AggregateError([probe.error], "Probe failed", { cause: probe.error }),
@@ -307,7 +307,8 @@ it.each(["direct", "nested"] as const)("finishes after the original child confir
   expect(f.emit).toHaveBeenCalledOnce();
   expect(probe.child.listenerCount("close")).toBe(1);
   probe.child.emit("close", null, "SIGKILL");
-  await expect(reporter.stop()).resolves.toBeUndefined();
+  if (kind === "direct") await expect(reporter.stop()).resolves.toBeUndefined();
+  else await expect(reporter.stop()).rejects.toBe(failure);
   reporter.trigger(); reporter.publishInventory({ observedAt: timestamp, claims: [] }); reporter.recordClaim(claim());
   await vi.advanceTimersByTimeAsync(120_000);
   expect(f.collect).toHaveBeenCalledTimes(3); expect(f.send).toHaveBeenCalledTimes(3);
@@ -335,6 +336,21 @@ it.each(["no close", "exit only", "another child", "termination failed", "legacy
   },
 );
 
+it("preserves an independent error whose cause is reporter cancellation", async () => {
+  const f = fixture(), probe = await timedOutProbe(), blocked = deferred<WorkerTelemetrySample>();
+  f.collect.mockImplementationOnce(() => blocked.promise);
+  const reporter = f.start();
+  const stopping = reporter.stop();
+  const operation = f.collect.mock.calls[0]![0];
+  const independent = new Error("Output failed while cancelling", { cause: operation.signal.reason });
+  const failure = new AggregateError([probe.error, independent], "Collection failed");
+  blocked.reject(failure);
+  await expect(stopping).rejects.toBe(failure);
+  probe.child.emit("close", null, "SIGKILL");
+  await expect(reporter.stop()).rejects.toBe(failure);
+  expect(reporter.isSettledCleanupFailure(failure)).toBe(false);
+});
+
 it.each(["unconfirmed sibling", "independent member", "independent cause"] as const)(
   "retains a mixed aggregate with an %s after another cleanup is confirmed",
   async (kind) => {
@@ -351,6 +367,20 @@ it.each(["unconfirmed sibling", "independent member", "independent cause"] as co
     await expect(reporter.stop()).rejects.toBe(failure);
     expect(f.send).not.toHaveBeenCalled();
     pending.child.emit("close", null, "SIGKILL");
+  },
+);
+
+it.each(["termination", "late output", "journal save"] as const)(
+  "retains an independent %s failure inside a confirmed cleanup error",
+  async (kind) => {
+    const f = fixture(), probe = await timedOutProbe();
+    const independent = new Error(`Independent ${kind} failure`);
+    (probe.error as OwnedCommandCleanupError).errors.push(independent);
+    f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] });
+    const reporter = f.start(); await settle();
+    probe.child.emit("close", null, "SIGKILL");
+    await expect(reporter.stop()).rejects.toBe(probe.error);
+    expect((probe.error as OwnedCommandCleanupError).errors).toContain(independent);
   },
 );
 

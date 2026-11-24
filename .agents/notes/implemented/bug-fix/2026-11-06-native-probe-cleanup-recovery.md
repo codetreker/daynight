@@ -41,7 +41,24 @@ availability. A new failure remains observable and a new cleanup error has its o
 confirmation identity. Reporter shutdown joins collection and evaluates remaining
 responsibility, preserving mixed independent failures and diagnostic failures while
 allowing acknowledged historical cleanup timeouts and its own cancellation wrappers
-to stop blocking shutdown.
+to stop blocking shutdown. The original owner supplies structured classification:
+only an original cleanup-wait timeout can be settled by the original confirmation.
+For a Worker execution-scope resource, confirmation covers the same resource,
+generation, process proof, output and durable events. An unclassified
+older error remains a failure. The reporter recursively preserves independent
+termination, output and persistence failures even inside an acknowledged cleanup
+error; the original command's sampling timeout remains historical context and does
+not turn the failed sample into a success.
+
+Worker shutdown joins the original reporter, reconciles the original owner, and
+stops that same reporter again. It excludes the first error from fatal shutdown
+only when the second stop has no remaining propagating error and structured
+classification proves that the first error contains only settled cleanup waits,
+apart from original sampling-failure context and reporter cancellation wrappers.
+If the second stop fails, both errors remain, deduplicated by object identity.
+The original diagnostic remains available. In-flight reconciliation joins its
+original operation; bounded re-observation follows the existing owner rules without
+refreshing deadlines or resending the command.
 
 The [collection design](../../../../docs/design/daynight-worker-reporting.md#纯版本探测与环境)
 owns the mechanism and lifecycle. The [reporting specification](../../../../docs/spec/daynight-worker-reporting.md)
@@ -71,14 +88,20 @@ provider substitution would also change the user's selection semantics.
 **Suppress all historical cleanup errors during reporter shutdown.** This would
 hide unconfirmed aggregate members, termination failures, errors from other cleanup
 owners and independent failures. Shutdown evaluates the remaining responsibility
-instead of dropping an entire error tree by its outer category.
+instead of dropping an entire error tree by its outer category. A successful second
+stop alone cannot classify the first failure or prove its independent members safe
+to discard.
 
 ## Consequences
 
 Late reliable closure permits recovery without extending command deadlines,
 adding polling processes or close listeners, changing single-flight scheduling,
 or reviving cancelled work. Original errors remain private and diagnostics retain
-their existing sanitization. Confirmation does not bypass current configuration,
+their existing sanitization. The five-second sampling budget includes termination,
+process-tree cleanup and output closure; later owner reconciliation is not counted
+as sampling completed within that budget. Unconfirmed resources retain their locks;
+confirmed closed resources can be released even when an independent historical
+failure still makes shutdown fail. Confirmation does not bypass current configuration,
 directory, freshness or provider checks, and it does not replay input, replace
 Sessions, change defaults or alter public DTOs and creation admission.
 

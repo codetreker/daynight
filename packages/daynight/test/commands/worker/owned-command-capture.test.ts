@@ -5,8 +5,9 @@ import { createOperation } from "../../../src/api/operation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
-import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
-import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import { hasUnconfirmedOwnedCommandCleanup, isConfirmedOwnedCommandCleanupWait, OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
+import { ownedCommandClosure, reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 
 vi.mock("node:child_process", { spy: true });
@@ -31,6 +32,80 @@ const helperFailures = {
   spawn: { message: { kind: "spawn-error", missing: true }, expected: { message: "Cannot execute the owned prerequisite command.", code: "ENOENT" } },
   malformed: { message: { kind: "result", code: 0 }, expected: { message: "Incomplete owned launcher result." } },
 };
+
+it.skipIf(process.platform !== "linux")("joins the original close and late IPC before confirming a timed-out TERM", async () => {
+  const ready = Promise.withResolvers<void>(), result = Promise.withResolvers<void>(), heldClose = Promise.withResolvers<void>(), processStopped = Promise.withResolvers<void>();
+  let releaseClose: (() => void) | undefined, restoreEmit: (() => void) | undefined;
+  const child = await observeLauncher(launcher => {
+    const emit = launcher.emit, descriptor = Object.getOwnPropertyDescriptor(launcher, "emit");
+    const deliver = (event: string | symbol, ...args: unknown[]) => Reflect.apply(emit, launcher, [event, ...args]) as boolean;
+    Object.defineProperty(launcher, "emit", { configurable: true, writable: true, value: (event: string | symbol, ...args: unknown[]) => {
+      if (event === "close") {
+        releaseClose = () => { deliver("close", ...args); };
+        heldClose.resolve();
+        return true;
+      }
+      return deliver(event, ...args);
+    } });
+    restoreEmit = () => { if (descriptor === undefined) Reflect.deleteProperty(launcher, "emit"); else Object.defineProperty(launcher, "emit", descriptor); };
+    vi.spyOn(launcher, "send");
+    launcher.on("message", (value: unknown) => {
+      if (typeof value === "object" && value !== null && "kind" in value && value.kind === "result") result.resolve();
+    });
+  });
+  const events: OwnedCommandLifecycleEvent[] = [];
+  let originalError: OwnedCommandCleanupError | undefined;
+  let errorsAtStopped: unknown[] | undefined;
+  const sink = async (event: OwnedCommandLifecycleEvent) => {
+    if (event.stage === "stopped") errorsAtStopped = [...(originalError?.errors ?? [])];
+    events.push(event);
+  };
+  const operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+  const now = Date.now;
+  let clockAdvance = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + clockAdvance);
+  const confirm = processProof.confirmControllerProcessesStopped;
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (...args) => {
+    const stopped = await confirm(...args);
+    if (stopped) processStopped.resolve();
+    return stopped;
+  });
+  const pending = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.once('SIGTERM',()=>setTimeout(()=>process.exit(0),1400));process.stdout.write('ready');setInterval(()=>{},1000);"], environment: process.env }, operation, sink,
+    { cleanupWithinDeadline: true, onStdout: async () => { clockAdvance = 29_100; ready.resolve(); } }).catch(error => error);
+  try {
+    await Promise.race([ready.promise, pending.then(error => { throw new Error(`The command did not reach output readiness: ${events.map(event => event.stage).join(",")}; sends=${JSON.stringify(vi.mocked(child().send).mock.calls)}`, { cause: error }); })]);
+    const error = await pending;
+    clock.mockRestore();
+    expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+    expect(error.cause).toBeInstanceOf(Error);
+    originalError = error;
+    const resourceId = events[0]!.resourceId, proof = events[1]!.proof, closure = ownedCommandClosure(resourceId);
+    let closed = false;
+    void closure.then(() => { closed = true; });
+    await withinExecutionDeadline(result.promise, Date.now() + 5000);
+    const first = reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 1000).then(() => null, failure => failure);
+    await withinExecutionDeadline(heldClose.promise, Date.now() + 5000);
+    await withinExecutionDeadline(processStopped.promise, Date.now() + 5000);
+    expect(await first).toMatchObject({ message: expect.stringMatching(/deadline/) });
+    expect(closed).toBe(false);
+    expect(retainedOwnedCommandBoundaries()).toContainEqual({ resourceId, proof });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "unknown"]);
+    child().emit("message", { kind: "io-error" });
+    releaseClose!(); releaseClose = undefined;
+    await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 5000);
+    await closure;
+    expect(error.errors).toContainEqual(expect.objectContaining(helperFailures.helper.expected));
+    expect(errorsAtStopped).toContainEqual(expect.objectContaining(helperFailures.helper.expected));
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
+    expect(events.at(-1)).toMatchObject({ resourceId, stage: "stopped", proof });
+    const dispatched = vi.mocked(child().send).mock.calls.filter(([message]) => typeof message === "object" && message !== null && "kind" in message && message.kind === "run").length;
+    expect(dispatched).toBe(1);
+  } finally {
+    clock.mockRestore(); releaseClose?.(); restoreEmit?.(); await pending; operation.dispose();
+    const resourceId = events[0]?.resourceId;
+    if (resourceId && retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, async event => { events.push(event); }, Date.now() + 10_000);
+  }
+}, 20_000);
 
 it.each([
   { source: "guardian", cancelled: false }, { source: "guardian", cancelled: true },
@@ -84,7 +159,7 @@ it.each([
   }
 }, 35_000);
 
-it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s capture failure on the original error after cleanup reconciliation", async source => {
+it.each(["success", "writer", "helper", "spawn", "malformed", "journal", "cancellation"] as const)("classifies a late %s capture result on the original error after cleanup reconciliation", async source => {
   let nativeClosed = false, consumerHeld = false;
   let dispatchedRuns: (() => number) | undefined;
   const child = await observeLauncher(launcher => {
@@ -94,9 +169,14 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
   });
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   const captured = new Error("The final captured output could not be persisted.");
-  const events: OwnedCommandLifecycleEvent[] = [], sink = async (event: OwnedCommandLifecycleEvent) => { events.push(event); };
+  const saveFailure = new Error("The unknown responsibility could not be saved.");
+  const events: OwnedCommandLifecycleEvent[] = [], sink = async (event: OwnedCommandLifecycleEvent) => {
+    events.push(event);
+    if (source === "journal" && event.stage === "unknown") throw saveFailure;
+  };
   const operationBudget = 30_000;
-  const operation = createOperation({ limits: { totalMs: operationBudget, requestMs: operationBudget } });
+  const cancellation = new AbortController();
+  const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: operationBudget, requestMs: operationBudget } });
   const confirmStopped = processProof.confirmControllerProcessesStopped;
   let nativeConfirmations = 0, nativeStopped = false, cleanupDeadline: number | undefined;
   const confirmation = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (...args: Parameters<typeof confirmStopped>) => {
@@ -134,6 +214,7 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     { cleanupWithinDeadline: true, onStdout: async () => {
       consumerHeld = true; entered.resolve(); await release.promise;
       consumerHeld = false;
+      if (source === "success" || source === "journal" || source === "cancellation") return;
       if (source === "writer") throw captured;
       child().emit("message", helperFailures[source].message);
     } }).catch(error => error);
@@ -141,6 +222,7 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
   void outcome.then(() => { settled = true; });
   try {
     await Promise.race([entered.promise, outcome.then(error => { throw error; })]);
+    if (source === "cancellation") cancellation.abort(new Error("root cancelled"));
     const join = await Promise.race([registered.promise, outcome.then(error => { throw error; })]);
     expect(join.timer.count).toBe(1);
     expect(join.at).toBeTypeOf("number");
@@ -162,11 +244,12 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     scheduling.mockRestore();
     clock.mockRestore();
     confirmation.mockRestore();
-    expect(operation.signal.aborted).toBe(false);
-    operation.check();
+    expect(operation.signal.aborted).toBe(source === "cancellation");
+    if (source !== "cancellation") operation.check();
     expect(error).toBeInstanceOf(OwnedCommandCleanupError);
     expect(error.cause).toMatchObject({ message: "Owned command output consumers did not join." });
     expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(false);
     const resourceId = events[0]!.resourceId, proof = events[1]!.proof;
     expect(events).toEqual([
       { resourceId, sequence: 1, stage: "prepared", proof: null },
@@ -175,12 +258,15 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     ]);
     expect(retainedOwnedCommandBoundaries()).toContainEqual({ resourceId, proof });
     expect(dispatchedRuns!()).toBe(1);
-    const expected = source !== "writer" ? expect.objectContaining(helperFailures[source].expected) : captured;
-    expect(error.errors).not.toContainEqual(expected);
+    const expected = source === "success" ? undefined : source === "journal" ? saveFailure : source === "cancellation" ? operation.signal.reason : source !== "writer" ? expect.objectContaining(helperFailures[source].expected) : captured;
+    if (source === "journal" || source === "cancellation") expect(error.errors).toContain(expected);
+    else if (expected !== undefined) expect(error.errors).not.toContainEqual(expected);
     release.resolve();
     await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 5000);
     expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
-    expect(error.errors).toContainEqual(expected);
+    expect(isConfirmedOwnedCommandCleanupWait(error)).toBe(source === "success");
+    if (source === "cancellation") expect(isConfirmedOwnedCommandCleanupWait(error, cause => isWorkerCancellation(cause, cancellation.signal))).toBe(true);
+    if (expected !== undefined) expect(error.errors).toContainEqual(expected);
     expect(events.at(-1)).toEqual({ resourceId, sequence: 4, stage: "stopped", proof });
     expect(await processProof.inspectProcessProof(proof!)).toBe("stopped");
     expect(retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)).toBe(false);

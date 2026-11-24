@@ -3,8 +3,9 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import crossSpawn from "cross-spawn";
-import type { Operation } from "../../api/operation.js";
+import { OperationError, type Operation } from "../../api/operation.js";
 import { currentOwnedCommandLifecycle, runLifecycleOwnedCommand } from "./owned-command-lifecycle.js";
+import { ControllerProcessWaitDeadlineError } from "../controller/process-proof.js";
 
 export type OwnedSpawn = (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 export const spawnOwnedProcess: OwnedSpawn = (file, args, options) => crossSpawn(file, [...args], options);
@@ -18,7 +19,7 @@ export class OwnedCommandError extends Error {
 }
 
 export class OwnedCommandDeadlineError extends Error {
-  constructor() { super("The Owned prerequisite command deadline elapsed."); this.name = "OwnedCommandDeadlineError"; }
+  constructor(message = "The Owned prerequisite command deadline elapsed.") { super(message); this.name = "OwnedCommandDeadlineError"; }
 }
 
 export class OwnedCommandCleanupError extends AggregateError {
@@ -34,10 +35,43 @@ const cleanupConfirmations = new WeakMap<OwnedCommandCleanupError, () => boolean
 /** Register only the original owner's close proof; exit or a PID lookup is insufficient. */
 export const registerOwnedCommandCleanupConfirmation = (error: OwnedCommandCleanupError, confirmed: () => boolean): void => { cleanupConfirmations.set(error, confirmed); };
 
-export const hasOwnedCommandCleanupFailure = (error: unknown): boolean => error instanceof Error && (
-  error instanceof OwnedCommandCleanupError || hasOwnedCommandCleanupFailure(error.cause) ||
-  (error instanceof AggregateError && error.errors.some(hasOwnedCommandCleanupFailure))
-);
+const cleanupWaits = new WeakSet<Error>();
+const cleanupWaitEvidence = new WeakMap<OwnedCommandCleanupError, { wait: Error; commandDeadline?: OwnedCommandDeadlineError; cancellation?: OperationError; cancellationCause: unknown; originalCause: unknown; originalErrors: readonly unknown[] }>();
+/** A deadline created by the original owner while waiting for cleanup. */
+export const ownedCommandCleanupWait = (message: string): Error => {
+  const error = new Error(message);
+  cleanupWaits.add(error);
+  return error;
+};
+/** Associate the owner's wait and optional command deadline with its original error. */
+export const registerOwnedCommandCleanupWait = (error: OwnedCommandCleanupError, wait: unknown, commandFailure: unknown, signal?: AbortSignal): void => {
+  if (!(wait instanceof Error) || !(cleanupWaits.has(wait) || wait instanceof ControllerProcessWaitDeadlineError)) return;
+  const commandDeadline = commandFailure instanceof OwnedCommandDeadlineError ? commandFailure : undefined;
+  const cancellation = signal?.aborted === true && commandFailure === signal.reason && commandFailure instanceof OperationError && commandFailure.kind === "cancelled" ? commandFailure : undefined;
+  const allowed = (item: unknown): boolean => item === wait || commandDeadline !== undefined && item === commandDeadline || cancellation !== undefined && item === cancellation;
+  if (!error.errors.includes(wait) || !error.errors.every(allowed) || error.cause !== undefined && !allowed(error.cause)) return;
+  cleanupWaitEvidence.set(error, { wait, ...(commandDeadline === undefined ? {} : { commandDeadline }), ...(cancellation === undefined ? {} : { cancellation }), cancellationCause: cancellation?.cause, originalCause: error.cause, originalErrors: [...error.errors] });
+};
+
+/** The optional predicate must recognize cancellation of the caller's own reporter. */
+export const isConfirmedOwnedCommandCleanupWait = (error: unknown, isCancellation?: (error: unknown) => boolean): boolean => {
+  if (!(error instanceof OwnedCommandCleanupError) || cleanupConfirmations.get(error)?.() !== true) return false;
+  const evidence = cleanupWaitEvidence.get(error);
+  if (evidence === undefined || evidence.wait.cause !== undefined || evidence.commandDeadline?.cause !== undefined) return false;
+  if (evidence.cancellation !== undefined) {
+    if (evidence.cancellation.cause !== evidence.cancellationCause) return false;
+    try { if (isCancellation?.(evidence.cancellation) !== true) return false; } catch { return false; }
+  }
+  const allowed = (item: unknown): boolean => item === evidence.wait || item === evidence.commandDeadline && item !== undefined || item === evidence.cancellation && item !== undefined;
+  return error.cause === evidence.originalCause && evidence.originalErrors.every(item => error.errors.includes(item)) && error.errors.every(allowed);
+};
+
+export const hasOwnedCommandCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
+  if (!(error instanceof Error) || seen.has(error)) return false;
+  seen.add(error);
+  return error instanceof OwnedCommandCleanupError || hasOwnedCommandCleanupFailure(error.cause, seen) ||
+    (error instanceof AggregateError && error.errors.some((item: unknown) => hasOwnedCommandCleanupFailure(item, seen)));
+};
 
 /** Current cleanup responsibility, independent of the historical failure category. */
 export const hasUnconfirmedOwnedCommandCleanup = (error: unknown, seen = new Set<unknown>()): boolean => {
@@ -118,12 +152,13 @@ export const runOwnedCommand = async (
     if (!closed) {
       const deadline = cleanupDeadline === null ? performance.now() + 2_000 : cleanupDeadline;
       while (!closed && performance.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      if (!closed) cleanupErrors.push(new Error("The owned prerequisite process and output streams did not close after termination."));
+      if (!closed) cleanupErrors.push(ownedCommandCleanupWait("The owned prerequisite process and output streams did not close after termination."));
     }
     if (cleanupErrors.length !== 0) {
       const error = new OwnedCommandCleanupError(cleanupErrors, failure);
       // The existing close listener outlives this bounded wait; exit alone is insufficient.
       if (!terminationFailed) cleanupConfirmations.set(error, () => closed);
+      registerOwnedCommandCleanupWait(error, cleanupErrors.at(-1), failure, operation.signal);
       throw error;
     }
     if (failure !== undefined) throw failure;
