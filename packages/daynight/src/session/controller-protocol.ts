@@ -2,6 +2,7 @@ import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChu
 import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, parseDirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage, type DirectCaptureSubmission } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
+import { parseBotHistoryWindowPage, parseBotHistoryWindowRequest, type BotHistoryWindowPage, type BotHistoryWindowRequest } from "./bot-history-window.js";
 import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, historyCursorText, parseInspectionPage, parseEntryChunk, type InspectionPage, type EntryChunk } from "./history.js";
 import { assertSessionFence, sessionBinding, sessionBindingKeys, sessionFence, SESSION_PROTOCOL, parseSessionSnapshot, parseSessionCommand, parseSessionEvent, parseSessionOperation, parseSessionResource, parseTimelineEntry,
   type SessionBinding, type SessionFence, type ControllerFence, type DecimalSequence, type SessionCapabilities, type SessionCommand, type SessionEvent, type SessionOperation, type SessionProvider, type SessionResource, type SessionSnapshot, type TimelineEntry } from "./protocol.js";
@@ -27,15 +28,16 @@ export type SourceEvent = { readonly sourceSeq: DecimalSequence } & (
   | { readonly kind: "gap"; readonly payload: { readonly reason: string } });
 export type Reconciliation = { readonly operationId: string; readonly state: "not_submitted" | "dispatching" | "provider_accepted" | "confirmed" | "failed" | "rejected" | "expired" | "unknown"; readonly providerResult: SessionOperation["providerResult"]; readonly error: SessionOperation["error"] };
 export type ContentRequest = { readonly requestId: string } & (
+  | BotHistoryWindowRequest
   | { readonly kind: "timeline"; readonly historyEpoch: string; readonly direction: "tail" | "before" | "after"; readonly cursor: string | null; readonly limit: number }
   | { readonly kind: "inspect_page"; readonly historyEpoch: string; readonly cursor: string | null; readonly limit: number; readonly responseOverhead: number }
   | { readonly kind: "entry_chunk"; readonly historyEpoch: string; readonly cursor: string; readonly limit: number }
   | { readonly kind: "resource"; readonly resourceId: string; readonly offset: string; readonly limit: number });
 export type ContentResult = (Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { readonly kind: "timeline" })
-  | InspectionPage | EntryChunk
+  | InspectionPage | EntryChunk | BotHistoryWindowPage
   | { readonly kind: "resource"; readonly resource: SessionResource; readonly offset: string; readonly data: string; readonly eof: boolean };
 export type ContentResponse = { readonly requestId: string; readonly sourceThrough: string; readonly result: ContentResult | null; readonly error: { readonly code: string; readonly message: string } | null };
-export type ControllerHello = Wire & SessionFence & { readonly contentRevision?: 2; readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
+export type ControllerHello = Wire & SessionFence & { readonly botHistoryWindowVersion?: 1; readonly contentRevision?: 2; readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
 export type ImageActionBody = {
   prepare: ImageUploadSpec;
   write: { readonly uploadId:string; readonly offset:string; readonly sha256:string; readonly data:string };
@@ -69,7 +71,7 @@ export type ControllerMessage = ControllerHello | ImageResponse | ImageCaptureMe
   | { readonly type: "sync_state"; readonly state: ControllerState; readonly pendingInteractions: readonly TimelineEntry[] }
   | ({ readonly type: "content_response" } & ContentResponse)
   | { readonly type: "heartbeat" }));
-export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true; readonly onlineMode?: "legacy" | "relay"; readonly historyContentPolicy?: "legacy" | "task_body" | null }) | (Wire & ControllerFence & (
+export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonly type: "welcome"; readonly botHistoryWindowVersion?: 1; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true; readonly onlineMode?: "legacy" | "relay"; readonly historyContentPolicy?: "legacy" | "task_body" | null }) | (Wire & ControllerFence & (
   | { readonly type: "events_ack"; readonly batchId: string; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "source_reset_ack"; readonly sourceEpoch: string; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "operation_offer"; readonly operationSeq: DecimalSequence; readonly command: SessionCommand }
@@ -166,6 +168,7 @@ export const parseSourceEvent = (x: unknown): SourceEvent => {
 };
 const parseContentResult = (value: unknown): ContentResult => {
   if (!value || typeof value !== "object" || !("kind" in value)) return fail();
+  if (value.kind === "bot_history_window") return parseBotHistoryWindowPage(value);
   if (value.kind === "inspect_page") return parseInspectionPage(value);
   if (value.kind === "entry_chunk") return parseEntryChunk(value);
   if (value.kind === "timeline") {
@@ -181,10 +184,10 @@ export const parseControllerMessage = (x: unknown): ControllerMessage => {
   if (x.type === "image_response") return parseImageResponse(x);
   if (x.type === "image_capture") return parseImageCaptureMessage(x);
   if (x.type === "hello") {
-    const media = Object.hasOwn(x,"contentRevision");
-    const o = obj(x, [...(media ? ["contentRevision"] : []),"type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq", ...("sourceFloor" in x ? ["sourceFloor"] : [])]);
-    if (o.schemaVersion !== 1 || o.projectionVersion !== 1 || media && o.contentRevision !== 2) return fail();
-    return { type: "hello", ...(media ? { contentRevision:2 as const } : {}), protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), ...("sourceFloor" in o ? { sourceFloor: seq(o.sourceFloor, true) } : {}) };
+    const media = Object.hasOwn(x,"contentRevision"), window = Object.hasOwn(x, "botHistoryWindowVersion");
+    const o = obj(x, [...(media ? ["contentRevision"] : []), ...(window ? ["botHistoryWindowVersion"] : []),"type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq", ...("sourceFloor" in x ? ["sourceFloor"] : [])]);
+    if (window && (o.botHistoryWindowVersion !== 1 || !("testExecutionId" in o)) || o.schemaVersion !== 1 || o.projectionVersion !== 1 || media && o.contentRevision !== 2) return fail();
+    return { type: "hello", ...(window ? { botHistoryWindowVersion: 1 as const } : {}), ...(media ? { contentRevision:2 as const } : {}), protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), ...("sourceFloor" in o ? { sourceFloor: seq(o.sourceFloor, true) } : {}) };
   }
   const extras: Record<string, readonly string[]> = { events: ["batchId", "sourceEpoch", "events"], source_reset: ["previousSourceEpoch", "newSourceEpoch", "reason"], operation_begin: ["operationId"], operation_receipt: ["operation"], reconcile: ["operations", "final"], sync_state: ["state", "pendingInteractions"], content_response: ["requestId", "sourceThrough", "result", "error"], heartbeat: [] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
@@ -214,14 +217,16 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
   if (x.type === "image_capture_result") return parseImageCaptureResult(x);
   if (x.type === "welcome") {
     if (("onlineMode" in x) !== ("historyContentPolicy" in x)) return fail();
-    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("requiresLiveSync" in x ? ["requiresLiveSync"] : []), ...("onlineMode" in x ? ["onlineMode", "historyContentPolicy"] : [])]);
-    if ("requiresLiveSync" in o && o.requiresLiveSync !== true) return fail();
+    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("botHistoryWindowVersion" in x ? ["botHistoryWindowVersion"] : []), ...("requiresLiveSync" in x ? ["requiresLiveSync"] : []), ...("onlineMode" in x ? ["onlineMode", "historyContentPolicy"] : [])]);
+    if ("botHistoryWindowVersion" in o && o.botHistoryWindowVersion !== 1 || "requiresLiveSync" in o && o.requiresLiveSync !== true) return fail();
     const limits = obj(o.limits, Object.keys(RELAY_LIMITS));
     for (const [k, v] of Object.entries(RELAY_LIMITS)) if (limits[k] !== v) return fail();
+    const session = parseSessionSnapshot(o.session);
+    if ("botHistoryWindowVersion" in o && session.testExecutionId === undefined) return fail();
     const online = "onlineMode" in o ? { onlineMode: choice(o.onlineMode, ["legacy", "relay"] as const), historyContentPolicy: nullable(o.historyContentPolicy, value => choice(value, ["legacy", "task_body"] as const)) } : {};
-    return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}), ...online };
+    return { type: "welcome", ...("botHistoryWindowVersion" in o ? { botHistoryWindowVersion: 1 as const } : {}), protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session, lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}), ...online };
   }
-  const contentFields: Record<string, readonly string[]> = { timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
+  const contentFields: Record<string, readonly string[]> = { bot_history_window: ["historyEpoch", "mode", "cursor", "limit", "responseOverhead"], timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
   const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId", ...("imageAuthorization" in x ? ["imageAuthorization"] : [])], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
@@ -242,6 +247,11 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     }
     case "sync_ack": return { ...base, type: "sync_ack" };
     case "content_request": {
+      if (o.kind === "bot_history_window") {
+        if (base.testExecutionId === undefined) return fail();
+        const request = parseBotHistoryWindowRequest({ kind: o.kind, historyEpoch: o.historyEpoch, mode: o.mode, cursor: o.cursor, limit: o.limit, responseOverhead: o.responseOverhead });
+        return { ...base, type: "content_request", requestId: id(o.requestId), ...request };
+      }
       if (typeof o.limit !== "number" || !Number.isSafeInteger(o.limit) || o.limit < 1) return fail();
       if (o.kind === "inspect_page") {
         if (o.limit > 200 || typeof o.responseOverhead !== "number" || !Number.isSafeInteger(o.responseOverhead) || o.responseOverhead < 0 || o.responseOverhead >= HISTORY_RESPONSE_BYTES) return fail();

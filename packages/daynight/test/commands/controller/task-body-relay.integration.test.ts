@@ -131,3 +131,57 @@ it("keeps body history, online tools and approval identity across real relay rec
     await rm(home, { recursive: true, force: true });
   }
 });
+
+it("refuses an unimplemented Bot window read without replacing the original Session or reading a cache", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-tests"); await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "bot-window-relay-"));
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test relay address");
+  const ticket: ControllerLaunchTicket = {
+    schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: `http://127.0.0.1:${address.port}`,
+    testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString(),
+  };
+  await writeFile(ticket.credentialFile, JSON.stringify({ token: "local-test-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, testExecutionId: ticket.testExecutionId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
+  const journal = openControllerLifecycleStore(path.join(home, "journal.sqlite"), ticket, { contentOwnedLocally: true });
+  const fence = { protocol: "daynight.session.v1", sessionId: ticket.sessionId, testExecutionId: ticket.testExecutionId, executionGeneration: "1", connectionEpoch: "1" };
+  const historyEpoch = randomUUID(), entryId = randomUUID(), requestId = randomUUID();
+  const frames: ReturnType<typeof parseControllerMessage>[] = [], errors: unknown[] = [], onCommand = vi.fn(async () => {});
+  let relay: ReturnType<typeof createControllerRelay> | undefined, socket: WebSocket | undefined;
+  server.on("connection", connected => {
+    socket = connected;
+    connected.on("message", raw => {
+      try {
+        const message = parseControllerMessage(JSON.parse(raw.toString())); frames.push(message);
+        if (message.type === "hello") {
+          const session = { ...snapshotFixture, ...fence, claimId: undefined, historyEpoch, lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: "not_required", identity: { ownerUserId: ticket.ownerUserId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, agentControlMode: "web", provider: "codex", nativeSessionId: null } };
+          connected.send(JSON.stringify({ type: "welcome", protocol: fence.protocol, connectionEpoch: fence.connectionEpoch, session, lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true }));
+        } else if (message.type === "reconcile") connected.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
+        else if (message.type === "events") connected.send(JSON.stringify({ ...fence, type: "events_ack", sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events.at(-1)!.sourceSeq, lastEventSeq: message.events.at(-1)!.sourceSeq }));
+        else if (message.type === "sync_state") connected.send(JSON.stringify({ ...fence, type: "sync_ack" }));
+      } catch (error) { errors.push(error); }
+    });
+  });
+  try {
+    journal.patchSnapshot({ initialInputState: "not_required", activity: "idle" });
+    journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original retained message" }] });
+    relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand, onError: error => errors.push(error) });
+    await vi.waitFor(() => { expect(relay!.connected()).toBe(true); expect(journal.getLastAcknowledgedSequence()).toBe(journal.getLastSourceSequence()); }, { timeout: 5000 });
+    const sourceThrough = journal.getLastSourceSequence(), original = journal.getTimelineEntry(entryId);
+    const readers = [vi.spyOn(journal, "readTimeline"), vi.spyOn(journal, "readInspection"), vi.spyOn(journal, "readEntryChunk")];
+    try {
+      socket!.send(JSON.stringify({ ...fence, type: "content_request", requestId, kind: "bot_history_window", historyEpoch, mode: "tail", cursor: null, limit: 50, responseOverhead: 0 }));
+      await vi.waitFor(() => expect(frames.some(message => message.type === "content_response" && message.requestId === requestId)).toBe(true), { timeout: 5000 });
+      expect(frames.filter(message => message.type === "content_response" && message.requestId === requestId)).toEqual([{ ...fence, type: "content_response", requestId, sourceThrough, result: null, error: { code: "upgrade_required", message: "This Controller does not provide Bot history windows." } }]);
+      for (const reader of readers) expect(reader).not.toHaveBeenCalled();
+    } finally { readers.forEach(reader => reader.mockRestore()); }
+    expect(journal.getLastSourceSequence()).toBe(sourceThrough);
+    expect(journal.getTimelineEntry(entryId)).toEqual(original);
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(relay.connected()).toBe(true); expect(errors).toEqual([]);
+  } finally {
+    relay?.close(); journal.close(); for (const client of server.clients) client.terminate();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await rm(home, { recursive: true });
+  }
+});

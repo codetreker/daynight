@@ -191,6 +191,9 @@ func handoffActiveHistory(ctx context.Context, tx *operationTx, r *record, grant
 }
 
 func (op *ArchiveOperation) validateHistoryWriter(r *record, t task) error {
+	if r.Live != nil && r.Live.BotHistoryWindowVersion == 1 {
+		return fault("upgrade_required", "Bot history windows use their independent checkpoint protocol.")
+	}
 	if op.historyWriter == nil {
 		return archiveConflict()
 	}

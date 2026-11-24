@@ -27,6 +27,8 @@ func (content archiveContent) GateContext(ctx context.Context) (context.Context,
 }
 
 type serviceCalls struct {
+	ReadBotHistoryWindow           func(context.Context, model.Principal, string, string, string, sessioncore.BotHistoryWindowRequest) (sp.BotHistoryWindowPage, error)
+	CommitBotHistoryCheckpoint     func(context.Context, string, sp.BotHistoryCheckpoint) (sp.BotHistoryCheckpointReceipt, error)
 	GetImageOccurrence             func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceStatus, error)
 	RetryImageOccurrence           func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceRetryReceipt, error)
 	BeginHistoryLedgerReserved     func(context.Context, string, string, string, sessioncore.ActiveHistoryWriter, io.Closer) (archiveOperation, error)
@@ -79,6 +81,8 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		return serviceCalls{}
 	}
 	return serviceCalls{
+		ReadBotHistoryWindow:       service.ReadBotHistoryWindow,
+		CommitBotHistoryCheckpoint: service.CommitBotHistoryCheckpoint,
 		BeginHistoryLedgerReserved: func(ctx context.Context, project, task, id string, writer sessioncore.ActiveHistoryWriter, reservation io.Closer) (archiveOperation, error) {
 			return service.BeginHistoryLedgerReserved(ctx, project, task, id, writer, reservation.(*sessioncore.ArchivePreflightReservation))
 		},

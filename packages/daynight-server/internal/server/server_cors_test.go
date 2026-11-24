@@ -188,6 +188,7 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("GET POST", "/api/v1/test-sessions")
 	add("GET", testSession)
 	add("POST", testSession+"/stop")
+	add("GET", testSession+"/bot-history-window")
 	for _, base := range []string{session, testSession} {
 		for _, op := range []string{"controller-grant", "commands"} {
 			add("POST", base+"/"+op)

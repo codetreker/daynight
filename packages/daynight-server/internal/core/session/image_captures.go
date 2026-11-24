@@ -444,7 +444,7 @@ func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project,
 	if err != nil {
 		return err
 	}
-	return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, _ *record, _ task, _ bool) error {
+	return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
 		d, e := resourceDAO(tx)
 		if e != nil {
 			return e
@@ -462,8 +462,14 @@ func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project,
 		current.Receipt.State = "committed"
 		current.Receipt.Resource = receipt.Resource
 		current.Receipt.ResourceID = &receipt.Resource.ResourceID
-		if e = d.AddSessionResourceReference(ctx, store.SessionResourceReference{SessionID: id, ResourceID: receipt.Resource.ResourceID, Kind: "message", ReferenceID: capture.Request.Occurrence.ImageID}); e != nil {
+		retired, e := retireEvictedBotCapture(ctx, tx, r, current, receipt.Resource.ResourceID)
+		if e != nil {
 			return e
+		}
+		if !retired {
+			if e = d.AddSessionResourceReference(ctx, store.SessionResourceReference{SessionID: id, ResourceID: receipt.Resource.ResourceID, Kind: "message", ReferenceID: capture.Request.Occurrence.ImageID}); e != nil {
+				return e
+			}
 		}
 		if e = d.RemoveSessionResourceReference(ctx, store.SessionResourceReference{SessionID: id, ResourceID: receipt.Resource.ResourceID, Kind: "upload", ReferenceID: capture.Receipt.AttemptID}); e != nil {
 			return e
@@ -526,6 +532,9 @@ func saveImageCapture(ctx context.Context, d store.SessionResourceDAO, row store
 }
 
 func verifyImageOccurrence(ctx context.Context, tx *operationTx, r *record, occurrence sp.ImageOccurrence) error {
+	if r.Live != nil && r.Live.BotHistoryWindowVersion == 1 {
+		return verifyBotWindowImageOccurrence(ctx, tx, r, occurrence)
+	}
 	dao, e := archiveDAO(tx)
 	if e != nil {
 		return e

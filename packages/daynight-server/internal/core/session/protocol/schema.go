@@ -152,6 +152,9 @@ func decodeVersioned[T any](data []byte, fields schema) (T, error) {
 	_ = json.Unmarshal(data, &normalized)
 	normalized["schemaVersion"] = json.RawMessage("1")
 	normalized["projectionVersion"] = json.RawMessage("1")
+	if normalized["botHistoryWindowVersion"] != nil {
+		normalized["botHistoryWindowVersion"] = json.RawMessage("1")
+	}
 	canonical, _ := json.Marshal(normalized)
 	if json.Unmarshal(canonical, &value) != nil {
 		return value, errInvalid
