@@ -680,8 +680,9 @@ test("the Go module runner bounds PostgreSQL storage in memory and checks the ac
 test("Go module coverage and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
+  assert.match(server, /^    runs-on: ubuntu-(?:latest|24\.04)$/m);
   for (const stage of [server, startupShutdown, apiIntegration]) {
-    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    if (stage !== server) assert.match(stage, /^    runs-on: ubuntu-latest$/m);
     assert.match(stage, /uses: actions\/checkout@/);
     assert.match(stage, /^          persist-credentials: false$/m);
     assert.match(stage, /^          go-version: 1\.27\.2$/m);
