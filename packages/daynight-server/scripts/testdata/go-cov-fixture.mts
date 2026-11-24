@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -35,10 +35,9 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
   const root = await mkdtemp(join(temporary, 'go-cov-test-'));
   const directory = join(root, 'scripts');
   await mkdir(directory);
-  for (const name of ['command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts', 'go-test-database-exec.sh']) {
+  for (const name of ['command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts']) {
     if (await exists(join(scripts, name))) await copyFile(join(scripts, name), join(directory, name));
   }
-  await chmod(join(directory, 'go-test-database-exec.sh'), 0o755);
   await writeFile(join(root, 'input'), input);
   const fakeGo = [
     '#!' + process.execPath,
