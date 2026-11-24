@@ -19,8 +19,12 @@ one request without `epoch` or `since`. The complete snapshot replaces the
 authorized project baseline. Same-history replacement retains the generation and
 known removals, records missing known summaries, and publishes a rebuild witness
 even when the difference is empty. A qualifying new-history snapshot is installed
-atomically before old history is retired. A stale ticket, uncertain history or
-failure ends the attempt without an automatic second full request.
+atomically before old history is retired. A stale ticket, a history becoming
+uncertain during a request, or a failure ends the attempt without an automatic
+second full request. A manual retry begun after uncertainty captures that history
+revision and confirms it with one new snapshot in the commit transaction. An
+access denial racing a committed replacement cleans only its exact successor,
+leaving a subsequently advanced baseline intact.
 
 The [atomic cache decision](../architecture/2026-11-24-task-sync-atomic-deletions.md)
 owns durable ordering and the [read-admission decision](../architecture/2026-11-24-task-removal-read-admission.md)

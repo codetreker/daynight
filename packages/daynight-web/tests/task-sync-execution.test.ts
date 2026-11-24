@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { getTaskSync } from '../src/api/client';
 import type { TaskSync } from '../src/api/types';
+import { openDB } from 'idb';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
 import { createTaskCacheScope, TaskCacheLifecycleChanged, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { executeTaskSync, taskSyncQuery } from '../src/features/task-cache/task-sync-execution';
@@ -171,6 +173,45 @@ it.each([false, true])('publishes a committed rebuild when the page cancels at c
   if (replacement) expect(cache.getHistoryGeneration(projectId)).toBe(1);
 });
 
+it.each([false, true])('cleans a revoked committed successor without erasing a later baseline (advanced=%s)', async advanced => {
+  const cache = scope(); await seed(cache);
+  const ticket = await cache.beginSync(projectId, signal());
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  const replacement = crypto.randomUUID(); const newerRevision = crypto.randomUUID();
+  let denial: Promise<boolean> | undefined; let later: Promise<unknown> | undefined;
+  const put = IDBObjectStore.prototype.put;
+  const interceptor = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    const row = args[0] as TaskCacheSchema['projects']['value'];
+    if (this.name === 'projects' && row.epoch === replacement) {
+      this.transaction.addEventListener('complete', () => {
+        interceptor.mockRestore();
+        if (advanced) {
+          const transaction = database.transaction('projects', 'readwrite');
+          void transaction.store.put({ ...row, syncRevision: newerRevision }); later = transaction.done;
+        }
+        denial = cache.revokeProject(ticket, signal());
+      }, { once: true });
+    }
+    return put.apply(this, args);
+  });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null })));
+  await expect(executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' })).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
+  await later; expect(await denial).toBe(true); interceptor.mockRestore();
+  const saved = await database.get('projects', [TEST_VIEWER_ID, projectId]);
+  expect(saved).toMatchObject(advanced ? { state: 'active', epoch: replacement, syncRevision: newerRevision } : { state: 'invalidated', invalidatedBy: 'access' });
+  if (advanced) {
+    const freshRead = await cache.beginTaskRead(projectId, taskId, 1, 1, signal());
+    expect(await cache.observeHistory(freshRead, replacement, signal())).toBe('retired');
+    const restored = await cache.beginSync(projectId, signal());
+    expect(restored.cacheGeneration).toBe(saved!.cacheGeneration);
+    expect(await cache.observeHistory(restored, replacement, signal())).toBe('current');
+    vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({ epoch: replacement }, { mode: 'delta', epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null })));
+    expect((await executeTaskSync({ scope: cache, projectId, ticket: restored, signal: signal() })).history).toBe('current');
+    expect(cache.getAuthorizedProject(projectId)?.manifest.cacheGeneration).toBe(saved!.cacheGeneration);
+  }
+  database.close();
+});
+
 it('keeps the previous history if a manual snapshot loses its commit race', async () => {
   const cache = scope(); await seed(cache);
   const observed = await cache.beginSync(projectId, signal()); await cache.observeHistory(observed, observed.epoch!, signal());
@@ -182,6 +223,50 @@ it('keeps the previous history if a manual snapshot loses its commit race', asyn
   await expect(executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' })).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
   const after = await cache.beginSync(projectId, signal());
   expect(after.epoch).toBe(observed.epoch); expect(after.coverageUpdatedAt).toBe(later);
+  expect(cache.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(true);
+});
+
+it('confirms an uncertain peer history on an explicit retry using one fresh snapshot', async () => {
+  const cache = scope(); await seed(cache);
+  const stale = await cache.beginSync(projectId, signal());
+  cache.fenceTaskHistory(projectId, stale.epoch);
+  const events: { historyHint?: true }[] = []; cache.subscribe(event => events.push(event));
+  const peer = scope(); const peerTicket = await peer.beginSync(projectId, signal());
+  const replacement = crypto.randomUUID();
+  await peer.applySync(peerTicket, response({}, { epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null }), signal());
+  await vi.waitFor(() => expect(events.some(event => event.historyHint)).toBe(true));
+  const offline = new Error('offline'); vi.mocked(getTaskSync).mockRejectedValueOnce(offline);
+  await expect(executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' })).rejects.toBe(offline);
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response({}, { epoch: replacement, tasks: [], dependencyStates: {}, coverageUpdatedAt: null })));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledTimes(2);
+  expect((await cache.beginSync(projectId, signal())).epoch).toBe(replacement);
+  expect(cache.getAuthorizedProject(projectId)?.summaries.size).toBe(0);
+  await expect(cache.applySync(stale, response({ epoch: stale.epoch! }), signal())).rejects.toBeInstanceOf(TaskCacheLifecycleChanged);
+});
+
+it('confirms a still-current epoch after a fresh manual retry', async () => {
+  const cache = scope(); await seed(cache);
+  const before = await cache.beginSync(projectId, signal()); cache.fenceTaskHistory(projectId, before.epoch);
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response()));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
+  expect((await cache.beginSync(projectId, signal())).epoch).toBe(before.epoch);
+});
+
+it('confirms the original live history when a conflicting peer baseline is stale', async () => {
+  const cache = scope(); await seed(cache);
+  const before = await cache.beginSync(projectId, signal()); cache.fenceTaskHistory(projectId, before.epoch);
+  const events: { historyHint?: true }[] = []; cache.subscribe(event => events.push(event));
+  const peer = scope(); const peerTicket = await peer.beginSync(projectId, signal());
+  await peer.applySync(peerTicket, response({}, { epoch: crypto.randomUUID(), tasks: [], dependencyStates: {}, coverageUpdatedAt: null }), signal());
+  await vi.waitFor(() => expect(events.some(event => event.historyHint)).toBe(true));
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response()));
+  const result = await executeTaskSync({ scope: cache, projectId, signal: signal(), trigger: 'manual-rebuild' });
+  expect(result.history).toBe('current'); expect(getTaskSync).toHaveBeenCalledOnce();
+  expect((await cache.beginSync(projectId, signal())).epoch).toBe(before.epoch);
+  expect(cache.getHistoryGeneration(projectId)).toBe(0);
   expect(cache.getAuthorizedProject(projectId)?.summaries.has(taskId)).toBe(true);
 });
 

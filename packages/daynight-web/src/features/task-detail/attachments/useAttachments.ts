@@ -66,6 +66,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const previewRequest = useRef<AbortController | null>(null);
   const preservePreviewOnResume = useRef(false);
   const recoverList = useRef(false);
+  const forceListRecovery = useRef(false);
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
@@ -96,7 +97,16 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
         withdraw(removed, event.historyChanged);
       } else if (event.baselineRebuilt) {
         void cache.taskReadQualification(projectId, taskId, cache.signal).then(eligibility => {
+          if (!live || currentScope.current !== scope) return;
           if (!eligibility.inBaseline || eligibility.removed) withdraw(eligibility.removed);
+          else {
+            // In-flight reads may have crossed a changed Task version and lost
+            // admission. Restart them without clearing already published content.
+            forceListRecovery.current ||= listRequest.current !== null || currentList.current.loading;
+            recoverList.current = true;
+            preservePreviewOnResume.current = true;
+            setResourceRevision(value => value + 1);
+          }
         }).catch(error => {
           if (live && !isAbortError(error)) setList(prior => ({ ...prior, loading: false, error }));
         });
@@ -178,9 +188,11 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   useEffect(() => {
     if (enabled && !paused) {
       const recovering = recoverList.current;
+      const forceRecovery = forceListRecovery.current;
       recoverList.current = false;
+      forceListRecovery.current = false;
       if (!recovering) reload();
-      else if (currentList.current.scope !== scope || !currentList.current.complete) load(true);
+      else if (forceRecovery || currentList.current.scope !== scope || !currentList.current.complete) load(true);
     }
     return () => {
       ++listGeneration.current;

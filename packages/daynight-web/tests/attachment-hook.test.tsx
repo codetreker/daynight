@@ -474,3 +474,89 @@ it.each(['put', 'remove'].flatMap(operation => ['success', 'failure'].map(outcom
     expect(view.result.current.write).toMatchObject({ status: 'idle', error: null });
   } finally { view.unmount(); world.dispose(); }
 });
+
+it('restarts an incomplete attachment list when a retained Task changes during manual rebuild', async () => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task);
+  await world.sync([target]);
+  const transport = api(), old = deferred<AttachmentPage>();
+  transport.list.mockReturnValueOnce(old.promise).mockResolvedValueOnce(page([b]));
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  try {
+    await waitFor(() => expect(transport.list).toHaveBeenCalledOnce());
+    const oldSignal = transport.list.mock.calls[0]![3];
+    const changed = { ...target, title: 'Updated task', version: 2n, updatedAt: '2026-10-23T00:00:00Z' };
+    const ticket = await world.scope.beginSync(project, world.scope.signal);
+    const snapshot = taskSyncFromGraph(graphFixture([changed]), { epoch: ticket.epoch!, query: {}, versionForTask: () => changed.version, propertiesForTask: () => changed.properties });
+    await act(async () => { await world.scope.applySync(ticket, snapshot, world.scope.signal, true, { rebuild: true }); });
+    await waitFor(() => expect(transport.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current).toMatchObject({ items: [b], complete: true, loading: false, error: null }));
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => old.resolve(page([a])));
+    expect(view.result.current.items).toEqual([b]);
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it('retains a selected native preview and pending write while restarting an interrupted inventory', async () => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task);
+  await world.sync([target]);
+  const document = file('index.html', 'text/html'), old = deferred<AttachmentPage>(), saved = deferred<Attachment>();
+  const transport = api();
+  transport.list.mockResolvedValueOnce(page([document])).mockReturnValueOnce(old.promise).mockResolvedValue(page([document]));
+  transport.put.mockReturnValueOnce(saved.promise);
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  try {
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    act(() => view.result.current.select(document.path));
+    await waitFor(() => expect(view.result.current.preview.status).toBe('ready'));
+    const original = view.result.current.preview.nativeSource;
+    let write!: Promise<boolean>;
+    act(() => { write = view.result.current.put(document.path, new File(['draft'], 'index.html')); view.result.current.reload(); });
+    await waitFor(() => expect(transport.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(transport.put).toHaveBeenCalledOnce());
+    const writeSignal = transport.put.mock.calls[0]![4];
+    const changed = { ...target, title: 'Updated task', version: 2n, updatedAt: '2026-10-23T00:00:00Z' };
+    const ticket = await world.scope.beginSync(project, world.scope.signal);
+    const snapshot = taskSyncFromGraph(graphFixture([changed]), { epoch: ticket.epoch!, query: {}, versionForTask: () => changed.version, propertiesForTask: () => changed.properties });
+    await act(async () => { await world.scope.applySync(ticket, snapshot, world.scope.signal, true, { rebuild: true }); });
+    await waitFor(() => expect(transport.list).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    expect(view.result.current.selectedPath).toBe(document.path);
+    expect(view.result.current.preview.nativeSource).toBe(original);
+    expect(view.result.current.write.status).toBe('saving');
+    expect(writeSignal.aborted).toBe(false);
+    await act(async () => { old.resolve(page([])); saved.resolve(document); expect(await write).toBe(false); });
+    expect(view.result.current.items).toEqual([document]);
+    expect(view.result.current.selectedPath).toBe(document.path);
+    expect(view.result.current.write.status).toBe('idle');
+  } finally { view.unmount(); world.dispose(); }
+});
+
+it('restarts an in-flight text preview when the retained Task version changes', async () => {
+  const world = createTaskSessionWorld();
+  const target = detailFixture(project, task);
+  await world.sync([target]);
+  const transport = api(), old = deferred<string>();
+  transport.readText.mockReturnValueOnce(old.promise).mockResolvedValueOnce('Current text');
+  const wrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={world.scope}>{children}</TaskCacheProvider>;
+  const view = renderHook(() => useAttachments(project, task, transport), { wrapper });
+  try {
+    await waitFor(() => expect(view.result.current.complete).toBe(true));
+    act(() => view.result.current.select(a.path));
+    await waitFor(() => expect(transport.readText).toHaveBeenCalledOnce());
+    const signal = transport.readText.mock.calls[0]![3];
+    const changed = { ...target, title: 'Updated task', version: 2n, updatedAt: '2026-10-23T00:00:00Z' };
+    const ticket = await world.scope.beginSync(project, world.scope.signal);
+    const snapshot = taskSyncFromGraph(graphFixture([changed]), { epoch: ticket.epoch!, query: {}, versionForTask: () => changed.version, propertiesForTask: () => changed.properties });
+    await act(async () => { await world.scope.applySync(ticket, snapshot, world.scope.signal, true, { rebuild: true }); });
+    await waitFor(() => expect(view.result.current.preview.text).toBe('Current text'));
+    expect(signal.aborted).toBe(true);
+    expect(view.result.current.selectedPath).toBe(a.path);
+    expect(transport.list).toHaveBeenCalledOnce();
+    await act(async () => old.resolve('Stale text'));
+    expect(view.result.current.preview.text).toBe('Current text');
+  } finally { view.unmount(); world.dispose(); }
+});
