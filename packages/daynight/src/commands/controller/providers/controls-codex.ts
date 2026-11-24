@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, sameControlValue, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError, NativeDispatchRejectedError, type NativeRpc } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
-import { IMAGE_LIMITS, type ProviderImageCapabilities } from "../../../session/image-values.js";
+import type { ProviderImageCapabilities } from "../../../session/image-values.js";
+import { applicationImageLimits } from "./image-admission.js";
 import { unknownCodexGeometry, type CodexImageProfile } from "./codex-image-profile.js";
 type Command = { kind: "compact" } | { kind: "skill"; name: string; path: string } | { kind: "prompt"; body: string };
 export class CodexControls {
@@ -15,6 +16,7 @@ export class CodexControls {
   private sandboxPolicies = new Map<string, Record<string, unknown>>();
   private models: Record<string, unknown>[] = [];
   private capabilityModels: Record<string, unknown>[] = [];
+  private catalogModelProvider: string | null = null;
   private requirements: Record<string, unknown> | null = null;
   private commands = new Map<string, Command>();
   private pending = new Map<string, { patch: Record<string, unknown>; resolve(): void; reject(error: Error): void }>();
@@ -24,22 +26,25 @@ export class CodexControls {
   constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
   beginTurn(): void { this.turnModel = string(this.native.model) || null; }
   imageSelection(): { model: string | null; modelProvider: string | null; cwd: string | null } { return { model: string(this.native.model) || null, modelProvider: string(this.native.modelProvider) || null, cwd: string(this.native.cwd) || null }; }
-  imageCapabilities(profile: CodexImageProfile | null): Omit<ProviderImageCapabilities, "revision"> {
+  imageCapabilities(profile: CodexImageProfile | null, available = true, observedProvider: string | null = null): Omit<ProviderImageCapabilities, "revision"> {
     const model = string(this.native.model) || null;
+    const sessionId = this.session() || null;
     const matches = this.capabilityModels.filter(item => item.model === model || item.id === model);
-    const modalities = matches.length === 1 && Array.isArray(matches[0]!.inputModalities) ? matches[0]!.inputModalities : null;
-    const stable = !this.settingInFlight && this.pending.size === 0 && this.store.value.settingsError === null;
+    const rawModalities = matches.length === 1 ? matches[0]!.inputModalities : null;
+    const modalities = Array.isArray(rawModalities) && rawModalities.length > 0 && rawModalities.every(value => typeof value === "string" && value.trim() === value && value.length > 0) ? rawModalities : null;
+    const stable = available && !this.closed && !this.settingInFlight && this.pending.size === 0 && this.store.value.settingsError === null;
     const bound = profile !== null && profile.modelProvider !== null && profile.modelProvider === this.native.modelProvider && profile.modelId === model;
-    const qualification = bound && profile.qualification?.identity.modelId === model ? profile.qualification : null;
-    const geometry = qualification ? qualifiedImageLimits(qualification).geometry : unknownCodexGeometry;
-    const support = !profile || !stable || !model || !modalities ? "unknown" : !modalities.includes("image") ? "unsupported" : geometry.known ? "supported" : "unknown";
+    const qualification = stable && bound && profile.qualification?.identity.modelId === model ? profile.qualification : null;
+    const catalogTextOnly = modalities !== null && !modalities.includes("image");
+    const modelUnsupported = catalogTextOnly && observedProvider !== null && observedProvider === this.catalogModelProvider && observedProvider === this.native.modelProvider;
+    const send = !stable || !sessionId || !model ? "unknown" : modelUnsupported || qualification?.send === false ? "unsupported" : "supported";
     const activeUnknown = this.turn() !== null && this.turnModel !== model;
-    const send = support === "supported" && !qualification?.send ? "unsupported" : support;
-    const steer = activeUnknown ? "unknown" : support === "supported" && !qualification?.steer ? "unsupported" : support;
-    return bindImageQualification({ expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send, steer,
-      reasonCode: activeUnknown ? "capability_unknown" : send === "supported" || steer === "supported" ? null : !profile || qualification && !qualification.send && !qualification.steer ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
-      inputMediaTypes: support === "supported" ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images,
-      ...(qualification ? qualifiedImageLimits(qualification) : {}), geometry }, qualification);
+    const steer = !stable || activeUnknown || !profile || !model || !modalities ? "unknown" : catalogTextOnly ? "unsupported" : qualification ? qualification.steer ? "supported" : "unsupported" : "unknown";
+    const limits = qualification ? qualifiedImageLimits(qualification) : applicationImageLimits;
+    const supported = send === "supported" || steer === "supported";
+    return bindImageQualification({ expectedNativeSessionId: sessionId, modelId: model, controlsRevision: this.store.value.revision, send, steer,
+      reasonCode: supported ? null : stable && modelUnsupported ? "model_unsupported" : qualification && !qualification.send && !qualification.steer ? "profile_disabled" : "capability_unknown",
+      ...limits, inputMediaTypes: supported ? limits.inputMediaTypes : [], geometry: supported ? limits.geometry : unknownCodexGeometry }, qualification);
   }
   seed(value: unknown) { const raw = record(value); this.observe({ ...raw, ...(raw.sandbox ? { sandboxPolicy: raw.sandbox } : {}), ...(raw.reasoningEffort ? { effort: raw.reasoningEffort } : {}) }); }
   observe(value: unknown) {
@@ -61,7 +66,7 @@ export class CodexControls {
   validateSelection(requested: NativeModelSelection): void {
     assertNativeModelSelection("Codex", requested, { model: string(this.native.model) || null, ...(typeof this.native.effort === "string" ? { effort: this.native.effort } : {}), models: this.capabilityModels.map(item => ({ id: string(item.model), efforts: Array.isArray(item.supportedReasoningEfforts) ? item.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null })) });
   }
-  async refresh() {
+  async refresh(catalogModelProvider: string | null = null) {
     try {
       const models: Record<string, unknown>[] = [], cursors = new Set<string>(); let cursor: string | undefined;
       do {
@@ -71,11 +76,12 @@ export class CodexControls {
         cursor = string(result.nextCursor) || undefined; if (models.length > 500 || cursor && cursors.has(cursor)) throw new Error("Native model catalog exceeded its bound."); if (cursor) cursors.add(cursor);
       } while (cursor);
       this.capabilityModels = models.filter(item => string(item.model));
+      this.catalogModelProvider = catalogModelProvider;
       this.models = this.capabilityModels.filter(item => item.hidden !== true);
       try { const result = record(await this.rpc.request("configRequirements/read", {})); this.requirements = result.requirements === null ? {} : result.requirements && typeof result.requirements === "object" && !Array.isArray(result.requirements) ? record(result.requirements) : null; }
       catch { this.requirements = null; }
       this.describe(null);
-    } catch (error) { this.models = []; this.capabilityModels = []; this.requirements = null; this.describe(controlError(error)); }
+    } catch (error) { this.models = []; this.capabilityModels = []; this.catalogModelProvider = null; this.requirements = null; this.describe(controlError(error)); }
     try {
       const next = new Map<string, Command>([["compact", { kind: "compact" }]]);
       const commands = [{ id: "compact", name: "compact", description: "Compact the current Codex thread", argumentHint: null as string | null, available: true }];

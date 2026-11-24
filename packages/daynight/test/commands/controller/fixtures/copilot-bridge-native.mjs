@@ -66,6 +66,10 @@ const server = createServer(socket => {
           const source = JSON.parse(params.message);
           write({ method: "session.event", params: { sessionId: "fixture-session", event: { type: "permission.requested", id: "source-requested", data: { requestId: "source-request", permissionRequest: { kind: "read", path: source.path, intention: source.intention } } } } }); respond(id, {});
         }
+        else if (params.message === "model-route-change") {
+          write({ method: "session.event", params: { sessionId: "fixture-session", event: { type: "session.mode_changed", id: "mode-change", data: {} } } });
+          respond(id, { message: params.message, timestamp: 1 });
+        }
         else if (params.message === "emit") { write({ method: "session.event", params: { sessionId: "fixture-session", event } }); respond(id, {}); }
         else if (params.message === "malformed") socket.write("Content-Length: 134217729\r\n\r\n");
         else if (params.message === "hold") continue;

@@ -5,13 +5,17 @@ import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import { encodeCopilotBridgeImages, exportCopilotBridgeMedia, type CopilotBridgeImageInput } from "./copilot-bridge-media.js";
 import { startCopilotFrameProxy } from "./copilot-frame.js";
 import { CopilotRouteObserver } from "./copilot-route-observation.js";
+import { NativeDispatchRejectedError } from "./native-rpc.js";
 
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (...args: never[]) => Error & { code: number } };
-const errorValue = (error: unknown) => ({ kind: error instanceof ResponseError ? "response" : "unknown", ...(error instanceof ResponseError ? { code: error.code } : {}), message: error instanceof Error ? error.message.slice(0, 4096) : "Copilot bridge operation failed; outcome is unknown." });
+const errorValue = (error: unknown) => ({ kind: error instanceof ResponseError ? "response" : error instanceof NativeDispatchRejectedError ? error.errorClass : "unknown", ...(error instanceof ResponseError ? { code: error.code } : {}), message: error instanceof Error ? error.message.slice(0, 4096) : "Copilot bridge operation failed; outcome is unknown." });
 let client: CopilotClient | undefined, session: CopilotSession | undefined;
 const route = new CopilotRouteObserver();
-let observingRoute = false, changingRoute = false;
+let observingRoute = false, changingRoute = false, routeGeneration = 0;
+let lastModelRead: { id: string; generation: number } | null = null;
+let pendingRouteEvents = 0;
+const invalidateRoute = () => { routeGeneration++; route.invalidate(); };
 let proxy: Awaited<ReturnType<typeof startCopilotFrameProxy>> | undefined;
 let closing = false, stoppingClient = false, fatalFailure = false, initializing = false, openingSession = false, sending = false, history = false;
 let eventWork: Promise<void> = Promise.resolve(), queuedEventBytes = 0;
@@ -28,7 +32,7 @@ metrics.unref();
 function fatal(error: Error): void {
   if (fatalFailure || closing) return;
   fatalFailure = true;
-  route.invalidate();
+  invalidateRoute();
   for (const waiter of waiters.values()) waiter.reject(error); waiters.clear();
   void (async () => {
     try { await channel.send({ type: "fatal", error: errorValue(error) }); } catch { /* The parent also observes process exit. */ }
@@ -92,7 +96,8 @@ const eventSize = (input: unknown): number => {
 };
 const permissionIdentities = new WeakMap<object, string>();
 const enqueueEvent = (sessionId: string, event: unknown) => {
-  if (["session.model_change", "session.mode_changed", "session.shutdown", "session.error"].includes(String(object(event).type))) route.invalidate();
+  const routeChanged = ["session.model_change", "session.mode_changed", "session.shutdown", "session.error"].includes(String(object(event).type));
+  if (routeChanged) { invalidateRoute(); pendingRouteEvents++; }
   try {
     const request = object(object(event).data).permissionRequest;
     const permissionIdentity = object(event).type === "permission.requested" && request !== null && typeof request === "object" ? permissionIdentities.get(request) : undefined;
@@ -103,7 +108,7 @@ const enqueueEvent = (sessionId: string, event: unknown) => {
       if (closing || fatalFailure) return;
       const result = await exportCopilotBridgeMedia(event, "event", transferImage);
       await channel.send({ type: "event", sessionId, result, ...(permissionIdentity ? { permissionIdentity } : {}) });
-    }).finally(() => { queuedEventBytes -= bytes; }).catch(fatal);
+    }).finally(() => { queuedEventBytes -= bytes; if (routeChanged) pendingRouteEvents--; }).catch(fatal);
   } catch (error) { fatal(error instanceof Error ? error : new Error(String(error))); }
 };
 const callback = (sessionId: string, name: string) => async (...args: unknown[]) => {
@@ -135,7 +140,7 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     await client.start(); return {};
   }
   if (method === "close") {
-    route.invalidate();
+    invalidateRoute();
     closing = true; clearInterval(metrics);
     for (const waiter of waiters.values()) waiter.reject(new Error("Copilot bridge is closing.")); waiters.clear();
     await client?.forceStop(); await proxy?.close(); return {};
@@ -166,11 +171,16 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     sending = true;
     try {
       if (typeof args[2] !== "string") throw new Error("Copilot image admission identity is missing.");
+      const generation = routeGeneration, observation = args[3], modelId = args[4], sessionId = session.sessionId;
+      if (observation === null && (typeof modelId !== "string" || lastModelRead?.id !== modelId || lastModelRead.generation !== generation)) throw new NativeDispatchRejectedError("Copilot model readback changed before image dispatch.");
+      const verifyRoute = () => {
+        if (generation !== routeGeneration || pendingRouteEvents > 0 || (observation !== null && !route.matches(observation, sessionId))) throw new NativeDispatchRejectedError("Copilot route observation changed before image dispatch.");
+      };
       const input = await encodeCopilotBridgeImages(args[1] as CopilotBridgeImageInput);
-      if (!route.matches(args[3], session.sessionId)) throw new Error("Copilot route observation changed before image dispatch.");
+      verifyRoute();
       const allowed = await request({ method: "image_admission", sessionId: session.sessionId, admissionId: args[2] });
       if (allowed !== true || closing || fatalFailure) throw new Error("Copilot image admission ended before native dispatch.");
-      if (!route.matches(args[3], session.sessionId)) throw new Error("Copilot route observation changed before image dispatch.");
+      verifyRoute();
       return await session.send(input);
     }
     finally { sending = false; }
@@ -186,20 +196,28 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
   if (rawParts.join(".") === "rpc.eventLog.read" && (object(input[0]).max !== 1 || object(input[0]).includeEphemeral !== false)) throw new Error("Copilot bridge history requires max=1 and includeEphemeral=false.");
   const isSend = rawParts.join(".") === "send";
   const changesRoute = path.startsWith("rpc.model.") && !["rpc.model.getCurrent", "rpc.model.list"].includes(path) || ["rpc.provider.add", "rpc.options.update", "rpc.mode.set", "rpc.commands.invoke"].includes(path);
-  if (["disconnect", "stop", "forceStop", "rpc.runtime.shutdown"].includes(path)) route.invalidate();
+  if (["disconnect", "stop", "forceStop", "rpc.runtime.shutdown"].includes(path)) invalidateRoute();
   if (changesRoute) {
     if (sending || observingRoute || changingRoute) throw new Error("Copilot route change is already in progress.");
-    changingRoute = true; route.invalidate();
+    changingRoute = true; invalidateRoute();
   }
   if (isSend && object(input[0]).attachments !== undefined) throw new Error("Copilot image sends require controlled bridge leases.");
   if (isSend && (sending || changingRoute)) throw new Error("Copilot bridge operation is already in progress.");
-  if (isSend) { route.invalidate(); sending = true; }
+  if (isSend) { invalidateRoute(); sending = true; }
   if (target === "client" && rawParts.length === 1 && ["stop", "forceStop"].includes(rawParts[0]!)) stoppingClient = true;
   if (target === "client" && rawParts.join(".") === "rpc.runtime.shutdown") {
     // The owner shuts down this external SDK runtime. Detach while its socket is
     // still writable, and classify the ensuing native EOF as intentional cleanup.
     stoppingClient = true;
     await session?.disconnect();
+  }
+  if (target !== "client" && path === "rpc.model.getCurrent") {
+    const generation = routeGeneration;
+    const result = await invoke(owner, rawParts, input), modelId = object(result).modelId;
+    // A readback cannot authorize images ahead of an observed route event that
+    // is still queued behind a media transfer to the Controller.
+    if (generation === routeGeneration) lastModelRead = pendingRouteEvents === 0 && typeof modelId === "string" && modelId ? { id: modelId, generation } : null;
+    return result;
   }
   try { return await invoke(owner, rawParts, input); }
   finally { if (isSend) sending = false; if (changesRoute) changingRoute = false; }

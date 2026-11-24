@@ -86,7 +86,7 @@ Controller 在标记 dispatching 前以及异步文件读取、编码结束后�
 
 已经发出的授权如遇服务策略撤销，使用既有原子授权边界结算已授权操作，不能声称撤销可以取消已经原生派发的输入；尚未授权者必须拒绝。服务每次授权也复核真实访问权限，revision不是权限凭据。modelId=null 表示有效模型无法确定，send/steer 均不能 supported。原生 default 选择值与已经确认的 effective model 不同；只有实际有效模型及其 profile 已获证实时才能宣布支持。controlsRevision=null表示原生未提供，不跳过能力校验。
 
-支持状态是**已验证的原生能力与所有中间层能力的交集**。send 和 steer 分开；文字 steer=true 不推出图片 steer=true。未知和不支持都禁止对应图片输入，reasonCode 必填；完全支持时可 null。reasonCode 取 `model_unsupported|capability_unknown|provider_unsupported|component_unsupported|policy_restricted`。inputMediaTypes 为去重数组且为输入白名单的子集。任一 supported 时数组非空、数值为正，maxImagesPerMessage 为 1..8；均不支持时数组可为空、上限全部为 `"0"`/0。上限不大于 10485760、20971520、8，已知 Provider 更小限制向下取交集，浏览器和 Controller 必须使用同一个最终值。解码器等尚不可用时不得先宣布支持。
+支持状态取 Provider 对普通 send 或活动回合 steer 的报告与所有中间层能力的交集。send 和 steer 分开；文字 steer=true 不推出图片 steer=true。未知和不支持都禁止对应图片输入，reasonCode 必填；完全支持时可 null。reasonCode 取 `model_unsupported|capability_unknown|provider_unsupported|component_unsupported|policy_restricted`。inputMediaTypes 为去重数组且为输入白名单的子集。任一 supported 时数组非空、数值为正，maxImagesPerMessage 为 1..8；均不支持时数组可为空、上限全部为 `"0"`/0。上限不大于 10485760、20971520、8，已知 Provider 更小限制向下取交集，浏览器和 Controller 必须使用同一个最终值。解码器等尚不可用时不得先宣布支持。
 
 发送仍要求原有 operations.canSend、当前 expectedTurnId、同步状态和生命周期允许。活动回合需要图片 steer=supported；不支持时保留草稿等待，不扩展队列、不取消回合。纯文字继续使用原文字能力，不受未知图片能力影响。
 
@@ -94,7 +94,7 @@ Controller 在标记 dispatching 前以及异步文件读取、编码结束后�
 
 Provider 按实际 executable、SDK、backend、精确模型、平台和操作匹配资格，资格记录绑定证据及已验证的原始输入限制、适用条件。目录中的 image modality、版本字符串或通用 decoder 上限不能独立建立资格。真实历史、工具、恢复及压缩观察限定证据范围；不把本条图数当累计上下文上限，也不要求推导不可观测的全部原生内部算法。原生可以正常转换及压缩，但已知会静默省略本次输入的条件不能匹配 supported。组合缺项、不匹配或资格不足时保持 unknown。
 
-服务取原生报告与当前上传、解码、存储、历史读取、归档及策略能力的交集；不能只将 Provider 的 supported 原样转发。双方已确认限额逐项向下取交集，Web、上传 complete 及最终派发消费同一有效值，显式更小限制对用户可见。发送前若可观测上下文条件、模型、权限或资格改变，重新计算并推进 revision，拒绝旧 revision 后保稿重核；不能偷偷继续用旧 profile。支持合成机制不会自行授予图片资格；生产资格目录只包含[已发布资格](session-image-providers.md#已发布资格)列出的精确组合。
+服务取 Provider 报告与当前上传、解码、存储、历史读取、归档及策略能力的交集。已确认限额逐项向下取交集，Web、上传 complete 及最终派发消费同一有效值。发送前若上下文条件、模型、权限或能力变化，推进 revision 并拒绝旧授权后保稿重核。普通 send 的默认报告和 steer 的资格条件由[Provider 设计](session-image-providers.md#三者共同的发送屏障)定义。
 
 服务[能力合成](../../packages/daynight-server/internal/core/session/image_capabilities.go)严格解析 Provider 报告，并与同一状态帧的 native 身份、模型及 controls 核对；Controller 传入的有效 Images 不是服务权威值。状态应用保留服务自己的有效 revision，使用该帧 controls 后重新合成。组件条件包括 content revision 2、完整 decoder、原件文件与清理能力，以及资源、输入意图和归档持久化能力；未知或关闭的原生动作不会因组件齐全而升级。三态按 send/steer 分别保留，MIME、字节、张数及 geometry 与服务通用限制取交集。
 
@@ -653,7 +653,7 @@ GC事务核全部pin并标deleting，阻止新acquire；事务外unlink、刷目
 
 ## 发布、回滚与验证责任
 
-先部署严格协议、schema3/旧表示读取和容量guard，再部署私有blob、Controller与Provider，最后完整Web接线。新图片写入和来源采集默认关闭；只有明确组合和同一真实路径的上传、校验、完整原生交付、接受、保存、读取、归档和权限全部满足，才可发布对应 supported。来源采集按其权限、安全和持久读取条件独立准入，不借输入 profile 绕过来源限制。局部发布不要求其他尚未验证组合先通过，也不代表 A6 完成；未列入资格目录的组合不因合成机制存在而开放。既有原件读取不因新输入能力unknown而失效。
+先部署严格协议、schema3/旧表示读取和容量 guard，再部署私有 blob、Controller 与 Provider，最后接入 Web。当前组件与权限均就绪时，Codex 和 Copilot 默认开放普通图片 send，采用当前 Provider 报告和 Daynight 限额的交集。来源采集独立按其权限、安全和持久读取条件准入。产品验收记录实际代码、运行组合和读取证据，既有原件读取继续使用原权限和引用。
 
 回滚关闭新写入，保留统一schema3/blob reader、旧数据边界、原upload/operation查询及unknown恢复直到保留期结束。只能使用理解新journal/schema的兼容程序，不能安装旧二进制后删存储重建。原生恢复路径可用与服务历史可读分别报告。
 

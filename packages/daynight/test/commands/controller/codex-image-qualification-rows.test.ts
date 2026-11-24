@@ -44,7 +44,7 @@ test.each(rows.flatMap(row => ([
   ["modelId", "gpt-6.1-astra"],
   ["modelId", "GPT-6-ASTRA"],
   ["provider", "copilot"],
-] as const).map(([field, value]) => [row.modelId, field, value] as const)))("%s closes when only %s becomes %s", (modelId, field, value) => {
+] as const).map(([field, value]) => [row.modelId, field, value] as const)))("%s exact qualification disappears when %s becomes %s", (modelId, field, value) => {
   expect(selectImageQualification({ ...identity(modelId), [field]: value })).toBeNull();
 });
 
@@ -98,21 +98,19 @@ describe("Codex capability publication for the production rows", () => {
     ["no declared observation", { observation: null }],
     ["another Codex version", { userAgent: "daynight/0.167.0 (Mac OS 27.2.1; arm64) ghostty/1.3.2 (daynight; 0.22.0)" }],
     ["another Controller architecture", { arch: "x64" }],
-  ] as const)("%s keeps image input closed", async (_case, change) => {
+  ] as const)("%s uses default send limits without qualification", async (_case, change) => {
     const model = "gpt-6-astra";
     if ("arch" in change) Object.defineProperty(process, "arch", { ...arch, value: change.arch });
     const profile = codexImageProfile("userAgent" in change ? { ...initialized, userAgent: change.userAgent } : initialized, { model, modelProvider: "copilot_gateway" }, "darwin", "executable" in change ? change.executable : executable, "observation" in change ? change.observation && observation(model, change.observation) : observation(model));
     expect(profile?.qualification ?? null).toBeNull();
     const capability = await capabilities(model, profile);
-    expect(capability.send).not.toBe("supported");
-    expect(capability.steer).not.toBe("supported");
-    expect(capability.reasonCode).toMatch(/^(capability_unknown|profile_disabled)$/);
-    expect(capability.geometry.known).toBe(false);
+    expect(capability).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null,
+      maxImageBytes: String(IMAGE_LIMITS.imageBytes), geometry: { known: true, maxFrames: IMAGE_LIMITS.maxFrames } });
   });
 
-  test("an unevidenced model on the qualified runtime stays closed", async () => {
+  test("an unevidenced model on the qualified runtime uses default send limits", async () => {
     const profile = codexImageProfile(initialized, { model: "gpt-6.1-astra", modelProvider: "copilot_gateway" }, "darwin", executable, observation("gpt-6.1-astra"));
     expect(profile?.qualification).toBeNull();
-    expect(await capabilities("gpt-6.1-astra", profile)).toMatchObject({ send: "unknown", steer: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
+    expect(await capabilities("gpt-6.1-astra", profile)).toMatchObject({ send: "supported", steer: "unknown", reasonCode: null, geometry: { known: true } });
   });
 });
