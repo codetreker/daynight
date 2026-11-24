@@ -1080,6 +1080,486 @@ test.skipIf(process.platform !== "linux")("Bot uses retained Linux launch and na
   } finally { read.mockRestore(); }
 });
 
+const submittedLinuxBot = async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  const native = { pid: 456, parentPid: 123, processGroupId: 456, startedAt: "native-original", commandHash: "b".repeat(64) };
+  f.launch.mockImplementationOnce(async options => {
+    const proof = { kind: "linux-controller-launch" as const, pid: 123, launchId: options.ticket.launchId };
+    await options.onSubmitting(); await options.onSpawned(proof);
+    const snapshot = { ...await f.observe(options.ticket), controllerProcess: proof, nativeProcesses: [native] };
+    await options.onObserved(snapshot); return snapshot;
+  });
+  const reconcileLaunch = vi.fn<typeof reconcileSubmittedControllerLaunch>(async () => { throw new Error("unexpected launch observation"); });
+  const stopBootstrap = vi.fn(async () => {}), stopProcesses = vi.fn(async () => {}), confirmStopped = vi.fn(async () => true);
+  const request = vi.fn(async () => ({ snapshot: f.executions.get(f.current())!.snapshot! }));
+  const recordStopped = vi.fn(async () => { throw new Error("unexpected journal stop record"); });
+  const manager = f.createProcess({ reconcileLaunch, stopBootstrap, stopProcesses, confirmStopped, request, recordStopped });
+  await manager.advance(f.current(), signal);
+  const execution = f.executions.get(f.current())!, saved = execution.snapshot!;
+  expect(execution.launchSubmission).toBe("acknowledged");
+  expect(saved.nativeProcesses).toEqual([native]);
+  expect(f.prepareEnvironment).toHaveBeenCalledOnce();
+  return { ...f, signal, manager, execution, saved, reconcileLaunch, stopBootstrap, stopProcesses, confirmStopped, request, recordStopped };
+};
+
+test.skipIf(process.platform !== "linux")("historical stop read I/O failure stops the bootstrap and retained native tree when later journal I/O fails", async () => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const second = Object.assign(new Error("historical stop recheck failed"), { code: "EIO" });
+  const unavailable = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const observation = new ControllerLaunchJournalObservationError(unavailable, Object.assign(new Error("journal observation failed"), { code: "EIO" }));
+  const later = new ControllerLaunchJournalObservationError(unavailable, Object.assign(new Error("later journal read failed"), { code: "EIO" }));
+  let time = Date.now(); const started = time;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration")
+    .mockImplementationOnce(() => { time += 950; throw first; }).mockImplementationOnce(() => { time += 950; throw second; });
+  f.reconcileLaunch.mockRejectedValueOnce(observation).mockRejectedValueOnce(later);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors).toHaveLength(3);
+    expect(error.errors[0]).toBeInstanceOf(ControllerLaunchJournalObservationError);
+    expect(error.errors[0].journalCause.errors).toEqual([first, second]);
+    expect(error.errors.slice(1)).toEqual([observation, later]);
+    expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    const [proof, deadline] = f.stopBootstrap.mock.calls[0]! as unknown as [unknown, number];
+    expect(proof).toEqual(f.execution.controllerProcess);
+    expect(deadline).toBe(started + 10_000);
+    expect(read.mock.calls[0]![2]).toBe(deadline); expect(read.mock.calls[1]![2]).toBe(deadline);
+    expect(read.mock.calls[0]![3]).toEqual({ maxBusyMs: 1000 }); expect(read.mock.calls[1]![3]).toEqual({ maxBusyMs: 1000 });
+    expect(deadline - time).toBe(8100);
+    expect(f.reconcileLaunch).toHaveBeenCalledTimes(2);
+    expect(f.reconcileLaunch.mock.invocationCallOrder[0]).toBeLessThan(f.stopBootstrap.mock.invocationCallOrder[0]!);
+    expect(f.stopBootstrap.mock.invocationCallOrder[0]).toBeLessThan(f.reconcileLaunch.mock.invocationCallOrder[1]!);
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); clock.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("historical stop read I/O failure remains reported after a successful later observation", async () => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  f.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(ControllerLaunchJournalObservationError);
+    expect(error.journalCause).toBe(first);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.reconcileLaunch).toHaveBeenCalledOnce();
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+    expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["conflict", "already stopped"] as const)("historical recheck after EIO preserves the failure without signaling on %s", async kind => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const ticket = await f.manager.readTicket(f.current());
+  const stopped = { ...f.saved, controllerProcess: kind === "conflict" ? { kind: "linux-controller-launch" as const, pid: 124, launchId: ticket.launchId } : f.saved.controllerProcess, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw first; }).mockReturnValueOnce(stopped);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    const original = kind === "conflict" ? error.errors[0] : error;
+    expect(original).toBeInstanceOf(ControllerLaunchJournalObservationError); expect(original.journalCause).toBe(first);
+    if (kind === "conflict") expect(error.errors[1].message).toMatch(/conflicts/);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[0]![2]).toBe(read.mock.calls[1]![2]);
+    expect(read.mock.calls[0]![3]).toEqual({ maxBusyMs: 1000 }); expect(read.mock.calls[1]![3]).toEqual({ maxBusyMs: 1000 });
+    expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("historical EIO retains its error while a healthy Controller receives normal IPC stop", async () => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(ControllerLaunchJournalObservationError); expect(error.journalCause).toBe(first);
+    expect(markShutdown).toHaveBeenCalledWith(f.current(), true);
+    expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(true);
+    expect(f.request).toHaveBeenCalledOnce();
+    const deadline = (f.stopBootstrap.mock.calls[0]! as unknown as [unknown, number])[1];
+    expect(read.mock.calls[0]![2]).toBe(deadline); expect(read.mock.calls[1]![2]).toBe(deadline);
+    expect(read.mock.calls[0]![3]).toEqual({ maxBusyMs: 1000 }); expect(read.mock.calls[1]![3]).toEqual({ maxBusyMs: 1000 });
+    expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ launchId: f.current().intent!.launchId }), { kind: "stop", deadline }, expect.objectContaining({ timeoutMs: expect.any(Number) }));
+    expect(markShutdown).toHaveBeenCalledBefore(f.request); expect(f.request).toHaveBeenCalledBefore(f.stopBootstrap);
+    expect(f.stopBootstrap).toHaveBeenCalledWith(f.execution.controllerProcess, deadline);
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["IPC identity", "snapshot identity", "native prefix"] as const)("historical EIO followed by %s conflict retains both errors without signaling", async kind => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const conflict = new ControllerIpcIdentityConflictError("authenticated IPC identity differs");
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  if (kind === "IPC identity") f.reconcileLaunch.mockRejectedValueOnce(conflict);
+  else {
+    const snapshot = kind === "snapshot identity"
+      ? { ...f.saved, controllerInstanceId: id(99) }
+      : { ...f.saved, nativeProcesses: [{ ...f.saved.nativeProcesses[0]!, commandHash: "c".repeat(64) }] };
+    f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot });
+  }
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(2);
+    expect(error.errors[0]).toBeInstanceOf(ControllerLaunchJournalObservationError); expect(error.errors[0].journalCause).toBe(first);
+    if (kind === "IPC identity") expect(error.errors[1]).toBe(conflict);
+    else if (kind === "snapshot identity") expect(error.errors[1].message).toMatch(/does not match.*execution fence/);
+    else expect(error.errors[1].message).toMatch(/conflicts/);
+    expect(read).toHaveBeenCalledTimes(2); expect(f.reconcileLaunch).toHaveBeenCalledOnce();
+    expect(markShutdown).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["identity", "configuration"] as const)("initial ticket %s conflict cannot be erased by a later valid ticket", async kind => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const conflicting = kind === "identity" ? { ...ticket, controllerInstanceId: id(99) }
+    : { ...ticket, configuration: { ...ticket.configuration, model: "different-model" } };
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValueOnce(conflicting).mockResolvedValueOnce(ticket);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/ticket conflicts with the original frozen execution intent/i);
+    expect(readTicket).toHaveBeenCalledOnce(); expect(read).not.toHaveBeenCalled();
+    expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(markShutdown).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("second ticket conflict retains the initial historical EIO without signaling", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValueOnce(ticket).mockResolvedValueOnce({ ...ticket, controllerInstanceId: id(99) });
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(2);
+    expect(error.errors[0]).toBeInstanceOf(ControllerLaunchJournalObservationError); expect(error.errors[0].journalCause).toBe(first);
+    expect(error.errors[1].message).toMatch(/conflicts/);
+    expect(readTicket).toHaveBeenCalledTimes(2);
+    expect(f.stopBootstrap).not.toHaveBeenCalled();
+    expect(f.request).not.toHaveBeenCalled(); expect(f.reconcileLaunch).not.toHaveBeenCalled();
+    expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("initial ticket EIO followed by a ticket identity conflict retains both errors without signaling", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), intent = f.current().intent;
+  const first = Object.assign(new Error("initial ticket read failed"), { code: "EIO" });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockRejectedValueOnce(first)
+    .mockResolvedValueOnce({ ...ticket, controllerInstanceId: id(99) });
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(2);
+    expect(error.errors[0]).toBe(first); expect(error.errors[1].message).toMatch(/ticket conflicts/);
+    expect(readTicket).toHaveBeenCalledTimes(2); expect(read).not.toHaveBeenCalled();
+    expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.current().intent).toEqual(intent); expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["healthy", "receipt conflict", "historical conflict", "historical recheck conflict", "already stopped"] as const)("initial ticket EIO rechecks recovered evidence before cleanup (%s)", async kind => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), intent = f.current().intent;
+  const first = Object.assign(new Error("initial ticket read failed"), { code: "EIO" });
+  const journalFailure = Object.assign(new Error("historical read failed"), { code: "EIO" });
+  const stopped = { ...f.saved, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  const conflicting = { ...stopped, controllerProcess: { kind: "linux-controller-launch" as const, pid: 124, launchId: ticket.launchId } };
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockRejectedValueOnce(first).mockResolvedValueOnce(ticket);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  if (kind === "historical conflict") read.mockReturnValueOnce(conflicting);
+  if (kind === "historical recheck conflict") read.mockImplementationOnce(() => { throw journalFailure; }).mockReturnValueOnce(conflicting);
+  if (kind === "already stopped") read.mockReturnValueOnce(stopped);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    if (kind === "receipt conflict") await writeUnreleasedLaunch(f.home, ticket, 124);
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    if (kind === "healthy" || kind === "already stopped") expect(error).toBe(first);
+    else {
+      expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(first); expect(error.errors).toHaveLength(2);
+      if (kind === "historical recheck conflict") {
+        expect(error.errors[1]).toBeInstanceOf(AggregateError);
+        expect(error.errors[1].errors[0].journalCause).toBe(journalFailure);
+        expect(error.errors).not.toContain(error.errors[1].errors[0]);
+        expect(error.errors[1].errors[1].message).toMatch(/conflicts/);
+      } else expect(error.errors[1].message).toMatch(/conflicts/);
+    }
+    expect(readTicket).toHaveBeenCalledTimes(2);
+    if (kind === "receipt conflict") expect(read).not.toHaveBeenCalled();
+    else expect(read).toHaveBeenCalled();
+    if (kind === "healthy") {
+      expect(f.reconcileLaunch).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledBefore(f.reconcileLaunch);
+      expect(markShutdown).toHaveBeenCalledWith(f.current(), true); expect(f.request).toHaveBeenCalledOnce();
+      expect(f.request).toHaveBeenCalledBefore(f.stopBootstrap);
+      const deadline = (f.stopBootstrap.mock.calls[0]! as unknown as [unknown, number])[1];
+      expect(f.request).toHaveBeenCalledWith(ticket, { kind: "stop", deadline }, expect.anything());
+      expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+      expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    } else {
+      expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(markShutdown).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+      expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    }
+    expect(f.current().intent).toEqual(intent); expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("initial ticket EIO followed by authenticated IPC identity conflict retains exactly both errors without signaling", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), intent = f.current().intent;
+  const first = Object.assign(new Error("initial ticket read failed"), { code: "EIO" });
+  const conflict = new ControllerIpcIdentityConflictError("authenticated IPC identity differs");
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockRejectedValueOnce(first).mockResolvedValueOnce(ticket);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null);
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  f.reconcileLaunch.mockRejectedValueOnce(conflict);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([first, conflict]);
+    expect(readTicket).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledOnce();
+    expect(f.reconcileLaunch).toHaveBeenCalledOnce(); expect(read).toHaveBeenCalledBefore(f.reconcileLaunch);
+    expect(f.reconcileLaunch).toHaveBeenCalledWith(expect.objectContaining({ ticket, spawnProof: f.execution.controllerProcess }));
+    expect(markShutdown).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.current().intent).toEqual(intent); expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("initial ticket EIO is retained when the submitted launch lacks spawn proof", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  const stopBootstrap = vi.fn(async () => {}), stopProcesses = vi.fn(async () => {});
+  const manager = f.createProcess({ stopBootstrap, stopProcesses });
+  f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); throw new Error("launch observation unavailable"); });
+  await expect(manager.advance(f.current(), signal)).rejects.toThrow("launch observation unavailable");
+  const first = Object.assign(new Error("initial ticket read failed"), { code: "EIO" });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockRejectedValueOnce(first);
+  try {
+    const error = await manager.shutdown(f.current(), signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(2);
+    expect(error.errors[0]).toBe(first); expect(error.errors[1].message).toMatch(/no original spawn proof/);
+    expect(readTicket).toHaveBeenCalledOnce(); expect(stopBootstrap).not.toHaveBeenCalled(); expect(stopProcesses).not.toHaveBeenCalled();
+    expect(f.executions.get(f.current())!.controllerProcess).toBeNull(); expect(f.release).not.toHaveBeenCalled();
+  } finally { readTicket.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("initial ticket EIO is retained when the cleanup deadline expires", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const first = Object.assign(new Error("initial ticket read failed"), { code: "EIO" });
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockImplementationOnce(async () => { time += 10_000; throw first; }).mockResolvedValueOnce(ticket);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(2);
+    expect(error.errors[0]).toBe(first); expect(error.errors[1].message).toMatch(/deadline/);
+    expect(readTicket).toHaveBeenCalledOnce(); expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved); expect(f.release).not.toHaveBeenCalled();
+  } finally { readTicket.mockRestore(); clock.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("unclassified IPC stop failure prevents retained tree fallback after historical and journal I/O failures", async () => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current()), intent = f.current().intent;
+  const first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const stopFailure = new Error("unclassified IPC stop failure");
+  const io = (message: string) => new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error(message), { code: "EIO" }));
+  const before = io("journal classification failed"), later = io("journal recheck failed");
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  f.request.mockRejectedValueOnce(stopFailure);
+  f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved }).mockRejectedValueOnce(before).mockRejectedValueOnce(later);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(4);
+    expect(error.errors[0].journalCause).toBe(first); expect(error.errors.slice(1)).toEqual([stopFailure, before, later]);
+    expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    const deadline = (f.stopBootstrap.mock.calls[0]! as unknown as [unknown, number])[1];
+    expect(f.request).toHaveBeenCalledWith(ticket, { kind: "stop", deadline }, expect.anything());
+    expect(f.request).toHaveBeenCalledBefore(f.stopBootstrap); expect(f.reconcileLaunch).toHaveBeenCalledTimes(3);
+    expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.current().intent).toEqual(intent); expect(f.executions.get(f.current())!.snapshot).toEqual(f.saved);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["IPC identity conflict", "healthy IPC", "observed tree", "journal I/O", "unclassified error"] as const)("second ticket EIO uses the original ticket before cleanup (%s)", async kind => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const ticketFailure = Object.assign(new Error("second ticket read failed"), { code: "EIO" });
+  const conflict = new ControllerIpcIdentityConflictError("authenticated IPC identity differs");
+  const unknown = new Error("unclassified observation failure");
+  const before = new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error("journal observation failed"), { code: "EIO" }));
+  const later = new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error("later journal I/O"), { code: "EIO" }));
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  const readTicket = vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValueOnce(ticket).mockRejectedValueOnce(ticketFailure);
+  const markShutdown = vi.spyOn(f.executions, "markShutdown");
+  if (kind === "IPC identity conflict") f.reconcileLaunch.mockRejectedValueOnce(conflict);
+  if (kind === "healthy IPC") f.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot: f.saved })
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  if (kind === "observed tree") f.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  if (kind === "journal I/O") f.reconcileLaunch.mockRejectedValueOnce(before).mockRejectedValueOnce(later);
+  if (kind === "unclassified error") f.reconcileLaunch.mockRejectedValueOnce(unknown).mockRejectedValueOnce(later);
+  const started = Date.now();
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors[0].journalCause).toBe(first); expect(error.errors[1]).toBe(ticketFailure);
+    if (kind === "IPC identity conflict") expect(error.errors.slice(2)).toEqual([conflict]);
+    else if (kind === "journal I/O") expect(error.errors.slice(2)).toEqual([before, later]);
+    else if (kind === "unclassified error") expect(error.errors.slice(2)).toEqual([unknown, later]);
+    else expect(error.errors).toHaveLength(2);
+    expect(readTicket).toHaveBeenCalledTimes(2);
+    const deadline = read.mock.calls[0]![2];
+    expect(deadline).toBeGreaterThanOrEqual(started); expect(deadline).toBeLessThanOrEqual(started + 10_500);
+    expect(f.reconcileLaunch).toHaveBeenCalledWith(expect.objectContaining({ ticket, spawnProof: f.execution.controllerProcess, deadline }));
+    if (kind === "IPC identity conflict") {
+      expect(f.reconcileLaunch).toHaveBeenCalledOnce(); expect(f.stopBootstrap).not.toHaveBeenCalled();
+      expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    } else {
+      if (kind === "observed tree") expect(f.stopBootstrap).not.toHaveBeenCalled();
+      else {
+        expect(f.stopBootstrap).toHaveBeenCalledWith(f.execution.controllerProcess, deadline);
+        expect(f.reconcileLaunch.mock.invocationCallOrder[0]).toBeLessThan(f.stopBootstrap.mock.invocationCallOrder[0]!);
+        if (kind === "journal I/O" || kind === "unclassified error") {
+          expect(f.reconcileLaunch).toHaveBeenCalledTimes(2);
+          expect(f.stopBootstrap.mock.invocationCallOrder[0]).toBeLessThan(f.reconcileLaunch.mock.invocationCallOrder[1]!);
+        }
+      }
+      if (kind === "unclassified error") { expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled(); }
+      else {
+        expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+        expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+      }
+    }
+    if (kind === "healthy IPC") {
+      expect(f.request).toHaveBeenCalledWith(ticket, { kind: "stop", deadline }, expect.objectContaining({ timeoutMs: expect.any(Number) }));
+      expect(markShutdown).toHaveBeenCalledWith(f.current(), true);
+      expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(true);
+      expect(f.reconcileLaunch).toHaveBeenCalledTimes(2); expect(f.request).toHaveBeenCalledBefore(f.stopBootstrap);
+    } else { expect(f.request).not.toHaveBeenCalled(); expect(markShutdown).not.toHaveBeenCalled(); }
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); readTicket.mockRestore(); markShutdown.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("a slow historical read keeps the full shutdown deadline while SQLite busy waits are limited", async () => {
+  const f = await submittedLinuxBot();
+  const stopped = { ...f.saved, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  let time = Date.now(); const started = time;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { time += 2500; return stopped; });
+  try {
+    await f.manager.shutdown(f.current(), f.signal);
+    expect(read).toHaveBeenCalledOnce(); expect(read.mock.calls[0]![2]).toBe(started + 10_000);
+    expect(read.mock.calls[0]![3]).toEqual({ maxBusyMs: 1000 });
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  } finally { read.mockRestore(); clock.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux")("historical EIO does not authorize retained tree cleanup after an unclassified observation error", async () => {
+  const f = await submittedLinuxBot(), first = Object.assign(new Error("historical stop read failed"), { code: "EIO" });
+  const unknown = new Error("unclassified observation failure");
+  const later = new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), Object.assign(new Error("later journal I/O"), { code: "EIO" }));
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  f.reconcileLaunch.mockRejectedValueOnce(unknown).mockRejectedValueOnce(later);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(3);
+    expect(error.errors[0].journalCause).toBe(first); expect(error.errors.slice(1)).toEqual([unknown, later]);
+    expect(f.stopBootstrap).toHaveBeenCalledOnce(); expect(f.reconcileLaunch).toHaveBeenCalledTimes(2);
+    expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["SQLITE_IOERR", "SQLITE_IOERR_READ", "SQLITE_BUSY"] as const)("inspection-wrapped %s permits bounded cleanup while retaining errors", async code => {
+  const f = await submittedLinuxBot();
+  const inspection = () => new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "inspect" }, { cause: new Database.SqliteError("journal unavailable", code) });
+  const first = inspection(), before = new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), inspection());
+  const later = new ControllerLaunchJournalObservationError(new ControllerIpcOutcomeUnknownError("IPC unavailable"), inspection());
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
+  f.reconcileLaunch.mockRejectedValueOnce(before).mockRejectedValueOnce(later);
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toHaveLength(3);
+    expect(error.errors[0].journalCause).toBe(first); expect(error.errors.slice(1)).toEqual([before, later]);
+    expect(f.stopBootstrap).toHaveBeenCalledOnce();
+    const deadline = (f.stopBootstrap.mock.calls[0]! as unknown as [unknown, number])[1];
+    expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.confirmStopped).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, deadline);
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["SQLITE_CORRUPT", "SQLITE_ERROR", "decode", "format mismatch", "unsupported version", "fake SQLite error", "wrapped SQLite error", "wrong phase", "mixed conflict"] as const)("inspection %s does not authorize cleanup", async kind => {
+  const f = await submittedLinuxBot(), sqliteIo = new Database.SqliteError("journal unavailable", "SQLITE_IOERR");
+  const cause = kind === "SQLITE_CORRUPT" || kind === "SQLITE_ERROR" ? new Database.SqliteError("invalid journal", kind)
+    : kind === "decode" ? new SyntaxError("invalid snapshot")
+      : kind === "fake SQLite error" ? Object.assign(new Error("journal unavailable"), { code: "SQLITE_IOERR" })
+        : kind === "wrapped SQLite error" ? new Error("journal unavailable", { cause: sqliteIo }) : sqliteIo;
+  const inspection = new SqliteAccessError(kind === "unsupported version" ? "unsupported-version" : "invalid-format", { database: "controller-journal", phase: kind === "wrong phase" ? "decode" : "inspect" }, kind === "format mismatch" ? {} : { cause });
+  const failure = kind === "mixed conflict" ? new AggregateError([inspection, new ControllerLaunchJournalConflictError("identity conflict")]) : inspection;
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockImplementationOnce(() => { throw failure; });
+  try {
+    await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toBe(failure);
+    expect(read).toHaveBeenCalledOnce(); expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["nested EIO", "wrapped deadline", "deadline alone", "wrong marker", "wrong cause", "nested conflict"] as const)("historical errors are classified by their causes rather than a deadline message (%s)", async kind => {
+  const f = await submittedLinuxBot(), io = Object.assign(new Error("journal I/O"), { code: "EIO" });
+  const underlying = kind === "nested conflict" ? new AggregateError([io, new ControllerLaunchJournalConflictError("identity conflict")]) : io;
+  const marker = new Error(kind === "wrong marker" ? "unrelated deadline" : "Controller stop recording exceeded its deadline.");
+  const failure = kind === "nested EIO" ? new Error("journal read failed", { cause: io }) : kind === "deadline alone" ? marker : new AggregateError([underlying, marker], "Controller stop observation failed at its deadline.", { cause: kind === "wrong cause" ? marker : underlying });
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw failure; });
+  f.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved }));
+  try {
+    const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+    if (kind === "nested EIO") {
+      expect(error).toBeInstanceOf(ControllerLaunchJournalObservationError); expect(error.journalCause).toBe(failure);
+      expect(f.stopProcesses).toHaveBeenCalledWith(f.saved.controllerProcess, f.saved.nativeProcesses, expect.any(Number));
+      expect(f.confirmStopped).toHaveBeenCalledOnce();
+    } else {
+      expect(error).toBe(failure); expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.stopProcesses).not.toHaveBeenCalled();
+    }
+    expect(f.stopBootstrap).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+    expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.skipIf(process.platform !== "linux").each(["receipt", "historical identity"] as const)("submitted Linux Bot refuses a real %s conflict before signaling", async kind => {
+  const f = await submittedLinuxBot(), ticket = await f.manager.readTicket(f.current());
+  const stopped = { ...f.saved, controllerProcess: { kind: "linux-controller-launch" as const, pid: 124, launchId: ticket.launchId }, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date().toISOString() };
+  const read = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(stopped);
+  try {
+    if (kind === "receipt") await writeUnreleasedLaunch(f.home, ticket, 124);
+    await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/conflicts/);
+    if (kind === "receipt") expect(read).not.toHaveBeenCalled(); else expect(read).toHaveBeenCalledOnce();
+    expect(f.reconcileLaunch).not.toHaveBeenCalled(); expect(f.stopBootstrap).not.toHaveBeenCalled();
+    expect(f.stopProcesses).not.toHaveBeenCalled(); expect(f.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
 test.skipIf(process.platform === "win32").each(["observed", "running-unobserved"] as const)("Bot cleans the retained tree when journal I/O fails after %s bootstrap stop", async kind => {
   const f = await recoveryFixture(), ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
   const io = () => new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));

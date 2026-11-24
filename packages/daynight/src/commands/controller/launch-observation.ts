@@ -34,12 +34,18 @@ export class ControllerLaunchJournalObservationError extends AggregateError {
 }
 
 /** A retained snapshot may be used for bounded cleanup only after a pure journal I/O failure. */
-export const isControllerJournalIoFailure = (error: unknown): boolean => {
-  if (!(error instanceof ControllerLaunchJournalObservationError)) return false;
+export const isControllerEvidenceReadIoFailure = (error: unknown): boolean => {
   const ancestors = new Set<object>();
   const visit = (value: unknown, depth: number): boolean => {
     if (depth > 16 || value === null || typeof value !== "object" || ancestors.has(value)) return false;
-    if (value instanceof ControllerLaunchJournalConflictError || value instanceof SqliteAccessError && (value.kind === "invalid-format" || value.kind === "unsupported-version")) return false;
+    if (value instanceof ControllerLaunchJournalConflictError || value instanceof SqliteAccessError && value.kind === "unsupported-version") return false;
+    // Schema inspection wraps its underlying SQLite exception as invalid-format.
+    // Only a direct operational SQLite error can distinguish I/O from a schema
+    // refusal; parser errors and mixed failures remain unsafe to fall back from.
+    if (value instanceof SqliteAccessError && value.kind === "invalid-format") {
+      if (value.context.phase !== "inspect" || !(value.cause instanceof Database.SqliteError) || value.cause.cause !== undefined) return false;
+      return /^(?:SQLITE_(?:BUSY|LOCKED|IOERR|CANTOPEN|PERM|READONLY|FULL)(?:_[A-Z0-9_]+)?)$/.test(value.cause.code);
+    }
     ancestors.add(value);
     const code = "code" in value ? value.code : undefined;
     const allowed = typeof code === "string" && /^(?:SQLITE_(?:BUSY|LOCKED|IOERR|CANTOPEN|PERM|READONLY|FULL)(?:_[A-Z0-9_]+)?|E(?:ACCES|PERM|IO|MFILE|NFILE|NOSPC|NOENT))$/.test(code);
@@ -50,8 +56,9 @@ export const isControllerJournalIoFailure = (error: unknown): boolean => {
     ancestors.delete(value);
     return result;
   };
-  return visit(error.journalCause, 0);
+  return visit(error, 0);
 };
+export const isControllerJournalIoFailure = (error: unknown): boolean => error instanceof ControllerLaunchJournalObservationError && isControllerEvidenceReadIoFailure(error.journalCause);
 
 /** A later successful journal read cannot erase an earlier conflicting or unclassified journal failure. */
 export const hasUnsafeControllerObservationFailure = (error: unknown): boolean => {

@@ -156,6 +156,19 @@ test.skipIf(process.platform !== "linux")("rejects a historical stop beside a di
   } finally { db.close(); }
 });
 
+test.skipIf(process.platform !== "linux")("bounds the SQLite lock wait for a historical stop without shortening its overall deadline", async () => {
+  const f = await linuxLaunchFixture(); f.journal.close();
+  await recordStoppedControllerGeneration(f.file, f.ticket, {});
+  const lock = new Database(f.file);
+  try {
+    lock.pragma("journal_mode = DELETE");
+    lock.exec("BEGIN EXCLUSIVE");
+    const start = Date.now();
+    expect(() => readHistoricalStoppedControllerGeneration(f.file, f.ticket, start + 5000, { maxBusyMs: 100 })).toThrow(/locked|busy/i);
+    expect(Date.now() - start).toBeLessThan(3000);
+  } finally { if (lock.inTransaction) lock.exec("ROLLBACK"); lock.close(); }
+});
+
 test.each(fixturePlatforms)("does not write stopped if complete proof consumes the stop deadline (%s)", async mode => {
   selectFixturePlatform(mode);
   const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;

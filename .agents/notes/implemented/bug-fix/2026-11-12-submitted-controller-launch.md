@@ -55,6 +55,11 @@ same cleanup deadline bounds process probes, Job operations and stop recording;
 started native calls still finish and release their handles. A pure journal I/O
 failure can use previously authenticated POSIX evidence only to attempt stopping
 an attributable original group; it cannot establish complete native stop.
+For Linux Bot stopped history, bounded SQLite lock waits leave time for cleanup,
+and a reread exposes a recovered identity conflict before signaling. A pure read I/O failure
+does not bypass normal authenticated stop, and remains reported even if later
+observation succeeds; unclassified or conflicting evidence cannot authorize the
+retained-proof fallback.
 
 A Windows Job name can be reused after the original name or object disappears.
 The Controller retains its Job handle for its lifetime. An observer acquires a

@@ -12,7 +12,7 @@ import { readUnreleasedLaunch } from "../../controller/unreleased-launch.js";
 import type { ControllerProcessProof } from "../../controller/process-proof.js";
 import type { BotExecution } from "./execution-store.js";
 import { ControllerIpcOutcomeUnknownError, LegacyWorkerControllerError, requestController } from "../../controller/local-client.js";
-import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, ControllerLaunchJournalObservationError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, isControllerEvidenceReadIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
@@ -227,9 +227,10 @@ export const createBotProcess = (options: {
     options.executions.update(record, { unreleased: receipt });
     return true;
   };
-  const historicalStop = (record: BotRecord, ticket: ControllerLaunchTicket, execution: BotExecution): ControllerSnapshot | null => {
+  const historicalStop = (record: BotRecord, ticket: ControllerLaunchTicket, execution: BotExecution, deadline = Date.now() + 10_000, maxBusyMs?: number): ControllerSnapshot | null => {
     if (!isLinuxControllerLaunch(execution.controllerProcess)) return null;
-    const saved = readHistoricalStoppedControllerGeneration(record.intent!.journalPath, ticket, Date.now() + 10_000);
+    const saved = maxBusyMs === undefined ? readHistoricalStoppedControllerGeneration(record.intent!.journalPath, ticket, deadline)
+      : readHistoricalStoppedControllerGeneration(record.intent!.journalPath, ticket, deadline, { maxBusyMs });
     if (saved === null) return null;
     validateBotExecutionSnapshot(record, saved);
     if (!preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
@@ -504,22 +505,87 @@ export const createBotProcess = (options: {
     await jobLeases.cleanupBirth(record.intent!.launchId, Date.now() + 5000);
     const execution = options.executions.get(record);
     if (execution === null || execution.launchSubmission === "not-submitted") { await releaseEnvironment(record.botId); return; }
-    let originalTicket: ControllerLaunchTicket | undefined;
-    try { originalTicket = await checkedTicket(record); } catch { /* The ordinary cleanup path retains and reports ticket failures. */ }
-    if (originalTicket !== undefined) {
-      if (await settleUnreleased(record, originalTicket, AbortSignal.timeout(10_000))) { await releaseEnvironment(record.botId); return; }
-      const historical = historicalStop(record, originalTicket, execution);
-      if (historical !== null) { options.executions.update(record, { snapshot: historical }); await jobLeases.release(originalTicket.launchId); await releaseEnvironment(record.botId); return; }
-    }
-    if (execution.controllerProcess === null) throw new Error("Bot shutdown has no original spawn proof; execution evidence is retained.");
     const deadline = Date.now() + 10_000;
     const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Bot cleanup exceeded its deadline; execution evidence is retained."); return time; };
+    let originalTicket: ControllerLaunchTicket | undefined;
+    let initialTicketReadFailure: unknown;
+    let historicalReadFailure: ControllerLaunchJournalObservationError | undefined;
+    try { originalTicket = await checkedTicket(record); }
+    catch (error) {
+      // I/O can be re-observed by the bounded path. A ticket or configuration
+      // conflict must not be erased by a later successful read.
+      if (!isControllerEvidenceReadIoFailure(error)) throw error;
+      initialTicketReadFailure = error;
+    }
+    const checkHistorical = (ticket: ControllerLaunchTicket): ControllerSnapshot | null => {
+      let historical: ControllerSnapshot | null = null;
+      try { historical = historicalStop(record, ticket, execution, deadline, 1000); }
+      catch (error) {
+        // Identity and format conflicts remain refusals. Pure I/O failures use
+        // the existing bounded stop path without discarding the original error.
+        if (!isControllerEvidenceReadIoFailure(error)) throw error;
+        historicalReadFailure = new ControllerLaunchJournalObservationError(new Error("Controller IPC was not observed after the historical journal read failed."), error);
+      }
+      if (historicalReadFailure !== undefined) try {
+        // A recovered read must reject a newly visible conflict before any
+        // signal; an already settled boundary needs no termination.
+        const recovered = historicalStop(record, ticket, execution, deadline, 1000);
+        if (recovered !== null) throw historicalReadFailure;
+      } catch (error) {
+        if (error === historicalReadFailure) throw error;
+        if (!isControllerEvidenceReadIoFailure(error)) throw new AggregateError([historicalReadFailure, error], "Bot historical stop evidence could not be rechecked.", { cause: historicalReadFailure });
+        historicalReadFailure = new ControllerLaunchJournalObservationError(new Error("Controller IPC was not observed after the historical journal read failed."), new AggregateError([historicalReadFailure.journalCause, error], "Bot historical journal reads failed."));
+      }
+      return historical;
+    };
+    if (originalTicket !== undefined) {
+      if (await settleUnreleased(record, originalTicket, AbortSignal.timeout(10_000))) { await releaseEnvironment(record.botId); return; }
+      const historical = checkHistorical(originalTicket);
+      if (historical !== null) { options.executions.update(record, { snapshot: historical }); await jobLeases.release(originalTicket.launchId); await releaseEnvironment(record.botId); return; }
+    }
+    if (execution.controllerProcess === null) {
+      const missing = new Error("Bot shutdown has no original spawn proof; execution evidence is retained.");
+      if (initialTicketReadFailure !== undefined) throw new AggregateError([initialTicketReadFailure, missing], "Bot shutdown cannot establish its original process evidence.", { cause: initialTicketReadFailure });
+      throw missing;
+    }
     // Business cancellation cannot interrupt bounded cleanup after it starts.
-    const cleanupSignal = AbortSignal.timeout(remaining());
-    let bootstrapAttempted = false, bootstrapCompleted = false, treeAttempted = false, treeEvidenceBlocked = false, leaseAttempted = false;
+    let cleanupSignal: AbortSignal;
+    try { cleanupSignal = AbortSignal.timeout(remaining()); }
+    catch (error) {
+      if (initialTicketReadFailure !== undefined) throw new AggregateError([initialTicketReadFailure, error], "Bot ticket observation and cleanup deadline failed.", { cause: initialTicketReadFailure });
+      if (historicalReadFailure !== undefined) throw new AggregateError([historicalReadFailure, error], "Bot historical observation and cleanup deadline failed.", { cause: historicalReadFailure });
+      throw error;
+    }
+    let bootstrapAttempted = false, bootstrapCompleted = false, bootstrapStopBlocked = false, treeAttempted = false, treeEvidenceBlocked = false, leaseAttempted = false;
+    let ticketReadFailure: unknown;
     let cleanupTicket: ControllerLaunchTicket | undefined, stopRequestFailure: { cause: unknown } | undefined;
     try {
-      const ticket = await checkedTicket(record); cleanupTicket = ticket;
+      const ticket = await (async (): Promise<ControllerLaunchTicket> => {
+        try { return await checkedTicket(record); }
+        catch (error) {
+          // A newly observed ticket conflict must not authorize even a single-PID
+          // stop from the previously saved record. Pure read I/O retains the
+          // original checked identity for bounded cleanup.
+          const ioFailure = isControllerEvidenceReadIoFailure(error);
+          if (historicalReadFailure !== undefined && originalTicket !== undefined) {
+            if (ioFailure) { ticketReadFailure = error; return originalTicket; }
+            bootstrapStopBlocked = true; treeEvidenceBlocked = true;
+          }
+          if (!ioFailure) { bootstrapStopBlocked = true; treeEvidenceBlocked = true; }
+          throw error;
+        }
+      })();
+      cleanupTicket = ticket;
+      if (originalTicket === undefined && initialTicketReadFailure !== undefined) {
+        try {
+          if (await settleUnreleased(record, ticket, cleanupSignal) || checkHistorical(ticket) !== null) {
+            bootstrapStopBlocked = true; treeEvidenceBlocked = true; throw initialTicketReadFailure;
+          }
+        } catch (error) {
+          if (error !== initialTicketReadFailure) { bootstrapStopBlocked = true; treeEvidenceBlocked = true; }
+          throw error;
+        }
+      }
       const before = await reconcileLaunch({ journalFile: record.intent!.journalPath, ticket, spawnProof: execution.controllerProcess, signal: cleanupSignal, deadline });
       remaining();
       if (before.kind === "controller-exited" || before.kind === "pre-writer-exited") bootstrapCompleted = true;
@@ -571,6 +637,8 @@ export const createBotProcess = (options: {
         if (!await confirmWithLease(ticket, record.intent!.journalPath, saved.controllerProcess, saved.nativeProcesses, deadline, saved)) throw new Error("Bot original process tree did not stop; recovery evidence is retained.");
         remaining();
         if (stopRequestFailure !== undefined) throw stopRequestFailure.cause;
+        if (historicalReadFailure !== undefined) throw historicalReadFailure;
+        if (initialTicketReadFailure !== undefined) throw initialTicketReadFailure;
         // Records stop through the journal's process verification + snapshot CAS;
         // operation receipts and pending user input remain in that same journal.
         stopped = await recordWithLease(record.intent!.journalPath, ticket, deadline);
@@ -580,12 +648,18 @@ export const createBotProcess = (options: {
       } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Bot bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
       await releaseEnvironment(record.botId);
     } catch (error) {
-      const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
+      const failures: unknown[] = [];
+      if (initialTicketReadFailure !== undefined) failures.push(initialTicketReadFailure);
+      if (historicalReadFailure !== undefined && !(error instanceof AggregateError && error.errors.includes(historicalReadFailure))) failures.push(historicalReadFailure);
+      if (ticketReadFailure !== undefined && !failures.includes(ticketReadFailure)) failures.push(ticketReadFailure);
+      if (stopRequestFailure !== undefined && !failures.includes(stopRequestFailure.cause)) failures.push(stopRequestFailure.cause);
+      if (!failures.includes(error)) failures.push(error);
       treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
+      if ((historicalReadFailure !== undefined || initialTicketReadFailure !== undefined) && treeEvidenceBlocked) bootstrapStopBlocked = true;
       if (!bootstrapAttempted && !bootstrapCompleted && !leaseAttempted && cleanupTicket !== undefined) {
         try { leaseAttempted = true; await retainJob(cleanupTicket.launchId, execution.controllerProcess, deadline); } catch (leaseError) { failures.push(leaseError); }
       }
-      if (!bootstrapAttempted && !bootstrapCompleted) {
+      if (!bootstrapStopBlocked && !bootstrapAttempted && !bootstrapCompleted) {
         try { await stopBootstrap(execution.controllerProcess, deadline); bootstrapCompleted = true; }
         catch (stopError) { failures.push(stopError); bootstrapCompleted = stopError instanceof ControllerBootstrapReplacedError; }
       }
@@ -606,6 +680,7 @@ export const createBotProcess = (options: {
           } catch (verificationError) { failures.push(verificationError); journalIoFailure = isControllerJournalIoFailure(verificationError); }
           const saved = execution.snapshot;
           if (!treeAttempted && journalIoFailure && (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError)
+            && (stopRequestFailure === undefined || stopRequestFailure.cause instanceof ControllerIpcOutcomeUnknownError)
             && process.platform !== "win32" && execution.launchSubmission === "acknowledged" && saved?.controllerProcess != null
             && (isLinuxControllerLaunch(execution.controllerProcess) ? execution.controllerProcess.launchId === cleanupTicket.launchId : execution.controllerProcess.processGroupId === execution.controllerProcess.pid && execution.controllerProcess.jobObjectName === undefined)
             && preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, cleanupTicket.launchId)) {

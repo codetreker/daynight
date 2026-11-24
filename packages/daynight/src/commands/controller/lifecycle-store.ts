@@ -654,7 +654,7 @@ export const readControllerSnapshot = (file: SqliteDatabaseSource, permit?: Cont
 });
 
 type ControllerStopRow = { snapshot: ControllerSnapshot; rawSnapshot: string; ticketHash: string; ownerPid: number | null };
-const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit, historicalTicketHash?: string, allowPreviousFormat = false): ControllerStopRow | null => {
+const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit, historicalTicketHash?: string, allowPreviousFormat = false, maxBusyMs?: number): ControllerStopRow | null => {
   const read = (db: Database.Database, historyAvailable = true): ControllerStopRow | null => {
     if (historicalTicketHash !== undefined) {
       if (!historyAvailable) return null;
@@ -687,19 +687,21 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
     if (left <= 0) throw new Error("Controller stop recording exceeded its deadline.");
     return Math.min(5000, left);
   };
+  if (maxBusyMs !== undefined && (!Number.isSafeInteger(maxBusyMs) || maxBusyMs < 1)) throw new Error("Invalid controller journal busy timeout.");
+  const busyTimeout = () => Math.min(remaining(), maxBusyMs ?? 5000);
   try {
     remaining();
     if (!path.isAbsolute(file)) throw new TypeError("The SQLite database path must be absolute.");
     if (sqliteDatabaseIsMissing(file)) { remaining(); return null; }
-    const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+    const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: busyTimeout() });
     let result: ControllerStopRow | null = null;
     closeJournal(db, file, () => {
-      db.pragma(`busy_timeout = ${remaining()}`); remaining();
+      db.pragma(`busy_timeout = ${busyTimeout()}`); remaining();
       result = db.transaction(() => {
         remaining();
         const source = allowPreviousFormat ? inspectReadCompatibleControllerJournal(db) : inspectSqlite(db, controllerJournalFormat);
         if (!allowPreviousFormat && source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
-        db.pragma(`busy_timeout = ${remaining()}`);
+        db.pragma(`busy_timeout = ${busyTimeout()}`);
         const row = read(db, source.version >= 17); remaining(); return row;
       }).deferred();
     }, "not-started");
@@ -920,8 +922,8 @@ export const readHistoricalWindowsStoppedControllerGeneration = (file: string, t
 };
 
 /** Recover the exact prior ticket's stopped boundary without migrating the journal. */
-export const readHistoricalStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number): ControllerSnapshot | null => {
-  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true);
+export const readHistoricalStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number, options: { maxBusyMs?: number } = {}): ControllerSnapshot | null => {
+  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true, options.maxBusyMs);
   if (row === null) return null;
   const snapshot = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
   if (snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.controllerProcess === null || snapshot.stoppedAt === null || !Number.isFinite(Date.parse(snapshot.stoppedAt)))
