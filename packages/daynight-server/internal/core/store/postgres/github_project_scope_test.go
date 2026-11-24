@@ -253,6 +253,11 @@ func TestGitHubConfigurationSharesProjectTransaction(t *testing.T) {
 	ctx := t.Context()
 	principal := model.Principal{Kind: model.SessionCredential, UserID: actor, CredentialID: uuid.NewString()}
 	appID, installationID, repositoryID, credential := int64(9), int64(7), int64(8), int64(1)
+	credentials, err := database.Credentials(ctx, app)
+	if err != nil || credentials.AppResourceID != app || credentials.GitHubAppID != appID ||
+		credentials.CredentialVersion != credential || string(credentials.PrivateKeyPEM) != "k" {
+		t.Fatalf("read configured App credentials for version %d: %v", credential, err)
+	}
 	account, fullName := "o", "o/r"
 	write := store.GitHubProjectAppWrite{Configuration: store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, AppID: &appID, InstallationID: &installationID, RepositoryID: &repositoryID, InstallationAccountLogin: &account, RepositoryFullName: &fullName, PollIntervalMinutes: 5, AccessState: "available"}, AppResourceID: &app, GrantID: &grant, CredentialVersion: &credential}
 	rollback := errors.New("abort transaction")
