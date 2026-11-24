@@ -13,6 +13,7 @@ import { ControllerStartupError } from "../../../src/commands/controller/startup
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
@@ -22,12 +23,6 @@ import { ControllerStorageWaitingError } from "../../../src/commands/controller/
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
-import { openLifecycleStore, type LifecycleBinding } from "../../../src/commands/worker/lifecycle-store.js";
-import { withWorkerLifecycle } from "../../../src/commands/worker/lifecycle-context.js";
-import { openControllerWorkerLifecycle } from "../../../src/commands/controller/worker-lifecycle.js";
-import { readLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
-import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 afterEach(cleanupBotProcesses);
 
@@ -315,85 +310,6 @@ test("recovery keeps its persisted target generation after a lost grant response
   await f.restart().advance(f.current(), f.signal);
   expect(f.current().intent).toEqual(target); expect(f.launch).toHaveBeenCalledTimes(2);
   expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
-});
-
-test.each(["grant failure", "disable during grant", "disable during reauthorization"] as const)("keeps native recovery lifecycle authorization fenced across %s", async interruption => {
-  const f = await recoveryFixture(); await f.manager.shutdown(f.current(), f.signal);
-  const paths = resolveWorkerPaths(f.home); mkdirSync(paths.workerDirectory, { recursive: true, mode: 0o700 });
-  const identity = { serverOrigin: f.owner.serverOrigin, userId: f.owner.ownerUserId, workerId: f.owner.workerId };
-  const authority = openLifecycleStore({ file: path.join(paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-  const activate = (action: "bootstrap" | "resume", generation: string): LifecycleBinding => {
-    const state = authority.readState();
-    authority.markStopped({ localEpoch: state.localEpoch, inventoryRevision: state.inventoryRevision, owners: [] });
-    const binding = { ...identity, instanceId: id(80), instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: generation };
-    const activation = { binding, action, operationId: id(action === "bootstrap" ? 81 : 82) };
-    authority.prepareActivation(activation);
-    authority.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action, operationId: activation.operationId,
-      workerId: identity.workerId, instanceEpoch: "1", intentVersion: "1", localEpoch: binding.localEpoch, scopeGeneration: generation } });
-    return binding;
-  };
-  try {
-    authority.bindInstance({ instanceId: id(80), instanceEpoch: "1", intentVersion: "1", desired: "enabled" });
-    const originalBinding = activate("bootstrap", "1"), cancel = new AbortController();
-    const run = (binding: LifecycleBinding, signal = f.signal) => withWorkerLifecycle({ store: authority, binding, failed: error => { throw error; } }, () => f.restart().advance(f.current(), signal));
-    const grant = f.grant.getMockImplementation()!;
-    f.grant.mockImplementationOnce(async record => {
-      if (interruption === "disable during grant") {
-        authority.closeAdmission({ operationId: id(83), local: true }); cancel.abort(new Error("disabled during grant"));
-        return grant(record);
-      }
-      throw new Error("grant failed");
-    });
-    await expect(run(originalBinding, cancel.signal)).rejects.toThrow(interruption === "disable during grant" ? "disabled during grant" : "grant failed");
-    const originalIntent = f.current().intent!, originalExecution = f.executions.get(f.current())!;
-    const originalTicket = await f.process.readTicket(f.current());
-    expect(originalExecution.launchSubmission).toBe("not-submitted");
-    expect(originalTicket).toMatchObject({ lifecycleBinding: originalBinding, executionGeneration: "2", resumeNativeSessionId: id(9) });
-    if (interruption !== "disable during grant") authority.closeAdmission({ operationId: id(83), local: true });
-    const binding = activate("resume", "2");
-    const stale = openControllerWorkerLifecycle(f.home, originalTicket)!;
-    try { expect(() => stale.reserveLaunch()).toThrow(); } finally { stale.close(); }
-    if (interruption === "disable during reauthorization") {
-      const publish = launchTickets.writeLaunchTicket;
-      const publication = vi.spyOn(launchTickets, "writeLaunchTicket").mockImplementationOnce(async (...args) => {
-        const file = await publish(...args);
-        authority.closeAdmission({ operationId: id(85), local: true });
-        return file;
-      });
-      try { await expect(run(binding)).rejects.toThrow(); expect(publication).toHaveBeenCalledTimes(1); } finally { publication.mockRestore(); }
-      expect(f.current().intent).toEqual(originalIntent);
-      expect(f.executions.get(f.current())).toMatchObject({ launchId: originalTicket.launchId, launchSubmission: "not-submitted",
-        controllerProcess: null, snapshot: null, previous: originalExecution.previous, retainedLaunchIds: originalExecution.retainedLaunchIds });
-      expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
-      expect(f.grant).toHaveBeenCalledTimes(2); expect(f.launch).toHaveBeenCalledOnce();
-      expect(authority.listResources()).toEqual([]);
-      return;
-    }
-    f.launch.mockImplementationOnce(async options => {
-      const launchAuthority = openControllerWorkerLifecycle(f.home, options.ticket)!;
-      try { launchAuthority.reserveLaunch(); } finally { launchAuthority.close(); }
-      await options.onSubmitting();
-      const snapshot = { ...f.saved(), lifecycle: "ready" as const, nativeStopped: false, stoppedAt: null,
-        executionGeneration: options.ticket.executionGeneration, controllerInstanceId: options.ticket.controllerInstanceId };
-      await options.onObserved(snapshot); return snapshot;
-    });
-    await expect(run(binding)).resolves.toMatchObject({ nativeSessionId: id(9), lifecycle: "ready" });
-    const replacement = await f.process.readTicket(f.current());
-    expect(replacement).toEqual({ ...originalTicket, lifecycleBinding: binding, launchId: replacement.launchId,
-      ipcEndpoint: replacement.ipcEndpoint, ipcSecret: replacement.ipcSecret });
-    expect(replacement.launchId).not.toBe(originalTicket.launchId);
-    expect(f.current().intent).toEqual({ ...originalIntent, launchId: replacement.launchId, ticketPath: f.current().intent!.ticketPath });
-    expect(f.executions.get(f.current())).toMatchObject({ previous: originalExecution.previous, recoveryCount: originalExecution.recoveryCount,
-      retainedLaunchIds: [...originalExecution.retainedLaunchIds, originalTicket.launchId] });
-    expect(await readLaunchTicket(f.home, originalTicket.launchId)).toEqual(originalTicket);
-    expect(authority.getResource(replacement.launchId)?.identity).toMatchObject({ sessionId: originalIntent.sessionId, executionGeneration: "2", controllerInstanceId: originalIntent.controllerInstanceId });
-    const previous = originalExecution.previous!;
-    expect(f.grant).toHaveBeenLastCalledWith(f.current(), f.signal, { generation: previous.generation, instanceId: previous.instanceId,
-      recordId: previous.recordId, stoppedAt: previous.stoppedAt });
-    expect(f.register).toHaveBeenCalledOnce(); expect(f.launch).toHaveBeenCalledTimes(2);
-    // Submitted evidence cannot be repurposed even after lifecycle authority changes.
-    expect(() => f.executions.replaceUnsubmittedLaunch(f.current(), id(84), f.home)).toThrow("never-submitted");
-  } finally { authority.close(); }
 });
 
 test("an abnormal stopped writer consumes one recovery attempt and a healthy later shutdown does not reset it", async () => {

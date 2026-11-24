@@ -56,8 +56,11 @@ INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
+	latest := schemaMigrations[len(schemaMigrations)-1].version
 	var upgraded bool
-	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NULL AND (SELECT checksum=$1 FROM schema_migrations WHERE version=124) AND (SELECT max(version)=124 FROM schema_migrations)`, schemaMigrations[index].checksum()).Scan(&upgraded)
+	err = pool.QueryRow(ctx, `SELECT to_regclass('task_steps') IS NULL
+		AND (SELECT checksum=$1 FROM schema_migrations WHERE version=124)
+		AND (SELECT max(version)=$2 FROM schema_migrations)`, schemaMigrations[index].checksum(), latest).Scan(&upgraded)
 	if err != nil || !upgraded || snapshot() != before {
 		t.Fatalf("upgrade changed retained state or ledger: %t %v", upgraded, err)
 	}

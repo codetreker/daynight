@@ -230,13 +230,6 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
   };
 
   return {
-    lifecycleAdopted: (): boolean => read(() => db.prepare("SELECT 1 FROM lifecycle_adoption WHERE singleton=1").get() !== undefined),
-    adoptLifecycle: (identity: { serverOrigin: string; userId: string; workerId: string }): void => atomic(() => {
-      const expected = { server_origin: text(identity.serverOrigin, "Lifecycle origin"), user_id: id(identity.userId, "Lifecycle user"), worker_id: id(identity.workerId, "Lifecycle Worker") };
-      const previous = db.prepare("SELECT server_origin,user_id,worker_id FROM lifecycle_adoption WHERE singleton=1").get();
-      if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(expected)) throw new Error("Worker lifecycle adoption belongs to another identity.");
-      if (previous === undefined) db.prepare("INSERT INTO lifecycle_adoption VALUES (1,@server_origin,@user_id,@worker_id)").run(expected);
-    }),
     close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
     getClaimToolReservation,
     listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE agent_control_mode = 'web' ORDER BY project_id, task_id`).all() as ReservationRow[]).map(asReservationRow)),

@@ -187,37 +187,6 @@ describe("Bot dedicated storage", () => {
     expect(reopened.executions.get(next)?.previous?.launchId).toBe(intent.launchId);
   });
 
-  it("atomically replaces only a never-submitted recovery launch and retains that proof after reopening", () => {
-    const f = fixture(); f.store.observe(owner, definition(), 1);
-    f.store.prepare(owner, id(3), { homeDirectory: f.home, recoveryLimit: 3, toolLaunch: frozenToolLaunch() });
-    const initial = f.store.get(owner, id(3))!.intent!;
-    const record = f.store.observe(owner, { ...definition(), version: "2", sessionId: id(10), testExecutionId: initial.executionId }, 2);
-    expect(() => f.executions.replaceUnsubmittedLaunch(record, id(90), f.home)).toThrow("never-submitted");
-    expect(f.store.get(owner, id(3))).toEqual(record); expect(f.executions.get(record)).toBeNull();
-    f.executions.prepare(record);
-    f.executions.update(record, { launchSubmission: "acknowledged", controllerProcess: proof, snapshot: snapshot(record) });
-    const pending = f.executions.beginRecovery(record, stopped(record), f.home), evidence = f.executions.get(pending)!;
-    const paths = resolveBotPaths(f.stateDirectory, id(3)), db = new Database(paths.databaseFile);
-    try {
-      db.exec("CREATE TRIGGER reject_launch BEFORE UPDATE ON bot_executions BEGIN SELECT RAISE(ABORT, 'launch interruption'); END");
-      expect(() => f.executions.replaceUnsubmittedLaunch(pending, id(90), f.home)).toThrow("launch interruption");
-      expect(f.store.get(owner, id(3))).toEqual(pending); expect(f.executions.get(pending)).toEqual(evidence);
-      db.exec("DROP TRIGGER reject_launch");
-    } finally { db.close(); }
-    const next = f.executions.replaceUnsubmittedLaunch(pending, id(90), f.home);
-    expect(next.intent).toEqual({ ...pending.intent, launchId: id(90), ticketPath: path.join(path.dirname(pending.intent!.ticketPath), `${id(90)}.json`) });
-    expect(() => f.executions.replaceUnsubmittedLaunch(pending, id(91), f.home)).toThrow("current durable launch intent");
-    f.close();
-    const reopened = f.open();
-    expect(reopened.store.get(owner, id(3))).toEqual(next);
-    expect(reopened.executions.get(next)).toEqual({ ...evidence, launchId: id(90), retainedLaunchIds: [...evidence.retainedLaunchIds, pending.intent!.launchId] });
-    for (const launchSubmission of ["unknown", "acknowledged"] as const) {
-      const submitted = reopened.executions.update(next, { launchSubmission });
-      expect(() => reopened.executions.replaceUnsubmittedLaunch(next, id(91), f.home)).toThrow("never-submitted");
-      expect(reopened.store.get(owner, id(3))).toEqual(next); expect(reopened.executions.get(next)).toEqual(submitted);
-    }
-  });
-
   it("recovers an empty interrupted initialization without adopting unidentified records", () => {
     const f = fixture(), paths = resolveBotPaths(f.stateDirectory, id(3));
     mkdirSync(paths.directory, { recursive: true, mode: 0o700 });

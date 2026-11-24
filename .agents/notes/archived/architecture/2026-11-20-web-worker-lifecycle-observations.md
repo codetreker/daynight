@@ -45,8 +45,8 @@ previous stopped observation. Detail truncation remains independent of complete
 aggregate inventory evidence; synchronization and individual recovery eligibility
 remain independent of stopped and saved execution.
 
-The [lifecycle design](../../../../docs/design/worker-lifecycle.md) owns the
-consumer mechanism. The [server authority decision](2026-11-20-worker-lifecycle-authority.md)
+The [lifecycle design](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/docs/design/worker-lifecycle.md) owns the
+consumer mechanism. The [server authority decision](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-20-worker-lifecycle-authority.md)
 owns persistence and execution admission.
 
 ## Alternatives

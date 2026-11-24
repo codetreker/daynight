@@ -4,8 +4,6 @@ import { validateServerToken, validateTokenTransport } from "../../../config/ser
 import { assertSessionFence, parseSessionCommand, parseSessionOperation, type SessionCommand, type SessionOperation } from "../../../session/protocol.js";
 import type { BotSessionApi } from "./session-api.js";
 import { parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
-import { withLifecycleReservation } from "../lifecycle-context.js";
-import { classifyLifecycleSessionOperation } from "../lifecycle-request-recovery.js";
 
 export class AssistantTaskSessionError extends Error {
   constructor(readonly outcomeUnconfirmed: boolean, readonly code: string, readonly status?: number) {
@@ -115,7 +113,7 @@ export const createAssistantTaskSessionTransport = (options: {
         if (error instanceof AssistantTaskSessionError) throw error;
         throw new AssistantTaskSessionError(false, "preflight_failed");
       }
-      return withLifecycleReservation("assistant", { kind: "assistant_input", botId: record.botId, sessionId: command.sessionId, executionId: command.testExecutionId ?? null, executionGeneration: command.executionGeneration }, () => request(command, signal, true), command.operationId, classifyLifecycleSessionOperation);
+      return request(command, signal, true);
     },
     readOperation: (record: BotRecord, input: SessionCommand, signal: AbortSignal): Promise<SessionOperation> => request(checkCommand(record, input, false), signal, false),
   };

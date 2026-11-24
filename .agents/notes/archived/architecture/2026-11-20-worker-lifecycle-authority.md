@@ -31,8 +31,8 @@ resolution, so resolving activation cannot erase the accepted intent. Fresh,
 complete stopped and saved observations are required for explicit resume and
 activation; initial bootstrap and normal reconnect have separate eligibility.
 
-The [design](../../../../docs/design/worker-lifecycle.md) owns storage, lock order,
-protocol integration and validation. The [Worker scope admission decision](2026-11-20-worker-scope-admission.md)
+The [design](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/docs/design/worker-lifecycle.md) owns storage, lock order,
+protocol integration and validation. The [Worker scope admission decision](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-20-worker-scope-admission.md)
 retains credential-policy rationale.
 
 ## Alternatives
@@ -63,6 +63,6 @@ write contract. The schema enforces the selected lifecycle enums, positive
 versions, hash lengths and disabled/closed relationship as persisted invariants.
 
 Server admission is not native process proof. Full Worker capability still
-requires the [local lifecycle integration](2026-11-21-worker-local-lifecycle.md),
+requires the [local lifecycle integration](https://github.com/codetreker/daynight/blob/7462028385405818f0d45f2e58cdefbe8ff1f2cc/.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md),
 complete resource ownership and safe final Provider dispatch. Server activation does not establish that the local gate was
 opened, and platform acceptance remains separate from server protocol tests.

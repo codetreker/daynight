@@ -45,9 +45,6 @@ func ValidRequestID(value string) bool {
 }
 
 func ErrorKind(err error) string {
-	if fault, ok := err.(*model.Fault); ok && fault.Code == "lifecycle_unavailable" {
-		return fault.Code
-	}
 	// Monitoring failures classify the Redis operation explicitly while retaining
 	// its cause, including deadline or network errors, for diagnosis.
 	if fault, ok := KnownFault(err); ok && (fault.Code == "monitoring_unavailable" || fault.Code == "monitoring_write_outcome_unknown") {

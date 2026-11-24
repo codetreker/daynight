@@ -18,7 +18,7 @@ Controller journal 的唯一编号序列为 `001`–`018`，当前格式为 v18�
 
 `015-online-content.sql` 新建 `online_entries`、`online_totals`，并给 execution 增加默认 `legacy` 的策略列。升级不搬移或过滤已有条目。runtime 仅在首次创建 claim 绑定的 Task execution 时选择 `task_body`；重新打开和恢复沿用已持久策略，不根据新配置重解释旧数据。普通 Test 与 Bot execution 保持兼容策略，不能从二者共用的 `testExecutionId` 推断 Bot 策略。
 
-`016-worker-lifecycle.sql` 保存 Worker 生命周期绑定；`017-stopped-generations.sql` 保存原停止快照；`018-online-mode.sql` 给已有 execution 绑定 `legacy` 在线模式，并在 timeline 事务保存修订对应的 source 序号、传输表示是否保留位置和原生图片的原槽位。替代显示错误的帧不能证明原图片位置；在线条目退休时清除对应修订记录。旧条目没有这些证明时不凭当前内容推断。新 execution 在收到实际 welcome 后持久绑定模式并核对正文策略，再发送对应模式的帧；断线、恢复和换代保持原决定。旧服务未协商时沿旧协议，已绑定 relay 的执行不能静默降级。
+`017-stopped-generations.sql` 保存原停止快照；`018-online-mode.sql` 给已有 execution 绑定 `legacy` 在线模式，并在 timeline 事务保存修订对应的 source 序号、传输表示是否保留位置和原生图片的原槽位。替代显示错误的帧不能证明原图片位置；在线条目退休时清除对应修订记录。旧条目没有这些证明时不凭当前内容推断。新 execution 在收到实际 welcome 后持久绑定模式并核对正文策略，再发送对应模式的帧；断线、恢复和换代保持原决定。旧服务未协商时沿旧协议，已绑定 relay 的执行不能静默降级。 `019-codex-response-usage.sql` 固定 Codex 用量回合归属，`020-drop-worker-lifecycle.sql` 删除历史 v16 的管理绑定表，保留原执行与停证。
 
 ## 当前行与事务
 

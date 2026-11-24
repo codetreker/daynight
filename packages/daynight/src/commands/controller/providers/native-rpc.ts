@@ -8,7 +8,7 @@ export const string = (value: unknown): string => typeof value === "string" ? va
 export class NativeRpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); }
 }
-/** Positive evidence that the final admission gate ran before native dispatch. */
+/** Positive evidence that the Controller stopped before native dispatch. */
 export class NativeDispatchRejectedError extends Error {
   readonly errorClass = "native_dispatch_rejected";
 }

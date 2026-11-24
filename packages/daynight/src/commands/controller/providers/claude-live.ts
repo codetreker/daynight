@@ -3,7 +3,6 @@ import { fork, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inspectProcessProof, type ProcessProof } from "../process-proof.js";
-import { freezeNativeLifecycleFence } from "../native-lifecycle.js";
 import { ClaudeLiveChannel } from "./claude-live-channel.js";
 import type { ClaudeLiveExport, ClaudeLiveInput } from "./claude-live-media.js";
 import type { NativeImageFile, NativeInput, ProviderOptions } from "./types.js";
@@ -28,7 +27,6 @@ type Transfer = { spool: ReturnType<NonNullable<ProviderOptions["imageRuntime"]>
 
 /** The Controller never imports the SDK runtime or receives a native Base64 frame. */
 export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>; options: Options }, owner: ProviderOptions): ClaudeLiveQuery => {
-  const nativeLifecycleFence = owner.nativeLifecycleFence === undefined ? undefined : freezeNativeLifecycleFence(owner.nativeLifecycleFence);
   owner.assertNativeDispatch?.();
   const child = fork(fileURLToPath(new URL("./claude-live-worker.js", import.meta.url)), [], { cwd: owner.cwd, env: owner.env ?? process.env, execArgv: ["--max-old-space-size=512"], stdio: ["ignore", "ignore", "pipe", "ipc"], detached: false, windowsHide: true, serialization: "json" });
   let profile: ClaudeRuntimeProfile | null = null, closing: Promise<void> | null = null, nativeStopped: Promise<void> | null = null, failure: Error | null = null, stopping = false, ended = false, wake: (() => void) | null = null;
@@ -120,10 +118,10 @@ export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>
   child.stderr?.on("data", chunk => owner.onDiagnostic?.(String(chunk).slice(0, 4096)));
   const spawned = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("spawn", () => { try { owner.onSpawn(child); resolve(); } catch (error) { reject(error); } }); });
   const { hooks: _hooks, canUseTool: _tool, onElicitation: _elicitation, spawnClaudeCodeProcess: _spawn, stderr: _stderr, sessionStore: _store, ...clean } = request.options; void _hooks; void _tool; void _elicitation; void _spawn; void _stderr;
-  const opened = spawned.then(() => { owner.assertNativeDispatch?.(); return channel.call("open", { ...clean, ...(nativeLifecycleFence ? { nativeLifecycleFence } : {}), ...(_store ? { daynightSessionMirror: true } : {}) }, undefined, 20_000); }); void opened.catch(fail);
+  const opened = spawned.then(() => { owner.assertNativeDispatch?.(); return channel.call("open", { ...clean, ...(_store ? { daynightSessionMirror: true } : {}) }, undefined, 20_000); }); void opened.catch(fail);
   // The provider owns the 30 s initialization deadline. Keep the helper's
   // transport watchdog distinct so native startup retains one decision owner.
-  const call = async (method: string, args: unknown[] = []) => { await opened; owner.assertNativeDispatch?.(); return channel.call("call", { method, args }, undefined, method === "initializationResult" ? 45_000 : 30_000); };
+  const call = async (method: string, args: unknown[] = []) => { await opened; if (method !== "interrupt") owner.assertNativeDispatch?.(); return channel.call("call", { method, args }, undefined, method === "initializationResult" ? 45_000 : 30_000); };
   const stopNative = (): Promise<void> => nativeStopped ??= (async () => {
     stopping = true; ended = true; wake?.();
     for (const event of events.splice(0)) { if (event.value && typeof event.value === "object") recordMedia.delete(event.value); event.resolve(); }

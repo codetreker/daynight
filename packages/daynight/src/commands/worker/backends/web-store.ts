@@ -1,7 +1,5 @@
 import { parseStartupObservation, type StartupObservation, type SessionStartupReport } from "../../../session/startup.js";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
-import { controllerTicketPath } from "../../controller/launch-ticket.js";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
@@ -216,32 +214,6 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       if (previous.initialPrompt !== null && patch.initialPrompt !== undefined && patch.initialPrompt !== previous.initialPrompt) throw new Error("The original managed prompt cannot change.");
       if (previous.sessionId !== null && patch.sessionId !== undefined && patch.sessionId !== previous.sessionId) throw new Error("The registered session cannot change.");
       return { ...task, webExecution: parseWebExecution({ ...previous, ...patch }) };
-    }),
-    /** The caller holds execution ownership, proves no dispatch, and publishes the
-     * replacement ticket and tool sidecar before changing the durable pointer.
-     * Original tickets and the lifecycle resource history retain launch ownership.
-     */
-    replaceUnsubmittedWebLaunch: (original: LocalTask, launchId: string, homeDirectory: string, now: number): LocalTask => change(original, now, task => {
-      requireOrdinary(task);
-      const execution = task.webExecution;
-      if (!same(task, original)) throw new Error("The original Web execution changed during launch replacement.");
-      if (task.status !== "active" || task.configuration?.agentControlMode !== "web" || execution === null
-        || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0
-        || execution.restartAfterShutdown || execution.cleanupOperationId !== null || task.recovery.pauseReason !== null
-        || getOrchestrationBlocker(task) !== null) throw new Error("Web launch replacement requires proven never-submitted execution.");
-      const report = execution.startupReport;
-      // Missing journal evidence can be reported before configuration admission permits spawn.
-      if (report !== undefined && (report.recovery.state !== "none"
-        || report.startup.state !== "starting"
-          && !(report.startup.state === "unknown" && report.startup.reasonCode === "evidence_missing")
-          && !(report.startup.state === "failed" && report.startup.reasonCode === "controller_launch_failed"))) throw new Error("Web launch replacement cannot discard uncertain or submitted startup evidence.");
-      if (execution.executionGeneration === "1"
-        ? execution.initialInputState !== "not_submitted" || task.resources.nativeSession !== null
-        : task.resources.nativeSession === null) throw new Error("Web launch replacement requires the original initial or recovery identity.");
-      id(launchId, "Web launch ID");
-      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || launchId === execution.launchId
-        || execution.ticketPath !== null && execution.ticketPath !== controllerTicketPath(homeDirectory, execution.launchId)) throw new Error("Web launch replacement requires a new identity in its original private home.");
-      return { ...task, webExecution: { ...execution, launchId, ticketPath: controllerTicketPath(homeDirectory, launchId) } };
     }),
     beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number, toolLaunch?: ResolvedToolLaunch): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;

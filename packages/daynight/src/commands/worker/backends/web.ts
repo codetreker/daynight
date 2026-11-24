@@ -518,8 +518,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
             signal.throwIfAborted();
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed before retry authorization consumption.");
-            // Consume this authorization after stop proof and before preparing a
-            // ticket, which may need renewal under the current Worker lifecycle.
+            // Consume authorization only after proving the predecessor stopped.
             task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
             const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
             prepareControllerLaunchStorage(options.homeDirectory, retryTicket);

@@ -1,4 +1,3 @@
-import { assertProviderNativeDispatch } from "../native-lifecycle.js";
 import { codexUsageProviderVersion } from "./codex-usage.js";
 import { CodexUsageRollout } from "./codex-usage-rollout.js";
 import { CodexBotRecovery, CodexBotRecoveryError } from "./codex-bot-recovery.js";
@@ -64,7 +63,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const childEnvironment = { ...(options.env ?? process.env) };
   if (options.onNativeReadPolicy) childEnvironment.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const nativeHome = codexNativeHome(childEnvironment, options.cwd);
-  assertProviderNativeDispatch(options.assertNativeDispatch);
+  options.assertNativeDispatch?.();
   const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", nativeExited = false, nativeClosed = false, closed = false, closing = false, sending = false;
@@ -235,7 +234,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (recovery && transportFailed) throw new NativeRpcError(-32602, "Codex Bot recovery is unavailable; native dispatch is closed.");
       const dispatch = imageDispatch;
       if (["turn/start", "turn/steer"].includes(method) && dispatch && dispatch.operationId === record(params).clientUserMessageId) dispatch.verify();
-      if (["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) assertProviderNativeDispatch(options.assertNativeDispatch);
+      if (["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) options.assertNativeDispatch?.();
       return transport.request(method, params, onLateResponse, consume);
     };
     if (recovery && ["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
@@ -245,7 +244,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         await recovery.markDirty();
         if (protecting && !settingInFlight) throw new NativeRpcError(-32602, "Codex recovery checkpoint changed before dispatch.");
         if (method === "thread/settings/update" && recoveryPath) settingsAfter = (await stat(recoveryPath)).size;
-        assertProviderNativeDispatch(options.assertNativeDispatch);
+        options.assertNativeDispatch?.();
         return request();
       })();
     }
@@ -330,7 +329,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (resumePath !== undefined) Object.assign(startParams, { path: resumePath });
     if (recovery && !options.resumeNativeSessionId) Object.assign(startParams, { historyMode: "legacy" });
     await configObserver?.prepare(startParams);
-    assertProviderNativeDispatch(options.assertNativeDispatch);
+    options.assertNativeDispatch?.();
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", startParams));
     const thread = record(response.thread); nativeId = string(thread.id);
     recoveryPath = string(thread.path);
@@ -408,7 +407,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
             env: childEnvironment,
             readConfiguration: async () => { const [config, requirements] = await Promise.all([rpc.request("config/read", { cwd: options.cwd, includeLayers: false }), rpc.request("configRequirements/read", {})]); return { config, requirements }; },
             expected: { ...(options.model ? { model: options.validateNativeSelection ? string(response.model) : options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }, signal: initialSettingsAbort.signal,
-            update: () => { assertProviderNativeDispatch(options.assertNativeDispatch); return rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }); } });
+            update: () => { options.assertNativeDispatch?.(); return rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }); } });
         } finally { awaitingInitialSettings = false; }
       }
     }
@@ -450,7 +449,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
           dispatched = true;
         } };
       }
-      assertProviderNativeDispatch(options.assertNativeDispatch);
+      options.assertNativeDispatch?.();
       if (!images.length) dispatched = true;
       if (images.length && !expectedTurnId) startingImageTurns = observedStartTurns;
       const result = record(await rpc.request(expectedTurnId ? "turn/steer" : "turn/start", { threadId: nativeId, ...(expectedTurnId ? { expectedTurnId } : {}), clientUserMessageId: operationId, input, ...(!expectedTurnId && (controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort)) ? { effort: controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort) } : {}) }, images.length ? response => { if ("result" in response) observeReceipt(response.result); } : undefined));
@@ -491,15 +490,15 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (nativeExited || closed || transportFailed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);
-      if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); assertProviderNativeDispatch(options.assertNativeDispatch); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
+      if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); options.assertNativeDispatch?.(); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
       if (command.kind === "skill") return send(textNativeInput(args), operationId, null, { name: command.name, path: command.path });
       if (/\$(?!ARGUMENTS\b)(?:[A-Za-z_0-9{]|\$)/.test(command.body) || args.trim() && !command.body.includes("$ARGUMENTS")) throw new NativeRpcError(-32602, "This prompt supports only $ARGUMENTS placeholders.");
       return send(textNativeInput(command.body.replace(/\$ARGUMENTS\b/g, () => args)), operationId, null);
     },
-    async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); assertProviderNativeDispatch(options.assertNativeDispatch); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
+    async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
       const p = pending.get(interactionId); if (nativeExited || closed || transportFailed || !p || revision !== p.interaction.revision || p.settled) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(p.interaction, response);
-      assertProviderNativeDispatch(options.assertNativeDispatch);
+      options.assertNativeDispatch?.();
       const confirmed = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native interaction result is unknown.")), 30_000); p.settled = () => { clearTimeout(timer); resolve(); }; p.rejected = error => { clearTimeout(timer); reject(error); }; });
       rpc.respond(p.nativeId, p.result(response)); await confirmed; return { disposition: "handled" };
     }, waitForTurn: (turnId, deadline) => turns.wait(turnId, deadline), close,

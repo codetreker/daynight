@@ -39,8 +39,6 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import { controllerExecutionDirectory, writeLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { runController } from "../../../src/commands/controller/runtime.js";
-import { openLifecycleStore, type LifecycleBinding } from "../../../src/commands/worker/lifecycle-store.js";
-import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 
 const { fixture, cleanupSource } = createWebBackendFixtures("file");
@@ -56,19 +54,7 @@ it.skipIf(process.platform === "win32").each([false, true])("Worker delivers rec
   task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
   const source = await cleanupSource(f, task);
   vi.stubEnv("DN_CONFIG_DIR", path.join(f.home, "state"));
-  const workerDirectory = resolveWorkerPaths(f.home).workerDirectory;
-  await mkdir(workerDirectory, { recursive: true, mode: 0o700 });
-  const identity = { serverOrigin: source.ticket.serverOrigin, userId: source.ticket.userId!, workerId: source.ticket.workerId! };
-  const workerLifecycle = openLifecycleStore({ file: path.join(workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
-  try {
-  const lifecycleBinding: LifecycleBinding = { ...identity, instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" };
-  workerLifecycle.bindInstance({ ...lifecycleBinding, desired: "enabled" });
-  workerLifecycle.markStopped({ localEpoch: "1", inventoryRevision: workerLifecycle.readState().inventoryRevision });
-  const activation = { binding: lifecycleBinding, operationId: randomUUID(), action: "bootstrap" as const };
-  workerLifecycle.prepareActivation(activation);
-  workerLifecycle.commitActivation({ ...activation, receipt: { protocolVersion: 1, admission: "open", action: "bootstrap", workerId: identity.workerId,
-    operationId: activation.operationId, instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1" } });
-  const firstTicket = { ...source.ticket, schemaVersion: 2 as const, lifecycleBinding };
+  const firstTicket = source.ticket;
   await writeLaunchTicket(f.home, firstTicket);
   source.saved.mockRestore();
   vi.mocked(lifecycle.readCompatibleControllerSnapshot).mockRestore();
@@ -114,7 +100,6 @@ it.skipIf(process.platform === "win32").each([false, true])("Worker delivers rec
     const result = await backend.advanceResult(task, AbortSignal.timeout(10_000));
     expect(result.kind).toBe("observed");
     expect(native.send).toHaveBeenCalledOnce();
-    expect(workerLifecycle.getResource(ticket.initialOperationId)?.stage).toBe("confirmed");
     expect(native.send).toHaveBeenCalledWith({ content: [{ type: "text", text: ticket.initialPrompt }] }, ticket.initialOperationId, null);
     const operation = lifecycle.readControllerOperation(file, ticket.initialOperationId);
     expect(operation).toMatchObject({ operationId: ticket.initialOperationId, executionGeneration: "2", kind: "initial", payload: { text: ticket.initialPrompt }, state: "confirmed" });
@@ -130,5 +115,4 @@ it.skipIf(process.platform === "win32").each([false, true])("Worker delivers rec
     }
     await running;
   }
-  } finally { workerLifecycle.close(); }
 }, 35_000);

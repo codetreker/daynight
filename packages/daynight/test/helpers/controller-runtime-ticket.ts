@@ -1,6 +1,5 @@
 import type { ControllerLaunchTicket } from "../../src/commands/controller/launch-ticket.js";
 
-/** Complete legacy tickets exercise runtime behavior without a Worker lifecycle database. */
 export const controllerRuntimeTicket = (provider: "codex" | "claude" | "copilot" = "codex", overrides: Record<string, unknown> = {}): ControllerLaunchTicket => {
   const test = overrides.testExecutionId !== undefined;
   return {

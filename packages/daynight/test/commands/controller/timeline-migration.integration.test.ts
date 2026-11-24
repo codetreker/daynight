@@ -74,7 +74,7 @@ test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical
   expect(f.migrate()).toMatchObject({ fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
   expect(inspectSqlite(f.db, controllerJournalFormat)).toEqual({ kind: "current", version: currentSqliteVersion(controllerJournalFormat) });
   expect(f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get()).toEqual(before);
-  expect(f.db.prepare("SELECT * FROM worker_lifecycle_bindings").all()).toEqual([]);
+  expect(f.db.prepare("SELECT name FROM sqlite_schema WHERE name = 'worker_lifecycle_bindings'").get()).toBeUndefined();
   expect(f.db.prepare("SELECT legacy_timeline_cleanup_pending FROM execution").get()).toEqual({ legacy_timeline_cleanup_pending: 1 });
   expect(f.db.prepare("SELECT value FROM operations").get()).toEqual({ value: '{ "state": "unknown", "initial": true }' });
   expect(f.db.prepare("SELECT value FROM outbox").get()).toEqual({ value: '{ "unacknowledged": true }' });
@@ -110,9 +110,9 @@ test.each([5, 7, 9].flatMap(version => ["text", "list"].map(kind => ({ version, 
 });
 
 test("canonical discovery includes the current schema and preserves shipped DDL", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(19);
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(20);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
   const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
   expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");

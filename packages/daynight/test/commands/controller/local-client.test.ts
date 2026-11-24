@@ -86,12 +86,21 @@ test("observe identifies recovered initial input separately from the legacy Work
   await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });
 
-test("version two tickets require the persistent lifecycle capability on every successful IPC result", async () => {
-  const base = { ...ticket(), schemaVersion: 2 as const }; let capability: unknown;
-  const t = await listen(base, req => ({ requestId: req.requestId, ok: true, snapshot: snapshot(base), ...(capability === undefined ? {} : { workerLifecycleProtocol: capability }) }));
-  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
-  capability = 2;
-  await expect(requestController(t, { kind: "stop", deadline: Date.now() + 1000 })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
-  capability = 1;
-  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBe(1);
+test("original v2 stop uses the launch secret and process identity", async () => {
+  const current = ticket();
+  const base: ControllerLaunchTicket = { ...current, schemaVersion: 2, lifecycleBinding: {
+    instanceId: randomUUID(), instanceEpoch: "1", intentVersion: "1", localEpoch: "1", scopeGeneration: "1",
+    serverOrigin: current.serverOrigin, userId: current.userId!, workerId: current.workerId!,
+  } };
+  let received: ControllerLocalRequest | undefined;
+  let responseSnapshot = snapshot(base);
+  const t = await listen(base, req => {
+    received = req;
+    return { requestId: req.requestId, ok: true, snapshot: responseSnapshot };
+  });
+  const stop = { kind: "stop", deadline: Date.now() + 10_000 } as const;
+  expect((await requestController(t, stop)).snapshot).toEqual(responseSnapshot);
+  expect(received).toMatchObject({ secret: base.ipcSecret, controllerInstanceId: base.controllerInstanceId, action: stop });
+  responseSnapshot = { ...responseSnapshot, controllerInstanceId: randomUUID() };
+  await expect(requestController(t, stop)).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });

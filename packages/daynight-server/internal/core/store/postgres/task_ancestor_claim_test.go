@@ -53,7 +53,6 @@ func TestWorkerClaimStartsDirectGoalAtomicallyBeforeWorkerLock(t *testing.T) {
 			mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'goal','Owner','todo')`, goal, project.ID)
 			mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,parent_id,type,title,status,assigned_to,allow_agents) VALUES($1,$2,$3,'task','Child','todo',$4,true)`, child, project.ID, goal, principal.UserID)
 			testutil.PutWorkerSnapshot(t, db, testutil.WorkerSnapshotFixture(principal.UserID, workerID, time.Now().UTC()))
-			mustQueryExec(t, db, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at) VALUES($1,$2,1,1,'enabled','open',0,now())`, principal.UserID, workerID)
 			beforeGoal, beforeChild := snapshotTask(t, db, project.ID, goal), snapshotTask(t, db, project.ID, child)
 			if failGoal {
 				mustQueryExec(t, db, `CREATE FUNCTION refuse_goal_start() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.type='goal' AND NEW.status='in_progress' THEN RAISE EXCEPTION 'injected Goal failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER refuse_goal_start BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_goal_start()`)
@@ -122,7 +121,6 @@ func TestWorkerClaimTraversesOrdinaryParentsAndRetainsExistingClaim(t *testing.T
 	}
 	workerID := uuid.NewString()
 	testutil.PutWorkerSnapshot(t, db, testutil.WorkerSnapshotFixture(principal.UserID, workerID, time.Now().UTC()))
-	mustQueryExec(t, db, `INSERT INTO worker_lifecycle(user_id,worker_id,protocol_version,intent_version,desired,admission,instance_epoch,updated_at) VALUES($1,$2,1,1,'enabled','open',0,now())`, principal.UserID, workerID)
 	tasks := taskservice.NewTasks(db)
 	allowed, ready := true, true
 	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AutomaticCandidate: true, CandidateWorkerID: &workerID, Ready: &ready, AllowAgents: &allowed, AssignedTo: &principal.UserID}

@@ -1158,17 +1158,6 @@ func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
 	return mock.BotBarrierDAOFn()
 }
 
-func (m taskHTTPClaimAdmission) CheckWorkerExecution(_ context.Context, user, worker string) error {
-	if user == "" || worker == "" {
-		panic("missing HTTP claim Worker identity")
-	}
-	return nil
-}
-
-func (m taskHTTPClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
-	return nil, m.CheckWorkerExecution(ctx, user, worker)
-}
-
 func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
 	return mock.Task(ctx, id)
 }

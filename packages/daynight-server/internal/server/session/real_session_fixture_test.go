@@ -258,7 +258,7 @@ func (s *realSessionStore) WriteSession(ctx context.Context, fn func(store.Sessi
 
 type realSessionScope struct {
 	t   *testing.T
-	dao *realSessionDAO
+	dao store.SessionDAO
 }
 
 func (s realSessionScope) SessionDAO() store.SessionDAO { return s.dao }
@@ -788,20 +788,4 @@ func (f *realSessionFixture) selectOffers(t *testing.T, ids ...string) {
 	}
 	f.acceptedPlans = append(f.acceptedPlans, append([]string(nil), ids...))
 	f.queryRevision++
-}
-
-func (s realSessionScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return s.dao }
-
-func (d *realSessionDAO) CheckWorkerExecution(ctx context.Context, user, worker string) error {
-	_, err := d.WorkerExecutionVersion(ctx, user, worker)
-	return err
-}
-func (d *realSessionDAO) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
-	d.called(ctx, "WorkerExecutionVersion")
-	if user != d.f.handler.principal.UserID || worker != d.f.registration.WorkerID || d.calls["LockSession"] != 1 || d.calls["LockCredential"] < 1 {
-		d.fail("Worker admission changed the declared owner, Worker or Session lock order")
-	}
-	// This fixture's declared Worker has no lifecycle history. Other identities
-	// fail above; production admission still requires its transaction capability.
-	return nil, nil
 }

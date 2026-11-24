@@ -2087,12 +2087,47 @@ describe("worker task tag filter admission", () => {
     const runner = createWorkerCoordinator(current);
     await runner.tick();
     expect(f.store.listTasks()).toEqual([]);
+    const native = { agent: configuration.agent, model: configuration.model, args: configuration.args };
+    const [reservation] = f.store.listClaimToolReservations();
+    expect(reservation).toMatchObject({ claimId: claimedId, taskId: f.candidates[0]!.id, nativeConfiguration: native });
     expect(stale).not.toHaveBeenCalled();
     runner.updateConfiguration({ ...current, taskTagFilterKey: null });
     await runner.tick();
     expect(f.remote.ownInventory).toHaveBeenCalledTimes(2);
     expect(f.store.listTasks()).toEqual([expect.objectContaining({ claimId: claimedId, taskId: f.candidates[0]!.id })]);
+    expect(f.store.getNativeConfiguration(reservation!)).toMatchObject(native);
+    expect(f.store.listClaimToolReservations()).toEqual([]);
     expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+
+  it("uses the exact grant when two inherited attempts targeted the same task version", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const task = f.candidates[0]!;
+    const first = { projectId: task.projectId, taskId: task.id, claimId: uuid(9911), worktreeId: uuid(9912), workerId,
+      version: task.version, agentControlMode: "web" as const, nativeConfiguration: { agent: "codex" as const, model: "first", args: [] } };
+    const second = { ...first, claimId: uuid(9913), worktreeId: uuid(9914), nativeConfiguration: { ...first.nativeConfiguration, model: "second" } };
+    f.store.reserveClaimTools(first);
+    f.grant(task, { claimId: second.claimId, worktreeId: second.worktreeId, workerId, machine: f.options.machine,
+      platform: "linux", agent: "codex", agentControlMode: "web" });
+    const runner = createWorkerCoordinator({ ...f.options, taskTagFilterKey: null,
+      retainedClaimRequests: new Map([[`${task.projectId}/${task.id}/${second.claimId}`, second]]) });
+    await runner.tick();
+    expect(f.store.getTask(first)).toBeNull();
+    expect(f.store.getNativeConfiguration(second)).toEqual(second.nativeConfiguration);
+    expect(f.store.listClaimToolReservations()).toEqual([]);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  });
+
+  it("releases a reservation after the API proves the claim was never dispatched", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    vi.mocked(f.remote.claim).mockRejectedValueOnce(new ApiError({ operation: "worker.claim" }, "request",
+      { cause: new Error("Cancelled before dispatch"), outcomeUnconfirmed: false }));
+    const runner = createWorkerCoordinator(f.options);
+    await runner.tick();
+    expect(f.store.listClaimToolReservations()).toEqual([]);
+    await runner.tick();
+    expect(f.remote.claim).toHaveBeenCalledTimes(2);
+    expect(f.store.listTasks()).toHaveLength(1);
   });
 
   it("continues an existing claim while new claims are suspended", async () => {

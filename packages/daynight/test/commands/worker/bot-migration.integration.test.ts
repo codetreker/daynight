@@ -12,6 +12,7 @@ import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js"
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { currentSqliteVersion, inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
 import { cleanupMigrationResources, cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
@@ -36,8 +37,8 @@ afterEach(async () => {
   }
 });
 
-const previousJournalFixture = async (version: 16 | 17 | 18 = 16, resources?: (() => void)[]) => {
-  const fixture = await migrationFixture({}, resources);
+const previousJournalFixture = async (version: 16 | 17 | 18 | 19 = 16, resources?: (() => void)[]) => {
+  const fixture = await migrationFixture(version === 19 ? { originalTicketVersion: 2 } : {}, resources);
   const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
   restoreControllerJournalVersion(journal, version);
   expect(inspectSqlite(journal, controllerJournalFormat)).toEqual({ kind: "outdated", version });
@@ -46,11 +47,13 @@ const previousJournalFixture = async (version: 16 | 17 | 18 = 16, resources?: ((
 };
 
 describe("legacy Bot storage migration", () => {
-  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", version => trackMigrationCase(async (signal, resources) => {
+  it.each([16, 17, 18, 19] as const)("preserves checksummed v%i history and recovery copies with the current reader", version => trackMigrationCase(async (signal, resources) => {
     const f = await previousJournalFixture(version, resources), original = readFileSync(f.record.intent!.journalPath);
     signal.throwIfAborted();
     expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
+    const originalTicket = readFileSync(f.record.intent!.ticketPath);
     const manifest = await migrateLegacyBot({ ...f.input, signal }), paths = resolveBotPaths(f.stateDirectory, f.botId);
+    expect(readFileSync(path.join(paths.directory, manifest.ticket!))).toEqual(originalTicket);
     expect(readFileSync(f.record.intent!.journalPath)).toEqual(original);
     const copies = new Map(manifest.files.map(file => {
       const destination = path.join(paths.directory, file.destination);
@@ -86,6 +89,18 @@ describe("legacy Bot storage migration", () => {
     expect(() => readMigratedBotHistory(f.input)).toThrow();
     expect(() => readMigratedBotRecoveryBinding(f.input)).toThrow();
     expect(readFileSync(journal)).toEqual(bytes);
+  });
+
+  it("verifies a committed Bot migration against its retained Worker v20 authority", async () => {
+    const f = await migrationFixture();
+    const manifest = await migrateLegacyBot(f.input);
+    const source = f.openRaw(f.legacyDatabaseFile, false);
+    const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+    source.exec(steps.find(step => step.version === 20)!.sql);
+    source.pragma("user_version=20");
+    expect(await migrateLegacyBot(f.input)).toEqual(manifest);
+    expect(source.pragma("user_version", { simple: true })).toBe(20);
+    source.close();
   });
 
   it("reads the native recovery binding from the verified copy after original Controller files disappear", async () => {

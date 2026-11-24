@@ -412,10 +412,6 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `DROP TABLE worker_lifecycle_observations, worker_lifecycle_operations, worker_lifecycle;
-			ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_version`); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := tx.Exec(f.context, `DROP INDEX webhook_endpoints_live_client_key_idx; ALTER TABLE webhook_endpoints DROP COLUMN client_key`); err != nil {
 			t.Fatal(err)
 		}
@@ -449,7 +445,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 46 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 47 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

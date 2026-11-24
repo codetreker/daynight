@@ -1,10 +1,8 @@
-import { NativeDispatchRejectedError } from "./native-rpc.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { CopilotClient, CopilotSession, SessionConfig } from "@github/copilot-sdk";
-import { freezeNativeLifecycleFence, type NativeLifecycleFence } from "../native-lifecycle.js";
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import type { CopilotBridgeImageInput, CopilotBridgeExport } from "./copilot-bridge-media.js";
 import { parseCopilotRouteObservation, type CopilotRouteObservation } from "./copilot-route-observation.js";
@@ -33,7 +31,6 @@ export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotB
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 const remoteError = (raw: unknown): Error => {
   const error = object(raw), message = typeof error.message === "string" ? error.message : "Copilot bridge operation failed; outcome is unknown.";
-  if (error.kind === "not_dispatched") return new NativeDispatchRejectedError(message);
   return error.kind === "response" && typeof error.code === "number" ? new ResponseError(error.code, message) : new Error(message);
 };
 type Transfer = { spool: CopilotBridgeSpool; length: number; offset: number; mime: string; hash: ReturnType<typeof createHash>; marker?: CopilotBridgeImage; claimed: boolean };
@@ -44,9 +41,7 @@ export const startCopilotBridge = (options: {
   cwd: string; env: NodeJS.ProcessEnv; port: number; token: string;
   onSpawn(child: ChildProcess): void; onLost(error: Error): void; onDiagnostic?(line: string): void;
   media?: CopilotBridgeMediaOptions;
-  nativeLifecycleFence?: NativeLifecycleFence;
 }) => {
-  const nativeLifecycleFence = options.nativeLifecycleFence === undefined ? undefined : freezeNativeLifecycleFence(options.nativeLifecycleFence);
   const child = spawn(process.execPath, ["--max-old-space-size=512", fileURLToPath(new URL("./copilot-bridge-worker.js", import.meta.url))], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   let closing = false, failed = false, closed = false, peakRss = 0, peakHeap = 0, peakExternal = 0, peakArrayBuffers = 0, samples = 0;
   const waiters = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
@@ -229,7 +224,7 @@ export const startCopilotBridge = (options: {
     if (name === "resumeSession") return (id: string, config: SessionConfig) => open("resumeSession", id, config);
     return (...args: unknown[]) => request("call", ["client", [name], args]);
   } }) as CopilotClient;
-  const ready = spawned.then(async () => { await request("initialize", [options.port, options.token, ...(nativeLifecycleFence ? [nativeLifecycleFence] : [])]); return client; });
+  const ready = spawned.then(async () => { await request("initialize", [options.port, options.token]); return client; });
   const bounded = async (operation: Promise<unknown>, ms: number) => {
     let timer: NodeJS.Timeout | undefined;
     try { await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Copilot bridge stop is unconfirmed.")), ms); })]); }

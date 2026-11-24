@@ -1,15 +1,15 @@
-import { lstat, unlink } from "node:fs/promises";
+import { lstat, readFile, unlink } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { Operation } from "../../../api/operation.js";
-import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { readCurrentControllerInventorySnapshot, readHistoricalWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { replaceFileAtomically } from "../../../platform/files.js";
+import { controllerPayloadHash, controllerTicketPath, readLaunchTicket } from "../../controller/launch-ticket.js";
+import { readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, recordStoppedControllerGeneration, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../controller/paths.js";
 import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectBootstrapProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import type { CleanupTarget } from "../execution-stop.js";
-import type { LifecycleIdentity, LifecycleJson, LifecycleStore } from "../lifecycle-store.js";
 import type { ResourceOwner } from "../types.js";
-import { hasLifecycleUnreleasedControllerGateProof, readLifecycleControllerTicket } from "../lifecycle-controller-ticket.js";
+import { hasLegacyUnreleasedControllerGateProof, isDurableLegacyResource, readLegacyWorkerResources, type LegacyWorkerIdentity } from "./legacy-retired-evidence.js";
 import type { ControllerJobLeases } from "./controller-job-leases.js";
 import { preservesControllerProcessProof } from "./orchestration.js";
 import { locateRetiredClaimControllers, type LocatedClaimController, type LocatedClaimNative } from "./retired-claim-tickets.js";
@@ -29,7 +29,7 @@ const confirmDurableBoundaryProcesses = async (proofs: readonly ProcessProof[], 
     if (state === "running" || state === "exiting") throw new Error("Original native process conflicts with its durable boundary stop receipt.");
   }
 };
-const processProof = (value: LifecycleJson): ProcessProof => {
+const processProof = (value: unknown): ProcessProof => {
   const proof = value as unknown as ProcessProof;
   if (proof === null || typeof proof !== "object" || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || proof.pid > 2_147_483_647
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 0 || !(proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0)
@@ -38,9 +38,19 @@ const processProof = (value: LifecycleJson): ProcessProof => {
     throw new Error("Original lifecycle Controller process proof is invalid.");
   return proof;
 };
+const ordinaryFileExists = async (file: string): Promise<boolean> => {
+  try {
+    if (!(await lstat(file)).isFile()) throw new Error(`Original Controller evidence must be an ordinary file: ${file}`);
+    return true;
+  } catch (error) { if (missing(error)) return false; throw error; }
+};
 const currentSnapshot = async (located: LocatedClaimController, controllers: readonly LocatedClaimController[], deadline: number): Promise<ControllerSnapshot | null> => {
-  try { const stat = await lstat(located.journalFile); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Original Controller journal must be an ordinary file."); }
-  catch (error) { if (missing(error)) return null; throw error; }
+  const files = [located.journalFile, `${located.journalFile}-wal`, `${located.journalFile}-journal`, `${located.journalFile}-shm`];
+  const present = await Promise.all(files.map(ordinaryFileExists));
+  if (!present[0]) {
+    if (present.slice(1).some(Boolean)) throw new Error("Original Controller journal sidecar has no journal.");
+    return null;
+  }
   const current = readCurrentControllerInventorySnapshot(located.journalFile, controllers.filter(controller => controller.journalFile === located.journalFile).map(controller => controller.ticket), deadline);
   if (current === null) return null;
   const { snapshot } = current;
@@ -53,96 +63,138 @@ const currentSnapshot = async (located: LocatedClaimController, controllers: rea
 };
 
 export const createRetiredClaimNativeCleanup = (options: {
-  homeDirectory: string; identity: LifecycleIdentity; jobLeases: ControllerJobLeases; storageStateDirectory?: string;
-  lifecycle?: Pick<LifecycleStore, "listResources" | "recordResource">;
+  homeDirectory: string; identity: LegacyWorkerIdentity; jobLeases: ControllerJobLeases; storageStateDirectory?: string;
 }) => {
-  const removeEndpoint = async (located: LocatedClaimController): Promise<void> => {
+  const validateEndpoint = (located: LocatedClaimController): void => {
     const ticket = located.ticket, root = located.storageStateDirectory;
     const endpoints = [resolveControllerIpcEndpoint(options.homeDirectory, ticket.launchId, process.platform, root)];
     if (root === resolveControllerStateDirectory(options.homeDirectory)) endpoints.push(resolveControllerIpcEndpoint(options.homeDirectory, ticket.launchId));
     if (!endpoints.includes(ticket.ipcEndpoint)) throw new Error("Original Controller endpoint conflicts with its storage root.");
+  };
+  const removeEndpoint = async (endpoint: string): Promise<void> => {
     if (process.platform === "win32") return;
-    try { await unlink(ticket.ipcEndpoint); } catch (error) { if (!missing(error)) throw error; }
-    try { await lstat(ticket.ipcEndpoint); } catch (error) { if (missing(error)) return; throw error; }
+    try { await unlink(endpoint); } catch (error) { if (!missing(error)) throw error; }
+    try { await lstat(endpoint); } catch (error) { if (missing(error)) return; throw error; }
     throw new Error("Original Controller endpoint remains after retired claim cleanup.");
   };
-  const recordBoundary = (located: LocatedClaimController, proof: ProcessProof | null, native: readonly ProcessProof[]): void => {
-    if (options.lifecycle === undefined) return;
-    const ticket = located.ticket;
-    const stopProof = JSON.parse(JSON.stringify({ kind: "retired_claim_controller_boundary", launchId: ticket.launchId, executionId: ticket.executionId,
+  const boundaryReceipt = (located: LocatedClaimController, controllerProcess: ProcessProof, nativeProcesses: readonly ProcessProof[]) => {
+    const { ticket } = located;
+    return { kind: "retired_claim_controller_boundary", launchId: ticket.launchId, executionId: ticket.executionId,
       executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, ticketHash: controllerPayloadHash(ticket),
-      controllerProcess: proof, nativeProcesses: native, boundaryEmpty: true, windowsJobStopped: process.platform === "win32" && proof !== null })) as LifecycleJson;
-    located.resources = located.resources.map(resource => ["stopped", "not_dispatched", "confirmed"].includes(resource.stage) && resource.saveState === "durable"
-      ? resource : options.lifecycle!.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof, saveState: "durable", error: null }));
+      controllerProcess, nativeProcesses, boundaryEmpty: true, windowsJobStopped: true };
   };
-  const durableBoundary = (located: LocatedClaimController, proof: ProcessProof): boolean => located.resources.some(resource => {
-    const saved = resource.stopProof;
-    return resource.stage === "stopped" && resource.saveState === "durable" && saved !== null && typeof saved === "object" && !Array.isArray(saved)
-      && saved.kind === "retired_claim_controller_boundary" && saved.launchId === located.ticket.launchId && saved.executionId === located.ticket.executionId
-      && saved.executionGeneration === located.ticket.executionGeneration && saved.controllerInstanceId === located.ticket.controllerInstanceId
-      && saved.ticketHash === controllerPayloadHash(located.ticket) && saved.boundaryEmpty === true && saved.windowsJobStopped === true
-      && isDeepStrictEqual(saved.controllerProcess, proof);
-  });
+  const receiptProcesses = (located: LocatedClaimController, proof: ProcessProof, value: unknown): ProcessProof[] | null => {
+    if (value === null || typeof value !== "object" || !("nativeProcesses" in value) || !Array.isArray(value.nativeProcesses)) return null;
+    const native = value.nativeProcesses.map(processProof);
+    return isDeepStrictEqual(value, boundaryReceipt(located, proof, native)) ? native : null;
+  };
+  const readDetachedReceipt = async (file: string): Promise<unknown> => {
+    try {
+      const info = await lstat(file);
+      if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error("Retired Controller stop receipt is invalid.");
+      return JSON.parse(await readFile(file, "utf8")) as unknown;
+    } catch (error) { if (missing(error)) return undefined; throw error; }
+  };
   const stopController = async (located: LocatedClaimController, controllers: readonly LocatedClaimController[], request: { deadline: number; signal: AbortSignal }): Promise<boolean> => {
     const check = () => { request.signal.throwIfAborted(); if (Date.now() >= request.deadline) throw new Error("Retired claim native cleanup exceeded its deadline."); };
     check();
-    await options.jobLeases.cleanupBirth(located.ticket.launchId, request.deadline);
+    const ticket = await readLaunchTicket(options.homeDirectory, located.ticket.launchId, located.storageStateDirectory);
+    if (controllerPayloadHash(ticket) !== controllerPayloadHash(located.ticket)) throw new Error("Original Controller launch ticket changed during cleanup.");
+    validateEndpoint(located);
+    await options.jobLeases.cleanupBirth(ticket.launchId, request.deadline);
     check();
-    if (options.lifecycle !== undefined && located.resources.length > 0) {
-      const current = new Map(options.lifecycle.listResources().map(resource => [resource.resourceId, resource]));
-      for (let index = 0; index < located.resources.length; index++) {
-        const resource = current.get(located.resources[index]!.resourceId);
-        if (resource === undefined) throw new Error("Original Controller lifecycle resource disappeared during cleanup.");
-        const ticket = await readLifecycleControllerTicket(options.homeDirectory, options.identity, resource);
-        if (controllerPayloadHash(ticket) !== controllerPayloadHash(located.ticket)) throw new Error("Original Controller lifecycle ticket changed during cleanup.");
-        located.resources[index] = resource;
-      }
-    }
+    const ticketFile = controllerTicketPath(options.homeDirectory, ticket.launchId, located.storageStateDirectory);
+    const submissionMarker = `${ticketFile}.submitted`;
+    const submitted = await ordinaryFileExists(submissionMarker);
     const snapshot = await currentSnapshot(located, controllers, request.deadline);
-    const historical = process.platform === "win32" && snapshot === null ? readHistoricalWindowsStoppedControllerGeneration(located.journalFile, located.ticket, request.deadline) : null;
-    const launches = located.resources.filter(resource => resource.identity.kind === "launch" && resource.processProof !== null).map(resource => processProof(resource.processProof));
-    const proof = snapshot?.controllerProcess ?? historical?.controllerProcess ?? launches[0] ?? null;
-    if (launches.some(launch => !preservesControllerProcessProof(launch, proof, located.ticket.launchId))) throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
+    const historical = snapshot === null ? readHistoricalStoppedControllerGeneration(located.journalFile, ticket, request.deadline) : null;
+    const launches = located.resources.flatMap(resource => {
+      if (resource.identity.kind !== "launch" || resource.processProof === null) return [];
+      const launch = processProof(resource.processProof);
+      if (submitted && hasLegacyUnreleasedControllerGateProof(ticket, resource, launch)) return [];
+      return [launch];
+    });
+    const journalProof = snapshot?.controllerProcess ?? historical?.controllerProcess ?? null;
+    const proof = journalProof ?? (submitted ? null : launches[0] ?? null);
+    if (proof !== null && launches.some(launch => !preservesControllerProcessProof(launch, proof, ticket.launchId)))
+      throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
     const native = [...(snapshot?.nativeProcesses ?? historical?.nativeProcesses ?? [])];
-    for (const resource of located.resources) {
-      if (resource.identity.kind !== "provider" || resource.processProof === null) continue;
-      const provider = processProof(resource.processProof);
+    const addNative = (provider: ProcessProof): void => {
       if (!native.some(existing => isDeepStrictEqual(existing, provider))) native.push(provider);
+    };
+    for (const resource of located.resources) {
+      if (resource.identity.kind === "provider" && resource.processProof !== null) addNative(processProof(resource.processProof));
     }
     if (proof !== null) {
       if (process.platform === "win32" && proof.jobObjectName !== `Local\\Daynight-${located.ticket.launchId}`) throw new Error("Original Controller Windows Job conflicts with its launch identity.");
-      let lease = await options.jobLeases.get(located.ticket.launchId);
+      const receiptFile = `${ticketFile}.retired-stop`;
+      let lease = await options.jobLeases.get(ticket.launchId);
+      let durableBoundary = false;
+      if (!submitted && options.jobLeases.enabled && lease === undefined) {
+        const detached = await readDetachedReceipt(receiptFile);
+        if (detached !== undefined) {
+          const processes = receiptProcesses(located, proof, detached);
+          if (processes === null) throw new Error("Retired Controller stop receipt conflicts with its original boundary.");
+          processes.forEach(addNative);
+          durableBoundary = true;
+        }
+        for (const resource of located.resources) {
+          if (resource.stage !== "stopped" || !isDurableLegacyResource(resource) || resource.stopProof === null
+            || typeof resource.stopProof !== "object" || Array.isArray(resource.stopProof)
+            || resource.stopProof.kind !== "retired_claim_controller_boundary") continue;
+          const processes = receiptProcesses(located, proof, resource.stopProof);
+          if (processes === null) continue;
+          processes.forEach(addNative);
+          durableBoundary = true;
+        }
+      }
       if (lease === undefined && historical !== null) {
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
-      } else if (lease === undefined && snapshot === null && native.length === 0 && located.resources.some(resource => hasLifecycleUnreleasedControllerGateProof(located.ticket, resource, proof))) {
+      } else if (!submitted && lease === undefined && snapshot === null && native.length === 0 && located.resources.some(resource => hasLegacyUnreleasedControllerGateProof(located.ticket, resource, proof))) {
         await confirmDurableBoundaryProcesses([proof], request.deadline);
       } else if (options.jobLeases.enabled && lease === undefined && snapshot?.lifecycle === "stopped" && snapshot.nativeStopped) {
         validateWindowsControllerStopProof(snapshot, located.ticket, controllerPayloadHash(located.ticket));
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
         await recordStoppedControllerGeneration(located.journalFile, located.ticket, { deadline: request.deadline, signal: request.signal });
-      } else if (options.jobLeases.enabled && lease === undefined && durableBoundary(located, proof)) {
+      } else if (lease === undefined && durableBoundary) {
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
       } else {
         if (options.jobLeases.enabled && lease === undefined) lease = await options.jobLeases.retain(located.ticket.launchId, proof, request.deadline);
         await stopControllerProcesses(proof, native, request.deadline, lease);
         check();
         if (!await confirmControllerProcessesStopped(proof, native, request.deadline, lease)) throw new Error("Original retired claim Controller boundary remains running.");
-        if (snapshot !== null && snapshot.controllerProcess !== null) await recordStoppedControllerGeneration(located.journalFile, located.ticket, { deadline: request.deadline, signal: request.signal, ...(lease === undefined ? {} : { jobLease: lease }) });
+        if (snapshot !== null && snapshot.controllerProcess !== null) {
+          await recordStoppedControllerGeneration(located.journalFile, ticket, { deadline: request.deadline, signal: request.signal, ...(lease === undefined ? {} : { jobLease: lease }) });
+        } else if (lease !== undefined && historical === null) {
+          // A legacy launch can have an original native boundary without owning
+          // the current journal. Persist its stop before releasing the Job.
+          await replaceFileAtomically(receiptFile, JSON.stringify(boundaryReceipt(located, proof, native)), 0o600);
+        }
       }
-    } else if (native.length > 0 || await options.jobLeases.get(located.ticket.launchId) !== undefined
-      || located.resources.some(resource => !["stopped", "not_dispatched", "confirmed"].includes(resource.stage) || resource.saveState !== "durable")) {
-      throw new Error("Original retired claim native resources have no Controller boundary proof.");
+    } else {
+      const neverSubmitted = !submitted && snapshot === null && located.resources.some(resource => resource.identity.kind === "launch" && isDurableLegacyResource(resource)
+        && (resource.stage === "not_dispatched" || hasLegacyUnreleasedControllerGateProof(ticket, resource, null)));
+      if (!neverSubmitted || native.length > 0 || await options.jobLeases.get(ticket.launchId) !== undefined
+        || located.resources.some(resource => !isDurableLegacyResource(resource))) {
+        throw new Error("Original retired claim native resources have no Controller boundary proof or authoritative non-submission evidence.");
+      }
     }
     check();
-    recordBoundary(located, proof, native);
+    if (!submitted && await ordinaryFileExists(submissionMarker)) throw new Error("Original Controller submission changed during retired claim cleanup.");
     await options.jobLeases.release(located.ticket.launchId);
-    await removeEndpoint(located);
+    await removeEndpoint(ticket.ipcEndpoint);
     check();
     return proof !== null;
   };
   return {
     locate: (targets: readonly CleanupTarget[], operation: Operation) => locateRetiredClaimControllers(options, targets, operation),
     stop: async (located: LocatedClaimNative, request: { deadline: number; signal: AbortSignal }): Promise<ClaimNativeClearance> => {
+      request.signal.throwIfAborted();
+      if (Date.now() >= request.deadline) throw new Error("Retired claim native cleanup exceeded its deadline.");
+      const resources = readLegacyWorkerResources(options.homeDirectory, options.identity, "controller").filter(({ identity }) =>
+        identity.projectId === located.target.projectId && identity.taskId === located.target.taskId && identity.claimId === located.target.claimId);
+      const original = located.controllers.flatMap(controller => controller.resources).sort((a, b) => a.resourceId.localeCompare(b.resourceId));
+      if (!isDeepStrictEqual(resources, original)) throw new Error("Original retired claim lifecycle evidence changed during cleanup.");
       const owners = new Map<string, ResourceOwner>();
       const stoppedExecutions: ClaimNativeClearance["stoppedExecutions"][number][] = [];
       for (const controller of located.controllers) {

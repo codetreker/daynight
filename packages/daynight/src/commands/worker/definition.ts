@@ -1,10 +1,6 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
 
 const help: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
-const lifecycleWorker: CommandOption = { names: ["--worker-id"], description: "Identify the original local Worker", value: { name: "worker-id", kind: "text" }, required: true };
-const lifecycleLocal: CommandOption = { names: ["--local"], description: "Use the original private local lifecycle authority", required: true };
-const lifecycleJson: CommandOption = { names: ["--json"], description: "Print the local lifecycle result as JSON", required: true };
-const lifecycleConfirm: CommandOption = { names: ["--confirm"], description: "Apply this explicit local lifecycle request", required: true };
 const claim: CommandOption = { names: ["--claim-id"], description: "Identify the original execution claim", value: { name: "claim-id", kind: "text" }, required: true };
 const project: CommandOption = { names: ["--project"], description: "Identify the task's project explicitly", value: { name: "project-id", kind: "text" } };
 const version: CommandOption = { names: ["--if-version"], description: "Use exactly this observed task version", value: { name: "version", kind: "text" }, required: true };
@@ -15,21 +11,6 @@ export const workerDefinition: CommandDefinition = {
   name: "worker",
   description: "Run automatically claimed tasks in dedicated worktrees",
   commands: [{
-    name: "disable",
-    description: "Persist a local Worker disable and stop its original execution owners",
-    options: [lifecycleWorker, lifecycleLocal, lifecycleConfirm, lifecycleJson, help],
-    details: "Works offline in the original DN_CONFIG_DIR. Persists local veto before requesting stop. Does not release claims or alter worktrees. Waits at most 90 seconds; exit 3 and outcome=pending require a later lifecycle show. A stopped phase requires complete stop and durable-save evidence.",
-  }, {
-    name: "resume",
-    description: "Explicitly resume the original local Worker through online activation",
-    options: [lifecycleWorker, lifecycleConfirm, lifecycleJson, help],
-    details: "Requires online authority and the original local manager or free Worker lock. Verifies retained stop evidence, current epochs and activation before reopening execution. Does not clear independent Task pauses or replay unknown input. Exit 3 preserves a pending or unknown operation for inspection.",
-  }, {
-    name: "lifecycle",
-    description: "Inspect the original private Worker lifecycle authority",
-    commands: [{ name: "show", description: "Read full local lifecycle state without networking or starting a Worker", options: [lifecycleWorker, lifecycleLocal, lifecycleJson, help] }],
-    options: [help],
-  }, {
     name: "list",
     description: "List the signed-in account's recently reported remote Workers",
     options: [{ names: ["--json"], description: "Print all Worker summaries and the service observation time as JSON" }, help],
