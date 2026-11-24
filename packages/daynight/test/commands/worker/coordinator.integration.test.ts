@@ -12,7 +12,7 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { createOperation, type Operation } from "../../../src/api/operation.js";
+import { createOperation } from "../../../src/api/operation.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -28,8 +28,6 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWebArchiveMaintenance } from "../../../src/commands/worker/web-archive-backfill.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
-import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { createRetiredClaimNativeCleanup } from "../../../src/commands/worker/backends/retired-claim-native.js";
@@ -85,10 +83,6 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 1_000 ? 1 : milliseconds, value, options);
   } };
 });
-const emptyFormatSources = { listSchedules: () => [], listWebTasks: () => [] };
-const prepareFormat: NonNullable<Parameters<typeof createWorkerGitManager>[0]["prepareFormat"]> = async (_project, repository, operation) => {
-  await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources: emptyFormatSources });
-};
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const unknownStop = async (target: CleanupTarget): Promise<StopObservation> => ({ kind: "unknown", target, error: new Error("Unobserved test backend"), observedAt: Date.now() });
 const origin = "https://daynight.example", workerId = uuid(1);
@@ -126,7 +120,7 @@ const fixture = async (maxConcurrent = 1) => {
   let store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store);
   const project: WorkerProject = { projectId: uuid(10), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") }; store.registerProject(project);
   const candidates = [task(project.projectId, uuid(100)), task(project.projectId, uuid(101))];
-  const grants = new Map<string, Task>(), worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>(), manifests = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
+  const grants = new Map<string, Task>(), worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const events: WorkerEvent[] = []; let clock = 1000;
   const bind = (owner: ResourceOwner): WorktreeBinding => {
     const source = store.getProject(owner)!; mkdirSync(source.localPath, { recursive: true });
@@ -134,12 +128,12 @@ const fixture = async (maxConcurrent = 1) => {
   };
   const git = {
     prepareRepository: vi.fn(), dispose: vi.fn(), removeEmptyReservation: vi.fn(async () => {}),
-    resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
+    resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
     isOriginalWorktreeAbsent: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => !worktrees.has(owner.claimId)),
-    listWorktreeManifests: vi.fn(async (source: WorkerProject) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId)),
-    retireWorktreeManifest: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { manifests.delete(owner.claimId); }),
-    removeUnpublishedReservation: vi.fn(async () => {}),
-    scanWorktrees: scanFromList, listWorktrees: vi.fn(async (source: WorkerProject) => [...worktrees.values()].filter(({ owner }) => owner.projectId === source.projectId)),
+    removeUnregisteredReservation: vi.fn(async () => {}),
+    scanWorktrees: scanFromList, listWorktrees: vi.fn(async (source: WorkerProject) => [...worktrees.values()]
+      .filter(({ binding }) => binding.repositoryPath === source.localPath)
+      .map(({ owner, binding }) => ({ taskId: owner.taskId, binding }))),
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { worktrees.delete(owner.claimId); return { kind: "absent" as const, effectErrors: [] }; }),
   } as unknown as WorkerGitManager;
   const grant = (candidate: Task, descriptor: WorkerClaimDescriptor): Task => {
@@ -158,8 +152,151 @@ const fixture = async (maxConcurrent = 1) => {
   const retiredNativeCleanup = createRetiredClaimNativeCleanup({ homeDirectory: root, identity: { serverOrigin: origin, workerId, userId: uuid(2) }, jobLeases: createControllerJobLeases() });
   const options = { store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, platformTaskMode: "all" as const, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => { stores.splice(stores.indexOf(store), 1); store.close(); store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store; return store; };
-  return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, worktrees, manifests, git, remote, events, options, clock: (value: number) => { clock = value; }, bind };
+  return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, worktrees, git, remote, events, options, clock: (value: number) => { clock = value; }, bind };
 };
+
+it("blocks a task for its remaining Git registration and claims it once only legacy metadata remains", async () => {
+  const f = await fixture();
+  const candidate = f.candidates[0]!;
+  f.candidates.splice(1);
+  const previous = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(940), worktreeId: uuid(941) };
+  const checkout = path.join(f.project.localPath, ".worktrees", "daynight", previous.worktreeId);
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+  git("init", "--initial-branch=main");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "seed");
+  git("remote", "add", "origin", f.project.repoUrl);
+  git("worktree", "add", "-b", `daynight/${candidate.id}`, "--", checkout, "HEAD");
+  await rm(checkout, { recursive: true });
+  expect(worktreePaths(f.project.localPath)).toContain(checkout);
+
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, verifyWebServer: async () => {},
+    webBackend: { ...f.options.webBackend, advance: async original => original } });
+  try {
+    const operation = createOperation();
+    try { await manager.prepareRepository(f.project, operation); }
+    finally { operation.dispose(); }
+    await coordinator.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({
+      kind: "warning", error: expect.objectContaining({ message: "A registered worktree remains for this task without a matching execution." }),
+    }));
+
+    const metadataDirectory = path.join(f.project.localPath, ".git", "daynight", "worktrees");
+    await mkdir(metadataDirectory, { recursive: true });
+    const legacyFile = path.join(metadataDirectory, `${previous.worktreeId}.json`);
+    const legacyRecord = JSON.stringify({ schemaVersion: 1, ...previous, directoryName: previous.worktreeId });
+    await writeFile(legacyFile, legacyRecord);
+    git("worktree", "prune", "--expire=now");
+    expect(worktreePaths(f.project.localPath)).not.toContain(checkout);
+
+    await coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([claimed]) => claimed.id), f.events.map(event => event.message).join("\n")).toEqual([candidate.id]);
+    expect(await readFile(legacyFile, "utf8")).toBe(legacyRecord);
+    await expect(access(checkout)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await coordinator.shutdown(); await manager.dispose(); }
+});
+
+it.each(["checkout present", "registration only"])("adopts a task-named worktree for an original prelaunch Web claim after verifying launch provenance (%s)", async state => {
+  const f = await fixture();
+  const candidate = f.candidates[0]!;
+  f.candidates.splice(0);
+  const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(942), worktreeId: uuid(943) };
+  const branch = `daynight/${owner.taskId}`;
+  const checkout = path.join(f.project.localPath, ".worktrees", "daynight", owner.taskId);
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+  git("init", "--initial-branch=main");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "seed");
+  git("remote", "add", "origin", f.project.repoUrl);
+  git("worktree", "add", "-b", branch, "--", checkout, "HEAD");
+  if (state === "registration only") await rm(checkout, { recursive: true });
+  f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  const { webStore } = f.options;
+  webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+  const provenance = Promise.withResolvers<void>();
+  const verifyWebUnregistered = vi.fn(async () => { await provenance.promise; });
+  const advance = vi.fn(async (record: WebTask) => {
+    const operation = createOperation();
+    try {
+      const original = record.resources.worktree!;
+      await manager.prepareWorktree(f.project, owner, operation, original.worktreePath, true, original);
+      return record;
+    } finally { operation.dispose(); }
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, verifyWebUnregistered,
+    webBackend: { ...f.options.webBackend, advance } });
+  try {
+    const operation = createOperation();
+    try { await manager.prepareRepository(f.project, operation); }
+    finally { operation.dispose(); }
+    await coordinator.tick();
+    await eventually(() => expect(verifyWebUnregistered).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(owner), expect.any(AbortSignal)));
+    expect(webStore.getTask(owner)?.resources.worktree).toBeNull();
+    expect(advance).not.toHaveBeenCalled();
+
+    provenance.resolve();
+    await eventually(() => expect(advance).toHaveBeenCalledOnce());
+    await eventually(async () => { await access(path.join(checkout, ".git")); });
+    expect(advance.mock.calls[0]![0]).toMatchObject({ ...owner, resources: { worktree: { worktreePath: checkout, branch } } });
+    expect(webStore.getTask(owner)?.resources.worktree).toMatchObject({ worktreePath: checkout, branch });
+    expect(worktreePaths(f.project.localPath)).toEqual([f.project.localPath, checkout]);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  } finally { provenance.resolve(); await coordinator.shutdown(); await manager.dispose(); }
+});
+
+it("removes a released prelaunch claim's task-named worktree after native clearance", async () => {
+  const f = await fixture();
+  const candidate = f.candidates[0]!;
+  f.candidates.splice(0);
+  const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(944), worktreeId: uuid(945) };
+  const checkout = path.join(f.project.localPath, ".worktrees", "daynight", owner.taskId);
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+  git("init", "--initial-branch=main");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "seed");
+  git("remote", "add", "origin", f.project.repoUrl);
+  git("worktree", "add", "-b", `daynight/${owner.taskId}`, "--", checkout, "HEAD");
+  f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  const { webStore, retiredNativeCleanup } = f.options;
+  webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+  f.grants.delete(owner.claimId);
+
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+  const clearance = Promise.withResolvers<void>();
+  const stop = retiredNativeCleanup.stop.bind(retiredNativeCleanup);
+  const locate = vi.spyOn(retiredNativeCleanup, "locate");
+  const stopNative = vi.spyOn(retiredNativeCleanup, "stop").mockImplementation(async (...args) => {
+    await clearance.promise;
+    return stop(...args);
+  });
+  const verifyWorktree = vi.spyOn(manager, "verifyWorktree");
+  const verifyWebUnregistered = vi.fn(async () => { throw new Error("The claim has been released."); });
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, verifyWebUnregistered });
+  try {
+    const operation = createOperation();
+    try { await manager.prepareRepository(f.project, operation); }
+    finally { operation.dispose(); }
+    await coordinator.tick();
+    await eventually(() => expect(stopNative).toHaveBeenCalledOnce());
+    expect(locate).toHaveBeenCalledExactlyOnceWith([expect.objectContaining(owner)], expect.anything());
+    expect(verifyWorktree).not.toHaveBeenCalled();
+    expect(worktreePaths(f.project.localPath)).toContain(checkout);
+
+    clearance.resolve();
+    await eventually(() => expect(webStore.getTask(owner)?.status).toBe("done"));
+    expect(verifyWorktree).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything(), checkout, true);
+    expect(verifyWebUnregistered).not.toHaveBeenCalled();
+    expect(f.store.getTask(owner)?.status).toBe("done");
+    expect(worktreePaths(f.project.localPath)).not.toContain(checkout);
+    await expect(access(checkout)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { clearance.resolve(); await coordinator.shutdown(); await manager.dispose(); }
+});
 
 it("reconciles a persisted missing-Web cleanup schedule on first shutdown after the local index became done", async () => {
   const f = await fixture();
@@ -173,7 +310,7 @@ it("reconciles a persisted missing-Web cleanup schedule on first shutdown after 
   await expect(coordinator.shutdown()).resolves.toBe(true);
   expect(f.store.getTask(owner)?.status).toBe("done");
   expect(f.store.getCleanupSchedule(owner)).toBeNull();
-  expect(f.git.removeUnpublishedReservation).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything());
+  expect(f.git.removeUnregisteredReservation).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything());
   expect(verify).not.toHaveBeenCalled();
   expect(f.remote.readTask).toHaveBeenCalledOnce();
 });
@@ -297,7 +434,6 @@ it("settles an explicitly controlled Web claim verified as unregistered", async 
   const owner = { projectId: f.project.projectId, taskId: uuid(940), claimId: uuid(941), worktreeId: uuid(942) };
   f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
   f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
-  f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
   const verifyWebUnregistered = vi.fn(async () => {});
   const coordinator = createWorkerCoordinator({ ...f.options, webStore, webBackend: { advance: vi.fn(), cleanup: vi.fn(), observeExecutionStop: unknownStop }, verifyWebUnregistered });
   try {
@@ -340,7 +476,7 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
   const joined = Promise.withResolvers<import("../../../src/repository/git-owned.js").GitSettlement>();
   const interrupt = new AbortController();
   let originalSignal: AbortSignal | undefined; let ownedSignal: AbortSignal | undefined; let shutdown: Promise<boolean> | undefined;
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat,
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"),
     startOwnedGit: (cwd, args, op, options) => {
       const remove = args.includes("worktree") && args.includes("remove");
       if (!remove) return startOwnedRepositoryGit(cwd, args, op, options);
@@ -506,7 +642,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
   git(f.root, "clone", "--bare", f.project.localPath, bare);
   git(f.project.localPath, "config", `url.${bare}.insteadOf`, f.project.repoUrl);
   const failure = new Error("controlled Web directory removal failure"); let fail = true;
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat,
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"),
     removeDirectory: async (...args) => { if (fail) { fail = false; throw failure; } return rm(...args); },
   });
   const operation = createOperation();
@@ -558,7 +694,6 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
     expect(archive).toHaveBeenCalledTimes(2);
     expect(monitoring.capture().lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
-    await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
     expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
     f.candidates.push(originalCandidate!);
     await coordinator.tick();
@@ -592,7 +727,7 @@ it.each([
   const bare = path.join(f.root, "origin.git");
   git(f.root, "clone", "--bare", f.project.localPath, bare);
   git(f.project.localPath, "config", `url.${bare}.insteadOf`, f.project.repoUrl);
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat });
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
   const owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(710), worktreeId: uuid(711) };
   const operation = createOperation();
   let binding: WorktreeBinding;
@@ -697,7 +832,7 @@ it("preserves independent Web work when enumeration fails after another cleanup"
   let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
   record = webStore.bindWorktree(record, worktree, 2); record = webStore.initializeWebExecution(record, 3);
   record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 4);
-  f.worktrees.set(owner.claimId, { owner, binding: worktree }); f.manifests.set(owner.claimId, { owner, binding: worktree });
+  f.worktrees.set(owner.claimId, { owner, binding: worktree });
   const cleanupEntered = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
   const scanEntered = Promise.withResolvers<void>(), finishScan = Promise.withResolvers<void>();
   const scan = f.git.scanWorktrees.bind(f.git); let holdScan = false;
@@ -741,7 +876,7 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
     const bare = path.join(f.root, "origin.git");
     execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { cwd: f.root, stdio: "pipe", timeout: 10_000 });
     git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
-    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp"), prepareFormat });
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp") });
     disposeManager = () => manager.dispose();
     const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(170), worktreeId: uuid(171) };
     const sibling = { projectId: f.project.projectId, taskId: uuid(172), claimId: uuid(173), worktreeId: uuid(174) };
@@ -749,8 +884,8 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
     try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); badBinding = await manager.prepareWorktree(f.project, sibling, operation); }
     finally { operation.dispose(); }
     if (scenario === "same-task") {
-      const manifests = createWorktreeManifestStore(binding.commonDirectory), previous = manifests.read(sibling.worktreeId)!;
-      manifests.remove(previous); manifests.publish({ ...previous, taskId: owner.taskId });
+      const admin = path.join(binding.commonDirectory, "worktrees", path.basename(badBinding.worktreePath));
+      git(`--git-dir=${admin}`, "symbolic-ref", "HEAD", `refs/heads/daynight/${owner.taskId}`);
     }
     const damagedPointer = path.join(badBinding.worktreePath, ".git");
     await rm(damagedPointer); await writeFile(damagedPointer, "damaged pointer\n");
@@ -807,7 +942,6 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
       }
     }
     const scheduleReads = vi.spyOn(f.store, "listCleanupSchedules");
-    const manifestReads = vi.spyOn(manager, "listWorktreeManifests");
     const verifyEntered = Promise.withResolvers<void>();
     const verify = manager.verifyWorktree.bind(manager);
     if (scenario === "cancel" || scenario === "target-disappears") vi.spyOn(manager, "verifyWorktree").mockImplementation(async (...args) => {
@@ -845,7 +979,9 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
       expect(prepare).not.toHaveBeenCalled();
       await expect(access(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     } else {
-      if (scenario === "same-task") await vi.waitFor(() => expect(manifestReads.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 10_000, interval: 20 });
+      if (scenario === "same-task") await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({
+        kind: "execution-error", error: expect.objectContaining({ message: "The task branch does not have exactly one Git worktree registration." }),
+      })));
       else if (scenario === "index-schedule" || scenario === "journal-schedule") await vi.waitFor(() => expect(scheduleReads.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 10_000, interval: 20 });
       else await new Promise<void>(resolve => setImmediate(resolve));
       expect(advance).not.toHaveBeenCalled();

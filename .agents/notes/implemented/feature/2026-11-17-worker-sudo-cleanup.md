@@ -18,7 +18,7 @@ verify the system mount inventory and reject mounted targets or descendants, the
 use a non-interactive shell command to remove the original target: root runs rm
 directly, while other users invoke sudo. The ordinary Git process removes the
 registration and a fresh observation verifies both resources are absent. Manual
-cleanup retains its ordinary behavior. The [Worker design](../../../../docs/design/daynight-worker.md#归属清单与格式转换)
+cleanup retains its ordinary behavior. The [Worker design](../../../../docs/design/daynight-worker.md#平台清理策略)
 records the execution boundary and [cleanup outcome decision](../architecture/2026-11-12-worktree-cleanup-outcome.md)
 retains the observation and error settlement rules.
 

@@ -107,7 +107,7 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
   };
   mocks.remote.mockReturnValue(remote);
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
-  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.webBackend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
@@ -158,7 +158,7 @@ it("registers fresh stop verification after a failed startup read even when the 
   const retained = { projectId, repoUrl: "https://git.example/team/retained.git", localPath: path.join(homeDirectory, "retained") };
   const selected = { projectId: selectedProjectId, repoUrl: "https://git.example/team/selected.git", localPath: path.join(homeDirectory, "selected") };
   const owner = { projectId, taskId, claimId, worktreeId };
-  const binding = { repositoryPath: retained.localPath, commonDirectory: path.join(retained.localPath, ".git"), worktreePath: path.join(retained.localPath, ".worktrees", "daynight", worktreeId), branch: "original-branch" };
+  const binding = { repositoryPath: retained.localPath, commonDirectory: path.join(retained.localPath, ".git"), worktreePath: path.join(retained.localPath, ".worktrees", "daynight", worktreeId), branch: `daynight/${taskId}` };
   const marker = path.join(binding.worktreePath, "unfinished.txt");
   await mkdir(binding.worktreePath, { recursive: true }); await mkdir(selected.localPath);
   await writeFile(marker, "original unfinished work\n");
@@ -202,8 +202,8 @@ it("registers fresh stop verification after a failed startup read even when the 
   };
   mocks.remote.mockReturnValue(remote); mocks.probe.mockResolvedValue("0.164.0");
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
-  const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
-  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
+  const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ taskId, binding }] : [];
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.webBackend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
@@ -264,7 +264,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
   const projectQ = { projectId: uuid(9), repoUrl: "https://git.example/team/q.git", localPath: path.join(homeDirectory, "q") };
   const retained = { projectId, repoUrl: "https://git.example/team/retained.git", localPath: path.join(homeDirectory, "retained") };
   const owner = { projectId, taskId, claimId, worktreeId };
-  const binding = { repositoryPath: retained.localPath, commonDirectory: path.join(retained.localPath, ".git"), worktreePath: path.join(retained.localPath, ".worktrees", "daynight", worktreeId), branch: "original-branch" };
+  const binding = { repositoryPath: retained.localPath, commonDirectory: path.join(retained.localPath, ".git"), worktreePath: path.join(retained.localPath, ".worktrees", "daynight", worktreeId), branch: `daynight/${taskId}` };
   const marker = path.join(binding.worktreePath, "unfinished.txt");
   await mkdir(binding.worktreePath, { recursive: true }); await mkdir(projectQ.localPath);
   await writeFile(marker, "original unfinished work\n");
@@ -296,8 +296,8 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: store.listProjects().map(project => project.projectId), unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
-  const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
-  mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async (project: { localPath: string }) => { await mkdir(project.localPath, { recursive: true }); }), listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose: vi.fn(async () => {}) }, { scanWorktrees: scanFromList }));
+  const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ taskId, binding }] : [];
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async (project: { localPath: string }) => { await mkdir(project.localPath, { recursive: true }); }), listWorktrees: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose: vi.fn(async () => {}) }, { scanWorktrees: scanFromList }));
   const cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.webBackend.mockReturnValue({ advance: vi.fn(async (record: WebTask) => record), cleanup, closeInput: vi.fn() });
   mocks.launcher.mockReturnValue({ launch: vi.fn() });

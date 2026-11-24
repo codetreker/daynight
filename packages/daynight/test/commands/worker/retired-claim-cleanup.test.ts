@@ -19,7 +19,7 @@ const fixture = async () => {
   store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
   const clearance: ClaimNativeClearance = { target: owner, owners: [owner], inventoryComplete: true, resourcesCleared: true, stoppedExecutions: [], observedAt: 1 };
   const native = { stop: vi.fn(async () => clearance) } as unknown as RetiredClaimNativeCleanup;
-  const git = { prepareRepository: vi.fn(async () => {}), listWorktreeManifests: vi.fn(async () => []), listWorktrees: vi.fn(async () => []), resolveWorktreeBinding: vi.fn(async () => null), removeUnpublishedReservation: vi.fn(async () => {}) } as unknown as WorkerGitManager;
+  const git = { prepareRepository: vi.fn(async () => {}), scanWorktrees: vi.fn(), resolveWorktreeBinding: vi.fn(async () => null), removeWorktree: vi.fn(), removeUnregisteredReservation: vi.fn(async () => {}) } as unknown as WorkerGitManager;
   const options = { target: owner, located: Promise.resolve({ target: owner, controllers: [] }), native, project, store, git, signal: new AbortController().signal, deadline: Date.now() + 5000,
     now: () => 1, onOwner: vi.fn(), onCleared: vi.fn(), onEffectError: vi.fn() };
   return { root, owner, project, store, native, git, options };
@@ -35,7 +35,7 @@ it("publishes exact native clearance before Git fails and retains durable cleanu
   });
   await expect(cleanupRetiredClaim(f.options)).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
   expect(f.store.getTask(f.owner)?.status).toBe("pending");
-  expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+  expect(f.git.removeUnregisteredReservation).not.toHaveBeenCalled();
 });
 
 it("retains a known worktree when its repository is missing after native clearance", async () => {
@@ -53,4 +53,16 @@ it("keeps native stop failures separate from Git work and capacity settlement", 
   expect(f.options.onCleared).not.toHaveBeenCalled();
   expect(f.git.prepareRepository).not.toHaveBeenCalled();
   expect(f.store.getCleanupSchedule(f.owner)).toBeNull();
+});
+
+it("retains a registered worktree when stop is known but the original worktree identity is missing", async () => {
+  const f = await fixture(); await mkdir(f.project.localPath);
+  const { projectId, taskId, claimId } = f.owner;
+  const target = { projectId, taskId, claimId };
+  const binding = { repositoryPath: f.project.localPath, commonDirectory: path.join(f.project.localPath, ".git"), worktreePath: path.join(f.project.localPath, ".worktrees", "daynight", f.owner.worktreeId), branch: `daynight/${taskId}` };
+  vi.mocked(f.native.stop).mockResolvedValue({ target, owners: [], inventoryComplete: true, resourcesCleared: true, stoppedExecutions: [], observedAt: 1 });
+  vi.mocked(f.git.scanWorktrees).mockResolvedValue({ enumerationComplete: true, validated: [{ taskId, binding }], quarantined: [], unknown: [] });
+  await expect(cleanupRetiredClaim({ ...f.options, target, located: Promise.resolve({ target, controllers: [] }) })).rejects.toMatchObject({ stage: "worktree-removal", cause: { message: expect.stringContaining("no confirmed original claim identity") } });
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.git.removeUnregisteredReservation).not.toHaveBeenCalled();
 });

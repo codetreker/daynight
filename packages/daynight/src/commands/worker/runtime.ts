@@ -59,7 +59,7 @@ import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter } from "./reporter.js";
 import { createWorkerConfigurationExchange, failedConfigurationRequestOutcome, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId, type WorkerConfigurationExchangeEvent } from "./configuration-exchange.js";
 import { createWorkerConfigurationBootstrap } from "./configuration-bootstrap.js";
-import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
+import { createWorkerRepositoryAdmission } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
@@ -402,18 +402,16 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
   const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const emit = (event: WorkerEvent): void => options.log?.(`${event.message}\n`);
   const repository = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
-    prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: root.store!, project, repository, operation,
-      workerId: identity.workerId, serverOrigin: identity.serverOrigin }),
   });
   const git: ReturnType<typeof createWorkerGitManager> = { ...repository,
-    resolveWorktreeBinding: async (project, owner, operation) => {
+    resolveWorktreeBinding: async (project, owner, operation, originalCwd) => {
       const retained = root.store!.getProject(project);
       if (retained === null || retained.repoUrl !== project.repoUrl || retained.localPath !== project.localPath)
         throw new Error("Original Task repository binding is unavailable for management cleanup.");
       const directory = await lstat(retained.localPath);
       if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Original Task repository must be an ordinary directory.");
       await repository.prepareRepository(retained, operation);
-      return repository.resolveWorktreeBinding(retained, owner, operation);
+      return repository.resolveWorktreeBinding(retained, owner, operation, originalCwd);
     },
   };
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
@@ -1092,13 +1090,12 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     const prepared = new Map<string, WorkerProject>();
     const locallyKnownIds = new Set(workerLocalExplicitProjectIds(local, paths));
     const unboundMappings = new Map<string, number>(workerLocalUnboundRepositoryIndexes(local, paths).map(index => [`legacy:${index}`, index]));
-    // Local mappings can retain Git-only owners even after cloud selection changes.
+    // Local mappings can retain registered worktrees even after cloud selection changes.
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (root.store = store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit), reportHolderTerminated: holderTerminatedReporter(emit),
       readCleanupPolicy: () => configuration?.readCleanupPolicy() ?? null,
-      prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: getStore(), project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
     })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore, workerId, serverOrigin: serverUrl });
     const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
@@ -1383,9 +1380,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
               try {
                 const candidate = { projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path };
                 await getGit().prepareRepository(candidate, operation);
-                const scan = await getGit().scanWorktrees(candidate, operation, false, true);
+                const scan = await getGit().scanWorktrees(candidate, operation);
                 if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Local repository resource coverage is incomplete.");
-                if ([...scan.validated, ...scan.quarantined].some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
                 // Mapping admission proves the project/path association only. The
                 // coordinator independently proves quarantined owners before claiming.
               } finally { operation.dispose(); }
@@ -1763,7 +1759,6 @@ export const runWorkerControl = async (options: {
     configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit), reportHolderTerminated: holderTerminatedReporter(diagnostics.emit),
-      prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: store!, project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
     });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
@@ -1893,11 +1888,15 @@ export const runWorkerControl = async (options: {
       archiveSessions: controlArchiveSessions,
       emit: diagnostics.emit, signal,
     });
-    const prepareControlProject = async (identity: { projectId: string }): Promise<void> => {
+    const prepareControlProject = async (identity: { projectId: string }, allowMissing = false): Promise<void> => {
       const project = store!.getProject(identity);
       if (project === null) throw new Error("The original project repository binding is unavailable.");
       // Management never recreates a missing retained repository.
-      await lstat(project.localPath);
+      try { await lstat(project.localPath); }
+      catch (error) {
+        if (allowMissing && error instanceof Error && "code" in error && error.code === "ENOENT") return;
+        throw error;
+      }
       const operation = createOperation({ signal });
       try { await git!.prepareRepository(project, operation); } finally { operation.dispose(); }
     };
@@ -1910,8 +1909,11 @@ export const runWorkerControl = async (options: {
         return coordinator.advanceRetry(identity, () => prepareControlProject(identity));
       },
       cleanupSource: async (identity: Parameters<typeof coordinator.cleanupSource>[0], settings: Parameters<typeof coordinator.cleanupSource>[1]) => {
-        if (settings?.deleteWorktree === true) await prepareControlProject(identity);
-        return coordinator.cleanupSource(identity, settings);
+        if (settings?.deleteWorktree === true) {
+          await prepareControlProject(identity);
+          return coordinator.cleanupSource(identity, settings);
+        }
+        return coordinator.cleanupSource(identity, settings, () => prepareControlProject(identity, true));
       },
       completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0], ownerUserId: Parameters<typeof coordinator.completeSource>[1]) => {
         await prepareControlProject(owner);

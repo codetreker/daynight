@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -11,8 +11,6 @@ import type { ServerCommand, KnownSessionOperationOutput } from "../../../src/co
 import { runWorkerMarkdownRepair } from "../../../src/commands/worker/repair-markdown.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
-import { manifestPath } from "../../../src/commands/worker/worktrees/paths.js";
 import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
@@ -45,7 +43,6 @@ const fixture = async (withSourceTail = false) => {
   await git(repositoryPath, ["worktree", "add", "-b", branch, worktreePath]);
   const commonDirectory = (await git(repositoryPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim();
   const binding = { repositoryPath, commonDirectory, worktreePath, branch };
-  createWorktreeManifestStore(commonDirectory).publish({ schemaVersion: 1, projectId: target.projectId, taskId: target.taskId, claimId: target.claimId, worktreeId: target.worktreeId, directoryName: target.worktreeId });
   const paths = resolveWorkerPaths(home); await mkdir(paths.workerDirectory, { recursive: true }); await writeFile(paths.configFile, `workerId: ${workerId}\n`, { mode: 0o600 });
   const store = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: () => {} });
   const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
@@ -98,13 +95,12 @@ test("passes the exact original execution and verifies it again before archive u
   expect(f.api.getTask.mock.calls.length).toBe(3); expect(f.output()).toMatchObject({ exitCode: 0 }); expect(JSON.parse(f.output()!.output)).toMatchObject({ ...f.target, repaired: ["entry"], archive: { state: "ready" }, cleanup: "owned-by-worker" });
 });
 
-test.each(["native", "claim", "paused", "platform", "manifest", "branch"])("refuses changed %s evidence before calling repair or upload", async kind => {
+test.each(["native", "claim", "paused", "platform", "branch"])("refuses changed %s evidence before calling repair or upload", async kind => {
   const f = await fixture(), before = await readFile(f.journalPath);
   if (kind === "native") { f.task.properties.worker.nativeSessionId = randomUUID(); f.session.session.nativeSessionId = f.task.properties.worker.nativeSessionId; }
   if (kind === "claim") f.task.properties.worker.claimId = randomUUID();
   if (kind === "paused") f.task.properties.blocked = true;
   if (kind === "platform") f.task.properties.worker.platform = process.platform === "win32" ? "linux" : "windows";
-  if (kind === "manifest") await unlink(manifestPath(f.binding.commonDirectory, f.target.worktreeId));
   if (kind === "branch") await f.git(f.binding.worktreePath, ["checkout", "-b", "changed-branch"]);
   await expect(runWorkerMarkdownRepair(f.target, f.context)).rejects.toThrow();
   expect(mocks.repair).not.toHaveBeenCalled(); expect(mocks.upload).not.toHaveBeenCalled(); expect(await readFile(f.journalPath)).toEqual(before);

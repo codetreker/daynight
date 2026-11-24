@@ -46,7 +46,7 @@ reproves the parent directory and the entry's own inode and type, and nested
 directory removal reproves the directory. Those checks prove local identity
 only, so the task worktree caller also passes `verifyOwnership` as
 `beforeMutation`: the walk admits every mutation, first attempt and retry
-alike, through the same manifest, captured metadata and external Git lock the
+alike, through the same task branch, captured metadata and external Git lock the
 caller verified before the walk began. Without it a lock taken during a busy
 backoff would go unseen until after the contents were already gone, because
 the walk itself rechecks nothing outside the directory it is clearing.
@@ -113,8 +113,7 @@ content walk's per-entry cost unchanged, but it recreates the divergence the
 required `reprove` parameter exists to prevent: the first attempt and the
 retries would admit mutations through different evidence. Passing
 `verifyOwnership` as `beforeMutation` instead strengthens both at once, at the
-cost of one manifest lookup, the captured directory and metadata reads and one
-lock read per removed entry.
+cost of the captured directory, task branch, metadata and lock reads per removed entry.
 
 **Add the missing check to each retry callback as it is found.** Three separate
 findings had the same shape: a first attempt verified ownership around an

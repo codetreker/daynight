@@ -1930,11 +1930,11 @@ it("settles an unpublished reservation only when the original Web execution neve
   const task = f.store.getTask(f.identity)!;
   const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(result.complete).toBe(true);
-  expect(f.git.removeUnpublishedReservation).toHaveBeenCalledOnce();
+  expect(f.git.removeUnregisteredReservation).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
-it("records a discovered original manifest binding before settling an unlaunched Web execution", async () => {
+it("records the original registered Git binding before settling an unlaunched Web execution", async () => {
   const f = await fixture();
   const task = f.store.getTask(f.identity)!;
   const binding = await f.git.resolveWorktreeBinding(f.identity, f.identity, {} as never);
@@ -1947,15 +1947,15 @@ it("records a discovered original manifest binding before settling an unlaunched
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
 });
 
-it("retains a launched Web execution whose original worktree manifest is missing", async () => {
+it("retains a launched Web execution when Git resolves to a conflicting worktree binding", async () => {
   const f = await fixture();
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   task = f.store.beginCleanup(task, { kind: "terminal", deadline: 30 }, 3);
   const source = await cleanupSource(f, task);
-  vi.mocked(f.git.resolveWorktreeBinding).mockResolvedValue(null);
+  vi.mocked(f.git.resolveWorktreeBinding).mockResolvedValue({ ...task.resources.worktree!, branch: "changed-branch" });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive: async () => {}, request: source.request });
-  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toThrow("no worktree manifest");
-  expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toThrow("differs from the verified Git worktree");
+  expect(f.git.removeUnregisteredReservation).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
@@ -1967,7 +1967,7 @@ it("retains an unlaunched Web worktree when the original binding cannot be persi
   await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
   expect(f.store.getTask(task)?.resources.worktree).toBeNull();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+  expect(f.git.removeUnregisteredReservation).not.toHaveBeenCalled();
 });
 
 it("retains the original binding across a failed Web worktree deletion and retry", async () => {

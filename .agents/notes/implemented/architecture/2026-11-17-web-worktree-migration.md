@@ -10,6 +10,8 @@ lifecycle are outside the retained Web execution responsibility.
 
 ## Decision
 
+This historical decision was superseded by [Git registration discovery](../simplification/2026-11-24-worker-git-worktree-discovery.md).
+
 Repository preparation selects Web execution records for the current service and
 Worker. Their owner and execution identity establish the allowed set. A worktree
 binding, or a matching manifest or Git registration after an interrupted creation,

@@ -117,9 +117,9 @@ nonrecursive removal of a directory whose inode already matched: the worst
 outcome is removing the very directory that was proven. Terminating processes
 is irreversible, reaches descendants, and acts on something other than the
 directory, so it is admitted through the evidence the main path proves: the
-owner manifest, the captured ownership-directory identities, and the
+task branch, the captured ownership-directory identities, and the
 registration's `gitdir` and `commondir` association, each rechecked after those
-asynchronous reads. A manifest removed or a registration retargeted during the
+asynchronous reads. A changed task branch or a registration retargeted during the
 backoff therefore refuses before any holder is inspected, and the original
 error is retained.
 

@@ -352,7 +352,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       }
       if (preparing) task = options.store.bindWorktree(task, verified, options.now());
       else {
-        if (original === null || !await sameWorktreeLocation(verified.worktreePath, original.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, original.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, original.commonDirectory) || verified.branch !== original.branch) throw new Error("The original Web worktree binding differs from its manifest.");
+        if (original === null || !await sameWorktreeLocation(verified.worktreePath, original.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, original.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, original.commonDirectory) || verified.branch !== original.branch) throw new Error("The original Web worktree binding differs from the verified Git worktree.");
         task = current(task);
       }
       try { if (task.resources.worktree !== null) monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree.worktreePath); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
@@ -906,15 +906,17 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation), fileSignal);
+        const original = task.resources.worktree;
+        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation, original?.worktreePath), fileSignal);
         if (binding === null) {
-          if (launched || task.resources.worktree !== null) throw new Error("The original Web execution has no worktree manifest.");
-          await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, task, operation), fileSignal);
+          if (launched || original !== null) throw new Error("The original Web execution has no verified worktree binding.");
+          await cleanupOperation(operation => options.git.removeUnregisteredReservation(project, task, operation), fileSignal);
         } else {
-          if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
+          if (original !== null && (binding.branch !== original.branch || !await sameWorktreeLocation(binding.worktreePath, original.worktreePath)
+            || !await sameWorktreeLocation(binding.repositoryPath, original.repositoryPath) || !await sameWorktreeLocation(binding.commonDirectory, original.commonDirectory))) throw new Error("The original Web worktree binding differs from the verified Git worktree.");
           fileSignal.throwIfAborted();
-          if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
-          const outcome = await options.git.removeWorktree(project, task, { signal: fileSignal });
+          if (original === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
+          const outcome = await options.git.removeWorktree(project, task, { signal: fileSignal, ...(original === null ? {} : { originalCwd: original.worktreePath }) });
           if (outcome.effectErrors.length > 0) {
             try { options.emit({ kind: "cleanup-effect-error", task, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
           }
