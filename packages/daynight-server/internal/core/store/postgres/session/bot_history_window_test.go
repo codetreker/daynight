@@ -8,8 +8,39 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
+
+func TestSessionStoreFixtureClearsBotHistoryWindowState(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	id, resource := uuid.NewString(), uuid.NewString()
+	suite.run(t, "persist history state", func(t *testing.T, db *postgres.Store) {
+		sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+			dao := base.(store.BotHistoryWindowDAO)
+			if err := dao.SaveBotHistoryCheckpoint(t.Context(), id, []byte(`{"windowRevision":"1"}`)); err != nil {
+				return err
+			}
+			return dao.QueueBotHistoryReclaim(t.Context(), id, resource)
+		})
+	})
+	suite.run(t, "observe cleared history state", func(t *testing.T, db *postgres.Store) {
+		sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+			dao := base.(store.BotHistoryWindowDAO)
+			if _, err := dao.BotHistoryCheckpoint(t.Context(), id); !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("fixture retained checkpoint: %v", err)
+			}
+			pending, err := dao.PendingBotHistoryReclaims(t.Context(), id)
+			if err != nil {
+				return err
+			}
+			if len(pending) != 0 {
+				t.Fatalf("fixture retained resource reclamation: %v", pending)
+			}
+			return nil
+		})
+	})
+}
 
 func TestBotHistoryWindowCheckpointAndReferenceTransaction(t *testing.T) {
 	db := isolatedStore(t)

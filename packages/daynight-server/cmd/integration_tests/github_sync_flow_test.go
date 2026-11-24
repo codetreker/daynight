@@ -443,9 +443,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, string(stepsSQL)); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `DROP TABLE bot_history_windows, bot_history_reclaims`); err != nil {
+			t.Fatal(err)
+		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 48 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 49 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -462,6 +465,10 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	defer db.Close()
 	var repositoryVersion int64
 	var migrationCount int
+	var windowTable, reclaimTable bool
+	if err := db.QueryRow(f.context, `SELECT to_regclass('bot_history_windows') IS NOT NULL, to_regclass('bot_history_reclaims') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=127)`).Scan(&windowTable, &reclaimTable, &migrationCount); err != nil || !windowTable || !reclaimTable || migrationCount != 1 {
+		t.Fatalf("upgraded Bot history window: window=%t reclaim=%t migration count=%d error=%v", windowTable, reclaimTable, migrationCount, err)
+	}
 	var descriptionColumns int
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('personal_access_tokens','oauth_grants') AND column_name='description'`).Scan(&descriptionColumns); err != nil || descriptionColumns != 2 {
 		t.Fatalf("credential description migration: columns=%d error=%v", descriptionColumns, err)

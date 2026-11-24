@@ -64,6 +64,8 @@ func TestProducerRoutesClassifyActualRegistrations(t *testing.T) {
 	add("/api/v1/controller-channel", fallback)
 	add("PUT /api/v1/controller-resources/{resourceId}", independent)
 	add("/api/v1/controller-resources/{resourceId}", fallback)
+	add("PUT /api/v1/test-sessions/{sessionId}/bot-history-window/checkpoint", independent)
+	add("/api/v1/test-sessions/{sessionId}/bot-history-window/checkpoint", fallback)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("producer classifications: got %#v; want %#v", got, want)
 	}
