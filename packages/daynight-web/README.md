@@ -27,7 +27,10 @@ starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.m
 provides an isolated instance of the same production build.
 
 The project Goals toolbar and Goal detail's right column open a separate Goal
-acceptance graph from the existing committed TaskSync baseline. Project dialogs,
+acceptance graph from the existing committed TaskSync baseline. Its ordinary and
+fullscreen dialogs allocate remaining height to the canvas and bounded inspection
+pane; on phones the pane stacks below the minimum 200px canvas, and short dialogs
+scroll to keep controls reachable. Project dialogs,
 standalone detail pages, My Tasks and nested Goal readers supply the current
 Goal's actual Project. An inherited Project-source registry reuses their existing
 synchronization and access owners, including an ancestor Project when returning

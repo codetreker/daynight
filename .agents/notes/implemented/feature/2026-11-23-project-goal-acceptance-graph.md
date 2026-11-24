@@ -114,7 +114,9 @@ remain available for retry. Retained presentation is distinct from the current
 qualified baseline and cannot authorize new relationship or detail reads.
 
 Goal-specific projection, cards and inspection reuse neutral geometry, edge
-painting, semantic highlights, toolbar and dialog mechanisms. Valid selection
+painting, semantic highlights, toolbar and dialog mechanisms. Its dedicated
+[height allocation](2026-11-24-goal-acceptance-graph-height.md) bounds inspection
+content while sharing the available dialog space. Valid selection
 and viewport survive updates, and an existing position anchors topology changes.
 Following an inspector relationship transfers focus to the persistent inspection
 heading without scrolling before the changing relation list can remove its
