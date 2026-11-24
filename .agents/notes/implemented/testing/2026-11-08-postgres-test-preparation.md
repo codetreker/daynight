@@ -64,7 +64,14 @@ one-connection pool. The Team lock case uses a short caller deadline and
 observes only its own schema's PostgreSQL workers. Both paths check cancellation
 before a callback can write, persisted state, and pool reuse. Project lifecycle
 and Thread cases share one schema within their parent, use separate Project,
-Team and Goal rows, and drain competing operations before the next case.
+Team and Goal rows, and drain competing operations before the next case. The
+Project Goal locking and watermark matrices also use independent identities in
+each shared schema. UUID ordering cases generate and sort fresh Task IDs while
+keeping Project order reversed. Blocker transactions are rolled back, background
+operations are drained, and pool and advisory lock reuse is checked before the
+next case. The watermark fault matrix removes its trigger and function and
+checks the catalog; any failed case or cleanup stops reuse. Matrices whose
+assertions depend on initially empty whole tables retain independent schemas.
 
 Historical prefix migrations and schema-control tests retain their serial
 scheduling. Explicit migration-lock holders remain serial because every ordinary
@@ -445,6 +452,12 @@ restoration before the next case.
 catalog tests, independently committed transactions and connection failures
 have different lifetimes. Those lifetimes remain isolated across independent
 tests; reuse is limited to matrices with explicit restoration and writer exit.
+
+**Reset the whole-table Project Goal matrices between cases.** Their counts and
+fixed identifiers require an initially empty mutable state. A bounded reset
+would also need to preserve the seed, migration ledger and sequence state; the
+available truncation helper does not establish those conditions by itself.
+Independent schemas retain the original assertions until restoration is proven.
 
 **Wrap the fixture in an outer transaction.** Production scopes and migrations
 acquire their own connections and own real commits and rollback. Inventory

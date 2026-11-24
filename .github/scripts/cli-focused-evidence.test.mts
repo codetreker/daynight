@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { portableFiles, preflightFocusedPlan, verifyFocusedEvidence } from "./cli-focused-evidence.mts";
 
 const identity = { sourceRevision: "a".repeat(40), sourceTree: "b".repeat(40), vitestVersion: "5.0.5", pnpmVersion: "11.28.6", prHead: "c".repeat(40), prRef: "feature" };
-const paths = ["test/portable.test.ts", "test/platform/windows-suspended-process.test.ts", "test/commands/controller/markdown/local-source-filesystem-darwin.test.ts"];
-const nativeNames = ["portable", "keeps the native thread suspended until its owner resumes and joins it", "local image filesystem records recognizes the actual local Darwin filesystem by name and mount flags"];
-const portable = new Set([paths[0]!]);
+const paths = ["test/cli/task-protocol.test.ts", "test/platform/windows-suspended-process.test.ts", "test/commands/controller/markdown/local-source-filesystem-darwin.test.ts", "test/commands/controller/markdown/local-source-filesystem.test.ts"];
+const nativeNames = ["portable protocol", "keeps the native thread suspended until its owner resumes and joins it", "local image filesystem records recognizes the actual local Darwin filesystem by name and mount flags", "synthetic filesystem record"];
+const portable = new Set([paths[0]!, paths[3]!]);
 function fixture(): Record<string, any> {
   const labels = ["linux-full", "windows-full-1", "windows-full-2", "windows-focused-1", "windows-focused-2", "macos-full", "macos-focused"];
   return Object.fromEntries(labels.map(label => {
@@ -13,7 +13,7 @@ function fixture(): Record<string, any> {
     const root = windows ? "C:\\work\\packages\\daynight" : "/work/packages/daynight";
     const absolute = (p: string) => windows ? `${root}\\${p.replaceAll("/", "\\")}` : `${root}/${p}`;
     const focused = label.includes("focused"), shard = /-([12])$/.exec(label)?.[1];
-    const selected = paths.filter((p, index) => (!focused || index !== 0) && (!shard || (focused ? index % 2 === Number(shard) % 2 : index % 2 === Number(shard) - 1)));
+    const selected = paths.filter((p, index) => (!focused || !portable.has(p)) && (!shard || (focused ? index % 2 === Number(shard) % 2 : index % 2 === Number(shard) - 1)));
     const testResults = selected.map(p => {
       const index = paths.indexOf(p), status = index === 1 && !windows || index === 2 && !mac ? "skipped" : "passed";
       return { name: absolute(p), status: "passed", message: "", assertionResults: [{ ancestorTitles: index === 2 ? ["local image filesystem records"] : [], title: index === 2 ? "recognizes the actual local Darwin filesystem by name and mount flags" : nativeNames[index], status, failureMessages: [] }] };
@@ -63,12 +63,41 @@ test("rejects mixed hosted origins and groups while preserving per-job rerun att
   assert.throws(() => verify(mixed), /Mixed execution origins/);
 });
 test("verifies a synthetic checkout separately from its PR head, native sentinels and retained case states", () => verify(fixture()));
+test("requires every Task protocol and synthetic filesystem case to pass on Linux", () => {
+  const e = fixture();
+  const portableModule = (value: any, label: string, file: string) => value[label].results.testResults.find((x: any) => x.name.endsWith(file));
+  for (const label of ["linux-full", "macos-full"]) for (const file of portable) {
+    portableModule(e, label, file).assertionResults.push({ ancestorTitles: ["suite"], title: "second case", status: "passed", failureMessages: [] });
+    e[label].results.numTotalTests++; e[label].results.numPassedTests++;
+  }
+  verify(e);
+  for (const file of portable) {
+    const missing = structuredClone(e);
+    portableModule(missing, "linux-full", file).assertionResults.pop();
+    missing["linux-full"].results.numTotalTests--; missing["linux-full"].results.numPassedTests--;
+    assert.throws(() => verify(missing), /Portable case did not pass on Linux/);
+    const skipped = structuredClone(e), report = skipped["linux-full"].results;
+    portableModule(skipped, "linux-full", file).assertionResults[1].status = "skipped";
+    report.numPassedTests--; report.numPendingTests++;
+    assert.throws(() => verify(skipped), /Portable case did not pass on Linux/);
+    for (const label of ["linux-full", "macos-full"]) {
+      const duplicate = structuredClone(e), result = duplicate[label].results;
+      const cases = portableModule(duplicate, label, file).assertionResults;
+      cases.push({ ...cases[0], status: "skipped" }); result.numTotalTests++; result.numPendingTests++;
+      assert.throws(() => verify(duplicate), /Duplicate portable test identity/);
+    }
+  }
+  const empty = structuredClone(e), mac = empty["macos-full"].results;
+  for (const a of mac.testResults.find((x: any) => x.name.endsWith(paths[0])).assertionResults) a.status = "skipped";
+  mac.numPassedTests -= 2; mac.numPendingTests += 2;
+  assert.throws(() => verify(empty), /Portable file did not pass on macOS/);
+});
 test("rejects stale, duplicate, malformed and empty portable classifications", () => {
   const blob = "1".repeat(40), good = { path: paths[0], blob, reason: "DTO" };
   const guards = Object.fromEntries(["packages/daynight/src", "packages/daynight/test", "packages/daynight/scripts", "packages/daynight/package.json", "packages/daynight/vitest.config.ts", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/vitest.focused-evidence.config.ts", "patches", ".github/workflows/cli-focused-evidence.yml"].map(path => [path, blob]));
   guards[".npmrc"] = null as any;
   const get = (path: string) => path === ".npmrc" ? null : blob;
-  assert.deepEqual(portableFiles({ files: [good], guards }, get), portable);
+  assert.deepEqual(portableFiles({ files: [good], guards }, get), new Set([paths[0]]));
   assert.throws(() => portableFiles({ files: [good], guards: { ...guards, "packages/daynight/src": "2".repeat(40) } }, get), /Stale classification guard/);
   assert.throws(() => portableFiles({ files: [good], guards: {} }, get), /guard paths/);
   assert.throws(() => portableFiles({ files: [good], guards }, path => path === ".github/workflows/cli-focused-evidence.yml" ? "2".repeat(40) : get(path)), /Stale classification guard/);

@@ -27,8 +27,13 @@ type membershipFixture struct {
 
 func newMembershipFixture(t *testing.T) *membershipFixture {
 	t.Helper()
-	projects, database, _, _ := projectService(t)
-	f := &membershipFixture{database: database, projects: projects, memberships: NewMemberships(database), now: time.Now().UTC().Truncate(time.Microsecond)}
+	_, database, _, _ := projectService(t)
+	return membershipFixtureWithStore(t, database)
+}
+
+func membershipFixtureWithStore(t *testing.T, database *postgres.Store) *membershipFixture {
+	t.Helper()
+	f := &membershipFixture{database: database, projects: NewProjects(database), memberships: NewMemberships(database), now: time.Now().UTC().Truncate(time.Microsecond)}
 	f.memberships.now = func() time.Time { return f.now }
 	return f
 }

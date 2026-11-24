@@ -72,11 +72,21 @@ func (s *lifecycleLockWitness) WriteGitHubProjectDeletion(ctx context.Context, i
 	})
 }
 
+func rollbackLifecycleBlocker(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		t.Errorf("blocker cleanup: %v", err)
+	}
+}
+
 func TestProjectLifecycleRetriesNewDownstreamLockSet(t *testing.T) {
+	db := isolatedStore(t)
 	for _, app := range []bool{false, true} {
 		for _, deleting := range []bool{false, true} {
-			t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
-				f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+			if !t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
+				f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 				defer cancel()
 				extra, err := testutil.CreatePrivateProject(ctx, f.db, f.principal, uuid.NewString(), "New downstream", "https://example.test/new-downstream")
@@ -103,14 +113,28 @@ func TestProjectLifecycleRetriesNewDownstreamLockSet(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback(context.WithoutCancel(ctx))
+				result := make(chan error, 1)
+				launched, drained := false, false
+				defer func() {
+					cancel()
+					rollbackLifecycleBlocker(t, tx)
+					if launched && !drained {
+						cleanup, stop := context.WithTimeout(context.Background(), cleanupTimeout)
+						defer stop()
+						select {
+						case <-result:
+						case <-cleanup.Done():
+							t.Errorf("lifecycle cleanup: %v", cleanup.Err())
+						}
+					}
+				}()
 				if _, err = tx.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, extra.ID); err != nil {
 					t.Fatal(err)
 				}
 				if err = pg.LockGoalDependencyTeam(ctx, tx, extra.ID); err != nil {
 					t.Fatal(err)
 				}
-				result := make(chan error, 1)
+				launched = true
 				go func() {
 					var e error
 					if deleting {
@@ -130,23 +154,29 @@ func TestProjectLifecycleRetriesNewDownstreamLockSet(t *testing.T) {
 				if err = tx.Commit(ctx); err != nil {
 					t.Fatal(err)
 				}
-				if err = testutil.ReceiveQueryResult(t, ctx, result); err != nil {
+				err = testutil.ReceiveQueryResult(t, ctx, result)
+				drained = true
+				if err != nil {
 					t.Fatal(err)
 				}
 				if witness.calls.Load() != 1 {
 					t.Fatalf("callback count %d", witness.calls.Load())
 				}
 				assertGoalRelationState(t, f.db, goal, 0, 2)
-			})
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
 		}
 	}
 }
 
 func TestProjectLifecycleRefusesNonOwnerBeforeRemoteLocks(t *testing.T) {
+	db := isolatedStore(t)
 	for _, app := range []bool{false, true} {
 		for _, deleting := range []bool{false, true} {
-			t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
-				f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+			if !t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
+				f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
 				_, actor, _ := testutil.AuthRecords(t, f.db)
@@ -164,7 +194,7 @@ func TestProjectLifecycleRefusesNonOwnerBeforeRemoteLocks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback(context.WithoutCancel(ctx))
+				defer rollbackLifecycleBlocker(t, tx)
 				if _, err = tx.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, f.downProject.ID); err != nil {
 					t.Fatal(err)
 				}
@@ -181,7 +211,10 @@ func TestProjectLifecycleRefusesNonOwnerBeforeRemoteLocks(t *testing.T) {
 				}
 				assertGoalFault(t, err, "forbidden")
 				assertGoalRelationState(t, f.db, f.down, 1, 1)
-			})
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
 		}
 	}
 }
@@ -240,10 +273,11 @@ func TestProjectLifecycleOverlappingLocksAvoidDeadlock(t *testing.T) {
 }
 
 func TestProjectLifecycleRemoteLockDeadlineRollsBack(t *testing.T) {
+	db := isolatedStore(t)
 	for _, app := range []bool{false, true} {
 		for _, deleting := range []bool{false, true} {
-			t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
-				f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+			if !t.Run(map[bool]string{true: "App", false: "base"}[app]+map[bool]string{true: " delete", false: " transfer"}[deleting], func(t *testing.T) {
+				f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
 				target, err := testutil.CreateTeam(ctx, f.db, f.principal.UserID, uuid.NewString(), "Destination")
@@ -263,7 +297,7 @@ func TestProjectLifecycleRemoteLockDeadlineRollsBack(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback(context.WithoutCancel(ctx))
+				defer rollbackLifecycleBlocker(t, tx)
 				if _, err = tx.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, f.downProject.ID); err != nil {
 					t.Fatal(err)
 				}
@@ -283,7 +317,10 @@ func TestProjectLifecycleRemoteLockDeadlineRollsBack(t *testing.T) {
 				if err = f.db.Pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL,(SELECT team_id::text FROM project_ownership WHERE project_id=$1) FROM projects WHERE id=$1`, f.upProject.ID).Scan(&deleted, &owner); err != nil || deleted || owner != f.upProject.Ownership.TeamID {
 					t.Fatalf("deadline changed project: deleted=%v owner=%s error=%v", deleted, owner, err)
 				}
-			})
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
 		}
 	}
 }
@@ -571,13 +608,17 @@ func TestProjectLifecycleAndThreadGoalLockOrdering(t *testing.T) {
 }
 
 func TestProjectLifecycleLocksAffectedTasksInUUIDOrder(t *testing.T) {
+	db := isolatedStore(t)
 	for _, deleting := range []bool{false, true} {
-		t.Run(map[bool]string{true: "deletion", false: "transfer"}[deleting], func(t *testing.T) {
-			f := newGoalLifecycleFixture(t, model.TaskTodo, model.TaskTodo)
+		if !t.Run(map[bool]string{true: "deletion", false: "transfer"}[deleting], func(t *testing.T) {
+			f := seedGoalLifecycleFixture(t, db, model.TaskTodo, model.TaskTodo)
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			done := make(chan error, 1)
 			launched, drained := false, false
-			low, high := queryID(30), queryID(40)
+			low, high := uuid.NewString(), uuid.NewString()
+			if low > high {
+				low, high = high, low
+			}
 			lowProject, highProject := f.upProject.ID, f.downProject.ID
 			if lowProject < highProject {
 				lowProject, highProject = highProject, lowProject
@@ -654,6 +695,9 @@ func TestProjectLifecycleLocksAffectedTasksInUUIDOrder(t *testing.T) {
 				t.Fatal("lifecycle did not finish")
 			}
 			testutil.AssertPoolReusable(t, f.db.Pool)
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, db.Pool)
 	}
 }

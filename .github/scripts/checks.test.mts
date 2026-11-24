@@ -43,7 +43,7 @@ test("the final gate waits for every independent validation stage", () => {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
-    assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
+    assert.ok(job.includes(`bash scripts/check.sh --${mode}`));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -664,6 +664,21 @@ test("Go coverage partitions provide isolated Azure migration storage", () => {
   }
 });
 
+test("PR Azure validation uses the current module capture while main retains the separate commands", () => {
+  const steps = stepsOf(server);
+  const validation = steps.find(step => step.includes("id: server-validation\n"))!;
+  const evidence = steps.find(step => step.includes("name: Validate Azure tests in the covered invocation\n"))!;
+  const separate = steps.find(step => step.includes("name: Validate Azure storage and startup\n"))!;
+  assert.ok(steps.indexOf(validation) < steps.indexOf(evidence));
+  assert.match(validation, /rm -rf \.tmp\/go-test-evidence\/module\n          bash scripts\/check\.sh --coverage/);
+  assert.match(evidence, /^        if: \$\{\{ github.event_name == 'pull_request' \}\}$/m);
+  assert.match(evidence, /node --test scripts\/azure-evidence\.test\.mts\n          node scripts\/azure-evidence\.mts \.tmp\/go-test-evidence\/module/);
+  assert.match(separate, /^        if: \$\{\{ github.event_name != 'pull_request' \}\}$/m);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzurite\(ArchiveStaging\)\?\$'/);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzureStartupWithAzurite\$'/);
+  assert.match(separate, /go test -count=1 -timeout=5m -run '\^TestAzure' \.\/internal\/service\/mcpdownload \.\/internal\/core\/session/);
+});
+
 test("the Go module runner bounds PostgreSQL storage in memory and checks the actual data mount", () => {
   const options = server.match(/^      postgres:\n([\s\S]*?)^    defaults:/m)?.[1];
   assert.ok(options);
@@ -707,7 +722,7 @@ test("Go module coverage and API integration prepare independent runners", () =>
   const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
   assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
   const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
-  assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
+  assert.ok(validation.includes("bash scripts/check.sh --coverage\n"));
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
   assert.deepEqual(artifactPaths(coverage), [
     "packages/daynight-server/coverage.out",

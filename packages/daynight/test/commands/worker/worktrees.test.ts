@@ -324,8 +324,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it("recognizes a verified successor in a different worktree directory", async () => {
-    const f = await fixture(), adapter = manager(f.root);
-    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const original = await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
     const successor = changedClaim(f.owner);
     const next = await adapter.prepareWorktree(f.project, successor, operation());
@@ -337,8 +337,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it("does not treat a task branch registered outside the managed namespace as a successor", async () => {
-    const f = await fixture(), adapter = manager(f.root);
-    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const original = await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
     const next = path.join(f.root, "manual");
     git(f.repository, ["worktree", "add", next, original.branch]);

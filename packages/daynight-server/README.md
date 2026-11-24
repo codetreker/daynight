@@ -1469,6 +1469,9 @@ preserves its container for the restart check; the last test removes it. The
 business tests also require `DAYNIGHT_TEST_DATABASE_URL` set to an isolated
 PostgreSQL database. The startup test uses the overlay produced by `scripts/check.sh`.
 CI runs the object, archive, startup and business tests against its own Azurite service.
+PR CI verifies their passing events in the complete module coverage invocation;
+main CI also runs the separate Azure commands. The PR gate rejects missing,
+skipped or failed tests and incomplete capture, including skipped image subtests.
 
 ### Startup and shutdown tests
 
@@ -3079,9 +3082,10 @@ the corresponding job-provided URL and fails when it is absent. Other packages
 keep the shared URL, including the Store root, whose existing TestMain selects
 its dedicated database. The test binary receives the original arguments, output
 streams, exit status, signals and Go environment. The launcher is attached only
-to the PR module coverage invocation; nested Go commands, local and main checks,
-other CI jobs, and the separate Azure tests keep their existing behavior. The
-service and all databases are removed with the job. The
+to the PR module coverage invocation, including its Azure tests. Nested Go
+commands, local and main checks, other CI jobs, and the separate Azure commands
+on main keep their existing behavior. The service and all databases are removed
+with the job. The
 [database routing decision](../../.agents/notes/implemented/testing/2026-11-24-go-pr-package-databases.md)
 records the trade-offs.
 
