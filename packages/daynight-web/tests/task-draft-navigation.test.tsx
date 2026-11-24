@@ -7,7 +7,7 @@ import { useBrowserLocation } from '../src/app/browser-location';
 import { useMyTasksHistory, useProjectHistory } from '../src/app/use-page-history';
 import { myTasksHistory, projectHistory, readProjectHistory, type MyTasksReading, type ProjectReading } from '../src/app/page-history';
 import { navigate } from '../src/app/router';
-import { DraftNavigationConfirmation, MyTasksDraftHost, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
+import { DraftNavigationConfirmation, LocalTaskDraftHost, MyTasksDraftHost, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRequestTaskDraftDeparture, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -27,18 +27,63 @@ const Consumer = ({ discard, retired }: { readonly discard: () => void; readonly
   return <><section ref={owner}><textarea aria-label="Draft" ref={editor} value={value} onChange={(event) => setValue(event.target.value)} /></section>
     <DraftNavigationConfirmation owner={owner} fallbackFocus={editor} taskTitle="Task title" /></>;
 };
-const mount = (page = true) => {
+const mount = (page = true, local = false) => {
   const scope = createTaskCacheScope({ userId: 'c0000000-0000-0000-0000-000000000001', onIdentityMismatch: vi.fn() });
   scopes.push(scope);
   let event!: (event: CacheEvent) => void;
   vi.spyOn(scope, 'subscribe').mockImplementation((listener) => { event = listener; return () => {}; });
   const discard = vi.fn();
-  const view = (retired = false) => <TaskCacheProvider scope={scope}><TaskDraftBoundary projectId={projectId} taskId={taskId} page={page}><Consumer discard={discard} retired={retired} /></TaskDraftBoundary></TaskCacheProvider>;
+  const view = (retired = false) => {
+    const draft = <TaskDraftBoundary projectId={projectId} taskId={taskId} page={page}><Consumer discard={discard} retired={retired} /></TaskDraftBoundary>;
+    return <TaskCacheProvider scope={scope}>{local ? <LocalTaskDraftHost identity={discard}>{draft}</LocalTaskDraftHost> : draft}</TaskCacheProvider>;
+  };
   const rendered = renderWithLocale(view(), { locale: 'en' });
   return { ...rendered, discard, scope, publish: (value: CacheEvent) => event(value), retire: () => rendered.rerender(view(true)) };
 };
 
 describe('task draft lifecycle and confirmation', () => {
+  it('discards only the departing local reader when the still-mounted parent edits the same Goal', () => {
+    const scope = createTaskCacheScope({ userId: 'c0000000-0000-0000-0000-000000000001', onIdentityMismatch: vi.fn() });
+    scopes.push(scope);
+    const parentDiscard = vi.fn(), localDiscard = vi.fn(), leave = vi.fn();
+    const Draft = ({ label, discard }: { label: string; discard: () => void }) => {
+      const [value, setValue] = useState(''), owner = useRef<HTMLElement>(null), editor = useRef<HTMLTextAreaElement>(null);
+      const depart = useRequestTaskDraftDeparture();
+      useDirtyTaskDraft({ isDirty: () => value !== '', discard: () => { discard(); setValue(''); } });
+      useLayoutEffect(() => registerOverlay(owner.current!, null), []);
+      return <><section ref={owner}><textarea ref={editor} aria-label={label} value={value} onChange={event => setValue(event.target.value)} /><button onClick={() => depart(leave)}>Leave {label}</button></section>
+        <DraftNavigationConfirmation owner={owner} fallbackFocus={editor} taskTitle={label} /></>;
+    };
+    renderWithLocale(<TaskCacheProvider scope={scope}>
+      <TaskDraftBoundary projectId={projectId} taskId={taskId} page><Draft label="Parent" discard={parentDiscard} /></TaskDraftBoundary>
+      <LocalTaskDraftHost identity={localDiscard}><TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}><Draft label="Nested" discard={localDiscard} /></TaskDraftBoundary></LocalTaskDraftHost>
+    </TaskCacheProvider>, { locale: 'en' });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Parent' }), { target: { value: 'parent draft' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nested' }), { target: { value: 'nested draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Leave Nested' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(leave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Leave Nested' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(leave).toHaveBeenCalledOnce();
+    expect(localDiscard).toHaveBeenCalledOnce();
+    expect(parentDiscard).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Parent' })).toHaveValue('parent draft');
+  });
+  it('protects a graph-local reader draft when navigating within the same underlying resource', () => {
+    history.replaceState(null, '', path);
+    const result = mount(false, true);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'nested graph draft' } });
+    act(() => navigate(`${path}?tab=discussion`));
+    expect(screen.getByRole('alertdialog')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByRole('textbox')).toHaveValue('nested graph draft');
+    expect(location.search).toBe('');
+    act(() => navigate(`${path}?tab=discussion`));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(result.discard).toHaveBeenCalledOnce();
+    expect(location.search).toBe('?tab=discussion');
+  });
   it('keeps same-task tab and attachment changes, cancels and then protects new drafts after discard', () => {
     history.replaceState(null, '', path);
     const result = mount();

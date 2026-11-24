@@ -8,6 +8,7 @@ import { MyTasksDraftHost } from '../task-detail/TaskDraftNavigation';
 import { TaskDetailDialog } from '../task-detail/TaskDetailDialog';
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { TaskExecutionClockProvider } from '../task-execution/TaskExecutionClock';
+import { GoalAcceptanceProvider } from '../goal-acceptance-graph/GoalAcceptanceProvider';
 
 type Selection = NonNullable<MyTasksReading['detail']>;
 type Props = {
@@ -41,7 +42,7 @@ const Content = ({ detail, select, refreshList, restoreFocus }: Props) => {
     if (node.parentId === null) { navigate(`/projects/${encodeURIComponent(projectId)}#chain=${encodeURIComponent(id)}`); return; }
     select({ projectId, id: node.parentId, navigation: { tab: 'description', path: null }, goalChildren: { graphRootId: representative, task: null } });
   };
-  return <TaskExecutionClockProvider projectId={projectId} snapshot={graph.snapshot}>
+  return <GoalAcceptanceProvider projectId={projectId} snapshot={graph.syncedSnapshot} detailSnapshot={graph.snapshot} graphError={graph.error} onRefreshGraph={graph.refresh}><TaskExecutionClockProvider projectId={projectId} snapshot={graph.snapshot}>
     <MyTasksDraftHost projectId={projectId} taskId={detail.id}>
       <TaskDetailDialog key={detail.id} projectId={projectId} taskId={detail.id} snapshot={graph.snapshot} observation={{ kind: 'direct' }}
         graphError={graph.error} goalGraphError={graph.error} navigation={detail.navigation}
@@ -51,7 +52,7 @@ const Content = ({ detail, select, refreshList, restoreFocus }: Props) => {
         onSelectTask={openTask} onNavigateExternalTask={openTask} onNavigateExternalChain={openChain}
         onNavigateParent={navigate} onRefreshGraph={graph.refresh} onClose={() => select(null, true)} onRestoreFocus={restoreFocus} />
     </MyTasksDraftHost>
-  </TaskExecutionClockProvider>;
+  </TaskExecutionClockProvider></GoalAcceptanceProvider>;
 };
 
 export const MyTasksDetailHost = (props: Props) => <ProjectAccessBoundary projectId={props.detail.projectId} initialRead><TaskDetailSessionBoundary><Content {...props} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

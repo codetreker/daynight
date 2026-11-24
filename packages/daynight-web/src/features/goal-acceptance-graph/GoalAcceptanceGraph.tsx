@@ -52,6 +52,7 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
   const [direction, setDirection] = useState<GraphDirection>('horizontal');
   const [selected, setSelected] = useState(initialSelectedId);
   const known = useMemo(() => projectGoalRelations(summaries), [summaries]);
+  useLayoutEffect(() => setSelected(initialSelectedId), [initialSelectedId]);
   const baseline = useMemo(() => projectGoalAcceptance(summaries, initialSelectedId), [summaries, initialSelectedId]);
   const reachableSnapshot = useMemo(() => relationSnapshot === undefined ? undefined : { ...relationSnapshot,
     sources: reachableGoalSources(projectId, baseline, relationSnapshot) }, [projectId, baseline, relationSnapshot]);

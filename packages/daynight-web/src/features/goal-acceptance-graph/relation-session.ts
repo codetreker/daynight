@@ -36,6 +36,7 @@ export class GoalRelationSession {
   private disposed = false;
   private qualified = false;
   private summaries = emptySummaries;
+  private focusId: string | null = null;
   private visible: GoalRelationSnapshot = { sources: new Map(), deniedIds: new Set() };
   private readonly unsubscribe: () => void;
 
@@ -67,8 +68,9 @@ export class GoalRelationSession {
     this.visible = { sources: new Map([...this.sources].map(([id, source]) => [id, source.view])), deniedIds: new Set(this.denied) };
     for (const listener of this.listeners) listener();
   };
-  setRoots = (summaries: ReadonlyMap<string, TaskSummary> | null) => {
+  setRoots = (summaries: ReadonlyMap<string, TaskSummary> | null, focusId: string | null = null) => {
     if (this.disposed) return;
+    this.focusId = focusId;
     const previouslyQualified = this.qualified;
     this.qualified = summaries !== null;
     if (summaries === null) {
@@ -77,7 +79,7 @@ export class GoalRelationSession {
       this.publish(); return;
     }
     this.summaries = summaries;
-    const roots = new Map([...summaries].filter(([, goal]) => goal.type === 'goal' && (goal.status === 'todo' || goal.status === 'in_progress')));
+    const roots = new Map([...summaries].filter(([, goal]) => goal.type === 'goal' && (goal.id === focusId || goal.status === 'todo' || goal.status === 'in_progress')));
     for (const [id, source] of this.sources) if (source.view.mode === 'root' && !roots.has(id)) source.view = { ...source.view, mode: 'inspection' };
     for (const [id, summary] of roots) {
       if (this.targetWithdrawals.has(id) && this.denied.has(id)) continue;
@@ -94,7 +96,7 @@ export class GoalRelationSession {
         }
       }
     }
-    const baseline = projectGoalAcceptance(summaries);
+    const baseline = projectGoalAcceptance(summaries, this.focusId);
     const legal = selectLegalContributions(this.projectId, baseline, this.contributions(), this.denied);
     for (const id of legal.conflictingIds) { const source = this.sources.get(id)!; this.cancel(source); source.view = { ...source.view, phase: 'conflict', contribution: null }; }
     this.prune();
@@ -145,7 +147,7 @@ export class GoalRelationSession {
   };
   private canvasContributions = () => [...this.sources.values()].flatMap(source => source.view.mode === 'inspection' || source.view.contribution === null ? [] : [source.view.contribution]);
   private prune = () => {
-    const baseline = projectGoalAcceptance(this.summaries);
+    const baseline = projectGoalAcceptance(this.summaries, this.focusId);
     const reachable = reachableGoalSources(this.projectId, baseline, { sources: new Map([...this.sources].map(([id, source]) => [id, source.view])), deniedIds: this.denied });
     for (const [id, source] of this.sources) {
       const view = reachable.get(id);
@@ -156,7 +158,7 @@ export class GoalRelationSession {
   };
   private cover = (id: string, mode: 'inspection' | 'expanded') => {
     if (!this.qualified || this.disposed || this.denied.has(id)) return;
-    const baseline = projectGoalAcceptance(this.summaries);
+    const baseline = projectGoalAcceptance(this.summaries, this.focusId);
     const visible = combineGoalRelations(this.projectId, baseline, this.canvasContributions(), this.denied);
     if (!visible.goals.has(id)) return;
     const existing = this.sources.get(id);
@@ -192,7 +194,7 @@ export class GoalRelationSession {
   retry = (id: string) => { this.enqueue(id); };
   reenter = () => {
     if (!this.qualified) return;
-    this.setRoots(this.summaries);
+    this.setRoots(this.summaries, this.focusId);
     for (const [id, source] of this.sources) if (!['queued', 'loading', 'partial'].includes(source.view.phase)) this.enqueue(id);
   };
   private pump = () => {
@@ -206,7 +208,7 @@ export class GoalRelationSession {
   private load = async (source: Source) => {
     // An incomplete replacement prefix cannot prove that later successors disappeared.
     const replacing = source.view.contribution !== null;
-    const retainedContribution = () => selectLegalContributions(this.projectId, projectGoalAcceptance(this.summaries), this.contributions(), this.denied).accepted
+    const retainedContribution = () => selectLegalContributions(this.projectId, projectGoalAcceptance(this.summaries, this.focusId), this.contributions(), this.denied).accepted
       .find(contribution => contribution.sourceId === source.view.goalId) ?? null;
     const controller = new AbortController(); source.controller = controller;
     const generation = source.generation;
@@ -246,7 +248,7 @@ export class GoalRelationSession {
         const prerequisites = page.prerequisites.map(item => item.target !== null && !this.admitsTarget(item.target, readGeneration) ? { ...item, target: null } : item);
         const candidate: GoalRelationContribution = { sourceId: source.view.goalId, sourceProjectId: source.view.projectId, prerequisites, successors: [...successors.values()] };
         const denied = new Set(this.denied); denied.delete(source.view.goalId);
-        if (contributionConflicts(this.projectId, projectGoalAcceptance(this.summaries), this.contributions(candidate), denied)) {
+        if (contributionConflicts(this.projectId, projectGoalAcceptance(this.summaries, this.focusId), this.contributions(candidate), denied)) {
           const retained = retainedContribution();
           source.view = { ...source.view, phase: 'conflict', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.prune(); this.publish(); return;
         }

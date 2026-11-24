@@ -14,6 +14,9 @@ type ProjectHost = { readonly projectId: string; readonly rootId: string; readon
 const ProjectHostContext = createContext<ProjectHost | null>(null);
 type MyTasksHost = { readonly projectId: string; readonly rootId: string; readonly child: boolean };
 const MyTasksHostContext = createContext<MyTasksHost | null>(null);
+const LocalHostContext = createContext<object | null>(null);
+
+export const LocalTaskDraftHost = ({ identity, children }: { readonly identity: object; readonly children: ReactNode }) => <LocalHostContext value={identity}>{children}</LocalHostContext>;
 
 export const MyTasksDraftHost = ({ projectId, taskId, children }: { readonly projectId: string; readonly taskId: string; readonly children: ReactNode }) => {
   const host = useMemo<MyTasksHost>(() => ({ projectId, rootId: taskId, child: false }), [projectId, taskId]);
@@ -58,9 +61,11 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensit
   const host = useContext(ResourceHostContext);
   const projectHost = useContext(ProjectHostContext);
   const myTasksHost = useContext(MyTasksHostContext);
+  const localHost = useContext(LocalHostContext);
   const value = useMemo<DraftContext>(() => ({
-    scope: { identity, projectId, taskId }, signal: identity.signal,
+    scope: { identity: localHost ?? identity, projectId, taskId }, signal: identity.signal,
     survives: (url, view, entryId) => {
+      if (localHost !== null) return false;
       const target = parseRoute(url.pathname, url.search);
       if (myTasksHost !== null) {
         if (parseAuthRoute(url.pathname, url.search).kind !== 'myTasks' || myTasksHost.projectId !== projectId || view === undefined) return false;
@@ -105,7 +110,7 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensit
         return host.kind === 'external' ? taskId === host.parentId : external.goalChildren?.task?.id === taskId;
       } catch { return false; }
     },
-  }), [identity, projectId, taskId, page, host, projectHost, myTasksHost, projectSourceSensitive]);
+  }), [identity, projectId, taskId, page, host, projectHost, myTasksHost, projectSourceSensitive, localHost]);
   useLayoutEffect(() => identity.subscribe((event) => {
     if (event.projectId === projectId && event.accessRevoked) browserNavigation().retireScope(value.scope);
   }), [identity, projectId, value]);
@@ -127,6 +132,16 @@ export const useRequestTaskDraftAction = () => {
   const context = useContext(Context);
   if (context === null) throw new Error('Task drafts require the current task draft boundary.');
   return (action: () => void): void => browserNavigation().requestScopeAction(context.scope, action);
+};
+
+export const useRequestTaskDraftDeparture = () => {
+  const context = useContext(Context);
+  const local = useContext(LocalHostContext);
+  if (context === null) throw new Error('Task departures require the current task draft boundary.');
+  return (action: () => void): void => {
+    if (local === null) browserNavigation().requestAction(action);
+    else browserNavigation().requestScopeAction(context.scope, action);
+  };
 };
 
 export const useDraftNavigationDecision = () => {

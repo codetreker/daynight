@@ -3,11 +3,11 @@ import type { TaskSummary } from '../../api/types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { GoalRelationSession } from './relation-session';
 
-export const useGoalRelationSession = (projectId: string, summaries: ReadonlyMap<string, TaskSummary> | null) => {
+export const useGoalRelationSession = (projectId: string, summaries: ReadonlyMap<string, TaskSummary> | null, focusId: string | null = null) => {
   const scope = useTaskCacheScope();
   const session = useMemo(() => new GoalRelationSession(scope, projectId), [scope, projectId]);
   useEffect(() => () => session.dispose(), [session]);
-  useEffect(() => session.setRoots(summaries), [session, summaries]);
+  useEffect(() => session.setRoots(summaries, focusId), [session, summaries, focusId]);
   useEffect(() => {
     const reenter = () => { if (document.visibilityState !== 'hidden') session.reenter(); };
     window.addEventListener('focus', reenter); document.addEventListener('visibilitychange', reenter);

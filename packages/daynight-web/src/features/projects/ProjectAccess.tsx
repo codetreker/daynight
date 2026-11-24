@@ -340,6 +340,12 @@ export const ProjectAccessBoundary = ({ projectId, initialRead = false, active =
   return current?.projectId === projectId && current.scope === scope ? children : <Provider key={`${projectId}:${initialRead}`} projectId={projectId} initialRead={initialRead} active={active}>{children}</Provider>;
 };
 
+export const ProjectAccessScope = ({ projectId, session, children }: { readonly projectId: string; readonly session: ProjectAccessSession; readonly children: ReactNode }) => {
+  const scope = useTaskCacheScope();
+  if (session.projectId !== projectId || session.scope !== scope) throw new Error('Project access requires the current authenticated project boundary.');
+  return <Context.Provider value={session}>{children}</Context.Provider>;
+};
+
 export const useProjectAccess = (projectId: string) => {
   const session = useContext(Context);
   const scope = useTaskCacheScope();
