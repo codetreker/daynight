@@ -17,8 +17,15 @@ different times or lose access while a graph remains visible.
 The project Goals toolbar and Goal detail's right column open a separate
 acceptance graph. Project dialogs, standalone detail pages, My Tasks and nested
 Goal readers use the current Goal's actual Project. An inherited Project-source
-registry is separate from each reader's child graph controller. It reuses existing
-synchronization owners, including ancestor A during A→B→A reading; a missing
+registry is separate from each reader's child graph controller. Each source pairs
+its committed synchronization baseline with the actual `ProjectAccessSession`
+from `useProjectAccess(projectId).session`. `ProjectAccessScope` validates the
+Project and current cache scope before restoring that existing session around
+the reader-local provider. A→B→A reading reuses both ancestor A owners: restoring
+only A's graph source would leave project-scoped editors under B's nearer access
+boundary. The restored session retains its original identity, scope, revocation
+and cancellation guards; context restoration starts no access lifecycle and
+grants no permission. A missing
 foreign source starts normal `useTaskGraph` on admitted detail mount, before a
 graph action. A child graph keeps its source detail and ancestor graphs open.
 Active Goals are roots; a detail entry also selects and retains its current Goal

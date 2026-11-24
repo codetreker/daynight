@@ -62,6 +62,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   let releaseReplacement: (() => void) | null = null;
   const syncRequests: string[] = [];
   const relationRequests: string[] = [];
+  const tagRequests: string[] = [];
   const failedSources = new Set<string>(), failedPages = new Set<string>(), heldSources = new Set<string>();
   const heldReplies = new Map<string, () => void>();
   const heldPages = new Set<string>(), heldPageReplies = new Map<string, () => void>();
@@ -92,6 +93,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   page.on('requestfailed', request => { if (new URL(request.url()).pathname.endsWith('/goal-dependencies')) cancelledRequests.push(request.url()); });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (path.endsWith('/tags')) tagRequests.push(`${path}${url.search}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body),
       headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const fail = () => send({ error: { code: 'not_found', message: 'Not found', requestId: activeId } }, 404);
@@ -168,7 +170,7 @@ const install = async (page: Page, options: { external?: boolean; bulk?: boolean
   const releaseAll = () => { heldSources.clear(); heldPages.clear(); for (const release of [...heldReplies.values(), ...heldPageReplies.values()]) release(); heldReplies.clear(); heldPageReplies.clear(); releaseReplacement?.(); };
   pendingFixtures.add(releaseAll);
   return {
-    syncRequests, relationRequests, unexpected, cancelledRequests, pageErrors,
+    syncRequests, relationRequests, tagRequests, unexpected, cancelledRequests, pageErrors,
     externalGoal: related(externalDetails[0]!),
     relatedGoal: (id: string, sourceProject = projectId) => related([...syncDetails, ...externalDetails].find(detail => detail.id === id)!, sourceProject),
     versionOf: (id: string) => syncDetails.find(detail => detail.id === id)!.version,
@@ -1183,6 +1185,20 @@ test('foreign nested graphs reuse ancestor Project owners and preserve each sour
   const returned = await goalSurface(page, 'Release client');
   await expect(returned.locator('.task-detail-title')).toHaveText('Release client');
   await expect(detailGraphButton(returned)).toBeEnabled();
+  const tagReads = state.tagRequests.length;
+  await returned.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const tagSearch = returned.getByRole('searchbox', { name: 'Search tags', exact: true });
+  await expect.poll(async () => state.pageErrors.length > 0 || await tagSearch.isVisible()).toBe(true);
+  expect(state.pageErrors).toEqual([]);
+  await tagSearch.fill('ancestor tag');
+  await page.clock.runFor(400);
+  await expect(returned.locator('.task-tags-editor')).toContainText('No matching tags.');
+  await expect.poll(() => state.tagRequests.slice(tagReads).some(path => path.includes('ancestor'))).toBe(true);
+  expect(state.tagRequests.slice(tagReads).every(path => path.startsWith(`/api/v1/projects/${projectId}/tags`))).toBe(true);
+  expect(state.syncRequests.filter(value => value.startsWith(`/api/v1/projects/${projectId}/`))).toEqual(originalProjectReads);
+  expect(state.syncRequests).toEqual(requests);
+  await returned.locator('.task-tags-editor').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(returned.getByRole('button', { name: 'Edit tags', exact: true })).toBeFocused();
   await returned.getByRole('tab', { name: 'Discussion', exact: true }).click();
   await returned.getByRole('textbox', { name: 'Discussion message', exact: true }).fill('Keep returned ancestor draft');
   await returned.getByRole('tab', { name: 'Description', exact: true }).click();

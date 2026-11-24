@@ -1,5 +1,5 @@
-import { fireEvent, screen } from '@testing-library/react';
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { act, fireEvent, screen } from '@testing-library/react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { GoalAcceptanceProvider } from '../src/features/goal-acceptance-graph/GoalAcceptanceProvider';
@@ -8,13 +8,16 @@ import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../src/app/overlay';
 import { useDetailOverlay } from '../src/features/task-detail/DetailFrame';
+import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
+import { getProjectAccess } from '../src/api/auth';
+import { directAccessFixture } from './helpers/taskSync';
 
 const mock = vi.hoisted(() => ({ mounted: [] as string[], source: new Map<string, { snapshot: GraphSnapshot; syncedSnapshot: GraphSnapshot; error: null; refresh: () => void }>(), sequence: 0 }));
 vi.mock('../src/features/projects/useTaskGraph', () => ({ useTaskGraph: (projectId: string) => {
   useEffect(() => { mock.mounted.push(projectId); }, []);
   return mock.source.get(projectId)!;
 } }));
-vi.mock('../src/features/projects/ProjectAccess', () => ({ ProjectAccessBoundary: ({ children }: { children: ReactNode }) => children }));
+vi.mock('../src/api/auth', async original => ({ ...await original<typeof import('../src/api/auth')>(), getProjectAccess: vi.fn() }));
 vi.mock('../src/features/goal-acceptance-graph/GoalAcceptanceHost', () => ({ GoalAcceptanceHost: (props: {
   projectId: string; initialSelectedId: string; detailSnapshot: GraphSnapshot | null; onClose: () => void; onRestoreFocus: () => void; onSourceUnavailable: () => void;
 }) => {
@@ -27,22 +30,33 @@ vi.mock('../src/features/goal-acceptance-graph/GoalAcceptanceHost', () => ({ Goa
   </section>;
 } }));
 
-const render = createLocaleRender('en');
 const a = '00000000-0000-4000-8000-000000000100', b = '00000000-0000-4000-8000-000000000200';
+const renderLocale = createLocaleRender('en', { taskCache: true });
+const render = (ui: ReactElement) => {
+  const wrap = (content: ReactElement) => <ProjectAccessBoundary projectId={a}>{content}</ProjectAccessBoundary>;
+  const rendered = renderLocale(wrap(ui));
+  return { ...rendered, rerender: (content: ReactElement) => rendered.rerender(wrap(content)) };
+};
+const accessSessions: ProjectAccessSession[] = [];
 const goal = '00000000-0000-4000-8000-000000000001';
 const snapshot = (projectId: string) => snapshotFixture([detailFixture(projectId, goal, { type: 'goal', status: 'done', ready: false })]);
 const Reader = ({ projectId, hidden = false, target, retired = false }: { projectId: string; hidden?: boolean; target?: string; retired?: boolean }) => {
+  const { session, status } = useProjectAccess(projectId);
+  useEffect(() => { accessSessions.push(session); }, [session]);
   const owner = useGoalAcceptanceOwner()!, root = useRef<HTMLElement>(null), heading = useRef<HTMLHeadingElement>(null);
   const [related, setRelated] = useState(false);
   useLayoutEffect(() => registerOverlay(root.current!, null), []);
   useLayoutEffect(() => { owner.attach(goal, root, heading); if (retired) owner.retire(goal); }, [owner, projectId, retired]);
-  return <section ref={root}><h2 tabIndex={-1} ref={heading}>Reader {projectId}</h2><div hidden={hidden}>
+  return <section ref={root} data-access-status={status}><h2 tabIndex={-1} ref={heading}>Reader {projectId}</h2><div hidden={hidden}>
     <button disabled={!owner.canOpen(goal)} onClick={event => owner.open({ projectId, goalId: goal, trigger: event.currentTarget, owner: root, fallback: heading })}>Open {projectId}</button>
   </div>{target !== undefined && <button onClick={() => setRelated(true)}>Read {target}</button>}
     {related && owner.renderRelated(target!, <Reader projectId={target!} {...(target === b ? { target: a } : {})} />)}
   </section>;
 };
-beforeEach(() => { mock.mounted.length = 0; mock.source.clear(); mock.sequence = 0; });
+beforeEach(() => {
+  mock.mounted.length = 0; mock.source.clear(); mock.sequence = 0; accessSessions.length = 0;
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async projectId => directAccessFixture(projectId));
+});
 
 const RecoveryReader = ({ label }: { label: string }) => {
   const acceptance = useGoalAcceptanceOwner()!, root = useRef<HTMLElement>(null), heading = useRef<HTMLHeadingElement>(null);
@@ -133,6 +147,13 @@ describe('Goal acceptance detail owner', () => {
     fireEvent.click(screen.getByRole('button', { name: `Read ${a}` }));
     fireEvent.click(screen.getAllByRole('button', { name: `Open ${a}` })[1]!);
     expect(screen.getByTestId(`graph-${a}`)).toHaveTextContent(goal);
+    expect(mock.mounted).toEqual([b]);
+    expect(accessSessions).toHaveLength(3);
+    expect(accessSessions[1]!.projectId).toBe(b);
+    expect(accessSessions[1]).not.toBe(accessSessions[0]);
+    expect(accessSessions[2]).toBe(accessSessions[0]);
+    act(() => accessSessions[0]!.publishMutation(null));
+    for (const heading of screen.getAllByRole('heading', { name: `Reader ${a}` })) expect(heading.closest('section')).toHaveAttribute('data-access-status', 'unavailable');
     expect(mock.mounted).toEqual([b]);
   });
 });

@@ -30,8 +30,12 @@ The project Goals toolbar and Goal detail's right column open a separate Goal
 acceptance graph from the existing committed TaskSync baseline. Project dialogs,
 standalone detail pages, My Tasks and nested Goal readers supply the current
 Goal's actual Project. An inherited Project-source registry reuses their existing
-synchronization owners, including an ancestor Project when returning through
-another Project. A missing foreign source starts normal synchronization on
+synchronization and access owners, including an ancestor Project when returning
+through another Project. Each source pairs its baseline with the actual
+`ProjectAccessSession`; `ProjectAccessScope` validates Project and cache scope
+before restoring that session for the nested reader. Project-scoped editors
+therefore use the reader's actual Project access, with the original identity,
+revocation and cancellation guards and no new access lifecycle. A missing foreign source starts normal synchronization on
 admitted detail mount; graph actions do not create it. Each reader has its own
 child graph controller. A detail entry selects the current
 Goal and includes it and its direct prerequisites even when the Goal is completed

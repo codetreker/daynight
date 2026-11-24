@@ -2,11 +2,11 @@ import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRe
 import { OverlayOwnerContext } from '../../app/overlay';
 import type { GraphSnapshot } from '../projects/useTaskGraph';
 import { useTaskGraph } from '../projects/useTaskGraph';
-import { ProjectAccessBoundary } from '../projects/ProjectAccess';
+import { ProjectAccessBoundary, ProjectAccessScope, useProjectAccess, type ProjectAccessSession } from '../projects/ProjectAccess';
 import { GoalAcceptanceHost } from './GoalAcceptanceHost';
 import { GoalAcceptanceOwnerContext, type GoalAcceptanceEntry as Entry, type GoalAcceptanceOwner } from './GoalAcceptanceContext';
 
-type Source = { readonly snapshot: GraphSnapshot | null; readonly detailSnapshot: GraphSnapshot | null; readonly graphError: unknown; readonly onRefreshGraph: () => void };
+type Source = { readonly snapshot: GraphSnapshot | null; readonly detailSnapshot: GraphSnapshot | null; readonly graphError: unknown; readonly onRefreshGraph: () => void; readonly accessSession: ProjectAccessSession };
 const SourceContext = createContext<ReadonlyMap<string, Source>>(new Map());
 const canRestore = (element: HTMLElement | null): element is HTMLElement => element !== null && element.isConnected &&
   !element.closest('[hidden], [inert]') && !element.matches(':disabled') && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden';
@@ -20,7 +20,8 @@ export const GoalAcceptanceProvider = ({ projectId, snapshot, detailSnapshot, gr
   readonly children: ReactNode;
 }) => {
   const inheritedSources = useContext(SourceContext);
-  const source = useMemo<Source>(() => ({ snapshot, detailSnapshot, graphError, onRefreshGraph }), [snapshot, detailSnapshot, graphError, onRefreshGraph]);
+  const { session: accessSession } = useProjectAccess(projectId);
+  const source = useMemo<Source>(() => ({ snapshot, detailSnapshot, graphError, onRefreshGraph, accessSession }), [snapshot, detailSnapshot, graphError, onRefreshGraph, accessSession]);
   const sources = useMemo(() => new Map([...inheritedSources, [projectId, source]]), [inheritedSources, projectId, source]);
   const [entry, setEntry] = useState<Entry | null>(null);
   const currentEntry = useRef(entry); currentEntry.current = entry;
@@ -56,9 +57,9 @@ export const GoalAcceptanceProvider = ({ projectId, snapshot, detailSnapshot, gr
   const open = useCallback((next: Entry) => { if (next.projectId === projectId && canOpen(next.goalId)) { preferHeading.current = false; retiredFocus.current = null; setEntry(next); } }, [projectId, canOpen]);
   const renderRelated = useCallback((relatedProjectId: string, content: ReactNode) => {
     const existing = sources.get(relatedProjectId);
-    return existing === undefined
-      ? <ProjectAccessBoundary projectId={relatedProjectId} initialRead><RelatedGoalScope projectId={relatedProjectId}>{content}</RelatedGoalScope></ProjectAccessBoundary>
-      : <GoalAcceptanceProvider projectId={relatedProjectId} {...existing}>{content}</GoalAcceptanceProvider>;
+    if (existing === undefined) return <ProjectAccessBoundary projectId={relatedProjectId} initialRead><RelatedGoalScope projectId={relatedProjectId}>{content}</RelatedGoalScope></ProjectAccessBoundary>;
+    const { accessSession: relatedAccess, ...graph } = existing;
+    return <ProjectAccessScope projectId={relatedProjectId} session={relatedAccess}><GoalAcceptanceProvider projectId={relatedProjectId} {...graph}>{content}</GoalAcceptanceProvider></ProjectAccessScope>;
   }, [sources]);
   const value = useMemo<GoalAcceptanceOwner>(() => ({ projectId, canOpen, open, attach, retire, renderRelated }), [projectId, canOpen, open, attach, retire, renderRelated]);
   useLayoutEffect(() => {
