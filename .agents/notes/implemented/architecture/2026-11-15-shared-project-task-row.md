@@ -57,3 +57,6 @@ failed and confirmed-empty states. Full-chain representatives remain a distinct
 entry. The [personal-list integration](2026-11-15-personal-shared-task-row.md)
 reuses this row through an account-projection adapter, supplies actual Parent
 Goal links and preserves the personal list's independent admission and navigation.
+The [detail-child integration](2026-11-24-detail-subtask-shared-row.md) uses an
+authorized Task-detail adapter, preserves child pagination and explicitly retains
+unknown Worker and absent Session inputs without per-row execution reads.
