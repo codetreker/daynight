@@ -12,6 +12,15 @@ const observation = { schemaVersion: 1, botId: id(9), botVersion: "9007199254740
   observedAt: "2026-11-19T00:00:00Z", workerLastSeenAt: "2026-11-18T00:00:00Z", sessionLastSeenAt: null, freshUntil: null, currentTurnId: null };
 
 describe("Bot recovery versioned protocol", () => {
+  it("admits initialization evidence only beside an exact stopped predecessor and a null native binding", () => {
+    const retry = { ...grant, nativeSessionId: null, initializationEvidence: { version: 1, state: "not_dispatched" } };
+    expect(parseBotRecoveryGrant(retry)).toEqual(retry);
+    for (const initializationEvidence of [null, {}, { version: 2, state: "not_dispatched" }, { version: 1, state: "dispatching" }, { version: 1, state: "not_dispatched", extra: true }]) {
+      expect(() => parseBotRecoveryGrant({ ...retry, initializationEvidence })).toThrow();
+    }
+    expect(() => parseBotRecoveryGrant({ ...retry, nativeSessionId: "existing" })).toThrow();
+    expect(() => parseBotRecoveryGrant({ ...retry, grant: { ...retry.grant, previousGeneration: null, stopProof: null } })).toThrow();
+  });
   it("preserves original identity and exact versions, independently from current authorization", () => {
     expect(parseBotRecoveryIdentity(identity)).toEqual(identity);
     expect(parseBotRecoveryRegistration(registration)).toEqual(registration);

@@ -301,3 +301,24 @@ func TestBotRecoveryRequiresNativeIdentityAndExactOriginalStopProof(t *testing.T
 		t.Fatalf("recovery replaced stable identity %+v %v", current, err)
 	}
 }
+
+func TestBotGrantInitializationRetainsIdentityAndExactStopOnReplay(t *testing.T) {
+	f, out, _, _ := connectedBotFixture(t)
+	v, previous := out.Session, "1"
+	grant := BotGrant{BotVersion: out.Bot.Version, InitializationEvidence: &BotInitializationEvidence{Version: 1, State: "not_dispatched"}, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: v.Identity.ControllerInstanceID, StoppedAt: f.s.now().UTC().Format(time.RFC3339Nano)}}}
+	recovered, err := f.s.GrantBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 3, "LockSession": 1, "SetSessionGrant": 1, "SaveSession": 1, "SetSessionGenerationStop": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, grant)
+	if err != nil || recovered.ExecutionGeneration != "2" || recovered.SessionID != v.SessionID || recovered.TestExecutionID != v.TestExecutionID || f.writes.Session.Snapshot.Identity.NativeSessionID != nil {
+		t.Fatalf("initialization recovery changed binding: %+v, %v", recovered, err)
+	}
+	selectBotGrant(t, f, recovered)
+	if _, err = f.s.Poll(botPhase(t, f, t.Context(), map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "Bot": 1}), v.ControllerFence); err == nil {
+		t.Fatal("old generation remains authorized")
+	}
+	if _, err = f.s.GrantBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 3, "LockSession": 1, "SetSessionGrant": 1, "SaveSession": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, grant); err != nil {
+		t.Fatal("exact stopped generation replay failed", err)
+	}
+	grant.Grant.StopProof.RecordID = uuid.NewString()
+	if _, err = f.s.GrantBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, grant); err == nil {
+		t.Fatal("changed stop proof reused initialization recovery")
+	}
+}

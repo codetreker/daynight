@@ -231,6 +231,13 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { invalidateImages(); authority?.invalidate(); if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
   const nativeRequest: CodexRpc["request"] = (method, params, onLateResponse, consume) => {
+    if (method === "thread/start" && options.onNativeInitializationDispatch !== undefined) {
+      options.assertNativeDispatch?.();
+      // Creation preparation can publish a dirty recovery barrier. Record the
+      // conservative dispatch boundary first; interruption cannot then pair
+      // not-dispatched evidence with an uncertain native recovery manifest.
+      options.onNativeInitializationDispatch();
+    }
     const request = () => {
       if (recovery && transportFailed) throw new NativeRpcError(-32602, "Codex Bot recovery is unavailable; native dispatch is closed.");
       const dispatch = imageDispatch;

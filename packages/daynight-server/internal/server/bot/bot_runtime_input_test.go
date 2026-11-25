@@ -2,6 +2,7 @@ package bot
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -9,6 +10,45 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
+
+func TestBotGrantInitializationEvidenceIsOptionalAndStrict(t *testing.T) {
+	_, recovery, _ := recoveryInputs()
+	for _, recoveryEnvelope := range []bool{false, true} {
+		var body any = sessioncore.BotGrant{BotVersion: 1, Grant: recovery.Grant}
+		if recoveryEnvelope {
+			body = recovery
+		}
+		raw, _ := json.Marshal(body)
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &fields)
+		decode := func(raw []byte) (*sessioncore.BotInitializationEvidence, error) {
+			if recoveryEnvelope {
+				input, err := botRecoveryGrantInput(raw)
+				return input.InitializationEvidence, err
+			}
+			input, err := botGrantInput(raw)
+			return input.InitializationEvidence, err
+		}
+		for _, evidence := range []string{`null`, `{}`, `[]`, `{"version":1}`, `{"state":"not_dispatched"}`, `{"version":2,"state":"not_dispatched"}`, `{"version":"1","state":"not_dispatched"}`, `{"version":1,"state":"dispatching"}`, `{"version":1,"state":null}`, `{"version":1,"state":"not_dispatched","extra":true}`, `{"version":1,"version":1,"state":"not_dispatched"}`} {
+			fields["initializationEvidence"] = json.RawMessage(evidence)
+			encoded, _ := json.Marshal(fields)
+			if _, err := decode(encoded); err == nil {
+				t.Fatalf("accepted initialization evidence %s (recovery=%v)", evidence, recoveryEnvelope)
+			}
+		}
+		fields["initializationEvidence"] = json.RawMessage(`{"version":1,"state":"not_dispatched"}`)
+		encoded, _ := json.Marshal(fields)
+		evidence, err := decode(encoded)
+		if err != nil || !reflect.DeepEqual(evidence, &sessioncore.BotInitializationEvidence{Version: 1, State: "not_dispatched"}) {
+			t.Fatalf("evidence not preserved: %+v, %v", evidence, err)
+		}
+		delete(fields, "nativeSessionId")
+		encoded, _ = json.Marshal(fields)
+		if _, err := decode(encoded); err == nil {
+			t.Fatal("optional evidence replaced a required grant field")
+		}
+	}
+}
 
 func TestBotRuntimeStrictEnvelopes(t *testing.T) {
 	reg := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}

@@ -64,6 +64,10 @@ an archive. Process-tree verification and journal stop evidence precede an atomi
 transition of the Bot intent and execution row. The next generation retains the
 same native Session, role, configuration and operation journal; an unreachable
 Controller alone never authorizes replacement.
+The [initialization recovery decision](../bug-fix/2026-11-25-bot-initialization-retry.md)
+allows a Codex Bot with positive evidence that thread creation was not dispatched
+to initialize a successor after the same complete stop checks. Missing native
+identity alone remains insufficient.
 
 Windows Job termination is asynchronous, so an empty member list does not prove
 that every retained original process has exited. The stop helper pins known

@@ -28,6 +28,7 @@ type LaunchCommon = {
   readonly initialOperationId: string; readonly initialPrompt: string;
   readonly instructions?: string;
   readonly botId?: string;
+  readonly initializationRetry?: { readonly previousLaunchId: string; readonly ticketHash: string; readonly snapshotHash: string };
   readonly codexBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly claudeBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly copilotBotRecovery?: { readonly botId: string; readonly directory: string };
@@ -71,7 +72,7 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const botFields = ["botId", "codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key));
+  const botFields = ["botId", "codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery", "initializationRetry"].filter(key => Object.hasOwn(data, key));
   const keys = ["schemaVersion", ...ids, ...(Object.hasOwn(data, "lifecycleBinding") ? ["lifecycleBinding"] : []), ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "usageScope") ? ["usageScope"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...botFields, "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
@@ -88,6 +89,14 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   } else if (Object.hasOwn(data, "lifecycleBinding")) throw new Error("Legacy Controller tickets cannot claim lifecycle fencing.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
+  if (Object.hasOwn(data, "initializationRetry")) {
+    const retry = data.initializationRetry as Record<string, unknown> | null;
+    if (!test || data.provider !== "codex" || data.botId === undefined || data.initialInput !== "none" || data.resumeNativeSessionId !== null || data.executionGeneration === "1"
+      || retry === null || typeof retry !== "object" || Object.keys(retry).sort().join() !== "previousLaunchId,snapshotHash,ticketHash"
+      || [retry.ticketHash, retry.snapshotHash].some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) throw new Error("Bot initialization retry ticket evidence is invalid.");
+    uuid(retry.previousLaunchId);
+    if (retry.previousLaunchId === data.launchId) throw new Error("Bot initialization retry must retain its original launch.");
+  }
   if (Object.hasOwn(data, "copilotBotRecovery")) {
     const recovery = data.copilotBotRecovery as Record<string, unknown> | null;
     if (!test || data.provider !== "copilot" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"

@@ -175,6 +175,20 @@ describe("Bot recovery grants", () => {
   const recoveredSnapshot = (): SessionSnapshot => ({ ...snapshot(), executionGeneration: "2", identity: { ...snapshot().identity, controllerInstanceId: id(31) } });
   const recoveredCredential = () => ({ ...credential(), executionGeneration: "2", controllerInstanceId: id(31) });
 
+  it("carries Codex initialization evidence outside the unchanged grant proof", async () => {
+    let payload: unknown;
+    const original = { ...snapshot(), identity: { ...snapshot().identity, nativeSessionId: null } };
+    const fixture = await listen((request, response, body) => {
+      if (request.method === "POST") payload = body;
+      response.end(JSON.stringify(request.method === "GET" ? { session: original } : recoveredCredential()));
+    });
+    const value = recover(fixture.record); value.intent!.nativeSessionId = null;
+    const initializationEvidence = { version: 1 as const, state: "not_dispatched" as const };
+    await fixture.api.grant(value, signal(), { ...previous, initializationEvidence });
+    expect(payload).toMatchObject({ nativeSessionId: null, initializationEvidence, grant: { previousGeneration: "1", stopProof: { recordId: previous.recordId } } });
+    expect((payload as { grant: object }).grant).not.toHaveProperty("initializationEvidence");
+  });
+
   it("requests the next generation only for the exact old native Session and durable stop proof", async () => {
     const requests: { method: string; body: unknown }[] = [];
     const fixture = await listen((request, response, body) => {
@@ -242,6 +256,22 @@ describe("Bot deletion receipts", () => {
   const deleted = () => ({ id: id(3), workerId: id(2), version: "9007199254740994", deletion: deletion() });
   const receipt = () => ({ deletionId: id(40), stop: { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(7), controllerInstanceId: id(8), stopProof: { recordId: id(41), previousControllerInstanceId: id(8), stoppedAt: "2026-01-01T00:00:00Z" } }, result: { state: "completed" as const, code: null } });
   const deleting = (value: BotRecord): BotRecord => ({ ...value, observed: deleted() });
+
+  it("submits only the retained predecessor stop for an ungranted initialization target", async () => {
+    let payload: unknown;
+    const fixture = await listen((_request, response, body) => {
+      payload = body;
+      response.end(JSON.stringify({ ...deleted(), deletion: { ...deletion(), workerCleanup: receipt().result } }));
+    });
+    const value = deleting(fixture.record), stop = receipt().stop;
+    value.intent = { ...value.intent!, executionGeneration: "2", controllerInstanceId: id(60), launchId: id(61) };
+    await expect(fixture.api.completeDeletion(value, receipt(), signal())).rejects.toThrow("execution fence");
+    value.initializationDeletion = { deletionId: deletion().deletionId, requestedVersion: deletion().requestedVersion, stop,
+      evidence: { version: 1, targetLaunchId: id(61), targetExecutionGeneration: "2", targetControllerInstanceId: id(60), predecessorLaunchId: id(9), ticketHash: "a".repeat(64), snapshotHash: "b".repeat(64), authorization: "rejected" } };
+    await fixture.api.completeDeletion(value, receipt(), signal());
+    expect(payload).toEqual(receipt());
+    expect(payload).not.toHaveProperty("initializationDeletion");
+  });
 
   it("reports cleanup through the current host while preserving the original creation Worker DTO", async () => {
     const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result } };

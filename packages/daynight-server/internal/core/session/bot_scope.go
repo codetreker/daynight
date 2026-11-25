@@ -23,10 +23,34 @@ type BotRegistrationResult struct {
 	Session sp.Snapshot
 }
 type BotGrant struct {
-	BotVersion      int64    `json:"botVersion,string"`
-	Grant           sp.Grant `json:"grant"`
-	NativeSessionID *string  `json:"nativeSessionId"`
+	BotVersion             int64                      `json:"botVersion,string"`
+	Grant                  sp.Grant                   `json:"grant"`
+	NativeSessionID        *string                    `json:"nativeSessionId"`
+	InitializationEvidence *BotInitializationEvidence `json:"initializationEvidence,omitempty"`
 }
+
+// BotInitializationEvidence asserts a locally verified creation boundary. The
+// hosting Worker retains the journal evidence and the original process-stop proof.
+type BotInitializationEvidence struct {
+	Version int    `json:"version"`
+	State   string `json:"state"`
+}
+
+func checkBotGenerationRecovery(r *record, g sp.Grant, native *string, evidence *BotInitializationEvidence) error {
+	if evidence != nil {
+		if evidence.Version != 1 || evidence.State != "not_dispatched" {
+			return fault("invalid_input", "Invalid Bot initialization evidence.")
+		}
+		if r.BotID == nil || r.Snapshot.ClaimID != "" || r.Snapshot.TestExecutionID == "" || r.Snapshot.Identity.Provider != "codex" || r.Snapshot.InitialInputState != "not_required" || native != nil || r.Snapshot.Identity.NativeSessionID != nil || g.PreviousGeneration == nil || g.StopProof == nil || g.StopProof.Kind != "" {
+			return conflict()
+		}
+	}
+	if g.PreviousGeneration != nil && (g.StopProof == nil || g.StopProof.Kind != "" || native == nil && evidence == nil) {
+		return conflict()
+	}
+	return nil
+}
+
 type BotReport struct {
 	BotVersion           int64                  `json:"botVersion,string"`
 	Fence                *sp.ControllerFence    `json:"fence"`
@@ -144,8 +168,8 @@ func (s *Execution) GrantBot(ctx context.Context, p model.Principal, workerID, i
 		if !equalNative(input.NativeSessionID, r.Snapshot.Identity.NativeSessionID) {
 			return conflict()
 		}
-		if input.Grant.PreviousGeneration != nil && (input.NativeSessionID == nil || input.Grant.StopProof == nil || input.Grant.StopProof.Kind != "") {
-			return conflict()
+		if err := checkBotGenerationRecovery(r, input.Grant, input.NativeSessionID, input.InitializationEvidence); err != nil {
+			return err
 		}
 		out, err = s.grantRecord(ctx, tx, p, r, task{}, input.Grant)
 		return err

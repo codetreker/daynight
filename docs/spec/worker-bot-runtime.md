@@ -14,7 +14,7 @@ Controller ticket 使用 `initialInput: "none"`、空 `initialPrompt` 及独立 
 
 spawn 前必须持久记录 `unknown`，随后保存进程出生证明和认证 IPC 观察。重开数据库后，`unknown` 或 `acknowledged` 优先观察同一 launch；IPC 失败或缺少 native ID 都不允许再次 spawn。进程未知时保留 ticket、journal、别名目录和执行责任。明确启动拒绝必须持久化；服务端报告失败后，下次按原对象核对并补报，不能永久降为未知。IPC 关闭后的原 journal 可以证明初始化拒绝，不能凭旧 ready 证明当前在线。
 
-ready 必须同时具备原 Controller 的初始化结果、正确无初始输入状态和服务端相同 native identity 的 active、connected、synchronized Session。spawn 回执、清单状态或本地 IPC 单独均不能证明 ready。零用户 turn 时 Provider 尚未分配 native ID 可以显式为 null，不能伪造身份；这样的执行停止后不能恢复成空白替代会话。
+ready 必须同时具备原 Controller 的初始化结果、正确无初始输入状态和服务端相同 native identity 的 active、connected、synchronized Session。spawn 回执、清单状态或本地 IPC 单独均不能证明 ready。零用户 turn 时 Provider 尚未分配 native ID 可以显式为 null，不能伪造身份；null 本身不授权创建替代会话，只有下述创建前失败证明允许重新初始化。
 
 ## 节拍与失败
 
@@ -30,11 +30,21 @@ Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#li
 
 停止针对原 ticket 和进程出生身份，认证 IPC stop 回执仅表示请求结果；原 Controller 及原生进程树须经 OS 核验确已停止，并在同一 journal 保存匹配 fence 的停止证据。恢复子进程已经提交但 journal 仍为前代时，必须继续依据当前子进程的已持久出生证明尝试停止；前代 journal 不能证明当前代停止，缺失当前代完整停证仍报告失败。Windows 的完整停止必须沿原 Job lease 确认成员清空，并确认终止前已固定的原 Controller/native 出生实例句柄全部 signaled；ESRCH、变化的退出码及空成员清单单独不构成完成证明。已核对出生身份的退出中实例只等待同一句柄，不放宽运行身份冲突或操作 PID 替代实例。原绝对 deadline、未知状态和主要/关闭错误保持。IPC 不可达、进程查询失败和停止超时都不等于已停止。ticket、journal、操作回执、原角色、原生身份及各代私有路径保留，供恢复和精确删除使用。
 
-重启先复用仍可认证观察的原 Controller，不为健康执行发新 generation。只有原 writer 完整停证和原 native ID 均存在时，才可分配直接下一代，保持 Bot、Session、testExecutionId、首次 registration、角色、配置和 native home，并恢复原 native Session。原 stopProof 与新 launch/Controller instance 身份在提交 grant 前持久保存。grant 响应未知后读取同一 Session：仍是精确前代时沿原停证申请同一目标；已是精确目标时续接该代；其它 fence 均拒绝。不得因未知响应继续递增 generation。
+重启先复用仍可认证观察的原 Controller，不为健康执行发新 generation。恢复原生会话要求原 writer 完整停证和原 native ID 均存在，才可分配直接下一代，保持 Bot、Session、testExecutionId、首次 registration、角色、配置和 native home，并恢复原 native Session。原 stopProof 与新 launch/Controller instance 身份在提交 grant 前持久保存。grant 响应未知后读取同一 Session：仍是精确前代时沿原停证申请同一目标；已是精确目标时续接该代；其它 fence 均拒绝。不得因未知响应继续递增 generation。
 
 未提交 spawn 的持久意图可以继续原首次启动或原恢复目标；`unknown` 不能回退为未提交。`never_started` 不构成换代停证，也不能绕过 native ID 缺失。未知用户操作保留原 journal 与 operation identity，恢复不得重新发送旧请求。
 
 正常关停来源必须来自停止前新鲜且健康的认证观察。若停机失败后重新接管仍运行的原 writer，则取消该次停机来源，后续异常退出仍受预算限制。该来源允许恢复原会话而不增加异常 `recoveryCount`；已有异常计数和阻止原因不能因退出、重启或成功观察清零。异常恢复受冻结的 `recoveryLimit` 限制，耗尽时保留可诊断原因、原身份和私有资料。旧 ready journal、已失败或已停止的观察不能将异常恢复改记为正常重启。
+
+### Codex 创建前失败
+
+Codex Bot 能证明原生线程创建请求尚未派发时，允许在原 writer 完整停止后初始化直接下一代。它保持同一 Bot、Session、执行、角色及冻结配置，保留旧票据、停止事实和业务记录。普通 Task/Test Session、其他 Provider 和已经创建的原生会话不使用此例外。
+
+新记录须在创建请求派发之前持久保存阶段，阶段写入失败不得派发。派发后结果未知、native ID 缺失、没有历史文件或没有用户输入都不能单独证明尚未创建。旧记录只允许使用可核对的特定创建前失败来源及完整原执行证据；缺失或矛盾的证据须明确拒绝，不能回填新阶段伪造证明。
+
+初始化重试使用冻结的异常恢复预算和跨重启保留的退避时间。环境检查前先持久消耗一次预算，成功后才推进代次；崩溃不返还已消耗次数。等待期间不重新申请授权或启动进程。证据不足与预算耗尽须保留可观察的明确失败，停止重复执行；服务端拒绝或未知授权结果不允许绕过原请求核对规则。
+
+初始化目标尚未启动且授权明确未提交或被拒绝时，删除可使用仍完整可核验的前代真实停证，保留目标身份和回执来源，不回滚 intent 或伪造 `never_started`。必须排除未知授权及任何目标成功回执，服务端仍按实际代次核验。服务端已接受目标代次却无法取得当前代停证时，保留 `failed/execution_evidence_missing` 及资料，后续只读核对；此结果不是删除完成。
 
 ## 删除与私有资料
 

@@ -28,6 +28,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if (Object.entries(expected).some(([key,value])=>m.params.config?.['shell_environment_policy.set.'+key]!==value)) {out({id:m.id,error:{code:-32602,message:'Agent CLI environment did not override native shell snapshot'}});continue;}
  }
  if(m.method==='thread/start'||m.method==='thread/resume') {
+  if(m.method==='thread/start' && process.env.CODEX_TEST_CREATE_DISCONNECT==='1')process.exit(0);
   if(process.env.CODEX_TEST_REJECT_ROLE && Object.hasOwn(m.params,'developerInstructions')) {
    out({id:m.id,error:{code:-32602,message:process.env.CODEX_TEST_REJECT_ROLE}});continue;
   }

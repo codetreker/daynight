@@ -3,7 +3,7 @@ import { maintainControllerGrants } from "../backends/grant-renewal.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import type { BotDeletionManager } from "./delete.js";
 import { createBotInventory } from "./inventory.js";
-import { BotAdmissionBlockedError, type BotProcess } from "./process.js";
+import { BotAdmissionBlockedError, BotInitializationBlockedError, BotInitializationWaitingError, type BotProcess } from "./process.js";
 import type { BotRemote } from "./remote.js";
 import type { BotSessionApi, BotStartupResult } from "./session-api.js";
 import type { BotStore } from "./store.js";
@@ -93,14 +93,14 @@ export const createManagedAssistantRuntime = (options: {
       errors.delete(input.botId);
     } catch (cause) {
       if (signal.aborted) return;
-      if (cause instanceof BotAdmissionBlockedError) return;
+      if (cause instanceof BotAdmissionBlockedError || cause instanceof BotInitializationWaitingError) return;
       error(input.botId, cause);
       const latest = options.store.get(owner, input.botId);
       // Do not advance the registration's version after a possibly submitted
       // request, or turn a transport outage into a definitive startup failure.
       if (record !== null && latest !== null && latest.observed.deletion === null
-        && (latest.intent === null || cause instanceof ControllerStartupError && cause.observation.state === "failed" && latest.intent.sessionId !== null)) {
-        try { await report(latest, { state: "failed", code: cause instanceof ControllerStartupError ? cause.observation.reasonCode : "environment_unavailable" }, signal); }
+        && (latest.intent === null || cause instanceof BotInitializationBlockedError || cause instanceof ControllerStartupError && cause.observation.state === "failed" && latest.intent.sessionId !== null)) {
+        try { await report(latest, { state: "failed", code: cause instanceof BotInitializationBlockedError ? cause.code : cause instanceof ControllerStartupError ? cause.observation.reasonCode : "environment_unavailable" }, signal); }
         catch (failure) { if (!signal.aborted) error(input.botId, failure); }
       }
     }

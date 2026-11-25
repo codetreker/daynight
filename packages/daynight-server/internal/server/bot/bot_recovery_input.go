@@ -103,7 +103,7 @@ func botRecoveryRegistrationInput(raw []byte) (sessioncore.BotRecoveryRegistrati
 func botRecoveryGrantInput(raw []byte) (sessioncore.BotRecoveryGrant, error) {
 	var input sessioncore.BotRecoveryGrant
 	keys := append(append(append([]string{}, recoveryIdentityKeys...), recoveryBindingKeys...), "operationId", "expectedHostingGeneration", "grant", "controllerToken")
-	fields, err := botRuntimeObject(raw, keys...)
+	fields, err := botGrantObject(raw, keys...)
 	if err != nil {
 		return input, err
 	}

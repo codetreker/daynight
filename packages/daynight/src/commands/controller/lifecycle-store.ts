@@ -1,4 +1,6 @@
 import { clearSourceWire, clearSourceWireThrough, sourceWireEvent } from "./source-wire.js";
+import { parseNativeInitialization, type NativeInitialization } from "./native-initialization.js";
+import { inspectBotInitializationRetryEvidence, type BotInitializationRetryEvidence } from "./bot-initialization-evidence.js";
 import { isProcessBirth } from "./linux-process-proof.js";
 import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
@@ -51,6 +53,7 @@ export type ControllerSnapshot = SessionBinding & {
   currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; controlsRevisionFloor?: string; turnStartedAt?: string | null;
   controllerProcess: ControllerProcessProof | null; nativeProcesses: readonly ProcessProof[];
   nativeStopped: boolean; stoppedAt: string | null; error: string | null; startup?: StartupObservation;
+  nativeInitialization?: NativeInitialization;
   windowsJobStopProof?: { readonly version: 1; readonly ticketHash: string; readonly snapshotHash: string };
 };
 export type ControllerOperation = {
@@ -66,6 +69,10 @@ const json = <T>(value: unknown): T => {
 };
 const checkedSnapshot = (value: ControllerSnapshot): ControllerSnapshot => {
   if (value.startup !== undefined) parseStartupObservation(value.startup);
+  if (value.nativeInitialization !== undefined) {
+    const initialization = parseNativeInitialization(value.nativeInitialization);
+    if (initialization.state === "not_dispatched" && value.nativeSessionId !== null) throw new Error("Undispatched native initialization cannot own a native Session.");
+  }
   return value;
 };
 const closeJournal = (db: Database.Database, file: string, operation: () => void, completedOutcome: SqliteOutcome = "committed"): void => {
@@ -81,7 +88,7 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file also identifies its Session-bound resource files. */
-type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; botHistoryBudget?: BotHistoryCacheBudget; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ControllerProcessProof };
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; botHistoryBudget?: BotHistoryCacheBudget; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ControllerProcessProof; initializationPredecessor?: ControllerLaunchTicket };
 const hasLinuxLaunchKind = (value: unknown): boolean => value !== null && typeof value === "object" && "kind" in value && value.kind === "linux-controller-launch";
 const validateLaunchIdentity = (value: unknown, ticket: ControllerLaunchTicket): void => {
   if (hasLinuxLaunchKind(value) && (!isLinuxControllerLaunch(value) || value.launchId !== ticket.launchId)) throw new Error("Linux Controller launch identity conflicts with its original ticket.");
@@ -96,6 +103,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   if (options.historyPolicy === "task_body" && (ticket.claimId === undefined || !options.contentOwnedLocally)) throw new Error("Task body history requires a locally owned Task Session.");
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let sessionContent!: SessionContent;
+  if (isBotHistoryTicket(ticket) && ticket.provider === "codex" && ticket.resumeNativeSessionId === null) initial.nativeInitialization = { version: 1, state: "not_dispatched" };
   let botHistory: ReturnType<typeof openBotHistoryCache> | null = null;
   let db!: Database.Database;
   let quarantined = false, outboxWritesDisabled = false, writeDepth = 0;
@@ -138,6 +146,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (!db.memory) chmodSync(file, 0o600);
       const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
       if (existing === undefined) {
+        if (ticket.initializationRetry !== undefined) throw new Error("Bot initialization retry requires its original stopped journal.");
         assertNoOrphanTimelineSource(file);
         db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
         db.prepare("UPDATE execution SET history_content_policy=? WHERE id=1").run(options.historyPolicy ?? "legacy");
@@ -146,11 +155,23 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
           try { process.kill(existing.owner_pid, 0); throw new Error("The original controller journal writer is still running."); }
           catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
         }
-        const previous = json<ControllerSnapshot>(existing.snapshot);
+        const previous = checkedSnapshot(json<ControllerSnapshot>(existing.snapshot));
         if (previous.executionId !== ticket.executionId || previous.claimId !== ticket.claimId || previous.testExecutionId !== ticket.testExecutionId || previous.sessionId !== ticket.sessionId) throw new Error("Controller journal belongs to another execution.");
         if (existing.ticket_hash === controllerPayloadHash(ticket) && previous.controllerProcess !== null) throw new Error("A native controller generation cannot be relaunched without a new stopped-generation ticket.");
         if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
-          if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
+          let undispatchedBot = false;
+          if (ticket.initializationRetry !== undefined) {
+            const predecessor = options.initializationPredecessor, retry = ticket.initializationRetry;
+            if (predecessor === undefined || predecessor.launchId !== retry.previousLaunchId || controllerPayloadHash(predecessor) !== retry.ticketHash
+              || existing.ticket_hash !== retry.ticketHash || controllerPayloadHash(previous) !== retry.snapshotHash
+              || predecessor.serverOrigin !== ticket.serverOrigin || predecessor.ownerUserId !== ticket.ownerUserId || predecessor.controllerId !== ticket.controllerId
+              || (predecessor.botId ?? predecessor.codexBotRecovery?.botId) !== ticket.botId
+              || controllerPayloadHash(predecessor.codexBotRecovery ?? null) !== controllerPayloadHash(ticket.codexBotRecovery ?? null)) throw new Error("Bot initialization retry differs from its original ticket or stopped snapshot.");
+            validateControllerSnapshot(previous, predecessor, existing.ticket_hash);
+            undispatchedBot = inspectBotInitializationRetryEvidence(db, predecessor, previous) !== null;
+            if (!undispatchedBot) throw new Error("Bot initialization retry no longer has verified non-dispatch evidence.");
+          }
+          if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null && !undispatchedBot || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
           if (process.platform === "win32") validateWindowsStoredStopProof(previous, existing.ticket_hash);
           if (hasLinuxLaunchKind(previous.controllerProcess)) {
             if (!/^[a-f0-9]{64}$/.test(existing.ticket_hash) || !isLinuxControllerLaunch(previous.controllerProcess) || existing.owner_pid !== null || !Array.isArray(previous.nativeProcesses) || !previous.nativeProcesses.every(isValidNativeProcessProof)
@@ -193,6 +214,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (Object.hasOwn(patch, "windowsJobStopProof") || current.windowsJobStopProof !== undefined) throw new Error("A completed Windows Job stop proof cannot be patched by the Controller.");
     if (Object.keys(patch).some((key) => ["executionId", "claimId", "testExecutionId", "sessionId", "executionGeneration", "controllerInstanceId"].includes(key))) throw new Error("Controller identity cannot change within a generation.");
     if (current.nativeSessionId !== null && patch.nativeSessionId !== undefined && patch.nativeSessionId !== current.nativeSessionId) throw new Error("The original native session cannot be replaced.");
+    if (Object.hasOwn(patch, "nativeInitialization")) {
+      const next = parseNativeInitialization(patch.nativeInitialization);
+      if (current.nativeInitialization === undefined || current.nativeInitialization.state === "dispatching" && next.state !== "dispatching") throw new Error("Native initialization dispatch evidence cannot be introduced or reset within a generation.");
+    }
     validateLaunchIdentity(patch.controllerProcess, ticket);
     if (isLinuxControllerLaunch(current.controllerProcess) && Object.hasOwn(patch, "controllerProcess") && controllerPayloadHash(patch.controllerProcess) !== controllerPayloadHash(current.controllerProcess)) throw new Error("Linux Controller launch identity cannot change within a generation.");
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
@@ -415,6 +440,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
+    markNativeInitializationDispatching: (): void => {
+      // Legacy and resumed generations cannot acquire new non-dispatch evidence.
+      if (getSnapshot().nativeInitialization !== undefined) patchSnapshot({ nativeInitialization: { version: 1, state: "dispatching" } });
+    },
     patchNativeImagePart,
     applyNativeImageReceipt: (request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void => atomic(() => {
       const source = request.nativeSource, occurrence = request.occurrence;
@@ -866,6 +895,24 @@ export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLa
 
 /** Read a validated v16–v19 or current snapshot without modifying protected or retained evidence. */
 export const readCompatibleControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, true);
+
+/** The caller independently proves stop and retains storage ownership through recovery preparation. */
+export const readBotInitializationRetryEvidence = (file: string, ticket: ControllerLaunchTicket, stopped: ControllerSnapshot, deadline = Date.now() + 5000): BotInitializationRetryEvidence | null => {
+  if (!path.isAbsolute(file) || !Number.isSafeInteger(deadline) || deadline <= Date.now()) throw new Error("Bot initialization evidence requires its original journal and an unexpired deadline.");
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: Math.min(5000, deadline - Date.now()) });
+  let result: BotInitializationRetryEvidence | null = null;
+  closeJournal(db, file, () => { result = db.transaction(() => {
+    inspectReadCompatibleControllerJournal(db);
+    const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+    if (row === undefined) throw new Error("Bot original initialization journal is unavailable.");
+    const observed = validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), ticket, row.ticket_hash);
+    if (controllerPayloadHash(observed) !== controllerPayloadHash(stopped)) throw new Error("Bot initialization evidence differs from the original stopped generation.");
+    const value = inspectBotInitializationRetryEvidence(db, ticket, observed);
+    if (Date.now() >= deadline) throw new Error("Bot initialization evidence exceeded its deadline.");
+    return value;
+  }).deferred(); }, "not-started");
+  return result;
+};
 
 /** Immutable launch attempts can share a generation; only the journal's exact ticket owns its snapshot. */
 export const readCurrentControllerInventorySnapshot = (file: string, tickets: readonly ControllerLaunchTicket[], deadline: number): { ticket: ControllerLaunchTicket; snapshot: ControllerSnapshot } | null => {

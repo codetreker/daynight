@@ -11,7 +11,7 @@ import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/t
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { FrozenToolObservation } from "../types.js";
 import { hasNeverStartedDeletionEvidence, type BotExecution } from "./execution-store.js";
-import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type Bot, type BotOwner, type BotRecord, type BotLaunchIntent, type BotRoleConfiguration } from "./types.js";
+import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, parseBotInitializationDeletionEvidence, matchesInitializationDeletionStop, type Bot, type BotOwner, type BotRecord, type BotLaunchIntent, type BotRoleConfiguration, type BotInitializationDeletionEvidence } from "./types.js";
 
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 const time = (value: number): number => { if (!Number.isSafeInteger(value) || value < 0) throw new TypeError("Bot observation time must be a nonnegative safe integer."); return value; };
@@ -79,6 +79,13 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
           || !Number.isFinite(Date.parse(stop.stopProof.stoppedAt)) || stop.stopProof.kind !== undefined && stop.stopProof.kind !== "never_started") throw new Error("Stored Bot deletion stop proof is invalid.");
       }
     }
+    if (record.initializationDeletion !== undefined) {
+      const saved = record.initializationDeletion;
+      if (saved === null || typeof saved !== "object" || Object.keys(saved).sort().join() !== "deletionId,evidence,requestedVersion,stop"
+        || saved.stop === null || typeof saved.stop !== "object" || !matchesInitializationDeletionStop(record, saved.stop)
+        || !Number.isFinite(Date.parse(saved.stop.stopProof.stoppedAt))) throw new Error("Stored Bot initialization deletion responsibility is inconsistent.");
+      for (const value of [saved.deletionId, saved.stop.sessionId, saved.stop.testExecutionId, saved.stop.controllerId, saved.stop.controllerInstanceId, saved.stop.stopProof.recordId]) botUUID(value, "Bot initialization deletion stop identity");
+    }
     return record;
   };
   const get = (owner: BotOwner, botId: string): BotRecord | null => read(() => {
@@ -106,15 +113,42 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       || !same(record.intent, input.intent)) throw new Error("Bot cleanup requires the original deletion identity and current intent.");
     return record;
   };
+  const checkInitializationDeletion = (record: BotRecord, stop: BotDeletionStop, evidence: BotInitializationDeletionEvidence): void => {
+    parseBotInitializationDeletionEvidence(evidence);
+    const row = db.prepare(`SELECT record FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) as { record: string } | undefined;
+    const execution = row === undefined ? null : JSON.parse(row.record) as BotExecution, intent = record.intent, previous = execution?.previous;
+    if (intent === null || execution === null || previous == null || previous.initializationEvidence?.version !== 1 || previous.initializationEvidence.state !== "not_dispatched"
+      || previous.initializationRetryEvidence === undefined || previous.initializationRetryEvidence.version !== 1
+      || !["native_initialization_not_dispatched", "legacy_codex_version_gate"].includes(previous.initializationRetryEvidence.kind)
+      || previous.initializationRetryEvidence.ticketHash !== evidence.ticketHash || previous.initializationRetryEvidence.snapshotHash !== evidence.snapshotHash
+      || execution.launchId !== intent.launchId || execution.executionId !== intent.executionId || execution.executionGeneration !== intent.executionGeneration
+      || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null || execution.unreleased !== undefined
+      || execution.initializationGrantState !== (evidence.authorization === "not_prepared" ? "not_submitted" : "refused")
+      || previous.launchId !== evidence.predecessorLaunchId || !execution.retainedLaunchIds.includes(previous.launchId)
+      || stop.executionGeneration !== previous.generation || stop.controllerInstanceId !== previous.instanceId
+      || stop.stopProof.previousControllerInstanceId !== previous.instanceId || stop.stopProof.recordId !== previous.recordId || stop.stopProof.stoppedAt !== previous.stoppedAt) throw new Error("Bot initialization deletion conflicts with its original unsubmitted execution and stopped predecessor.");
+  };
   return {
+    /** The deletion barrier is observed; the caller has definitively excluded a target grant and reproved the original stop. */
+    recordInitializationDeletion: (input: BotRecord, stop: BotDeletionStop, evidence: BotInitializationDeletionEvidence): BotRecord => atomic(() => {
+      const record = deleting(input), deletion = record.observed.deletion!;
+      const value = { deletionId: deletion.deletionId, requestedVersion: deletion.requestedVersion, evidence, stop };
+      if (record.initializationDeletion !== undefined && !same(record.initializationDeletion, value)) throw new Error("Bot initialization deletion evidence cannot be replaced.");
+      const next = { ...record, initializationDeletion: value };
+      if (!matchesInitializationDeletionStop(next, stop)) throw new Error("Bot initialization deletion stop differs from its original execution.");
+      checkInitializationDeletion(next, stop, evidence);
+      return put(next);
+    }),
     /** The caller holds the per-Bot execution serializer and has proved the writer stopped. */
     prepareDeletion: (input: BotRecord, stop: BotDeletionStop | null, targets: BotDeletionTarget[]): BotRecord => atomic(() => {
       const record = deleting(input), deletion = record.observed.deletion!;
       if (record.cleanup !== undefined && (record.cleanup.stop !== null || stop === null || record.intent === null || record.cleanup.targets.length !== 0)) throw new Error("Bot cleanup responsibility has already been prepared.");
       const intent = record.intent;
+      const predecessor = stop !== null && matchesInitializationDeletionStop(record, stop);
+      if (predecessor) checkInitializationDeletion(record, stop!, record.initializationDeletion!.evidence);
       if (stop !== null && (intent === null || stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
         || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId
-        || stop.controllerInstanceId !== intent.controllerInstanceId)) throw new Error("Bot cleanup stop differs from the original execution intent.");
+        || stop.controllerInstanceId !== intent.controllerInstanceId) && !predecessor) throw new Error("Bot cleanup stop differs from the original execution intent.");
       if (stop === null && (intent !== null || record.definition?.sessionId != null)) throw new Error("A bound Bot requires an exact execution stop proof.");
       record.cleanup = { deletionId: deletion.deletionId, requestedVersion: deletion.requestedVersion, stop, targets, localCompleted: false };
       return put(record);
@@ -190,7 +224,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
           if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
         }
       }
-      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }), ...(previous?.migration === undefined ? {} : { migration: previous.migration }) });
+      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }), ...(previous?.migration === undefined ? {} : { migration: previous.migration }), ...(previous?.initializationDeletion === undefined ? {} : { initializationDeletion: previous.initializationDeletion }) });
     }),
     /** Persist the first registration identity before any register, ticket write or spawn. */
     prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation }): BotLaunchIntent => atomic(() => {

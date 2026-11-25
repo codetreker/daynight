@@ -14,8 +14,10 @@ import { workerStoreFormat } from "../store-format.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { botUUID, botVersion, parseBotOwner, type BotRecord } from "./types.js";
+import { parseBotInitializationEvidence, type BotInitializationEvidence } from "./recovery-protocol.js";
+import type { BotInitializationRetryEvidence } from "../../controller/bot-initialization-evidence.js";
 
-export type BotPreviousGeneration = { launchId: string; generation: string; instanceId: string; recordId: string; stoppedAt: string };
+export type BotPreviousGeneration = { launchId: string; generation: string; instanceId: string; recordId: string; stoppedAt: string; initializationEvidence?: BotInitializationEvidence; initializationRetryEvidence?: BotInitializationRetryEvidence };
 export type BotExecution = {
   launchId: string; executionId: string; executionGeneration: string;
   launchSubmission: "not-submitted" | "unknown" | "acknowledged";
@@ -24,13 +26,20 @@ export type BotExecution = {
   aliasDirectory: string | null; lastError: string | null; startup: StartupObservation | null;
   recoveryCount: number; restartAfterShutdown: boolean; recoveryBlocked: string | null;
   previous: BotPreviousGeneration | null; retainedLaunchIds: string[]; retainedAliasDirectories: string[];
+  initializationRetryAt?: number;
+  initializationGrantState?: "not_submitted" | "unknown" | "refused" | "acknowledged";
 };
-export type BotExecutionPatch = Partial<Pick<BotExecution, "launchSubmission" | "controllerProcess" | "snapshot" | "aliasDirectory" | "lastError" | "startup" | "unreleased">>;
-const fields = ["launchSubmission", "controllerProcess", "snapshot", "aliasDirectory", "lastError", "startup", "unreleased"];
+export type BotExecutionPatch = Partial<Pick<BotExecution, "launchSubmission" | "controllerProcess" | "snapshot" | "aliasDirectory" | "lastError" | "startup" | "unreleased" | "initializationGrantState">>;
+const fields = ["launchSubmission", "controllerProcess", "snapshot", "aliasDirectory", "lastError", "startup", "unreleased", "initializationGrantState"];
 const recoveryFields = ["recoveryCount", "restartAfterShutdown", "recoveryBlocked", "previous", "retainedLaunchIds", "retainedAliasDirectories"];
 const submissions = ["not-submitted", "unknown", "acknowledged"];
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId AND bot_id = @botId";
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
+const checkInitializationEvidence = (value: BotInitializationRetryEvidence): void => {
+  if (value === null || typeof value !== "object" || Object.keys(value).sort().join() !== "kind,snapshotHash,ticketHash,version" || value.version !== 1
+    || !["native_initialization_not_dispatched", "legacy_codex_version_gate"].includes(value.kind)
+    || !/^[a-f0-9]{64}$/.test(value.ticketHash) || !/^[a-f0-9]{64}$/.test(value.snapshotHash)) throw new Error("Bot initialization journal evidence is invalid.");
+};
 const identity = (record: BotRecord) => ({ ...parseBotOwner(record.owner), botId: botUUID(record.botId, "Bot ID") });
 
 const checkProcess = (proof: ProcessProof): void => {
@@ -79,18 +88,27 @@ export const validateBotExecutionSnapshot = (record: BotRecord, snapshot: Contro
 };
 const check = (record: BotRecord, value: BotExecution): BotExecution => {
   const intent = record.intent!;
-  if (value === null || typeof value !== "object" || Object.keys(value).filter(key => key !== "unreleased").sort().join() !== [...fields.filter(key => key !== "unreleased"), ...recoveryFields, "launchId", "executionId", "executionGeneration"].sort().join()
+  if (value === null || typeof value !== "object" || Object.keys(value).filter(key => key !== "unreleased" && key !== "initializationRetryAt" && key !== "initializationGrantState").sort().join() !== [...fields.filter(key => key !== "unreleased" && key !== "initializationGrantState"), ...recoveryFields, "launchId", "executionId", "executionGeneration"].sort().join()
     || value.launchId !== intent.launchId || value.executionId !== intent.executionId || value.executionGeneration !== intent.executionGeneration) throw new Error("Bot execution identity differs from its durable launch intent.");
   botUUID(value.launchId, "Bot launch ID"); botUUID(value.executionId, "Bot execution ID"); botVersion(value.executionGeneration);
   if (!Number.isSafeInteger(value.recoveryCount) || value.recoveryCount < 0 || typeof value.restartAfterShutdown !== "boolean"
     || !(value.recoveryBlocked === null || typeof value.recoveryBlocked === "string" && value.recoveryBlocked.trim() !== "" && value.recoveryBlocked.isWellFormed())) throw new Error("Bot recovery evidence is invalid.");
+  if (value.initializationRetryAt !== undefined && (!Number.isSafeInteger(value.initializationRetryAt) || value.initializationRetryAt < 0 || intent.nativeSessionId !== null || intent.registration.provider !== "codex")) throw new Error("Bot initialization retry deadline is invalid.");
+  if (value.initializationGrantState !== undefined && (!["not_submitted", "unknown", "refused", "acknowledged"].includes(value.initializationGrantState)
+    || value.previous?.initializationEvidence === undefined)) throw new Error("Bot initialization grant evidence is invalid.");
   if (!Array.isArray(value.retainedLaunchIds) || new Set(value.retainedLaunchIds).size !== value.retainedLaunchIds.length) throw new Error("Bot retained launch ownership is invalid.");
   for (const launchId of value.retainedLaunchIds) { botUUID(launchId, "Retained Bot launch ID"); if (launchId === value.launchId) throw new Error("The current Bot launch cannot be retained as a previous launch."); }
   if (!Array.isArray(value.retainedAliasDirectories) || new Set(value.retainedAliasDirectories).size !== value.retainedAliasDirectories.length
     || value.retainedAliasDirectories.some(directory => typeof directory !== "string" || !path.isAbsolute(directory) || /[\0\r\n]/.test(directory))) throw new Error("Bot retained alias ownership is invalid.");
   if (value.previous !== null) {
     const previous = value.previous;
-    if (typeof previous !== "object" || Object.keys(previous).sort().join() !== "generation,instanceId,launchId,recordId,stoppedAt") throw new Error("Bot previous generation evidence is invalid.");
+    if (typeof previous !== "object" || Object.keys(previous).filter(key => key !== "initializationEvidence" && key !== "initializationRetryEvidence").sort().join() !== "generation,instanceId,launchId,recordId,stoppedAt") throw new Error("Bot previous generation evidence is invalid.");
+    if ((previous.initializationEvidence === undefined) !== (previous.initializationRetryEvidence === undefined)) throw new Error("Bot initialization retry must retain its original journal evidence.");
+    if (previous.initializationEvidence !== undefined) {
+      parseBotInitializationEvidence(previous.initializationEvidence);
+      checkInitializationEvidence(previous.initializationRetryEvidence!);
+      if (intent.registration.provider !== "codex") throw new Error("Bot initialization retry conflicts with its provider.");
+    }
     for (const id of [previous.launchId, previous.instanceId, previous.recordId]) botUUID(id, "Bot previous generation identity");
     botVersion(previous.generation);
     if (BigInt(previous.generation) + 1n !== BigInt(value.executionGeneration) || previous.instanceId === intent.controllerInstanceId
@@ -171,6 +189,8 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       const saved = current(record), previous = get(saved);
       if (previous === null) throw new Error("Bot execution evidence has not been prepared.");
       const next = { ...previous, ...patch };
+      if (previous.initializationGrantState === "acknowledged" && next.initializationGrantState !== "acknowledged"
+        || previous.initializationGrantState !== undefined && previous.initializationGrantState !== "not_submitted" && next.initializationGrantState === "not_submitted") throw new Error("Bot initialization grant submission evidence cannot be erased.");
       if (submissions.indexOf(next.launchSubmission) < submissions.indexOf(previous.launchSubmission)) throw new Error("Bot launch submission cannot regress after a possible dispatch.");
       check(saved, next);
       if (previous.startup !== null && (previous.startup.state === "failed" || previous.startup.state === "ready") && !same(previous.startup, next.startup)) {
@@ -210,19 +230,35 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (typeof reason !== "string" || reason.trim() === "" || !reason.isWellFormed()) throw new Error("Bot recovery block requires a nonempty reason.");
       return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
     }),
+    /** Reserve before environment work; a crash cannot restore a spent attempt. */
+    scheduleInitializationRetry: (record: BotRecord, now: number, reserve = false): BotExecution => atomic(() => {
+      const saved = current(record), previous = get(saved), intent = saved.intent!;
+      if (previous === null || saved.observed.deletion !== null || intent.nativeSessionId !== null || intent.registration.provider !== "codex"
+        || previous.snapshot?.nativeSessionId !== null || previous.snapshot.lifecycle !== "stopped" || !previous.snapshot.nativeStopped
+        || previous.recoveryBlocked !== null || !Number.isSafeInteger(now) || now < 0) throw new Error("Bot initialization retry requires the original stopped execution.");
+      if (!reserve && previous.initializationRetryAt !== undefined) return previous;
+      if (reserve && (previous.initializationRetryAt === undefined || previous.initializationRetryAt > now || previous.recoveryCount >= intent.recoveryLimit)) throw new Error("Bot initialization retry is not due or its budget is exhausted.");
+      const recoveryCount = previous.recoveryCount + (reserve ? 1 : 0);
+      const delay = Math.min(300_000, 15_000 * 2 ** Math.min(recoveryCount, 5));
+      return put(saved, { ...previous, recoveryCount, initializationRetryAt: now + delay, restartAfterShutdown: false });
+    }),
     /** The caller first proves process-tree stop and commits the matching journal snapshot. */
-    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch): BotRecord => atomic(() => {
+    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch, initialization?: BotInitializationRetryEvidence): BotRecord => atomic(() => {
       const saved = current(record), previous = get(saved), intent = saved.intent!;
       if (saved.observed.deletion !== null) throw new Error("A deleting Bot cannot recover execution.");
       if (previous === null || previous.launchSubmission === "not-submitted") throw new Error("Bot recovery requires the original submitted generation.");
       validateBotExecutionSnapshot(saved, stopped);
-      if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.nativeSessionId === null || stopped.controllerProcess === null
+      if (initialization !== undefined) checkInitializationEvidence(initialization);
+      if (initialization !== undefined && (initialization.snapshotHash !== controllerPayloadHash(stopped)
+        || intent.registration.provider !== "codex" || stopped.nativeSessionId !== null || intent.nativeSessionId !== null
+        || previous.initializationRetryAt === undefined || previous.recoveryCount < 1)) throw new Error("Bot initialization retry evidence conflicts with the original stopped execution.");
+      if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.nativeSessionId === null && initialization === undefined || stopped.controllerProcess === null
         || previous.snapshot?.nativeSessionId !== stopped.nativeSessionId
         || previous.controllerProcess !== null && !sameProcess(previous.controllerProcess, stopped.controllerProcess)
         || previous.snapshot?.controllerProcess != null && !sameProcess(previous.snapshot.controllerProcess, stopped.controllerProcess)) throw new Error("Bot recovery requires complete original process stop and native identity evidence.");
       if (previous.recoveryBlocked !== null) throw new Error(previous.recoveryBlocked);
       const orderly = previous.restartAfterShutdown && stopped.error === null;
-      if (!orderly && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
+      if (!orderly && initialization === undefined && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
       if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
       if (intent.registration.provider !== "claude") {
         const selected = toolLaunch ?? intent.toolLaunch;
@@ -235,7 +271,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       const launchId = randomUUID(), controllerInstanceId = randomUUID();
       const next: BotRecord = { ...saved, intent: { ...intent, executionGeneration: generation, launchId, controllerInstanceId,
         ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)), nativeSessionId: stopped.nativeSessionId } };
-      const recoveryCount = previous.recoveryCount + (orderly ? 0 : 1);
+      const recoveryCount = previous.recoveryCount + (orderly || initialization !== undefined ? 0 : 1);
       if (!Number.isSafeInteger(recoveryCount)) throw new Error("Bot recovery count is exhausted.");
       // Both rows share their owning database and transaction; interruption cannot
       // expose a replacement intent paired with the old generation's evidence.
@@ -243,7 +279,9 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       put(next, { launchId, executionId: intent.executionId, executionGeneration: generation,
         launchSubmission: "not-submitted", controllerProcess: null, snapshot: null, aliasDirectory: null, lastError: null, startup: null,
         recoveryCount, restartAfterShutdown: false, recoveryBlocked: null,
-        previous: { launchId: intent.launchId, generation: intent.executionGeneration, instanceId: intent.controllerInstanceId, recordId: launchId, stoppedAt: stopped.stoppedAt },
+        ...(initialization === undefined ? {} : { initializationGrantState: "not_submitted" }),
+        previous: { launchId: intent.launchId, generation: intent.executionGeneration, instanceId: intent.controllerInstanceId, recordId: launchId, stoppedAt: stopped.stoppedAt,
+          ...(initialization === undefined ? {} : { initializationEvidence: { version: 1, state: "not_dispatched" }, initializationRetryEvidence: initialization }) },
         retainedLaunchIds: [...previous.retainedLaunchIds, intent.launchId],
         retainedAliasDirectories: [...new Set([...previous.retainedAliasDirectories, ...(previous.aliasDirectory === null ? [] : [previous.aliasDirectory])])] });
       return next;

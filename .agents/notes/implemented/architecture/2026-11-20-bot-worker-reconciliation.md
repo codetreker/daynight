@@ -79,6 +79,10 @@ process. Only the existing complete stopping and native recovery checks permit
 another Controller generation. A hosting change does not replay user input or
 change the assistant's business-task claims. Input remains subject to the current
 Session's synchronization and permission checks.
+The [initialization recovery decision](../bug-fix/2026-11-25-bot-initialization-retry.md)
+defines the Bot-only exception for a Codex thread that was never requested;
+its separate assertion does not relax ordinary Session grants or process-stop
+requirements.
 
 Committed legacy migration can register its retained recovery identity without
 making copied old paths executable. Its execution fence remains until a verified

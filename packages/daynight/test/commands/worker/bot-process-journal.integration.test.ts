@@ -23,10 +23,12 @@ const stoppedJournalFixture = async (version: 16 | 17 = 16) => {
   await f.process.advance(f.current(), signal);
   const ticket = f.getTicket(), original = f.current().intent!;
   const journal = openControllerLifecycleStore(original.journalPath, ticket, { onMigration: () => {} });
+  journal.markNativeInitializationDispatching();
   const controller = { ...f.executions.get(f.current())!.controllerProcess!, processGroupId: null, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
   let snapshot = journal.patchSnapshot({ lifecycle: "stopped", activity: "stopped", nativeSessionId: id(9), nativeStopped: true,
     stoppedAt: "2026-11-19T00:00:00Z", controllerProcess: controller });
   journal.close();
+  delete snapshot.nativeInitialization;
   snapshot = { ...snapshot, windowsJobStopProof: { version: 1, ticketHash: controllerPayloadHash(ticket), snapshotHash: controllerPayloadHash(snapshot) } };
   f.executions.update(f.current(), { controllerProcess: controller, snapshot });
   const db = new Database(sqliteFilename(original.journalPath));
@@ -71,6 +73,7 @@ test.skipIf(process.platform !== "linux").each([
   const ticket = await manager.readTicket(f.current()), original = f.current().intent!;
   const launch = f.executions.get(f.current())!.controllerProcess!;
   const journal = openControllerLifecycleStore(original.journalPath, ticket, { controllerProcess: launch });
+  journal.markNativeInitializationDispatching();
   journal.patchSnapshot({ nativeSessionId: id(9) }); journal.close();
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   const stopped = await recordStoppedControllerGeneration(original.journalPath, ticket, {});

@@ -6,12 +6,12 @@ import { isNonemptyText } from "../../../platform/text.js";
 import { parseControllerGrantResponse, parseRegistrationResponse, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnapshot } from "../../../session/protocol.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotDeleted, type BotOwner, type BotRecord } from "./types.js";
+import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, matchesInitializationDeletionStop, type BotDefinition, type BotDeleted, type BotOwner, type BotRecord } from "./types.js";
 import type { BotReconciliation } from "./reconciliation.js";
-import type { BotRecoveryBinding } from "./recovery-protocol.js";
+import { parseBotInitializationEvidence, type BotInitializationEvidence, type BotRecoveryBinding } from "./recovery-protocol.js";
 import { readMigratedBotRecoveryBinding } from "./migration.js";
 
-export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string };
+export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string; initializationEvidence?: BotInitializationEvidence };
 export type BotDeletionStop = {
   protocol: typeof SESSION_PROTOCOL; sessionId: string; testExecutionId: string; executionGeneration: string;
   controllerId: string; controllerInstanceId: string;
@@ -131,6 +131,8 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     return { sessionId, testExecutionId: intent.executionId, nativeSessionId: intent.nativeSessionId };
   };
   return {
+    initializationGrantAcknowledged: (record: BotRecord): boolean => options.recovery?.initializationGrantAcknowledged(record) ?? false,
+    initializationGrantUncommitted: (record: BotRecord): boolean => options.recovery?.initializationGrantUncommitted(record) ?? false,
     /** Submit the persisted receipt unchanged; the caller observes after any uncertain result. */
     completeDeletion: (record: BotRecord, receipt: BotDeletionReceipt, signal: AbortSignal): Promise<BotDeleted> => run(signal, async operation => {
       const original = parseBotOwner(record.owner);
@@ -155,7 +157,7 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
         if (stop.stopProof.previousControllerInstanceId !== stop.controllerInstanceId
           || typeof stop.stopProof.stoppedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(stop.stopProof.stoppedAt)
           || !Number.isFinite(Date.parse(stop.stopProof.stoppedAt)) || Date.parse(stop.stopProof.stoppedAt) > Date.now() + 1000) throw new Error("Bot deletion stop proof does not identify a stopped original controller.");
-        if (intent !== null && (stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
+        if (intent !== null && !matchesInitializationDeletionStop(record, stop) && (stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
           || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId
           || stop.controllerInstanceId !== intent.controllerInstanceId)) throw new Error("Bot deletion stop proof differs from its durable execution fence.");
         if (record.definition !== null && (stop.sessionId !== record.definition.sessionId || stop.testExecutionId !== record.definition.testExecutionId)) throw new Error("Bot deletion stop proof differs from its original Session binding.");
@@ -202,8 +204,11 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     grant: (record: BotRecord, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => run(signal, async operation => {
       const bot = active(record), intent = intentOf(record);
       if (previous !== undefined) {
-        if (previous === null || typeof previous !== "object" || Object.keys(previous).sort().join() !== "generation,instanceId,recordId,stoppedAt"
-          || !isNonemptyText(intent.nativeSessionId) || intent.nativeSessionId.trim() === "") throw new Error("Bot recovery requires the original native Session and a complete process stop proof.");
+        if (previous === null || typeof previous !== "object" || Object.keys(previous).filter(key => key !== "initializationEvidence").sort().join() !== "generation,instanceId,recordId,stoppedAt") throw new Error("Bot recovery requires the original native Session and a complete process stop proof.");
+        if (previous.initializationEvidence !== undefined) {
+          parseBotInitializationEvidence(previous.initializationEvidence);
+          if (intent.nativeSessionId !== null || intent.registration.provider !== "codex") throw new Error("Bot initialization retry conflicts with its original provider or native identity.");
+        } else if (!isNonemptyText(intent.nativeSessionId) || intent.nativeSessionId.trim() === "") throw new Error("Bot recovery requires the original native Session and a complete process stop proof.");
         botVersion(previous.generation); botVersion(intent.executionGeneration);
         botUUID(previous.instanceId, "Previous Bot controller instance"); botUUID(previous.recordId, "Bot stop proof record");
         botUUID(intent.controllerInstanceId, "Bot controller instance");
@@ -218,6 +223,7 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       const recovering = previous !== undefined && snapshot.executionGeneration === previous.generation;
       const grant = parseControllerGrantResponse(await request(`${prefix(record)}/grant`, operation, {
         botVersion: bot.version, nativeSessionId: snapshot.identity.nativeSessionId,
+        ...(recovering && previous.initializationEvidence !== undefined ? { initializationEvidence: previous.initializationEvidence } : {}),
         grant: { protocol: SESSION_PROTOCOL, testExecutionId: intent.executionId, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, executionGeneration: intent.executionGeneration, kind: "reconnect", previousGeneration: recovering ? previous.generation : null, stopProof: recovering ? { recordId: previous.recordId, previousControllerInstanceId: previous.instanceId, stoppedAt: previous.stoppedAt } : null },
       }));
       if (grant.sessionId !== snapshot.sessionId || grant.testExecutionId !== intent.executionId || grant.executionGeneration !== intent.executionGeneration
@@ -227,6 +233,12 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     report: (record: BotRecord, result: BotStartupResult, signal: AbortSignal): Promise<BotDefinition> => run(signal, async operation => {
       const bot = active(record), code = result.code ?? null;
       if (result.state !== "ready" && result.state !== "failed" || result.state === "ready" && code !== null || result.state === "failed" && (!isNonemptyText(code) || code.trim() === "")) throw new Error("Bot startup result must be ready or failed with a nonempty error code.");
+      if (result.state === "failed" && ["initialization_evidence_missing", "initialization_retry_exhausted", "initialization_retry_failed"].includes(code!)
+        && options.recovery?.applicable(record) && !options.recovery.ready(record)) {
+        // Reporting a stopped generation still needs current hosting authority.
+        // Grant reconciliation observes any pending operation before a new write.
+        await options.recovery.grant(record, recoveryBinding(record), signal);
+      }
       let snapshot: SessionSnapshot | null = null;
       if (bot.sessionId !== null) snapshot = await read(record, operation);
       if (result.state === "ready" && (snapshot === null || !snapshot.synchronized || snapshot.connectionState !== "connected" || snapshot.lifecycle !== "active" || !["idle", "working", "waiting_input"].includes(snapshot.activity))) throw new Error("Bot ready report requires a synchronized active Session.");
