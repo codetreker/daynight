@@ -39,3 +39,27 @@ func TestSettingsPersistWithTeamVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSettingsWriteFailureRollsBack(t *testing.T) {
+	s := testutil.OpenStore(t, postgres.Open)
+	p, team := testutil.TeamFixture(t, s)
+	ctx := t.Context()
+	testutil.MustExec(t, s.Pool, `CREATE FUNCTION refuse_nested_setting() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected settings failure'; END $$`)
+	testutil.MustExec(t, s.Pool, `CREATE TRIGGER refuse_nested_setting BEFORE UPDATE OF allow_nested_subtask ON teams FOR EACH ROW EXECUTE FUNCTION refuse_nested_setting()`)
+	completion, err := s.WriteTeam(ctx, team.ID, func(scope store.TeamWriteScope) error {
+		_, err := scope.TeamDAO().SetNestedSubtask(ctx, p.UserID, true)
+		return err
+	})
+	if err == nil || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("completion=%+v err=%v", completion, err)
+	}
+	if err := s.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		actual, err := scope.TeamDAO().Team(ctx, p.UserID, team.ID)
+		if err == nil && (actual.AllowNestedSubtask || actual.Version != team.Version) {
+			t.Fatalf("failed write changed Team: %+v", actual)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

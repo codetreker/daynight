@@ -73,6 +73,16 @@ func TestSettingsHTTPRouteInputAndTransactions(t *testing.T) {
 	if read.Header().Get("Daynight-User-ID") != h.principal.UserID || read.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("headers=%v", read.Header())
 	}
+	originalRead := db.ReadSnapshotCall
+	db.ReadSnapshotCall = func(context.Context, func(store.SnapshotScope) error) error {
+		return errors.New("private settings read failure")
+	}
+	failure := teamComponentRequest(h, http.MethodGet, path, "")
+	assertProjectError(t, failure, 500, "internal_error")
+	if strings.Contains(failure.Body.String(), "private") {
+		t.Fatal("read failure leaked details")
+	}
+	db.ReadSnapshotCall = originalRead
 	for _, value := range []string{"", `,"allowNestedSubtask":null`, `,"allowNestedSubtask":"true"`, `,"allowNestedSubtask":1`, `,"allowNestedSubtask":true,"unknown":0`} {
 		body := fmt.Sprintf(`{"version":%d,"expectedUserId":%q%s}`, team.Version, h.principal.UserID, value)
 		assertProjectError(t, teamComponentRequest(h, http.MethodPatch, path, body), 400, "invalid_input")
