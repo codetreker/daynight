@@ -9,6 +9,7 @@ import { TaskCacheLifecycleChanged } from "../src/features/task-cache/project-ca
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 vi.mock("../src/api/teams", () => ({ getTeam: vi.fn(), listTeams: vi.fn(), createTeam: vi.fn(), renameTeam: vi.fn(), deleteTeam: vi.fn() }));
+vi.mock("../src/api/team-settings", () => ({ getTeamSettings: vi.fn().mockResolvedValue({ kind: "available", settings: { version: 1n, allowNestedSubtask: false } }), saveTeamSettings: vi.fn() }));
 import { createTeam, deleteTeam, getTeam, listTeams, renameTeam } from "../src/api/teams";
 const render = createLocaleRender("en");
 const userId = "00000000-0000-4000-8000-000000000001", teamId = "00000000-0000-4000-8000-000000000002";
@@ -97,12 +98,12 @@ describe("Team management", () => {
     createLocaleRender("zh-CN")(<TeamSettingsPanel teamId={teamId} admission={scope} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />);
     expect(await screen.findByText("成员")).toBeInTheDocument();
   });
-  it("does not offer mutations on the Personal Team", async () => {
+  it("does not offer metadata mutations on the Personal Team", async () => {
     vi.mocked(getTeam).mockResolvedValueOnce({ ...team("unused"), kind: "personal", name: null });
     settings(); expect(await screen.findByText("Personal")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     await expandTeamDelete(); expect(screen.getByText("Delete Team", { selector: "button" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(await screen.findByRole("switch", { name: "Allow nested subtasks" })).toBeEnabled();
   });
   it("does not install a wrong-principal mutation response", async () => {
     vi.mocked(createTeam).mockImplementation(async (_id, _name, _signal, onMismatch, dispatch) => { dispatch(); onMismatch(); throw new ApiError("protocol", 201, "principal_mismatch"); });
@@ -234,7 +235,7 @@ describe("Team management", () => {
   it("saves raw names with the version read and reports a nonempty Team rejection", async () => {
     vi.mocked(renameTeam).mockImplementation(async (_id, old, name, _signal, _mismatch, dispatch) => { dispatch(); return team(name, old.version + 1n); });
     vi.mocked(deleteTeam).mockImplementation(async (_id, _target, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("server", 409, "team_not_empty"); });
-    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" })); fireEvent.change(screen.getByLabelText("Team name"), { target: { value: " New " } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" })); fireEvent.change(screen.getByLabelText("Team name"), { target: { value: " New " } }); fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(updated).toHaveBeenCalledTimes(1)); expect(vi.mocked(renameTeam).mock.calls[0]?.[1].version).toBe(9007199254740993n);
     vi.mocked(getTeam).mockResolvedValue(team(" New ", 9007199254740994n)); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" })); const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: " New " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -324,7 +325,7 @@ describe("Team ID copy", () => {
     expect(copy.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByText(teamId)).toBeInTheDocument();
     fireEvent.click(copy);
-    expect(await screen.findByRole("status", { name: "" })).toHaveTextContent("Copied");
+    expect(await screen.findByText("Copied")).toBeVisible();
     expect(writeText).toHaveBeenCalledExactlyOnceWith(teamId);
     expect(renameTeam).not.toHaveBeenCalled(); expect(deleteTeam).not.toHaveBeenCalled();
   });

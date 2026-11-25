@@ -27,6 +27,9 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   try {
     const device = await Promise.race([instructions, login.finished.then(() => { throw new Error("CLI login exited before device authorization."); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    const teamPermissions = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+    await teamPermissions.locator('summary').click();
+    await teamPermissions.getByRole('checkbox', { name: /^Select this group/ }).check();
     await page.getByRole("checkbox", { name: "This code matches the one in my terminal", exact: true }).check();
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);
@@ -49,7 +52,8 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
     return rpc.result!.structuredContent!.data!;
   };
   const name = `Ordinary subtask E2E ${randomUUID()}`;
-  const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);
+  const team = JSON.parse((await cli(["team", "create", `Nested subtask E2E ${randomUUID()}`, "--confirm", "--json"])).stdout) as { id: string };
+  const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", team.id, "--confirm"]);
   const projectId = project.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   if (projectId === undefined) throw new Error("Project creation returned no ID.");
   const command = async (args: string[]) => cli([...args, "--project", projectId]);
@@ -105,6 +109,67 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   const mcpChildren = await mcp<{ items: MCPTask[]; nextCursor: string | null }>("task_list", { projectId, parentTaskId: parentId, all: true, view: "full", taskParentView: "v1" });
   expect(mcpChildren.nextCursor).toBeNull();
   expect(mcpChildren.items).toMatchObject([{ id: childId, parentTaskId: parentId, version: String(created.version) }]);
+
+  const settingsPath = `/api/v1/teams/${team.id}/settings`;
+  const readSettings = async () => {
+    const response = await page.request.get(`${topology.baseURL}${settingsPath}`);
+    expect(response.status()).toBe(200);
+    return await response.json() as { version: number; allowNestedSubtask: boolean };
+  };
+  const initialSettings = await readSettings();
+  expect(initialSettings.allowNestedSubtask).toBe(false);
+  await page.goto(`${topology.baseURL}/teams/${team.id}/settings`);
+  const settings = page.locator("section").filter({ has: page.getByRole("heading", { name: "Task settings", exact: true }) });
+  const toggle = settings.getByRole("switch", { name: "Allow nested subtasks", exact: true });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  const saveSettings = async (value: boolean, previousVersion: number) => {
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", String(value));
+    const result = page.waitForResponse(response => response.url().endsWith(settingsPath) && response.request().method() === "PATCH");
+    await settings.getByRole("button", { name: "Save changes", exact: true }).click();
+    const receipt = await result;
+    expect(receipt.status()).toBe(200);
+    expect(await receipt.json()).toMatchObject({ version: previousVersion + 1, allowNestedSubtask: value });
+    await expect(settings.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+    expect(await readSettings()).toMatchObject({ version: previousVersion + 1, allowNestedSubtask: value });
+  };
+  await saveSettings(true, initialSettings.version);
+
+  await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${childId}`);
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
+  const nestedChildren = page.getByRole("region", { name: "Subtasks", exact: true });
+  await nestedChildren.getByRole("button", { name: "New subtask" }).click();
+  const nestedForm = page.getByRole("dialog", { name: "New subtask" });
+  await nestedForm.getByLabel("Title", { exact: true }).fill("Existing nested task");
+  await nestedForm.getByRole("combobox", { name: "Status", exact: true }).selectOption("todo");
+  const nestedResult = page.waitForResponse(response => response.url().endsWith(`/api/v1/projects/${projectId}/tasks`) && response.request().method() === "POST");
+  await nestedForm.getByRole("button", { name: "Create", exact: true }).click();
+  const nestedReceipt = await nestedResult;
+  expect(nestedReceipt.status()).toBe(201);
+  const nested = await nestedReceipt.json() as Task;
+  expect(nested).toMatchObject({ title: "Existing nested task", parentTaskId: childId, status: "todo" });
+  await expect(nestedChildren.getByRole("link", { name: nested.title, exact: true })).toBeVisible();
+
+  await page.goto(`${topology.baseURL}/teams/${team.id}/settings`);
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await saveSettings(false, initialSettings.version + 1);
+  await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${childId}`);
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
+  await expect(nestedChildren.getByRole("link", { name: nested.title, exact: true })).toBeVisible();
+  await nestedChildren.getByRole("button", { name: "New subtask" }).click();
+  await nestedForm.getByLabel("Title", { exact: true }).fill("Rejected nested task");
+  const rejectedResult = page.waitForResponse(response => response.url().endsWith(`/api/v1/projects/${projectId}/tasks`) && response.request().method() === "POST");
+  await nestedForm.getByRole("button", { name: "Create", exact: true }).click();
+  const rejected = await rejectedResult;
+  expect(rejected.status()).toBe(400);
+  expect(await rejected.text()).toContain("Nested subtasks are disabled for this Team.");
+  await expect(nestedForm.getByRole("alert")).toContainText("Nested subtasks are disabled for this Team.");
+  const remainingNested = JSON.parse((await command(["task", "list", "--parent-task", childId, "--all", "--json"])).stdout) as Task[];
+  expect(remainingNested.map(item => item.id)).toEqual([nested.id]);
+  expect(await show(nested.id)).toMatchObject({ id: nested.id, parentTaskId: childId, status: "todo" });
+  await status(nested.id, "done");
+  await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${parentId}`);
+  await page.getByRole("tab", { name: "Subtasks", exact: true }).click();
 
   await page.locator(".task-status-trigger").click();
   await page.getByRole("menuitemradio", { name: "Done", exact: true }).click();
@@ -213,5 +278,5 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   expect(afterDelete.map(item => item.id)).not.toContain(deleteChild);
   const remainingChildren = await mcp<{ items: MCPTask[] }>("task_list", { projectId, all: true, view: "full", taskParentView: "v1" });
   expect(remainingChildren.items.map(item => item.id)).not.toContain(deleteChild);
-  console.log(`ordinary subtask project=${projectId} goal=${goalId} parent=${parentId} repair=${childId} cancellation=${cancelParent} deletion=${deleteParent}`);
+  console.log(`ordinary subtask team=${team.id} project=${projectId} goal=${goalId} parent=${parentId} repair=${childId} nested=${nested.id} cancellation=${cancelParent} deletion=${deleteParent}`);
 });

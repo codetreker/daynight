@@ -9,9 +9,9 @@ const key = `daynight.selectedTeam:${userId}`;
 const personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
-type State = { role: 'admin' | 'member'; name: string; version: number; exists: boolean; refusal: string | null; lost: boolean; holdRead?: { started: () => void; wait: Promise<void> }; writes: { method: string; body: Record<string, unknown> }[] };
+type State = { role: 'admin' | 'member'; name: string; version: number; exists: boolean; refusal: string | null; lost: boolean; nested: boolean; settingsWrites: Record<string, unknown>[]; holdRead?: { started: () => void; wait: Promise<void> }; writes: { method: string; body: Record<string, unknown> }[] };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { role: 'admin', name: 'Alpha', version: 1, exists: true, refusal: null, lost: false, writes: [] };
+  const state: State = { role: 'admin', name: 'Alpha', version: 1, exists: true, refusal: null, lost: false, nested: false, settingsWrites: [], writes: [] };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : state.name, version: state.version, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: state.role, version: 1, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -19,6 +19,13 @@ const install = async (page: Page): Promise<State> => {
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ json: body, status, headers: { ...headers, ...extra } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/teams/${teamId}/settings` || path === `/api/v1/teams/${personalId}/settings`) {
+      if (method === 'PATCH') {
+        const body = request.postDataJSON() as Record<string, unknown>;
+        state.settingsWrites.push(body); state.nested = body.allowNestedSubtask === true; state.version++;
+      }
+      return send({ version: state.version, allowNestedSubtask: state.nested });
+    }
     if (path === '/api/v1/teams' && method === 'GET') return send({ items: state.exists ? [team(teamId)] : [], nextCursor: null });
     if ((path === '/api/v1/teams' && method === 'POST') || (path === `/api/v1/teams/${teamId}` && (method === 'PATCH' || method === 'DELETE'))) {
       const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ method, body });
@@ -48,6 +55,93 @@ const expandDelete = async (page: Page) => {
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
 const openCreate = async (page: Page) => { await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: 'Create Team', exact: true }).click(); };
 const settings = async (page: Page) => { await page.getByRole('link', { name: 'Team settings' }).click(); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); };
+
+test('nested subtask settings support keyboard and narrow layouts for administrators, members and Personal owners', async ({ page }) => {
+  const api = await install(page);
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/teams/${teamId}/settings`);
+    const toggle = page.getByRole('switch', { name: 'Allow nested subtasks' });
+    await expect(toggle).toHaveAttribute('aria-checked', String(api.nested));
+    await toggle.focus(); await expect(toggle).toBeFocused();
+    expect(await toggle.evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Space');
+    await expect(toggle).toHaveAttribute('aria-checked', String(!api.nested));
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(toggle).toHaveAttribute('aria-checked', String(api.nested));
+    await toggle.focus(); await page.keyboard.press('Enter');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect.poll(() => api.settingsWrites.length).toBe(width === 1280 ? 1 : 2);
+    await expect(toggle).toHaveAttribute('aria-checked', String(api.nested));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const bounds = await toggle.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+  }
+  expect(api.settingsWrites).toEqual([
+    { version: 1, expectedUserId: userId, allowNestedSubtask: true },
+    { version: 2, expectedUserId: userId, allowNestedSubtask: false },
+  ]);
+  api.role = 'member'; await page.goto(`/teams/${teamId}/settings`);
+  await expect(page.getByRole('switch', { name: 'Allow nested subtasks' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0);
+  api.role = 'admin'; await page.goto(`/teams/${personalId}/settings`);
+  await expect(page.getByRole('switch', { name: 'Allow nested subtasks' })).toBeEnabled();
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await expect(page.getByRole('switch', { name: '允许嵌套子任务' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+for (const outcome of ['confirmed', 'unknown'] as const) {
+  test(`late settings read cannot overwrite a ${outcome} save`, async ({ page }) => {
+    await install(page);
+    const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let reads = 0, version = 7, allowed = false;
+    const writes: Record<string, unknown>[] = [];
+    await page.route(`**/api/v1/teams/${teamId}/settings`, async route => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        reads++;
+        if (reads === 2) {
+          started.resolve(); await release.promise;
+          await route.fulfill({ json: { version: 7, allowNestedSubtask: false }, headers: { 'Daynight-User-ID': userId } }).catch(() => {});
+          return;
+        }
+        return route.fulfill({ json: { version, allowNestedSubtask: allowed }, headers: { 'Daynight-User-ID': userId } });
+      }
+      const body = request.postDataJSON() as Record<string, unknown>;
+      writes.push(body); version++; allowed = body.allowNestedSubtask === true;
+      if (outcome === 'unknown') return route.abort('failed');
+      return route.fulfill({ json: { version, allowNestedSubtask: allowed }, headers: { 'Daynight-User-ID': userId } });
+    });
+    await page.goto(`/teams/${teamId}/settings`);
+    const toggle = page.getByRole('switch', { name: 'Allow nested subtasks' });
+    await expect(toggle).toHaveAttribute('aria-checked', 'false'); await toggle.click();
+    await page.evaluate(() => {
+      let focused = false;
+      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => focused });
+      window.dispatchEvent(new Event('blur')); focused = true; window.dispatchEvent(new Event('focus'));
+    });
+    await started.promise;
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    if (outcome === 'unknown') await expect(page.getByText(/save result is unknown/)).toBeVisible();
+    else await expect(page.getByText('Saved: On')).toBeVisible();
+    release.resolve();
+    if (outcome === 'unknown') {
+      await expect(toggle).toBeDisabled();
+      await expect(page.getByText(/save result is unknown/)).toBeVisible();
+      expect(reads).toBe(2); expect(writes).toHaveLength(1);
+      await page.getByRole('button', { name: 'Check current state' }).click();
+      await expect(page.getByText('Saved: On')).toBeVisible(); await expect(toggle).toBeEnabled();
+      expect(reads).toBe(3); expect(writes).toHaveLength(1);
+    } else {
+      await expect(toggle).toHaveAttribute('aria-checked', 'true');
+      await toggle.click(); await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+      await expect.poll(() => writes.length).toBe(2);
+      expect(writes[1]).toEqual({ version: 8, expectedUserId: userId, allowNestedSubtask: false });
+    }
+  });
+}
 
 test('copies the displayed Team ID with accessible feedback and responsive layout', async ({ page, context }, testInfo) => {
   const api = await install(page); api.name = 'AI Native Studio';

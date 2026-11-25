@@ -42,6 +42,13 @@ it('creates an ordinary child once and requires the committed receipt to match i
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
+it('retains the specific nested policy refusal without exposing other server messages', async () => {
+  const error = (message: string) => response({ error: { code: 'invalid_input', message, requestId: '00000000-0000-4000-8000-000000000099' } }, 400);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(error('Nested subtasks are disabled for this Team.')).mockResolvedValueOnce(error('private detail')));
+  await expect(createTask(project, { title: 'Child', parentTaskId: parent }, signal(), admission)).rejects.toMatchObject({ serverMessage: 'Nested subtasks are disabled for this Team.' });
+  await expect(createTask(project, { title: 'Child', parentTaskId: parent }, signal(), admission)).rejects.toMatchObject({ serverMessage: undefined });
+});
+
 it('reads all statuses using a scoped paged direct-child GET and exact versions', async () => {
   const saved = detailFixture(project, child, { parentTaskId: parent, status: 'done', ready: false, completedAt: '2026-10-22T10:00:00Z', version: 9007199254740993n });
   const fetcher = vi.fn().mockResolvedValueOnce(response({ items: [saved], nextCursor: 'next' })).mockResolvedValueOnce(response({ items: [], nextCursor: null })); vi.stubGlobal('fetch', fetcher);
