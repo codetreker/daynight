@@ -27,6 +27,9 @@ test("ordinary subtask: repair, reverify, cancel and delete across Web CLI MCP",
   try {
     const device = await Promise.race([instructions, login.finished.then(() => { throw new Error("CLI login exited before device authorization."); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    const teamPermissions = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+    await teamPermissions.locator('summary').click();
+    await teamPermissions.getByRole('checkbox', { name: /^Select this group/ }).check();
     await page.getByRole("checkbox", { name: "This code matches the one in my terminal", exact: true }).check();
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);
