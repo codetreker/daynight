@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test, expect, topology, cli, cliEnvironment, startOwnedCommand } from './fixtures.ts';
-import { verifyGoalWorker } from './subtask-compat-worker.ts';
+import { selectFixtureTeamScopes, verifyGoalWorker } from './subtask-compat-worker.ts';
 
 type WorkerTopology = typeof topology & { oldCliEntry: string; workerVariant: 'candidate' | 'npm-0.72.0' };
 const compat = topology as WorkerTopology;
@@ -28,6 +28,7 @@ test(`Goal Worker five-edge claim and terminal ancestor: ${compat.workerVariant}
   try {
     const device = await Promise.race([authorization, login.finished.then(() => { throw new Error('Device login exited before authorization.'); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    await selectFixtureTeamScopes(page);
     await page.getByRole('checkbox', { name: 'This code matches the one in my terminal', exact: true }).check();
     await page.getByRole('button', { name: 'Authorize CLI', exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);

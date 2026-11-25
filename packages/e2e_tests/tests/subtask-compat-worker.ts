@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, copyFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { inspect } from 'node:util';
+import type { Page } from '@playwright/test';
 import { aggregateFailures } from '../src/failures.ts';
 import { prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity } from '../src/fixture-owner.ts';
 import { prepareWorkerFixtureConfiguration } from '../src/worker-config.ts';
@@ -13,6 +14,17 @@ import { observeWorkerCandidates } from './subtask-compat-worker-observer.ts';
 type Task = { id: string; assignedTo: string | null; version: number; status: string; properties: { worker?: { claimId: string; workerId: string; state: string; nativeSessionId?: string } } };
 type Invoke = (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 const shellLiteral = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+export async function selectFixtureTeamScopes(page: Page): Promise<void> {
+  const team = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+  await expect(team).toHaveCount(1);
+  await team.locator('summary').click();
+  for (const scope of ['team:read', 'team:write']) {
+    const option = team.locator('label.credential-scope-option').filter({ has: page.locator('code', { hasText: new RegExp(`^${scope}$`) }) }).locator('input');
+    await option.check();
+    await expect(option).toBeChecked();
+  }
+}
 
 // Every candidate fixture owns a separate Team, so its temporary setting cannot
 // change another scenario's creation policy.

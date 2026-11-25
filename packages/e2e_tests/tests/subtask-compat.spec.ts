@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import type { createCompatGateway } from '../src/subtask-compat-gateway.ts';
 import { test, expect, topology, cliEnvironment, startOwnedCommand } from './fixtures.ts';
-import { createNestedFixtureTeam, verifyOldWorker } from './subtask-compat-worker.ts';
+import { createNestedFixtureTeam, selectFixtureTeamScopes, verifyOldWorker } from './subtask-compat-worker.ts';
 
 type CompatTopology = typeof topology & { oldCliEntry: string; oldCliConfigDirectory: string; serverVersion: 'baseline' | 'candidate'; baselineSchema: string };
 const compat = topology as CompatTopology;
@@ -13,7 +13,7 @@ type Task = { id: string; title: string; type: string; status: string; version: 
 type Tool = { name: string; inputSchema: { properties: Record<string, unknown> } };
 test.use({ trace: 'off', screenshot: 'off' });
 
-async function login(page: Page, entry: string, directory: string): Promise<string> {
+async function login(page: Page, entry: string, directory: string, teamScopes: boolean): Promise<string> {
   let output = '';
   let publish: (v: { uri: string; code: string }) => void = () => {};
   const pending = new Promise<{ uri: string; code: string }>(resolve => { publish = resolve; });
@@ -28,6 +28,7 @@ async function login(page: Page, entry: string, directory: string): Promise<stri
   try {
     const device = await Promise.race([pending, command.finished.then(() => { throw new Error('CLI exited before device authorization.'); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    if (teamScopes) await selectFixtureTeamScopes(page);
     await page.getByRole('checkbox', { name: 'This code matches the one in my terminal', exact: true }).check();
     await page.getByRole('button', { name: 'Authorize CLI', exact: true }).click();
     expect((await command.finished).exitCode).toBe(0);
@@ -52,6 +53,7 @@ async function oauthGrant(page: Page): Promise<string> {
     const query = new URLSearchParams({ client_id: clientId, redirect_uri: callback, response_type: 'code', scope: 'daynight:mcp', resource: `${topology.baseURL}/mcp`, state: randomUUID(), code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' });
     stage = 'consent';
     await page.goto(`${topology.baseURL}/oauth/authorize?${query}`);
+    if (compat.serverVersion === 'candidate') await selectFixtureTeamScopes(page);
     const decision = page.waitForResponse(response => /\/api\/v2\/oauth\/requests\/[^/]+\/decision$/.test(response.url()) && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Allow access', exact: true }).click();
     const approved = await decision;
@@ -78,8 +80,8 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
   await page.getByRole('button', { name: 'Sign in with GitHub', exact: true }).click();
   await page.getByRole('button', { name: 'Authorize local identity', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Projects', exact: true })).toBeVisible();
-  const candidateToken = await login(page, topology.cliEntry, topology.cliConfigDirectory);
-  const oldToken = await login(page, compat.oldCliEntry, compat.oldCliConfigDirectory);
+  const candidateToken = await login(page, topology.cliEntry, topology.cliConfigDirectory, compat.serverVersion === 'candidate');
+  const oldToken = await login(page, compat.oldCliEntry, compat.oldCliConfigDirectory, compat.serverVersion === 'candidate');
   const token = await oauthGrant(page);
   const command = async (version: 'old' | 'new', args: string[], success = true) => {
     const entry = version === 'old' ? compat.oldCliEntry : topology.cliEntry;
