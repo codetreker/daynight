@@ -135,6 +135,14 @@ owns the mechanism's alternatives and limits.
 
 ### CLI test fixtures
 
+The process-supervisor registration test uses real Windows review phases with
+held Jobs, and detached process groups on POSIX. Each Windows phase completes
+admission before registration and is stopped during teardown even after its
+guardian exits. Both stop/exclude sequences and duplicate-registration refusal
+remain covered. The
+[registration fixture decision](../.agents/notes/implemented/testing/2026-11-25-review-registration-job-fixture.md)
+owns this isolation from unrelated machine-wide ancestry.
+
 The information-command import matrix in `test/cli/application-command-loading.test.ts`
 starts a fresh compiled CLI process for each argument vector and checks its
 blocked imports. The native `application.integration.test.ts` retains the

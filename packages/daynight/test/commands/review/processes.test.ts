@@ -12,7 +12,7 @@ import { createProcessSupervisor, processGroupIsExecuting } from "../../../src/c
 import { formatError } from "../../../src/platform/diagnostics.js";
 import type { CopilotAttemptOutcome } from "../../../src/commands/review/adapters/copilot.js";
 import type { ReviewState } from "../../../src/commands/review/model.js";
-import { spawnWindowsReviewPhase } from "../../../src/commands/review/windows-phase.js";
+import { spawnWindowsReviewPhase, type WindowsReviewPhase } from "../../../src/commands/review/windows-phase.js";
 
 const review = (pid: number | null): ReviewState => ({ id: "review", host: "github.com", githubId: "1", number: 1, revision: 1,
   headSha: "a".repeat(40), baseRef: "main", baseSha: "b".repeat(40), status: "running", attemptCount: 1, maxAttempts: 3,
@@ -187,12 +187,20 @@ describe("current-run process supervision", () => {
   it("keeps one child per attempt until exclusion removes the previous handle", async () => {
     const supervisor = createProcessSupervisor({ graceMs: 1_000 });
     const attempt = { reviewId: "review", attempt: 1 };
-    const children = [0, 1].map(() => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
-      { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] }));
-    for (const child of children) { child.stdout!.resume(); child.stderr!.resume(); }
-    await Promise.all(children.map((child) => once(child, "spawn")));
-    const first = children[0]!; const second = children[1]!;
+    const fixtures: { child: ChildProcess; phase: WindowsReviewPhase | undefined; closed: Promise<void> }[] = [];
     try {
+      for (let index = 0; index < 2; index++) {
+        const args = ["-e", "setInterval(() => {}, 1000)"];
+        const phase = process.platform === "win32" ? spawnWindowsReviewPhase({ file: process.execPath, args, cwd: directory,
+          environment: process.env, deadline: performance.now() + 10_000, graceMs: 3_000 }) : undefined;
+        const child = phase?.child ?? spawn(process.execPath, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const closed = phase?.closed ?? new Promise<void>((resolve) => { child.once("close", () => { resolve(); }); });
+        fixtures.push({ child, phase, closed });
+        child.stdout!.resume(); child.stderr!.resume();
+        await once(child, "spawn");
+        if (phase !== undefined) { child.stdin!.end(); await phase.start(); }
+      }
+      const first = fixtures[0]!.child; const second = fixtures[1]!.child;
       supervisor.onProcess(first, attempt);
       expect(() => supervisor.onProcess(second, attempt)).toThrow("more than one process");
       await supervisor.stop(first, attempt);
@@ -201,9 +209,13 @@ describe("current-run process supervision", () => {
       await supervisor.stop(second, attempt);
       await supervisor.exclude(review(second.pid!));
     } finally {
-      for (const child of children) if (child.exitCode === null && child.signalCode === null) {
-        const closed = once(child, "close"); child.kill("SIGKILL"); await closed;
-      }
+      const cleanup = await Promise.allSettled(fixtures.map(async ({ child, phase, closed }) => {
+        if (phase !== undefined) await phase.stop();
+        else if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await closed;
+      }));
+      const failures = cleanup.filter((result) => result.status === "rejected").map((result) => result.reason as unknown);
+      if (failures.length > 0) throw new AggregateError(failures, "Process registration fixture cleanup failed.");
     }
     expect(supervisor.safeToReleaseLock).toBe(false);
   });
