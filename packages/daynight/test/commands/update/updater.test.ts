@@ -477,7 +477,7 @@ try {
     const leafPid = path.join(directory, "leaf-pid");
     const stop = path.join(directory, "stop");
     await writeFile(script, `const fs=require('node:fs');const {spawn}=require('node:child_process');
-if(process.argv[2]==='leaf'){fs.writeFileSync(${JSON.stringify(leafPid)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);fs.writeFileSync(process.argv[3],String(Date.now()));},10);}
+if(process.argv[2]==='leaf'){${publishFixturePid(leafPid)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);fs.writeFileSync(process.argv[3],String(Date.now()));},10);}
 else{spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'inherit'});process.on('SIGTERM',()=>{});setInterval(()=>{},1000);}`);
     const command: UpdateCommand = { executable: process.execPath, arguments: [script, marker], cwd: directory, environment: process.env, timeoutMs: interruption === "timeout" ? 3_000 : 10_000, output: "capture" };
     const { environment: _environment, ...driverCommand } = command;
@@ -502,7 +502,7 @@ if(process.connected)process.disconnect();`;
         if (Date.now() >= deadline) throw new Error(`Owned command did not start: ${output}`);
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
-      const pgid = process.platform === "win32" ? undefined : processGroupOf(Number(await waitForFile(leafPid)));
+      const pgid = process.platform === "win32" ? undefined : processGroupOf(await waitForFixturePid(leafPid));
       if (interruption === "timeout") child.send("expire-command");
       else {
         if (process.platform === "win32") child.send(interruption);
@@ -540,7 +540,7 @@ if(process.connected)process.disconnect();`;
     const heartbeat = path.join(directory, "heartbeat");
     const stop = path.join(directory, "stop");
     const fakeGit = path.join(bin, "git");
-    await writeFile(fakeGit, `#!${process.execPath}\nconst fs = require('node:fs');fs.writeFileSync(${JSON.stringify(marker)}, String(process.pid));setInterval(() => { if(fs.existsSync(${JSON.stringify(stop)})) process.exit(0); fs.appendFileSync(${JSON.stringify(heartbeat)}, 'tick\\n'); }, 10);`);
+    await writeFile(fakeGit, `#!${process.execPath}\nconst fs = require('node:fs');${publishFixturePid(marker)}setInterval(() => { if(fs.existsSync(${JSON.stringify(stop)})) process.exit(0); fs.appendFileSync(${JSON.stringify(heartbeat)}, 'tick\\n'); }, 10);`);
     await chmod(fakeGit, 0o755);
     const helper = path.resolve(import.meta.dirname, "../../../dist/commands/skill/refresh-installed.js");
     const command = { executable: process.execPath, arguments: [helper], cwd: directory, timeoutMs: interruption === "timeout" ? 3_000 : 10_000, output: "capture", cleanupProcessGroup: true };
@@ -561,7 +561,7 @@ process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.e
       throw cause;
     });
     try {
-      const gitPid = Number(await waitForFile(marker));
+      const gitPid = await waitForFixturePid(marker);
       expect(Number.isSafeInteger(gitPid) && gitPid > 1).toBe(true);
       const pgid = processGroupOf(gitPid);
       const deadline = Date.now() + 5_000;
@@ -598,12 +598,12 @@ process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.e
     const stop = path.join(directory, "stop");
     const leaf = path.join(directory, "leaf.cjs");
     const helper = path.join(directory, "helper.cjs");
-    await writeFile(leaf, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);fs.appendFileSync(${JSON.stringify(heartbeat)},'tick\\n');},10);`);
+    await writeFile(leaf, `const fs=require('node:fs');${publishFixturePid(ready)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);fs.appendFileSync(${JSON.stringify(heartbeat)},'tick\\n');},10);`);
     await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{stdio:'ignore'});child.unref();process.stdout.write(String(child.pid));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
     const result = runUpdateCommand({ executable: process.execPath, arguments: [helper], cwd: directory, environment: process.env, timeoutMs: 5_000, output: "capture", cleanupProcessGroup: true });
     void result.catch(() => {});
     try {
-      const pid = Number(await waitForFile(ready));
+      const pid = await waitForFixturePid(ready);
       const pgid = processGroupOf(pid);
       await waitForFile(heartbeat);
       await writeFile(release, "release");
@@ -700,7 +700,7 @@ process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.e
     const ready = path.join(directory, "ready");
     const stop = path.join(directory, "stop");
     const anchorPid = path.join(directory, "anchor-pid");
-    const command = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
+    const command = `const fs=require('node:fs');${publishFixturePid(ready)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');
 ${controlledDeadlineDriver}
@@ -728,7 +728,7 @@ await outcome;process.stdout.write(JSON.stringify({message,calls,elapsed:Date.no
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     try {
-      const pgid = processGroupOf(Number(await waitForFile(ready)));
+      const pgid = processGroupOf(await waitForFixturePid(ready));
       child.send("interrupt");
       expect(await waitForDriver(closed, () => stderr), stderr).toBe(0);
       const observed = JSON.parse(stdout) as { message: string; calls: unknown[]; elapsed: number };
