@@ -28,6 +28,7 @@ const stoppedJournalFixture = async (version: 16 | 17 = 16) => {
   let snapshot = journal.patchSnapshot({ lifecycle: "stopped", activity: "stopped", nativeSessionId: id(9), nativeStopped: true,
     stoppedAt: "2026-11-19T00:00:00Z", controllerProcess: controller });
   journal.close();
+  delete snapshot.nativeInitialization;
   snapshot = { ...snapshot, windowsJobStopProof: { version: 1, ticketHash: controllerPayloadHash(ticket), snapshotHash: controllerPayloadHash(snapshot) } };
   f.executions.update(f.current(), { controllerProcess: controller, snapshot });
   const db = new Database(sqliteFilename(original.journalPath));
