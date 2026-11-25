@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import type { createCompatGateway } from '../src/subtask-compat-gateway.ts';
+import { CommandFailure } from '../src/command.ts';
 import { test, expect, topology, cliEnvironment, startOwnedCommand } from './fixtures.ts';
 import { createNestedFixtureTeam, selectFixtureTeamScopes, verifyOldWorker } from './subtask-compat-worker.ts';
 
@@ -87,7 +88,7 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
     const entry = version === 'old' ? compat.oldCliEntry : topology.cliEntry;
     const directory = version === 'old' ? compat.oldCliConfigDirectory : topology.cliConfigDirectory;
     const result = await (await startOwnedCommand(process.execPath, [entry, ...args], { cwd: directory, env: { ...cliEnvironment, DN_CONFIG_DIR: directory }, timeoutMs: 30_000, onOutput: () => {} })).finished;
-    if (success && result.exitCode !== 0) throw new Error(`${version} CLI ${args[0]} ${args[1]} failed: ${result.stderr}`);
+    if (success && result.exitCode !== 0) throw new CommandFailure(`${version} CLI ${args[0]} ${args[1]}`, result);
     if (!success) expect(result.exitCode).not.toBe(0);
     return result;
   };

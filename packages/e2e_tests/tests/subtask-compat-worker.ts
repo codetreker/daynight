@@ -213,7 +213,11 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
     const creation = await input.command(['task', 'create', '--project', projectId, '--title', 'Published Worker compatibility', '--status', 'todo']);
     const taskId = creation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
     if (!taskId) throw new Error('Worker Task creation returned no ID.');
-    const read = async (): Promise<Task> => JSON.parse((await input.command(['task', 'show', taskId, '--project', projectId, '--json'])).stdout) as Task;
+    let originalClaim: string | undefined;
+    const read = async (): Promise<CompatTask & Task> => readCompatTask({
+      command: input.command, projectId, taskId, workerId,
+      ...(originalClaim === undefined ? {} : { claimId: originalClaim }),
+    });
     const task = await read();
     if (!task.assignedTo) throw new Error('Worker Task has no assignee.');
     await input.command(['task', 'update', taskId, '--project', projectId, '--allow-agents', 'true', '--if-version', String(task.version)]);
@@ -224,7 +228,9 @@ export async function verifyOldWorker(input: { entry: string; token: string; ser
     await expect.poll(async () => {
       if (observationFailure !== undefined) throw new Error('Published Worker observation failed.', { cause: observationFailure });
       if (exited) throw new Error(`Published Worker exited early: ${inspect(worker!.diagnostics(), { depth: 6 })}`);
-      return (await read()).properties.worker?.claimId;
+      const observed = (await read()).properties.worker;
+      if (observed) originalClaim = observed.claimId;
+      return originalClaim;
     }, { timeout: 90_000, intervals: [1_000] }).toEqual(expect.any(String));
     const claimed = await read(), claim = claimed.properties.worker;
     if (!claim || claim.workerId !== workerId || claim.state !== 'active') throw new Error('Published Worker did not own the original claim.');
