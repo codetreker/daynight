@@ -34,7 +34,7 @@ func TestServerAPIUsageNormalFlow(t *testing.T) {
 			TaskSummary  bool   `json:"taskSummary"`
 			Aggregates   bool   `json:"aggregates"`
 		}](t, data)
-		if resp.Header.Get("X-Request-ID") == "" || capabilities.Protocol != core.Protocol || capabilities.WriteEnabled || !capabilities.TaskSummary || !capabilities.Aggregates {
+		if resp.Header.Get("X-Request-ID") == "" || capabilities.Protocol != core.Protocol || !capabilities.WriteEnabled || !capabilities.TaskSummary || !capabilities.Aggregates {
 			t.Fatalf("unexpected usage capabilities: %+v", capabilities)
 		}
 		project := createProject(t, f, "Usage without keys")
