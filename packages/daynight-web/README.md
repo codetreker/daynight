@@ -564,7 +564,7 @@ Team settings share a heading, the current Team name, and horizontal General and
 Members & invitations links. Native links preserve direct access, reload and browser
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
-viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
+viewer, task settings, and a separate deletion panel at the bottom. Team administrators and Personal owners can save the nested subtask policy; members can read it. Conflicts preserve the draft, and an unknown save requires an explicit readback that cannot prove the original outcome. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
 the roster and its role, removal and self-departure actions, followed by
 admin-only invitation management. An ordinary Team's sole administrator sees the
 last-admin reason on hover or focus of their unavailable Leave Team button. The

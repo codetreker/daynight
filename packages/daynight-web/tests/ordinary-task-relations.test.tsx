@@ -155,6 +155,18 @@ it('submits the fixed ordinary parent and assignee exactly once; uncertain resul
   expect(createTask).toHaveBeenCalledOnce(); fireEvent.click(screen.getByRole('button', { name: 'Create another subtask' })); fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); expect(opener).toHaveFocus();
 });
 
+it('shows the server refusal when nested creation is disabled', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  vi.mocked(createTask).mockRejectedValueOnce(new ApiError('server', 400, 'invalid_input', null, undefined, 'Nested subtasks are disabled for this Team.'));
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  renderWithLocale(panel(), { locale: 'en', container: root }); await screen.findByText('No subtasks');
+  fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Nested' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Nested subtasks are disabled for this Team.');
+  expect(createTask).toHaveBeenCalledOnce();
+});
+
 it('refreshes child versions without replacing focused links or requiring a parent version change', async () => {
   const first = child(2, 'todo');
   vi.mocked(listTaskChildren).mockResolvedValueOnce({ items: [first], nextCursor: null }).mockResolvedValue({ items: [{ ...first, status: 'done', version: 2n }], nextCursor: null });

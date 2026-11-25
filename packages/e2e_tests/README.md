@@ -254,7 +254,9 @@ The ordinary subtask journey creates a repair task from Web under an in-progress
 acceptance task, reads the same relationship through CLI and MCP, and verifies
 that the parent cannot finish while the repair remains open. It records and
 completes the repair, returns to the original task for reverification, and checks
-Goal progress. Separate tasks exercise confirmed cancellation and deletion, with
+Goal progress. A Team administrator enables nested subtasks in Web, creates a
+second-level task, disables the policy and observes the refusal and retained tree
+through Web and CLI. Separate tasks exercise confirmed cancellation and deletion, with
 cross-client readback and a new Web snapshot after deletion.
 
 Framework verification is separate from product journeys:

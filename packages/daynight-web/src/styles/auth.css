@@ -504,3 +504,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-invitations :is(.person-name, .row-detail, .row .button, .empty-inline),
 .team-invitations-loading, .team-loading { font-size: var(--text-sm); }
 .team-invitations .person-meta { font-size: var(--text-xs); }
+
+.team-nested-setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.team-nested-setting .hint { margin-top: 6px; }

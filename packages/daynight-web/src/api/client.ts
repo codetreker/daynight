@@ -311,7 +311,7 @@ export const createTask = async (projectId: string, input: CreateTaskInput, sign
   });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 201) admission.onWriteConfirmed?.();
-  return json(response, signal, (data) => {
+  try { return await json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, id(record(data).id));
     if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) || body.parentTaskId !== undefined && result.parentTaskId !== body.parentTaskId ||
       result.title !== body.title || result.description !== (body.description ?? "") ||
@@ -319,7 +319,13 @@ export const createTask = async (projectId: string, input: CreateTaskInput, sign
       body.assignedTo !== undefined && result.assignedTo !== body.assignedTo ||
       result.tags.length !== tagIds.length || result.tags.some(tag => !tagIds.includes(tag.id))) throw new ApiError("protocol", response.status);
     return result;
-  });
+  }, undefined, body.parentTaskId !== undefined); }
+  catch (error) {
+    if (error instanceof ApiError && error.serverMessage !== undefined && !(error.code === "invalid_input" && error.serverMessage === "Nested subtasks are disabled for this Team.")) {
+      throw new ApiError(error.kind, error.status, error.code, error.requestId, undefined, undefined, error.writeOutcome, error.taskIds);
+    }
+    throw error;
+  }
 };
 
 export const updateTaskFields = async (
