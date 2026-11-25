@@ -30,11 +30,12 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
   };
   const [current, setCurrent] = useState<TeamSettings | null>(null), [draft, setDraft] = useState(false);
   const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(null), [unsupported, setUnsupported] = useState(false);
-  const [conflict, setConflict] = useState(false), [saved, setSaved] = useState(false);
-  const retryReason = useRef<"background" | "reconcile" | "conflict">("background");
+  const [conflict, setConflict] = useState(false), [saved, setSaved] = useState(false), [recovering, setRecovering] = useState(false);
+  const retryReason = useRef<"background" | "reconcile" | "conflict" | "refusal">("background");
+  const pendingRefusal = useRef<"conflict" | "refusal" | null>(null);
   const floor = useRef<bigint | null>(null), authority = useRef(0);
   const latest = useRef<TeamSettings | null>(null), draftRef = useRef(false), epoch = useRef(0), fresh = useRef(false), reading = useRef<AbortController | null>(null);
-  const callbacks = useRef({ onDenied, onWrite, onSaved, onReconciled }); callbacks.current = { onDenied, onWrite, onSaved, onReconciled };
+  const callbacks = useRef({ onDenied, onWrite, onSaved, onReconciled, onIdentityMismatch }); callbacks.current = { onDenied, onWrite, onSaved, onReconciled, onIdentityMismatch };
   const access = useRef({ active, blocked, denied }); access.current = { active, blocked, denied };
   const op = useRef(operation); op.current = operation;
   const previousDenied = useRef(false);
@@ -44,7 +45,7 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
     if (denied) { reading.current?.abort(); latest.current = null; setCurrent(null); }
   }, [denied]);
   if (!active || blocked) fresh.current = false;
-  const read = useCallback(async (reason: "background" | "reconcile" | "conflict") => {
+  const read = useCallback(async (reason: "background" | "reconcile" | "conflict" | "refusal") => {
     if (authRequestsPaused()) return;
     retryReason.current = reason;
     const generation = ++epoch.current, authGeneration = readAuthRequestGeneration();
@@ -55,14 +56,15 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
     setError(null);
     try {
       await admission.ready(signal);
-      const result = await getTeamSettings(teamId, admission.userId, signal, onIdentityMismatch);
+      const result = await getTeamSettings(teamId, admission.userId, signal, callbacks.current.onIdentityMismatch);
       await admission.ready(signal);
       if (signal.aborted || admission.isInvalidated || generation !== epoch.current || authGeneration !== readAuthRequestGeneration()) return;
       if (result.kind === "unavailable") { setUnsupported(true); setCurrent(null); fresh.current = false; return; }
       if (floor.current !== null && result.settings.version < floor.current) { setError(new Error("The settings read is older than the confirmed version.")); return; }
       const previous = latest.current;
-      floor.current = result.settings.version; latest.current = result.settings; setCurrent(result.settings); setUnsupported(false); fresh.current = true;
+      floor.current = result.settings.version; latest.current = result.settings; setCurrent(result.settings); setUnsupported(false); fresh.current = true; setRecovering(false);
       if (previous === null || draftRef.current === previous.allowNestedSubtask) { draftRef.current = result.settings.allowNestedSubtask; setDraft(draftRef.current); }
+      if (reason === pendingRefusal.current) pendingRefusal.current = null;
       if (reason === "reconcile") { op.current.clear(); callbacks.current.onReconciled?.(); }
       if (reason === "conflict") setConflict(draftRef.current !== result.settings.allowNestedSubtask);
     } catch (failure) {
@@ -74,10 +76,10 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
       }
       setError(failure);
     } finally { if (generation === epoch.current) { reading.current = null; setLoading(false); } }
-  }, [admission, teamId, onIdentityMismatch]);
+  }, [admission, teamId]);
   useEffect(() => {
     if (!active || blocked) { ++epoch.current; reading.current?.abort(); return; }
-    void read("background");
+    void read(pendingRefusal.current ?? "background");
     return () => { ++epoch.current; reading.current?.abort(); };
   }, [active, blocked, read]);
   const previousEditable = useRef(editable);
@@ -87,9 +89,9 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
     ++epoch.current; reading.current?.abort(); fresh.current = false;
     if (!editable) ++authority.current;
     if (!editable && latest.current !== null) { draftRef.current = latest.current.allowNestedSubtask; setDraft(draftRef.current); setConflict(false); }
-    if (active && !blocked) void read("background");
+    if (active && !blocked) void read(pendingRefusal.current ?? "background");
   }, [editable, active, blocked, read]);
-  useTeamForeground(active && !blocked, () => { if (!op.current.guarded()) void read("background"); });
+  useTeamForeground(active && !blocked, () => { if (!op.current.guarded()) void read(pendingRefusal.current ?? "background"); });
   const unknown = operation.result?.kind === "unknown";
   const dirty = current !== null && draft !== current.allowNestedSubtask;
   const submit = () => {
@@ -98,7 +100,7 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
     setSaved(false); setConflict(false);
     const submittedAuthority = authority.current;
     void operation.run((signal, dispatched) => saveTeamSettings(teamId, admission.userId, base, value, signal, onIdentityMismatch, () => {
-      ++epoch.current; reading.current?.abort(); fresh.current = false; callbacks.current.onWrite(); dispatched();
+      ++epoch.current; reading.current?.abort(); fresh.current = false; setRecovering(true); callbacks.current.onWrite(); dispatched();
     }), result => {
       if (submittedAuthority !== authority.current) {
         if (floor.current === null || result.version > floor.current) floor.current = result.version;
@@ -111,18 +113,20 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
       if (floor.current === null || result.version >= floor.current) { floor.current = result.version; latest.current = result; setCurrent(result); }
       const observed = latest.current;
       if (observed !== null && draftRef.current === value && observed.allowNestedSubtask === value) { setSaved(true); }
-      fresh.current = observed !== null; callbacks.current.onSaved();
+      fresh.current = observed !== null; setRecovering(observed === null); callbacks.current.onSaved();
     }, failure => {
       if (failure instanceof ApiError && (failure.code === "forbidden" || failure.code === "not_found")) { ++authority.current; latest.current = null; setCurrent(null); callbacks.current.onDenied(); }
       else {
-        if (failure instanceof ApiError && failure.code === "version_conflict") void read("conflict");
+        const reason = failure instanceof ApiError && failure.code === "version_conflict" ? "conflict" : "refusal";
+        pendingRefusal.current = reason; retryReason.current = reason;
+        if (access.current.active && !access.current.blocked && !access.current.denied) void read(reason);
         callbacks.current.onReconciled?.();
       }
     });
   };
   return <section className="panel team-nested-settings"><header className="panel-heading"><div><h2>{m.title}</h2></div></header><div className="panel-body settings-form">
     {loading && current === null && <p role="status">{m.loading}</p>}
-    {unsupported && <p>{m.unavailable}</p>}
+    {unsupported && <div><p>{m.unavailable}</p>{recovering && !unknown && <button className="button" type="button" disabled={loading || !active || blocked} onClick={() => { void read(pendingRefusal.current ?? retryReason.current); }}>{m.retry}</button>}</div>}
     {saved && current === null && <p role="status">{m.saved}</p>}
     <OperationPublicationError operation={operation} zh={zh} />
     {error !== null && <div className="notice error" role="alert"><p>{m.failed}</p><button className="button" type="button" disabled={loading} onClick={() => { void read(unknown ? "reconcile" : retryReason.current); }}>{unknown ? m.check : m.retry}</button></div>}
@@ -133,7 +137,7 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
       {conflict && <p className="notice warning" role="alert">{m.conflict}</p>}
 
       {operation.result?.kind === "rejected" && !conflict && <p className="notice error" role="alert">{m.rejected}</p>}
-      {editable && !unknown && <div className="settings-actions"><button className="button primary" type="button" disabled={!dirty || !active || blocked || loading || operation.pending || operation.publicationPending || operation.publicationError !== null || error !== null} onClick={submit}>{operation.pending ? m.saving : m.save}</button><button className="button" type="button" disabled={!dirty || operation.pending} onClick={() => { draftRef.current = current.allowNestedSubtask; setDraft(draftRef.current); setConflict(false); operation.clear(); }}>{m.cancel}</button></div>}
+      {editable && !unknown && <div className="settings-actions"><button className="button primary" type="button" disabled={!dirty || !active || blocked || loading || recovering || operation.pending || operation.publicationPending || operation.publicationError !== null || error !== null} onClick={submit}>{operation.pending ? m.saving : m.save}</button><button className="button" type="button" disabled={!dirty || operation.pending} onClick={() => { draftRef.current = current.allowNestedSubtask; setDraft(draftRef.current); setConflict(false); operation.clear(); }}>{m.cancel}</button></div>}
       <p className="settings-state" role="status">{saved && !dirty ? m.saved : dirty ? m.unsaved : ""}</p>
     </>}
   </div></section>;
