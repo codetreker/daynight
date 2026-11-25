@@ -36,6 +36,7 @@ const fixture = (botHistoryBudget: BotHistoryCacheBudget) => {
     if (database) cleanup.push(() => { if (database.open) database.close(); });
     const journal = openControllerLifecycleStore(file, ticket, { ...(database ? { database } : {}), contentOwnedLocally: true, botHistoryBudget, onMigration: () => {} });
     cleanup.push(() => journal.close());
+    journal.markNativeInitializationDispatching();
     return journal;
   };
   const measure = () => {

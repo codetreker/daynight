@@ -952,7 +952,10 @@ test.skipIf(process.platform !== "linux").each(["original ticket", "conflicting 
   const native = { pid: 456, parentPid: 123, processGroupId: 456, startedAt: "native-original", commandHash: "b".repeat(64) };
   mkdirSync(path.dirname(file), { recursive: true });
   const journal = lifecycle.openControllerLifecycleStore(file, journalTicket, { onMigration: () => {} });
-  try { journal.patchSnapshot({ controllerProcess: f.saved().controllerProcess, nativeProcesses: [native], nativeSessionId: f.saved().nativeSessionId, lifecycle: "ready", error: null }); }
+  try {
+    journal.markNativeInitializationDispatching();
+    journal.patchSnapshot({ controllerProcess: f.saved().controllerProcess, nativeProcesses: [native], nativeSessionId: f.saved().nativeSessionId, lifecycle: "ready", error: null });
+  }
   finally { journal.close(); }
   const first = Object.assign(new Error("historical read failed"), { code: "EIO" });
   const history = vi.spyOn(lifecycle, "readHistoricalStoppedControllerGeneration").mockReturnValue(null).mockImplementationOnce(() => { throw first; });
