@@ -205,6 +205,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     freezeRole: (value, botId, role) => selected(value, botId)!.store.freezeRole(value, botId, role),
     freezeToolLaunch: (record, launch, observation) => required(record).store.freezeToolLaunch(record, launch, observation),
     prepareDeletion: (record, stop, targets) => required(record).store.prepareDeletion(record, stop, targets),
+    recordInitializationDeletion: (record, stop, evidence) => required(record).store.recordInitializationDeletion(record, stop, evidence),
     bindDeletionWorker: (record, workerId) => required(record).store.bindDeletionWorker(record, workerId),
     rejectNeverStartedDeletion: record => required(record).store.rejectNeverStartedDeletion(record),
     completeDeletionTarget: (record, file) => required(record).store.completeDeletionTarget(record, file),
@@ -218,7 +219,8 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     markShutdown: (record, eligible) => required(record).executions.markShutdown(record, eligible),
     resumeObserved: record => required(record).executions.resumeObserved(record),
     blockRecovery: (record, reason) => required(record).executions.blockRecovery(record, reason),
-    beginRecovery: (record, stopped, home, launch) => required(record).executions.beginRecovery(record, stopped, home, launch),
+    scheduleInitializationRetry: (record, now, reserve) => required(record).executions.scheduleInitializationRetry(record, now, reserve),
+    beginRecovery: (record, stopped, home, launch, initialization) => required(record).executions.beginRecovery(record, stopped, home, launch, initialization),
   };
   const assertLocked = (record: BotRecord): void => {
     assertOwner(record.owner);

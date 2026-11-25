@@ -65,6 +65,8 @@ export type ProviderOptions = {
   imageRuntime?: NativeImageRuntime;
   /** Recheck the owning Controller before a new native side effect. */
   assertNativeDispatch?(): void;
+  /** Commit the conservative creation boundary before recovery preparation or native dispatch. */
+  onNativeInitializationDispatch?(): void;
   /** Original persistent admission identity for native helper dispatch. */
   onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */

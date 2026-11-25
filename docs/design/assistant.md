@@ -68,13 +68,13 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 迁移协调器在原 Worker、Bot 与 Controller 存储锁下核验原执行已停止，再复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后切换唯一写入位置。原 Worker 库事务将源行移除与迁移摘要回执一起提交；原票据和 journal 停证保持不变，由独立映射定位副本。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。本地提交后的 `registration_pending` 阻止旧路径执行，机制与只读历史入口由 [Worker 执行层设计](worker-bot-runtime.md#bot-专属位置与迁移责任)拥有。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
 
-新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。实际换 Worker 时，在同一个 Session 写事务中撤销旧连接，终结尚处于 accepted 或 offered 的普通输入并保存未派发回执；取消请求以及已取得派发许可或结果未知的操作继续沿原身份对账。原 Worker 续签保持未派发输入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
+新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。实际换 Worker 时，在同一个 Session 写事务中撤销旧连接，终结尚处于 accepted 或 offered 的普通输入并保存未派发回执；取消请求以及已取得派发许可或结果未知的操作继续沿原身份对账。原 Worker 续签保持未派发输入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；新进程恢复已有会话仍需原 writer 停证和已知 native ID，创建前失败使用下述专用证明。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
 
-接管请求、恢复身份与观察字段使用独立版本化合同，不向现有严格管理 DTO 或 `/grant` 静默增加字段。原请求身份及结果查询由接管用例持久保存，结果未知不重发业务输入。当前机器、状态及新鲜度来自版本化观测；数据库中的 ready 或可读缓存不授予发送资格。上述机制不声明跨机接管或真实 Provider 验收已完成。
+接管请求、恢复身份与观察字段使用独立版本化合同，管理 DTO 保持严格解析。Bot grant 的初始化证明是下述显式可选扩展，普通 Session grant 不接受它。原请求身份及结果查询由接管用例持久保存，结果未知不重发业务输入。当前机器、状态及新鲜度来自版本化观测；数据库中的 ready 或可读缓存不授予发送资格。上述机制不声明跨机接管或真实 Provider 验收已完成。
 
 ### 服务端恢复 v1 协议
 
-入口为 `/api/v1/me/workers/{workerId}/bots/{botId}/recovery/v1/`。`register`、`takeover`、`grant`、`report` 和 `operations/{operationId}` 均使用 POST；最后一项只查询原回执，不重发操作。恢复证明仅放在请求正文，错误与回执不回显秘密。Go API DTO 与 TypeScript 独立解析器保留十进制 int64 字符串，旧管理 DTO 和旧 grant 形状保持不变。
+入口为 `/api/v1/me/workers/{workerId}/bots/{botId}/recovery/v1/`。`register`、`takeover`、`grant`、`report` 和 `operations/{operationId}` 均使用 POST；最后一项只查询原回执，不重发操作。恢复证明仅放在请求正文，错误与回执不回显秘密。Go API DTO 与 TypeScript 独立解析器保留十进制 int64 字符串，管理 DTO 保持不变。
 
 所有请求包含 `botRecoveryVersion=1`、与配置 PublicOrigin 完全一致的 `serviceOrigin`、32 字节无填充 canonical base64url `recoveryIdentity`，且使用当前有效 PAT。`register` 另含 `operationId`、`botVersion`、`sessionId`、`testExecutionId`、必填可空 `nativeSessionId`。首次登记要求原 Worker、已绑定 Session 和当前 Bot 版本，将承载代次设为 1，并保存已锁定 Worker 报告的机器身份；不会新建 Session，也不延续旧 PAT 权限。已经登记的证明不能被另一登记覆盖。
 
@@ -83,6 +83,8 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 `service/bot/runtime.Recovery` 协调当前凭据、Bot、Session 和机器报告锁，`core/bot` 判断归属、恢复证明与承载代次，`core/session` 核验原会话及 Controller stopProof。`bot_recovery` 保存当前 Worker、服务域、机器、证明摘要和代次；`bot_recovery_operations` 保存原请求摘要和无秘密回执。它们与既有 Session 使用同一数据库事务。每次恢复 grant 都清除旧连接租约及同步资格。浏览器权限投影与命令准入共同要求当前持久连接租约有效；同 fence 的 relay 缓存只能提供阅读内容，不能覆盖租约撤销或过期。因此其它 relay 的旧缓存，以及提交成功但调用方只收到 unknown 的情况，都不能在新连接同步完成前恢复发送资格。连接失效不证明本机命令已停止。
 
 回执包含原 `operationId`、kind、Worker、承载代次、Bot version、平台和原生身份，以及可空的 grant 到期时间与 token SHA-256。`current` 表示该回执仍对应当前承载；含 grant 时还要求未过期、摘要仍被选中、Controller 身份相同，且父 PAT 就是本次认证的 PAT。新 PAT 可以读取旧回执，但旧授权不因此恢复。相同操作 ID 与相同请求只返回原回执，不重新签发；不同请求冲突。未知提交保留 `outcome_unknown`，查询不存在不能证明先前未提交。客户端须保留原请求，不能把历史成功或当前可读状态当作新授权。
+
+两个 Bot grant 外层允许可选 `initializationEvidence:{version:1,state:"not_dispatched"}`，由 `core/session` 在原会话锁内限定为 Codex、双方 native ID 为空、无需初始输入以及精确前代和真实停证。该例外允许尚未创建线程的 Bot 初始化下一代，既有原生会话仍要求相同 native ID。Worker 的[创建前失败恢复](worker-bot-runtime.md#codex-创建前失败的恢复)负责本机证据、持久预算与退避；服务端不从 null 自行推断未派发，也不放宽普通 Session grant。
 
 `report` 包含 `hostingGeneration` 和原 `report` 对象，先检查恢复证明、当前 Worker 与承载代次，再执行既有版本、fence、native ID 和 ready 同步检查。新恢复接口不参与普通 Task claim 或助手业务 claim 的流转。Worker 目录发现、独占锁、旧进程停证以及真实 Provider resume 仍由对应模块验收；服务端接口存在不自动启用这些能力。
 

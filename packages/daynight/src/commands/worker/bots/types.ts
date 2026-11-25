@@ -41,10 +41,55 @@ export type BotCleanup = {
   targets: import("./delete-files.js").BotDeletionTarget[];
   localCompleted: boolean;
 };
+export type BotInitializationDeletionEvidence = {
+  version: 1; targetLaunchId: string; targetExecutionGeneration: string; targetControllerInstanceId: string;
+  predecessorLaunchId: string; ticketHash: string; snapshotHash: string;
+  authorization: "not_prepared" | "rejected";
+};
+export type BotInitializationDeletion = {
+  deletionId: string; requestedVersion: string;
+  evidence: BotInitializationDeletionEvidence;
+  stop: import("./session-api.js").BotDeletionStop;
+};
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
   observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
   migration?: { state: "registration_pending"; manifestPath: string };
+  initializationDeletion?: BotInitializationDeletion;
+};
+
+export const parseBotInitializationDeletionEvidence = (value: unknown): BotInitializationDeletionEvidence => {
+  const data = object(value, "Bot initialization deletion evidence");
+  if (Object.keys(data).sort().join() !== "authorization,predecessorLaunchId,snapshotHash,targetControllerInstanceId,targetExecutionGeneration,targetLaunchId,ticketHash,version"
+    || data.version !== 1 || data.authorization !== "not_prepared" && data.authorization !== "rejected"
+    || [data.ticketHash, data.snapshotHash].some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) throw new Error("Bot initialization deletion evidence is invalid.");
+  for (const field of ["targetLaunchId", "targetControllerInstanceId", "predecessorLaunchId"]) botUUID(data[field], "Bot initialization deletion identity");
+  botVersion(data.targetExecutionGeneration);
+  if (data.targetExecutionGeneration === "1" || data.targetLaunchId === data.predecessorLaunchId) throw new Error("Bot initialization deletion requires its unsubmitted successor generation.");
+  return value as BotInitializationDeletionEvidence;
+};
+
+/** The store records this exception only after confirming the ungranted target and original real stop. */
+export const matchesInitializationDeletionStop = (record: BotRecord, stop: import("./session-api.js").BotDeletionStop): boolean => {
+  const saved = record.initializationDeletion, intent = record.intent, deletion = record.observed.deletion;
+  if (saved === undefined || deletion === null) return false;
+  const evidence = parseBotInitializationDeletionEvidence(saved.evidence);
+  const fields = ["protocol", "sessionId", "testExecutionId", "executionGeneration", "controllerId", "controllerInstanceId"] as const;
+  const proofFields = ["recordId", "previousControllerInstanceId", "stoppedAt"] as const;
+  const sameStop = (candidate: import("./session-api.js").BotDeletionStop): boolean => fields.every(field => stop[field] === candidate[field]) && proofFields.every(field => stop.stopProof[field] === candidate.stopProof[field]);
+  const identity = saved.deletionId === deletion.deletionId && saved.requestedVersion === deletion.requestedVersion
+    && stop.protocol === "daynight.session.v1" && stop.controllerInstanceId === stop.stopProof.previousControllerInstanceId && stop.stopProof.kind === undefined
+    && stop.controllerInstanceId !== evidence.targetControllerInstanceId
+    && BigInt(botVersion(stop.executionGeneration)) + 1n === BigInt(evidence.targetExecutionGeneration)
+    && Object.keys(stop).sort().join() === [...fields, "stopProof"].sort().join()
+    && Object.keys(stop.stopProof).sort().join() === [...proofFields].sort().join()
+    && sameStop(saved.stop);
+  if (!identity) return false;
+  if (record.cleanup?.stop != null && !sameStop(record.cleanup.stop)) return false;
+  if (intent === null) return record.cleanup?.localCompleted === true && record.cleanup.stop !== null && sameStop(record.cleanup.stop);
+  return intent.launchId === evidence.targetLaunchId && intent.executionGeneration === evidence.targetExecutionGeneration
+    && intent.controllerInstanceId === evidence.targetControllerInstanceId && intent.nativeSessionId === null && intent.registration.provider === "codex"
+    && stop.sessionId === intent.sessionId && stop.testExecutionId === intent.executionId && stop.controllerId === intent.registration.controllerId;
 };
 
 export const botUUID = (value: unknown, field: string): string => {

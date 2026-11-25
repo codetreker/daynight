@@ -154,6 +154,31 @@ func TestBotRecoveryHTTPDispatchAndSafeResponses(t *testing.T) {
 	}
 }
 
+func TestBotRecoveryHTTPPreservesInitializationEvidence(t *testing.T) {
+	_, grant, _ := recoveryInputs()
+	grant.NativeSessionID = nil
+	grant.InitializationEvidence = &sessioncore.BotInitializationEvidence{Version: 1, State: "not_dispatched"}
+	previous := "1"
+	grant.Grant.PreviousGeneration, grant.Grant.ExecutionGeneration = &previous, "2"
+	grant.Grant.StopProof = &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: uuid.NewString(), StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	for _, action := range []string{"grant", "takeover"} {
+		f, h := newRecoveryHTTP(t)
+		f.method, f.input = action, grant
+		raw, _ := json.Marshal(grant)
+		w := f.request(h, http.MethodPost, action, raw)
+		if w.Code != 200 || f.calls != 1 {
+			t.Fatalf("evidence request was not forwarded: status=%d calls=%d body=%s", w.Code, f.calls, w.Body.String())
+		}
+		grant.InitializationEvidence.State = "dispatching"
+		raw, _ = json.Marshal(grant)
+		w = f.request(h, http.MethodPost, action, raw)
+		if w.Code != 400 || f.calls != 1 {
+			t.Fatalf("invalid evidence reached business operation: status=%d calls=%d", w.Code, f.calls)
+		}
+		grant.InitializationEvidence.State = "not_dispatched"
+	}
+}
+
 func TestBotRecoveryHTTPRejectsBeforeBusinessCall(t *testing.T) {
 	registration, grant, report := recoveryInputs()
 	for _, action := range []string{"register", "takeover", "grant", "report", "query"} {

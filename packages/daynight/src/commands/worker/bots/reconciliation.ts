@@ -38,7 +38,9 @@ export const createBotReconciliation = (options: {
       || observed.nativeSessionId !== null && observed.nativeSessionId !== operation.body.nativeSessionId) {
       throw new Error("Bot recovery requires matching current service and authenticated local execution evidence before preparing an operation.");
     }
-    if (previousGeneration != null && observed.nativeSessionId === null) throw new Error("Bot generation recovery requires the service to retain its original native Session binding.");
+    const initializationEvidence = operation.kind === "register" ? previous?.initializationEvidence : (operation.body as BotRecoveryGrant).initializationEvidence;
+    if (previousGeneration != null && observed.nativeSessionId === null && initializationEvidence === undefined) throw new Error("Bot generation recovery requires the service to retain its original native Session binding.");
+    if (initializationEvidence !== undefined && (observed.nativeSessionId !== null || observed.provider !== "codex" || operation.body.nativeSessionId !== null)) throw new Error("Bot initialization retry conflicts with the service's original native Session binding.");
     const state = options.store.read(record)!;
     const hosting = state.current?.receipt ?? state.registration?.receipt;
     if (operation.kind === "register" ? observed.hostingGeneration !== null || observed.workerId !== record.owner.workerId
@@ -105,6 +107,7 @@ export const createBotReconciliation = (options: {
       ...identity(state), operationId: randomUUID(), expectedHostingGeneration: receipt.hostingGeneration,
       ...binding,
       controllerToken: `dncontroller_${randomBytes(32).toString("base64url")}`,
+      ...(previous?.initializationEvidence === undefined ? {} : { initializationEvidence: previous.initializationEvidence }),
       grant: { protocol: SESSION_PROTOCOL, testExecutionId: intent.executionId, controllerId: intent.registration.controllerId,
         controllerInstanceId: intent.controllerInstanceId, executionGeneration: intent.executionGeneration, kind: "reconnect",
         previousGeneration: recovering ? previous.generation : null,
@@ -123,6 +126,24 @@ export const createBotReconciliation = (options: {
       controllerInstanceId: confirmed.receipt.controllerInstanceId };
   };
   return {
+    initializationGrantAcknowledged: (record: BotRecord): boolean => {
+      const state = options.store.read(record), intent = record.intent;
+      return state !== null && intent !== null && [state.registration, state.current, state.currentOperation?.result, state.pending?.result]
+        .some(result => result != null && BigInt(result.receipt.executionGeneration) >= BigInt(intent.executionGeneration));
+    },
+    initializationGrantUncommitted: (record: BotRecord): boolean => {
+      const state = options.store.read(record), intent = record.intent;
+      if (state === null || intent === null || state.pending !== null) return false;
+      const target = BigInt(intent.executionGeneration);
+      if ([state.registration, state.current, state.currentOperation?.result].some(result => result != null && BigInt(result.receipt.executionGeneration) >= target)) return false;
+      return state.rejections.some(rejected => {
+        const operation = rejected.operation;
+        if (operation.kind === "register") return false;
+        const body = operation.body as BotRecoveryGrant;
+        return body.initializationEvidence !== undefined && body.grant.executionGeneration === intent.executionGeneration
+          && body.grant.controllerInstanceId === intent.controllerInstanceId;
+      });
+    },
     applicable: (record: BotRecord): boolean => options.applicable?.(record) ?? true,
     ownsHosting: (record: BotRecord): boolean => {
       if (record.owner.workerId === options.owner.workerId) return true;

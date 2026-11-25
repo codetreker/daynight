@@ -129,6 +129,63 @@ const fixture = async () => {
 };
 
 describe("Bot hosting reconciliation with durable storage and HTTP", () => {
+  it.each([false, true])("initialization deletion checks the original grant ledger even when a later renewal is refused (earlier commit %s)", async committed => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    const original = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };
+    await f.active.sessionApi.grant(original, signal());
+    const previous = { generation: "1", instanceId: original.intent.controllerInstanceId, recordId: id(75), stoppedAt: "2026-01-01T00:00:00Z",
+      initializationEvidence: { version: 1 as const, state: "not_dispatched" as const } };
+    const retry = { ...original, intent: { ...original.intent, executionGeneration: "2", controllerInstanceId: id(76) } };
+    if (committed) {
+      f.fault.drop = "grant";
+      await expect(f.active.sessionApi.grant(retry, signal(), previous)).rejects.toThrow();
+      expect(f.active.sessionApi.initializationGrantUncommitted(retry)).toBe(false);
+      f.fault.expired = true;
+    }
+    f.fault.archiveBusy = true;
+    await expect(f.active.sessionApi.grant(retry, signal(), previous)).rejects.toMatchObject({ writeOutcome: "not_committed" });
+    const restarted = f.restart();
+    expect(restarted.sessionApi.initializationGrantUncommitted(retry)).toBe(!committed);
+    expect(restarted.sessionApi.initializationGrantAcknowledged(retry)).toBe(committed);
+    expect(restarted.store.read(retry)!.pending).toBeNull();
+  });
+  it("retains the exact initialization retry operation after a lost grant and resumes the same generation after restart", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    const original = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };
+    await f.active.sessionApi.grant(original, signal());
+    const previous = { generation: "1", instanceId: original.intent.controllerInstanceId, recordId: id(75), stoppedAt: "2026-01-01T00:00:00Z",
+      initializationEvidence: { version: 1 as const, state: "not_dispatched" as const } };
+    const retry = { ...original, intent: { ...original.intent, executionGeneration: "2", controllerInstanceId: id(76) } };
+    f.fault.drop = "grant";
+    await expect(f.active.sessionApi.grant(retry, signal(), previous)).rejects.toThrow();
+    const pending = f.active.store.read(retry)!.pending!;
+    expect(pending.body).toMatchObject({ initializationEvidence: previous.initializationEvidence, nativeSessionId: null });
+    const requests = f.requests.filter(request => request.action === "grant").length;
+    await f.restart().sessionApi.grant(retry, signal(), previous);
+    expect(f.requests.filter(request => request.action === "grant")).toHaveLength(requests);
+    expect(f.active.store.read(retry)!.pending).toBeNull();
+    expect(f.snapshot.executionGeneration).toBe("2");
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: id(11) } });
+    const ready = { ...retry, intent: { ...retry.intent, nativeSessionId: id(11) } };
+    await f.restart(id(2), "renewed-current-token").sessionApi.grant(ready, signal());
+    const renewed = f.requests.at(-1)!.body as BotRecoveryGrant;
+    expect(renewed.initializationEvidence).toBeUndefined();
+    expect(renewed.grant.previousGeneration).toBeNull();
+    expect(renewed.nativeSessionId).toBe(id(11));
+  });
+  it("reconfirms stopped initialization hosting after restart before reporting the original failure", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    const original = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };
+    await f.active.sessionApi.grant(original, signal());
+    const active = f.restart();
+    expect(active.reconciliation.ready(original)).toBe(false);
+    await expect(active.sessionApi.report(original, { state: "failed", code: "initialization_evidence_missing" }, signal())).resolves.toMatchObject({ startupResult: { state: "failed", code: "initialization_evidence_missing" } });
+    expect(active.reconciliation.ready(original)).toBe(true);
+    expect(f.requests.at(-1)!.action).toBe("report");
+  });
   it("waits for current local evidence when the service native identity is ahead of the cache", async () => {
     const f = await fixture();
     const cached = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };

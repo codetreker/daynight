@@ -170,6 +170,75 @@ func TestBotRecoveryNewProcessRequiresOriginalStopProof(t *testing.T) {
 	}
 }
 
+func initializationRecovery(a *Access, input *BotRecoveryGrant, now time.Time) {
+	a.record.Snapshot.Identity.NativeSessionID, input.NativeSessionID = nil, nil
+	previous := a.record.Snapshot.ExecutionGeneration
+	input.Grant.PreviousGeneration, input.Grant.ExecutionGeneration = &previous, "2"
+	input.Grant.ControllerInstanceID = uuid.NewString()
+	input.Grant.StopProof = &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: a.record.Snapshot.Identity.ControllerInstanceID, StoppedAt: now.UTC().Format(time.RFC3339Nano)}
+	input.InitializationEvidence = &BotInitializationEvidence{Version: 1, State: "not_dispatched"}
+}
+
+func TestBotRecoveryInitializationAdvancesOnlyTheStoppedGeneration(t *testing.T) {
+	f, op, a, input, ctx := recoveryAccess(t, map[string]int{"SetSessionGenerationStop": 1, "SetSessionGrant": 1, "SaveSession": 2, "DisconnectSession": 1})
+	initializationRecovery(a, &input, f.s.now())
+	before := fixtureCopy(a.record.Snapshot)
+	result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExecutionGeneration != "2" || result.SessionID != before.SessionID || result.TestExecutionID != before.TestExecutionID || result.ControllerID != before.Identity.ControllerID || result.ControllerInstanceID == before.Identity.ControllerInstanceID || a.record.Snapshot.Identity.NativeSessionID != nil {
+		t.Fatalf("initialization recovery replaced stable identity: %+v", result)
+	}
+	if !jsonEqual(f.writes.StopProof, encode(input.Grant.StopProof)) || !f.writes.Disconnected || a.record.Snapshot.Synchronized || a.record.Snapshot.Operations.CanSend {
+		t.Fatal("initialization recovery lost its stop proof or retained old input authority")
+	}
+	if err := op.BindController(a, &TaskAccess{}, before.ControllerFence); err == nil {
+		t.Fatal("the stopped generation retained Controller authority")
+	}
+}
+
+func TestBotRecoveryInitializationRejectsAmbiguousOrIncompatibleEvidence(t *testing.T) {
+	for name, mutate := range map[string]func(*Access, *BotRecoveryGrant){
+		"missing evidence":  func(_ *Access, g *BotRecoveryGrant) { g.InitializationEvidence = nil },
+		"unknown version":   func(_ *Access, g *BotRecoveryGrant) { g.InitializationEvidence.Version = 2 },
+		"dispatched":        func(_ *Access, g *BotRecoveryGrant) { g.InitializationEvidence.State = "dispatching" },
+		"ordinary session":  func(a *Access, _ *BotRecoveryGrant) { a.record.BotID = nil },
+		"task claim":        func(a *Access, _ *BotRecoveryGrant) { a.record.Snapshot.ClaimID = uuid.NewString() },
+		"missing execution": func(a *Access, _ *BotRecoveryGrant) { a.record.Snapshot.TestExecutionID = "" },
+		"other provider":    func(a *Access, _ *BotRecoveryGrant) { a.record.Snapshot.Identity.Provider = "claude" },
+		"initial input":     func(a *Access, _ *BotRecoveryGrant) { a.record.Snapshot.InitialInputState = "submitted" },
+		"native known": func(a *Access, g *BotRecoveryGrant) {
+			native := "existing"
+			a.record.Snapshot.Identity.NativeSessionID, g.NativeSessionID = &native, &native
+		},
+		"request native":        func(_ *Access, g *BotRecoveryGrant) { native := "replacement"; g.NativeSessionID = &native },
+		"same generation":       func(_ *Access, g *BotRecoveryGrant) { g.Grant.PreviousGeneration, g.Grant.StopProof = nil, nil },
+		"missing stop":          func(_ *Access, g *BotRecoveryGrant) { g.Grant.StopProof = nil },
+		"never started process": func(_ *Access, g *BotRecoveryGrant) { g.Grant.StopProof.Kind = "never_started" },
+		"wrong predecessor": func(_ *Access, g *BotRecoveryGrant) {
+			g.Grant.StopProof.PreviousControllerInstanceID = uuid.NewString()
+		},
+		"skipped generation": func(_ *Access, g *BotRecoveryGrant) { g.Grant.ExecutionGeneration = "3" },
+		"reused instance": func(a *Access, g *BotRecoveryGrant) {
+			g.Grant.ControllerInstanceID = a.record.Snapshot.Identity.ControllerInstanceID
+		},
+		"future stop": func(_ *Access, g *BotRecoveryGrant) {
+			g.Grant.StopProof.StoppedAt = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, op, a, input, ctx := recoveryAccess(t, map[string]int{})
+			initializationRecovery(a, &input, f.s.now())
+			mutate(a, &input)
+			result, err := op.GrantBotRecovery(ctx, a, f.p, input, false)
+			if err == nil || result.Token != "" {
+				t.Fatalf("unsafe initialization admitted: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestBotRecoveryGrantPreservesStorageFailures(t *testing.T) {
 	for _, stage := range []string{"grant", "first save", "disconnect", "final save"} {
 		t.Run(stage, func(t *testing.T) {

@@ -14,7 +14,7 @@
 
 Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `toolObservation`；Worker SQLite 格式 14 与 Web 库格式 4 阻止旧进程丢弃这些字段。启动、原身份恢复与 never-submitted 侧文件规则由[工具冻结设计](daynight-worker.md#本地工具路径选择)拥有。观察和停止原活 Controller 不因当前工具文件变化而失效。
 
-执行写入在即时事务中重新核对库存中的当前 intent。未知提交不能回退为未提交；同代已知 native ID 与进程出生证明不能更换或丢弃。`beginRecovery` 同时更新库存意图与执行证据，避免崩溃后出现新 intent 配旧代提交状态。它要求原代完整 stopped snapshot、native ID、Controller process proof 与允许的恢复预算，保存前代停证及原 launch/别名路径后，产生一个未提交的新目标。普通 patch 不能修改恢复计数或关停来源。
+执行写入在即时事务中重新核对库存中的当前 intent。未知提交不能回退为未提交；同代已知 native ID 与进程出生证明不能更换或丢弃。`beginRecovery` 同时更新库存意图与执行证据，避免崩溃后出现新 intent 配旧代提交状态。恢复原生会话要求原代完整 stopped snapshot、native ID、Controller process proof 与允许的恢复预算；下述 Codex 创建前失败例外使用已核验的未派发证据。保存前代停证及原 launch/别名路径后产生一个未提交的新目标。普通 patch 不能修改恢复计数或关停来源。
 
 删除进度保存在既有 `bots.record` JSON 的可选 `cleanup` 中，固定原 `deletionId`、请求版本、stopProof、清理目标和完成状态；缺省表示尚未准备清理。`011-bot-deletion.sql` 将 Worker 格式升为 11，不新增表，但阻止旧 Worker 打开或继续使用数据库：旧版 observe 会重写 JSON 并丢弃不认识的清理字段，仅依赖 deletion marker 拒绝启动无法保住 journal 删除后的唯一回执。本地清理完成时，在同一事务中清空定义和 intent、删除 `bot_executions` 行并裁剪目标列表，保留原停证与完成回执身份。
 
@@ -34,11 +34,25 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 `bots/session-api.ts` 用 Worker 当前 PAT 建立首次 Bot Session，并为专属存储的 Bot 登记恢复身份；此后的 grant/report 使用独立恢复接口，未迁移的共享存储保留旧生命周期接口。响应必须携带相同账号，字节数与请求时间有界。首次 Session 注册传递冻结的 `botVersion`，恢复登记与 report 使用当前观察版本。每个新恢复操作先通过当前账号授权的 Bot observation 读取服务端已提交的 Session/native/execution 绑定，再核对持久 intent、原 Controller 的新鲜认证观察或停证。续期同样先更新原 Controller 的 IPC 观察，不能只用 Worker 缓存。普通 Session GET 不作为该绑定的来源：旧 parent PAT 失效时，普通读取仍应拒绝，而专用恢复接口使用当前有效 PAT 和恢复证明重新授权。客户端不伪造完整 `SessionSnapshot`；授信成功后才通过普通读取核对服务端同步状态。HTTP 客户端不自动重复变更请求；恢复操作按下述持久原请求查询，不能用 GET 管理定义代替回执。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
 
-服务端 native ID 为 null 而本地已知 ID 时，同代授信使用观察到的服务端绑定，保留本地原生身份，并由原 Controller 在新授权下同步。要求两者先相等会在旧 parent PAT 失效时形成循环等待。首条输入才创建 native ID 的 Provider 也可续期同代 null 绑定；它在观察与提交之间发生变化时，按服务端明确事务拒绝处理。换代恢复仍要求服务端已有相同的非空 native ID、原代停证及既有 Provider 材料。尚未登记恢复身份的专属 Bot 若已停止并在本地进入下一代，首次登记延续已核验的精确前代停证，允许服务端仍处于该前代；登记回执保持服务端原代，只有后续 grant 才推进代次。缺失或错误的前代证明不能放宽 generation 校验。
+服务端 native ID 为 null 而本地已知 ID 时，同代授信使用观察到的服务端绑定，保留本地原生身份，并由原 Controller 在新授权下同步。要求两者先相等会在旧 parent PAT 失效时形成循环等待。首条输入才创建 native ID 的 Provider 也可续期同代 null 绑定；它在观察与提交之间发生变化时，按服务端明确事务拒绝处理。恢复已有原生会话的换代要求服务端已有相同的非空 native ID、原代停证及既有 Provider 材料；尚未派发的 Codex 创建使用下述专用证明。尚未登记恢复身份的专属 Bot 若已停止并在本地进入下一代，首次登记延续已核验的精确前代停证，允许服务端仍处于该前代；登记回执保持服务端原代，只有后续 grant 才推进代次。缺失或错误的前代证明不能放宽 generation 校验。
 
 ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，为独立 Session，不含 Task/claim/worktree，角色与初始输入分别编码。Controller 自身仍负责 Provider 适配与原生权限。准备出的环境和别名责任保留到原执行停止；提交前失败可以释放当前准备资源，提交后未知结果不能清理仍可能使用的目录。
 
 `backends/controller-process.ts` 被 Task 与 Bot 实际共享：日志准备、持久提交回调、detached spawn、process proof、认证 IPC 观察和按执行串行化。Task 的 worktree、claim、cleanup prompt、归档及回收仍由原 backend 持有。明确 OS 启动拒绝先持久化，再报告服务端；Provider 快速拒绝后 IPC 可能已关闭，此时只允许读取同 fence 的 journal 失败证据，旧 ready 记录不能作为当前在线证明。启动时的 Windows 进程证明通过本进程内的同一原 process handle 采集出生时间、父进程身份及完整命令行，保持证明字段结构与出生时间精度，完整 Unicode 命令行不再经过 PowerShell console 编码，并使用共享 15 秒预算；native 调用之间检查预算，已开始的调用仍须等待返回。POSIX 采集和日常身份复核仍为 5 秒；完整证明、认证 IPC 和资源责任由[Session 设计](task-session-protocol.md)拥有。
+
+### Codex 创建前失败的恢复
+
+新 Codex Bot journal 在没有 resume native ID 时记录 `nativeInitialization:{version:1,state:"not_dispatched"}`。Provider 在为 `thread/start` 准备 dirty 恢复屏障之前同步持久化 `dispatching`；写入失败不准备屏障或派发，阶段不回退。此后即使请求尚未到达原生进程，也保守视为未知，避免带 dirty 材料重新初始化。普通 Task、其他 Provider 与缺少字段的旧 journal 不因打开存储而获得这项证明。
+
+`lifecycle-store.ts` 的只读入口核对原 ticket 与 stopped snapshot，调用 `bot-initialization-evidence.ts` 判别器，返回绑定两者摘要的未派发证据。Worker 仍先确认原 Controller/native 进程树停止，再沿原存储准备机制保留该代停止事实。旧 Codex 固定版本门槛只接受精确的本地失败来源及无矛盾的原记录，不能单独以错误文本、缺少 native ID 或空目录放行，也不向旧 snapshot 回填新阶段。
+
+初始化重试在 execution 行持久保存 `initializationRetryAt`，首次等待 15 秒，后续按已消耗异常次数指数增加，上限 5 分钟。环境检查前在同一存储中预留一次 `recoveryCount` 与下一次时间；换代前检查失败保留旧代次并受剩余预算和期限约束，成功后 `beginRecovery` 不再重复扣数。进程重启不能跳过期限或恢复已消耗次数。换代后、目标尚未提交时的明确本地失败或授权拒绝则持久阻断该目标，不能每次发现都重新申请 grant；未知授权结果只核对原操作。
+
+缺证据、耗尽预算和初始化尝试失败分别保留 `initialization_evidence_missing`、`initialization_retry_exhausted` 和 `initialization_retry_failed`。能核对当前服务端绑定与承载授权时，通过既有失败报告同步原因；服务端仍处于前代而本地目标已换代时，不冒充当前 fence，上报无法完成的原因留在本地诊断中。
+
+新初始化目标的 grant 阶段单调保存为未提交、未知、明确拒绝或已确认；历史成功回执不能被后来的拒绝覆盖。删除屏障已观察后，目标明确尚未提交进程，且没有进程、snapshot、未释放启动或未知/成功授权时，可再次核对原 ticket、journal 摘要及真实停证，沿精确前代停止回执清理。`initializationDeletion` 保留该例外的目标身份、摘要、授权事实和回执来源，清理后仍可跨重启核对；它不回滚当前 intent，不构造 `never_started`。服务端最终仍检查实际 fence，明确冲突且权威读取确认未完成时转为既有 `execution_evidence_missing`，停止重复无效回执；结果未知保留原责任。已确认新代授权但尚未启动、无法证明当前代停止时，同样保留该明确失败及全部资料，不用旧代回执替代。
+
+两个 Bot grant 外层接受可选 `initializationEvidence:{version:1,state:"not_dispatched"}`。服务端仅在原 Bot 为 Codex、当前与请求 native ID 均为空、初始输入为 `not_required`，且精确前代和真实 stopProof 满足既有规则时接受。它不改变普通 Session grant，也不以 `never_started` 代替已经启动过的 Controller 停证。原请求回执和承载规则继续防止未知授权结果触发新代次。成功创建原生会话后沿既有身份恢复与续期规则运行。取舍见[初始化恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-25-bot-initialization-retry.md)。
 
 ## 本地发现与承载接回
 

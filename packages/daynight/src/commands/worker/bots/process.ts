@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { readControllerSnapshot, readCurrentControllerSnapshot, readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerSnapshot, readCurrentControllerSnapshot, readCurrentControllerInventorySnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, readBotInitializationRetryEvidence, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { isLinuxControllerLaunch } from "../../controller/linux-controller-launch.js";
 import { readUnreleasedLaunch, unreleasedLaunchPath, UnreleasedLaunchReceiptDurabilityError } from "../../controller/unreleased-launch.js";
 import type { ControllerProcessProof } from "../../controller/process-proof.js";
@@ -35,6 +35,23 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
 import { assertBotMigrationExecutable } from "./migration-state.js";
+import type { BotInitializationRetryEvidence } from "../../controller/bot-initialization-evidence.js";
+import { BotRecoveryRejectedError } from "./recovery-api.js";
+
+export class BotInitializationBlockedError extends Error {
+  constructor(readonly code: "initialization_evidence_missing" | "initialization_retry_exhausted" | "initialization_retry_failed", options?: ErrorOptions) {
+    const description = code === "initialization_evidence_missing" ? "The original generation does not prove that native Session creation was never dispatched; a replacement is forbidden."
+      : code === "initialization_retry_exhausted" ? "The Bot initialization recovery budget is exhausted; automatic initialization has stopped."
+      : "The Bot initialization attempt failed; its original execution and recovery evidence are retained.";
+    super(`${code}: ${description}${options?.cause instanceof Error ? ` ${options.cause.message}` : ""}`, options);
+  }
+}
+export class BotInitializationWaitingError extends Error {
+  constructor(readonly retryAt: number) { super(`Bot initialization retry is waiting until ${new Date(retryAt).toISOString()}.`); }
+}
+class BotInitializationGrantUnknownError extends Error {
+  constructor(cause: unknown) { super("Bot initialization grant is unconfirmed; the original operation must be reconciled before another launch.", { cause }); }
+}
 
 export class BotAdmissionBlockedError extends Error {
   constructor(options?: ErrorOptions) {
@@ -72,14 +89,14 @@ const blockedAdmission = (cause: unknown): BotAdmissionBlockedError | undefined 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: Omit<BotSessionApi, "registerRecovery">; recoveryLimit: number | (() => number); now?: () => number;
+  sessionApi: Omit<BotSessionApi, "registerRecovery" | "initializationGrantUncommitted" | "initializationGrantAcknowledged"> & Partial<Pick<BotSessionApi, "initializationGrantUncommitted" | "initializationGrantAcknowledged">>; recoveryLimit: number | (() => number); now?: () => number;
   reconcileHosting?: (record: BotRecord) => boolean;
   canControl?: (record: BotRecord) => boolean;
   canAdmitNewExecution(): boolean;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
   toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
-  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController; reconcileLaunch?: typeof reconcileSubmittedControllerLaunch; stopBootstrap?: typeof stopControllerBootstrap; prepareStorage?: typeof prepareControllerStorage; inspectUnreleasedPath?: (file: string) => Promise<unknown> };
+  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController; reconcileLaunch?: typeof reconcileSubmittedControllerLaunch; stopBootstrap?: typeof stopControllerBootstrap; prepareStorage?: typeof prepareControllerStorage; readInitializationEvidence?: typeof readBotInitializationRetryEvidence; inspectUnreleasedPath?: (file: string) => Promise<unknown> };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
   const environments = new Map<string, PreparedBotEnvironment>();
@@ -175,6 +192,9 @@ export const createBotProcess = (options: {
     const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
     if (ticket.botId !== undefined && ticket.botId !== record.botId) throw new Error("Controller ticket belongs to another Bot.");
+    const previous = options.executions.get(record)?.previous;
+    const initializationRetry = previous?.initializationRetryEvidence === undefined ? undefined : { previousLaunchId: previous.launchId, ticketHash: previous.initializationRetryEvidence.ticketHash, snapshotHash: previous.initializationRetryEvidence.snapshotHash };
+    if (controllerPayloadHash(ticket.initializationRetry ?? null) !== controllerPayloadHash(initializationRetry ?? null)) throw new Error("Bot ticket initialization evidence differs from its original stopped generation.");
     if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
       || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
     if (ticket.claudeBotRecovery !== undefined && (ticket.claudeBotRecovery.botId !== record.botId
@@ -314,13 +334,17 @@ export const createBotProcess = (options: {
     let record = current(input);
     const prior = record.intent === null ? null : options.executions.get(record);
     checkAdmission(record);
+    if (prior?.recoveryBlocked?.startsWith("initialization_") && record.intent?.nativeSessionId === null) {
+      throw new BotInitializationBlockedError(prior.recoveryBlocked as BotInitializationBlockedError["code"], prior.lastError === null ? undefined : { cause: new Error(prior.lastError) });
+    }
+    if (prior?.initializationRetryAt !== undefined && prior.initializationRetryAt > now()) throw new BotInitializationWaitingError(prior.initializationRetryAt);
     if (prior !== null && prior.launchSubmission !== "not-submitted") {
       const ticket = await checkedTicket(record);
       if (await settleUnreleased(record, ticket, signal)) {
         await releaseEnvironment(record.botId);
         throw new Error("Bot controller launch was confirmed unreleased; the original ticket cannot be replayed.");
       }
-      if (prior.startup?.state === "failed" && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
+      if (prior.startup?.state === "failed" && prior.controllerProcess === null && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
       if (prior.controllerProcess === null) {
         // Legacy records can still authenticate a live peer, but cannot prove stop
         // or authorize a replacement generation without the original process proof.
@@ -372,7 +396,32 @@ export const createBotProcess = (options: {
       if (saved.controllerProcess === null || !await confirmWithLease(ticket, record.intent!.journalPath, saved.controllerProcess, saved.nativeProcesses, undefined, saved)) {
         throw new Error("Bot original writer stop is unproven; complete controller and native proof is required.");
       }
-      if (saved.nativeSessionId === null) {
+      let initialization: BotInitializationRetryEvidence | undefined;
+      let initializationStopped: ControllerSnapshot | undefined;
+      if (saved.nativeSessionId === null && ticket.provider === "codex") {
+        initializationStopped = await prepareRecoveryStorage(record, ticket, signal);
+        initialization = (options.dependencies?.readInitializationEvidence ?? readBotInitializationRetryEvidence)(record.intent!.journalPath, ticket, initializationStopped) ?? undefined;
+        if (initialization === undefined) {
+          options.executions.blockRecovery(record, "initialization_evidence_missing");
+          throw new BotInitializationBlockedError("initialization_evidence_missing");
+        }
+        const recovery = options.executions.get(record)!;
+        if (recovery.recoveryCount >= record.intent!.recoveryLimit) {
+          options.executions.blockRecovery(record, "initialization_retry_exhausted");
+          throw new BotInitializationBlockedError("initialization_retry_exhausted");
+        }
+        const scheduled = options.executions.scheduleInitializationRetry(record, now());
+        if (scheduled.initializationRetryAt! > now()) throw new BotInitializationWaitingError(scheduled.initializationRetryAt!);
+        options.executions.scheduleInitializationRetry(record, now(), true);
+        // A submitted predecessor may retain its environment cache. Its aliases
+        // remain owned by that generation; admission must probe current config.
+        environments.delete(record.botId);
+        try { await prepareEnvironment(record, signal); }
+        catch (cause) {
+          signal.throwIfAborted();
+          throw new BotInitializationBlockedError("initialization_retry_failed", { cause });
+        }
+      } else if (saved.nativeSessionId === null) {
         if (saved.startup?.state === "failed") {
           options.executions.update(record, { startup: saved.startup, lastError: saved.error });
           throw new ControllerStartupError(saved.startup, saved.error ?? "Bot initialization failed before native session creation.");
@@ -383,19 +432,19 @@ export const createBotProcess = (options: {
       if (ticket.provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
       const recovery = options.executions.get(record)!;
       if (recovery.recoveryBlocked !== null) throw new Error(recovery.recoveryBlocked);
-      if (!(recovery.restartAfterShutdown && saved.error === null) && recovery.recoveryCount >= record.intent!.recoveryLimit) {
+      if (initialization === undefined && !(recovery.restartAfterShutdown && saved.error === null) && recovery.recoveryCount >= record.intent!.recoveryLimit) {
         const reason = "Bot execution recovery budget is exhausted.";
         options.executions.blockRecovery(record, reason);
         throw new Error(reason);
       }
       signal.throwIfAborted();
-      const stopped = await prepareRecoveryStorage(record, ticket, signal);
+      const stopped = initializationStopped ?? await prepareRecoveryStorage(record, ticket, signal);
       await jobLeases.release(ticket.launchId);
       signal.throwIfAborted();
-      record = options.executions.beginRecovery(record, stopped, options.homeDirectory, toolLaunch);
+      record = options.executions.beginRecovery(record, stopped, options.homeDirectory, toolLaunch, initialization);
       // A new launch must revalidate CLI owner/server configuration. Old aliases
       // remain listed in durable evidence for precise eventual deletion.
-      environments.delete(record.botId);
+      if (initialization === undefined) environments.delete(record.botId);
     }
     // Preflight may report a failure and advance the Bot version. Freeze the first
     // registration only once the initial environment is known to be usable.
@@ -441,6 +490,7 @@ export const createBotProcess = (options: {
         ticket = { schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
           executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, botId: record.botId,
+          ...(previous?.initializationRetryEvidence === undefined ? {} : { initializationRetry: { previousLaunchId: previous.launchId, ticketHash: previous.initializationRetryEvidence.ticketHash, snapshotHash: previous.initializationRetryEvidence.snapshotHash } }),
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
             ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
@@ -455,9 +505,21 @@ export const createBotProcess = (options: {
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
       }
       const previous = options.executions.get(current(record))!.previous;
-      const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
+      const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt,
+        ...(previous.initializationEvidence === undefined ? {} : { initializationEvidence: previous.initializationEvidence }) };
       checkAdmission(record);
-      const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
+      let grant;
+      const initializationGrant = previous?.initializationEvidence !== undefined;
+      if (initializationGrant && options.executions.get(current(record))!.initializationGrantState !== "acknowledged") options.executions.update(current(record), { initializationGrantState: "unknown" });
+      try {
+        grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
+        if (initializationGrant) options.executions.update(current(record), { initializationGrantState: "acknowledged" });
+      }
+      catch (cause) {
+        if (initializationGrant && cause instanceof BotRecoveryRejectedError && options.executions.get(current(record))!.initializationGrantState !== "acknowledged") options.executions.update(current(record), { initializationGrantState: "refused" });
+        if (initializationGrant && !(cause instanceof BotRecoveryRejectedError)) throw new BotInitializationGrantUnknownError(cause);
+        throw cause;
+      }
       current(record); signal.throwIfAborted();
       checkAdmission(record);
       if (ticket.provider !== "claude" && (await readLaunchToolSelection(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record)))?.selectionKey !== record.intent!.toolLaunch?.selectionKey) throw missingSelection(record);
@@ -854,6 +916,28 @@ export const createBotProcess = (options: {
       record = deletionRecord(input);
     }
     const unreleased = options.executions.get(record)?.unreleased !== undefined;
+    const previous = execution.previous, initialization = previous?.initializationRetryEvidence;
+    if (unsubmitted && initialization !== undefined && execution.controllerProcess === null && execution.snapshot === null && !unreleased
+      && (execution.initializationGrantState === "not_submitted" || execution.initializationGrantState === "refused" && options.sessionApi.initializationGrantUncommitted?.(record) === true)) {
+      const ticket = await readLaunchTicket(options.homeDirectory, previous!.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record));
+      if (controllerPayloadHash(ticket) !== initialization.ticketHash || ticket.executionGeneration !== previous!.generation
+        || ticket.controllerInstanceId !== previous!.instanceId || ticket.sessionId !== intent.sessionId || ticket.testExecutionId !== intent.executionId
+        || ticket.controllerId !== intent.registration.controllerId || (ticket.botId ?? ticket.codexBotRecovery?.botId) !== record.botId || ticket.resumeNativeSessionId !== null) throw new Error("Bot initialization deletion conflicts with its original predecessor ticket.");
+      const stopped = readCurrentControllerSnapshot(intent.journalPath, ticket);
+      if (controllerPayloadHash(stopped) !== initialization.snapshotHash || stopped.stoppedAt !== previous!.stoppedAt
+        || stopped.controllerProcess === null || !await confirmWithLease(ticket, intent.journalPath, stopped.controllerProcess, stopped.nativeProcesses, undefined, stopped)) throw new Error("Bot initialization deletion requires the retained original process stop proof.");
+      const proof: BotDeletionStop = { protocol: "daynight.session.v1", sessionId: intent.sessionId!, testExecutionId: intent.executionId,
+        executionGeneration: previous!.generation, controllerId: intent.registration.controllerId, controllerInstanceId: previous!.instanceId,
+        stopProof: { recordId: previous!.recordId, previousControllerInstanceId: previous!.instanceId, stoppedAt: previous!.stoppedAt } };
+      signal.throwIfAborted(); deletionRecord(record);
+      options.store.recordInitializationDeletion(record, proof, { version: 1, targetLaunchId: intent.launchId, targetExecutionGeneration: intent.executionGeneration,
+        targetControllerInstanceId: intent.controllerInstanceId, predecessorLaunchId: previous!.launchId, ticketHash: initialization.ticketHash, snapshotHash: initialization.snapshotHash,
+        authorization: execution.initializationGrantState === "not_submitted" ? "not_prepared" : "rejected" });
+      await releaseEnvironment(record.botId);
+      return proof;
+    }
+    if (unsubmitted && initialization !== undefined && execution.controllerProcess === null && execution.snapshot === null && !unreleased
+      && (execution.initializationGrantState === "acknowledged" || options.sessionApi.initializationGrantAcknowledged?.(record) === true)) throw new BotExecutionEvidenceMissingError({ cause: new Error("The authorized initialization target never launched; no matching target stop can be proven and its original evidence is retained.") });
     if (unsubmitted || rejected || unreleased) {
       // A prepared recovery may have advanced the remote fence even when its
       // grant response was lost. Never guess which generation owns deletion.
@@ -897,7 +981,15 @@ export const createBotProcess = (options: {
       catch (cause) {
         const latest = options.store.get(record.owner, record.botId);
         const blocked = latest !== null && initialUnsubmitted(latest) ? blockedAdmission(cause) : undefined;
-        if (blocked === undefined && latest?.intent !== null && latest !== null && latest.migration === undefined && options.executions.get(latest) !== null) {
+        const execution = latest?.intent == null ? null : options.executions.get(latest);
+        if (cause instanceof BotInitializationBlockedError && execution?.recoveryBlocked !== null && execution?.recoveryBlocked !== undefined) throw cause;
+        if (!signal.aborted && blocked === undefined && !(cause instanceof BotInitializationWaitingError) && !(cause instanceof BotInitializationGrantUnknownError)
+          && latest !== null && execution?.launchSubmission === "not-submitted" && execution.previous?.initializationEvidence !== undefined) {
+          options.executions.blockRecovery(latest, "initialization_retry_failed");
+          options.executions.update(latest, { lastError: cause instanceof Error ? cause.message : "Bot initialization preparation failed." });
+          throw cause instanceof BotInitializationBlockedError ? cause : new BotInitializationBlockedError("initialization_retry_failed", { cause });
+        }
+        if (!(cause instanceof BotInitializationWaitingError) && blocked === undefined && latest?.intent !== null && latest !== null && latest.migration === undefined && options.executions.get(latest) !== null) {
           options.executions.update(latest, { lastError: cause instanceof Error ? cause.message : "Bot recovery is unavailable." });
         }
         throw blocked === undefined || blocked === cause ? cause : new BotAdmissionBlockedError({ cause });

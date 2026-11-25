@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { once } from "node:events";
 import { captureProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
-import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/bots/types.js";
@@ -27,6 +27,8 @@ import { writeUnreleasedLaunch } from "../../../src/commands/controller/unreleas
 import * as unreleasedLaunch from "../../../src/commands/controller/unreleased-launch.js";
 import * as durableDirectory from "../../../src/platform/durable-directory.js";
 import { hasNeverStartedDeletionEvidence } from "../../../src/commands/worker/bots/execution-store.js";
+import { BotInitializationBlockedError, BotInitializationWaitingError } from "../../../src/commands/worker/bots/process.js";
+import { BotRecoveryRejectedError } from "../../../src/commands/worker/bots/recovery-api.js";
 
 afterEach(cleanupBotProcesses);
 
@@ -326,10 +328,166 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     catch { return { kind: "running-unobserved" as const, process: spawnProof }; }
   });
   const deps = { confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved, reconcileLaunch, stopBootstrap };
-  return { ...f, signal, deps, manager: f.createProcess(deps, recoveryLimit), saved: () => saved,
+  return { ...f, get store() { return f.store; }, get executions() { return f.executions; }, signal, deps, manager: f.createProcess(deps, recoveryLimit), saved: () => saved,
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps, recoveryLimit) };
 };
+
+test("a proven uninitialized Codex retries with persistent delay, the same Session and a fresh stopped generation", async () => {
+  const f = await recoveryFixture({}, false, true, 3, true, "codex", true);
+  f.patch({ lifecycle: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z", error: "environment failed" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const readInitializationEvidence = vi.fn((_file: string, ticket: launchTickets.ControllerLaunchTicket, stopped: ControllerSnapshot) => ({ version: 1 as const, kind: "native_initialization_not_dispatched" as const,
+    ticketHash: launchTickets.controllerPayloadHash(ticket), snapshotHash: launchTickets.controllerPayloadHash(stopped) }));
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  try {
+    const original = f.current().intent!;
+    const manager = () => f.createProcess({ ...f.deps, readInitializationEvidence });
+    await expect(manager().advance(f.current(), f.signal)).rejects.toBeInstanceOf(BotInitializationWaitingError);
+    expect(f.launch).toHaveBeenCalledTimes(1);
+    const due = f.executions.get(f.current())!.initializationRetryAt!;
+    expect(due).toBe(time + 15_000);
+    f.reopen();
+    await expect(manager().advance(f.current(), f.signal)).rejects.toBeInstanceOf(BotInitializationWaitingError);
+    expect(readInitializationEvidence).toHaveBeenCalledTimes(1);
+    time = due;
+    await manager().advance(f.current(), f.signal);
+    const next = f.current().intent!, execution = f.executions.get(f.current())!;
+    expect(next).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, executionGeneration: "2", nativeSessionId: null });
+    expect(next.launchId).not.toBe(original.launchId);
+    expect(execution).toMatchObject({ recoveryCount: 1, previous: { generation: "1", initializationEvidence: { version: 1, state: "not_dispatched" } }, retainedLaunchIds: [original.launchId] });
+    expect((f.grant.mock.calls as unknown[][]).at(-1)?.[2]).toMatchObject({ initializationEvidence: { version: 1, state: "not_dispatched" } });
+    expect(f.getTicket()).toMatchObject({ resumeNativeSessionId: null, initialInput: "none", initialPrompt: "", instructions: original.roleConfiguration!.instructions });
+    f.patch({ ...execution.snapshot!, controllerProcess: f.saved().controllerProcess });
+    f.deps.confirmStopped.mockResolvedValue(false);
+    const resumed = manager();
+    await resumed.shutdown(f.current(), f.signal);
+    await resumed.advance(f.current(), f.signal);
+    expect(f.current().intent).toMatchObject({ executionGeneration: "3", nativeSessionId: id(9), sessionId: original.sessionId });
+    expect(f.executions.get(f.current())).toMatchObject({ recoveryCount: 1, previous: { generation: "2" } });
+    expect(f.executions.get(f.current())!.previous!.initializationEvidence).toBeUndefined();
+    expect(f.getTicket().initializationRetry).toBeUndefined();
+  } finally { clock.mockRestore(); }
+});
+
+test("missing native initialization evidence becomes a retained block without repeated controller probes", async () => {
+  const f = await recoveryFixture({}, false, true, 3, true);
+  f.patch({ lifecycle: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z", error: "transport failed" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const readInitializationEvidence = vi.fn(() => null), manager = f.createProcess({ ...f.deps, readInitializationEvidence });
+  await expect(manager.advance(f.current(), f.signal)).rejects.toMatchObject({ code: "initialization_evidence_missing" });
+  expect(f.executions.get(f.current())).toMatchObject({ recoveryBlocked: "initialization_evidence_missing", recoveryCount: 0 });
+  const calls = f.deps.reconcileLaunch.mock.calls.length;
+  await expect(manager.advance(f.current(), f.signal)).rejects.toBeInstanceOf(BotInitializationBlockedError);
+  expect(f.deps.reconcileLaunch).toHaveBeenCalledTimes(calls);
+  expect(readInitializationEvidence).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+test("initialization preflight failures spend bounded attempts before changing the original generation", async () => {
+  const f = await recoveryFixture({}, false, true, 1, true);
+  f.patch({ lifecycle: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z", error: "environment failed" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const readInitializationEvidence = (_file: string, ticket: launchTickets.ControllerLaunchTicket, stopped: ControllerSnapshot) => ({ version: 1 as const, kind: "native_initialization_not_dispatched" as const,
+    ticketHash: launchTickets.controllerPayloadHash(ticket), snapshotHash: launchTickets.controllerPayloadHash(stopped) });
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  try {
+    const manager = f.createProcess({ ...f.deps, readInitializationEvidence }, 1);
+    await expect(manager.advance(f.current(), f.signal)).rejects.toBeInstanceOf(BotInitializationWaitingError);
+    time = f.executions.get(f.current())!.initializationRetryAt!;
+    f.prepareEnvironment.mockRejectedValueOnce(new Error("CLI probe unavailable"));
+    await expect(manager.advance(f.current(), f.signal)).rejects.toMatchObject({ code: "initialization_retry_failed" });
+    expect(f.current().intent!.executionGeneration).toBe("1");
+    expect(f.executions.get(f.current())!.recoveryCount).toBe(1);
+    time = f.executions.get(f.current())!.initializationRetryAt!;
+    await expect(manager.advance(f.current(), f.signal)).rejects.toMatchObject({ code: "initialization_retry_exhausted" });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  } finally { clock.mockRestore(); }
+});
+
+test("initialization retry in the same Worker rechecks configuration instead of reusing the failed generation's environment", async () => {
+  const f = fixture("codex", {}, false, true), signal = new AbortController().signal;
+  let saved!: ControllerSnapshot;
+  const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned(proof);
+    saved = { ...await f.observe(options.ticket), controllerProcess: proof, nativeSessionId: null, startup: { state: "unknown", reasonCode: "native_transport_unknown" }, lifecycle: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" };
+    await options.onObserved(saved); return saved;
+  });
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  try {
+    const manager = f.createProcess({ confirmStopped: async () => true, recordStopped: async () => saved,
+      reconcileLaunch: async () => ({ kind: "controller-exited", process: proof, snapshot: saved }),
+      readInitializationEvidence: (_file: string, ticket: launchTickets.ControllerLaunchTicket, stopped: ControllerSnapshot) => ({ version: 1, kind: "native_initialization_not_dispatched", ticketHash: launchTickets.controllerPayloadHash(ticket), snapshotHash: launchTickets.controllerPayloadHash(stopped) }) });
+    await manager.advance(f.current(), signal);
+    expect(f.prepareEnvironment).toHaveBeenCalledTimes(1);
+    await expect(manager.advance(f.current(), signal)).rejects.toBeInstanceOf(BotInitializationWaitingError);
+    time = f.executions.get(f.current())!.initializationRetryAt!;
+    f.prepareEnvironment.mockRejectedValueOnce(new Error("Current CLI account no longer matches the original Worker"));
+    await expect(manager.advance(f.current(), signal)).rejects.toThrow("Current CLI account no longer matches");
+    expect(f.prepareEnvironment).toHaveBeenCalledTimes(2);
+    expect(f.launch).toHaveBeenCalledTimes(1);
+    expect(f.current().intent!.executionGeneration).toBe("1");
+  } finally { clock.mockRestore(); }
+});
+
+test.each(["refused", "legacy refused", "unknown", "environment", "acknowledged"] as const)("initialization recovery retains a bounded prepared generation after %s failure and Worker restart", async failure => {
+  const f = await recoveryFixture({}, false, true, 3, true, "codex", true);
+  if (failure === "legacy refused") {
+    const ticket = JSON.parse(readFileSync(f.current().intent!.ticketPath, "utf8"));
+    delete ticket.botId;
+    writeFileSync(f.current().intent!.ticketPath, JSON.stringify(ticket));
+  }
+  f.patch({ lifecycle: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z", error: "initialization failed" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  let time = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const readInitializationEvidence = (_file: string, ticket: launchTickets.ControllerLaunchTicket, stopped: ControllerSnapshot) => ({ version: 1 as const, kind: "native_initialization_not_dispatched" as const, ticketHash: launchTickets.controllerPayloadHash(ticket), snapshotHash: launchTickets.controllerPayloadHash(stopped) });
+  try {
+    const manager = () => f.createProcess({ ...f.deps, readInitializationEvidence });
+    await expect(manager().advance(f.current(), f.signal)).rejects.toBeInstanceOf(BotInitializationWaitingError);
+    time = f.executions.get(f.current())!.initializationRetryAt!;
+    if (failure === "acknowledged") f.launch.mockRejectedValueOnce(new Error("local launch preparation failed"));
+    else f.grant.mockRejectedValueOnce(failure.endsWith("refused") ? new BotRecoveryRejectedError(id(97), "session_conflict") : new Error("grant response lost"));
+    await expect(manager().advance(f.current(), f.signal)).rejects.toThrow();
+    const generation = f.current().intent!.executionGeneration, calls = f.grant.mock.calls.length;
+    expect(generation).toBe("2");
+    f.reopen();
+    if (failure === "environment") f.prepareEnvironment.mockRejectedValueOnce(new Error("CLI configuration unavailable after restart"));
+    if (failure === "unknown") {
+      await manager().advance(f.current(), f.signal);
+      expect(f.grant).toHaveBeenCalledTimes(calls + 1);
+      expect(f.executions.get(f.current())!.recoveryBlocked).toBeNull();
+    } else {
+      await expect(manager().advance(f.current(), f.signal)).rejects.toMatchObject({ code: "initialization_retry_failed" });
+      await expect(manager().advance(f.current(), f.signal)).rejects.toMatchObject({ code: "initialization_retry_failed" });
+      expect(f.grant).toHaveBeenCalledTimes(calls);
+      expect(f.launch).toHaveBeenCalledTimes(failure === "acknowledged" ? 2 : 1);
+      expect(f.executions.get(f.current())!.recoveryBlocked).toBe("initialization_retry_failed");
+    }
+    expect(f.current().intent!.executionGeneration).toBe(generation);
+    if (failure.endsWith("refused")) {
+      expect(f.executions.get(f.current())!.initializationGrantState).toBe("refused");
+      const deleting = markDeleting(f), stopped = f.saved();
+      const read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(stopped);
+      try {
+        await expect(manager().withDeletion(deleting, f.signal, stop => stop())).rejects.toThrow("server generation is unconfirmed");
+        f.initializationGrantUncommitted.mockReturnValue(true);
+        const proof = await manager().withDeletion(deleting, f.signal, stop => stop());
+        expect(proof).toMatchObject({ executionGeneration: "1", controllerInstanceId: stopped.controllerInstanceId });
+        expect(proof!.stopProof.kind).toBeUndefined();
+        expect(f.current().initializationDeletion?.stop).toEqual(proof);
+        expect(f.current().intent!.executionGeneration).toBe("2");
+      } finally { read.mockRestore(); }
+    }
+    if (failure === "acknowledged") {
+      const deleting = markDeleting(f);
+      await expect(manager().withDeletion(deleting, f.signal, stop => stop())).rejects.toThrow("execution_evidence_missing");
+      f.reopen();
+      await expect(manager().withDeletion(f.current(), f.signal, stop => stop())).rejects.toThrow("execution_evidence_missing");
+      expect(f.current().initializationDeletion).toBeUndefined();
+      expect(f.executions.get(f.current())!.initializationGrantState).toBe("acknowledged");
+    }
+  } finally { clock.mockRestore(); }
+});
 
 test("an unreleased recovery keeps the previous native session and never replays its ticket", async () => {
   const f = await recoveryFixture();
@@ -2052,6 +2210,7 @@ test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery 
   f.executions.markShutdown(f.current(), true);
   const file = f.current().intent!.journalPath; mkdirSync(path.dirname(file), { recursive: true });
   const journal = lifecycle.openControllerLifecycleStore(file, ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ nativeInitialization: { version: 1, state: "dispatching" } });
   journal.patchSnapshot({ controllerProcess: controller, nativeSessionId: original.nativeSessionId, lifecycle: "ready", ...(original.startup === undefined ? {} : { startup: original.startup }), error: null }); journal.close();
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;

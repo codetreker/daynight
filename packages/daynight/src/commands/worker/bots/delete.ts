@@ -119,7 +119,7 @@ export const createBotDeletion = (options: {
           // A conflict alone does not prove the receipt was unapplied. Read its
           // original cleanup state before classifying unsupported stop evidence.
           if (cause instanceof ApiError && cause.phase === "response" && cause.status === 409 && cause.code === "session_conflict"
-            && (receipt.stop === null || receipt.stop.stopProof.kind === "never_started")) {
+            && (receipt.stop === null || receipt.stop.stopProof.kind === "never_started" || record.initializationDeletion !== undefined)) {
             const latest = await refresh(record, signal);
             if (latest.observed.deletion!.workerCleanup.state !== "completed") {
               if (latest.cleanup?.stop?.stopProof.kind === "never_started" && latest.cleanup.workerId !== undefined) {

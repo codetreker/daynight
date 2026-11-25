@@ -66,6 +66,31 @@ test("a definitive old-service null-proof conflict transitions to the existing r
  expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
 });
 
+test.each([409, 500])("a retained initialization predecessor receipt handles HTTP %s without an endless invalid completion loop", async status => {
+ const f = fixture(), record = f.current();
+ const { kind: _kind, ...realProof } = f.stopProof.stopProof;
+ const stop = { ...f.stopProof, stopProof: realProof };
+ record.intent = null; record.definition = null;
+ record.cleanup = { deletionId: id(8), requestedVersion: "1", stop, targets: [], localCompleted: true };
+ record.initializationDeletion = { deletionId: id(8), requestedVersion: "1", stop, evidence: { version: 1, targetLaunchId: id(60), targetExecutionGeneration: "2", targetControllerInstanceId: id(61), predecessorLaunchId: f.intent.launchId, ticketHash: "a".repeat(64), snapshotHash: "b".repeat(64), authorization: "rejected" } };
+ f.database.prepare("UPDATE bots SET record=?").run(JSON.stringify(record));
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+  status, serverError: { code: "session_conflict", message: "The current server generation differs.", requestId: "fixture" }, cause: new Error("unconfirmed completion") }));
+ const operation = f.create().advance(f.current(), new AbortController().signal);
+ if (status === 409) {
+  await operation;
+  expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+  await f.create().advance(f.current(), new AbortController().signal);
+  expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+ } else {
+  await expect(operation).rejects.toThrow();
+  expect(f.api.completeDeletion).toHaveBeenCalledTimes(1);
+  expect(f.current().observed.deletion!.workerCleanup.state).toBe("pending");
+ }
+ expect(f.stop).not.toHaveBeenCalled();
+ expect(f.current().initializationDeletion?.stop).toEqual(stop);
+});
+
 test.each([401, 500])("a null-proof HTTP %s failure cannot create a missing-evidence report", async status => {
  const f = fixture(); loseEvidence(f, true);
  const failure = new ApiError({ operation: "worker.bot.delete" }, "response", {

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { openCodexProvider } from '../../../src/commands/controller/providers/codex.js';
-import { CodexBotRecovery } from '../../../src/commands/controller/providers/codex-bot-recovery.js';
+import { CodexBotRecovery, CodexBotRecoveryError } from '../../../src/commands/controller/providers/codex-bot-recovery.js';
+import { startupFailure } from '../../../src/commands/controller/startup.js';
 import { textNativeInput } from '../../../src/commands/controller/providers/native-input.js';
 import type { NativeProvider, ProviderEntry, ProviderOptions, ProviderState } from '../../../src/commands/controller/providers/types.js';
 
@@ -21,7 +22,7 @@ beforeEach(async () => {
 afterEach(async () => { try { for (const provider of opened) await provider.close(); } finally { await rm(directory, { recursive: true, force: true }); } });
 const requests = async () => (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
 const manifest = async () => JSON.parse(await readFile(join(recoveryDirectory, 'manifest.json'), 'utf8'));
-const open = async (resumeNativeSessionId: string | null = null, environment: NodeJS.ProcessEnv = {}, callbacks: Pick<ProviderOptions, 'onControlConfirmed' | 'onFatalError'> = {}) => {
+const open = async (resumeNativeSessionId: string | null = null, environment: NodeJS.ProcessEnv = {}, callbacks: Pick<ProviderOptions, 'onControlConfirmed' | 'onFatalError' | 'onNativeInitializationDispatch'> = {}) => {
   const options: ProviderOptions = {
     cwd: directory, model: null, args: [], resumeNativeSessionId,
     executable: fileURLToPath(new URL('./fixtures/codex-bot-native.mjs', import.meta.url)),
@@ -33,6 +34,28 @@ const open = async (resumeNativeSessionId: string | null = null, environment: No
   const provider = await openCodexProvider(options); opened.push(provider); return provider;
 };
 const close = async (provider: NativeProvider) => { await provider.close(); opened = opened.filter(value => value !== provider); };
+
+test('the legacy local recovery gate fails before the initialization dispatch boundary', async () => {
+  const error = new CodexBotRecoveryError('recovery_version_unsupported', 'Codex recovery requires the verified 0.169.0 runtime.');
+  const prepare = vi.spyOn(CodexBotRecovery.prototype, 'prepare').mockRejectedValueOnce(error);
+  let dispatches = 0;
+  try {
+    await expect(open(null, { CODEX_BOT_VERSION: '0.170.0' }, { onNativeInitializationDispatch: () => { dispatches++; } })).rejects.toBe(error);
+    expect(startupFailure(error)).toEqual({ state: 'unknown', reasonCode: 'native_transport_unknown' });
+    expect(dispatches).toBe(0);
+    expect((await requests()).filter(request => request.method === 'thread/start')).toEqual([]);
+    expect(timeline).toEqual([]);
+  } finally { prepare.mockRestore(); }
+});
+
+test('a failed initialization marker cannot publish a dirty manifest or create a thread', async () => {
+  const failure = new Error('initialization marker write failed'), dirty = vi.spyOn(CodexBotRecovery.prototype, 'markDirty');
+  try {
+    await expect(open(null, {}, { onNativeInitializationDispatch: () => { throw failure; } })).rejects.toBe(failure);
+    expect(dirty).not.toHaveBeenCalled();
+    expect((await requests()).filter(request => request.method === 'thread/start')).toEqual([]);
+  } finally { dirty.mockRestore(); }
+});
 
 test('Bot recovery preserves configuration environment and resumes the original ID from its owned copy', async () => {
   const first = await open(), nativeId = first.nativeSessionId;

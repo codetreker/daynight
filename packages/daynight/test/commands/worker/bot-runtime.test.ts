@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createManagedAssistantRuntime } from "../../../src/commands/worker/bots/runtime.js";
-import { BotAdmissionBlockedError } from "../../../src/commands/worker/bots/process.js";
+import { BotAdmissionBlockedError, BotInitializationBlockedError, BotInitializationWaitingError } from "../../../src/commands/worker/bots/process.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 vi.mock("node:timers/promises", () => ({ setTimeout: (ms: number, value: unknown, options?: {signal?: AbortSignal}) => new Promise((resolve, reject) => {
@@ -25,6 +25,20 @@ const fixture=(pollIntervalMs: number | (() => number) = 60000, assistantTasks?:
   const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs,onError,deletion,...(assistantTasks === undefined ? {} : { assistantTasks }),inventory:{reconcile},canAdmitNewExecution:()=>admission});
   return {runtime,process,api,remote,records,reconcile,onError,deletion,setAdmission:(value:boolean)=>{admission=value;}};
 };
+
+test("reports the retained initialization block once and keeps scheduled backoff quiet", async () => {
+  const f = fixture();
+  f.records[0]!.intent = { sessionId: id(7) } as BotRecord["intent"];
+  f.process.advance.mockImplementation(async record => {
+    if (record.botId === id(3)) throw new BotInitializationBlockedError("initialization_evidence_missing");
+    throw new BotInitializationWaitingError(Date.now() + 15_000);
+  });
+  await f.runtime.tick(new AbortController().signal);
+  await f.runtime.tick(new AbortController().signal);
+  expect(f.api.report).toHaveBeenCalledTimes(1);
+  expect(f.api.report).toHaveBeenCalledWith(f.records[0], { state: "failed", code: "initialization_evidence_missing" }, expect.any(AbortSignal));
+  expect(f.onError).toHaveBeenCalledTimes(1);
+});
 
 test("bounds shutdown without forgetting an unjoined launch and stops all original writers", async () => {
   vi.useFakeTimers();

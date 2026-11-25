@@ -7,6 +7,12 @@ import { botUUID, botVersion } from "./types.js";
 export type BotRecoveryIdentity = { botRecoveryVersion: 1; serviceOrigin: string; recoveryIdentity: string };
 export type BotRecoveryBinding = { sessionId: string; testExecutionId: string; nativeSessionId: string | null };
 export type BotRecoveryRegistration = BotRecoveryIdentity & BotRecoveryBinding & { operationId: string; botVersion: string };
+export type BotInitializationEvidence = { version: 1; state: "not_dispatched" };
+export const parseBotInitializationEvidence = (input: unknown): BotInitializationEvidence => {
+  const value = object(input, ["version", "state"]);
+  if (value.version !== 1 || value.state !== "not_dispatched") return fail();
+  return { version: 1, state: "not_dispatched" };
+};
 export type BotRecoveryControllerGrant = {
   protocol: typeof SESSION_PROTOCOL; testExecutionId: string; controllerId: string; controllerInstanceId: string;
   executionGeneration: string; kind: "bootstrap" | "reconnect"; previousGeneration: string | null;
@@ -14,6 +20,7 @@ export type BotRecoveryControllerGrant = {
 };
 export type BotRecoveryGrant = BotRecoveryIdentity & BotRecoveryBinding & {
   operationId: string; expectedHostingGeneration: string; controllerToken: string; grant: BotRecoveryControllerGrant;
+  initializationEvidence?: BotInitializationEvidence;
 };
 export type BotRecoveryReport = BotRecoveryIdentity & {
   hostingGeneration: string;
@@ -90,7 +97,8 @@ export const parseBotRecoveryRegistration = (input: unknown): BotRecoveryRegistr
   return { ...identity(value), ...binding(value), operationId: id(value.operationId), botVersion: botVersion(value.botVersion) };
 };
 export const parseBotRecoveryGrant = (input: unknown): BotRecoveryGrant => {
-  const value = object(input, [...identityKeys, ...bindingKeys, "operationId", "expectedHostingGeneration", "grant", "controllerToken"]);
+  const hasInitialization = input !== null && typeof input === "object" && Object.hasOwn(input, "initializationEvidence");
+  const value = object(input, [...identityKeys, ...bindingKeys, "operationId", "expectedHostingGeneration", "grant", "controllerToken", ...(hasInitialization ? ["initializationEvidence"] : [])]);
   const grant = object(value.grant, ["protocol", "testExecutionId", "controllerId", "controllerInstanceId", "executionGeneration", "kind", "previousGeneration", "stopProof"]);
   if (grant.protocol !== SESSION_PROTOCOL || grant.kind !== "bootstrap" && grant.kind !== "reconnect") return fail();
   const previousGeneration = grant.previousGeneration === null ? null : botVersion(grant.previousGeneration);
@@ -100,7 +108,10 @@ export const parseBotRecoveryGrant = (input: unknown): BotRecoveryGrant => {
     stopProof = { recordId: id(proof.recordId), previousControllerInstanceId: id(proof.previousControllerInstanceId), stoppedAt: timestamp(proof.stoppedAt) };
   }
   if ((previousGeneration === null) !== (stopProof === null)) return fail();
+  const initializationEvidence = hasInitialization ? parseBotInitializationEvidence(value.initializationEvidence) : undefined;
+  if (initializationEvidence !== undefined && (value.nativeSessionId !== null || previousGeneration === null || grant.kind !== "reconnect")) return fail();
   return { ...identity(value), ...binding(value), operationId: id(value.operationId), expectedHostingGeneration: botVersion(value.expectedHostingGeneration), controllerToken: secret(value.controllerToken, "dncontroller_"),
+    ...(initializationEvidence === undefined ? {} : { initializationEvidence }),
     grant: { protocol: SESSION_PROTOCOL, testExecutionId: id(grant.testExecutionId), controllerId: id(grant.controllerId), controllerInstanceId: id(grant.controllerInstanceId), executionGeneration: botVersion(grant.executionGeneration), kind: grant.kind, previousGeneration, stopProof } };
 };
 export const parseBotRecoveryReport = (input: unknown): BotRecoveryReport => {

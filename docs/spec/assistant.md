@@ -159,7 +159,7 @@ Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字�
 | 后缀 | 请求 | 响应与条件 |
 |---|---|---|
 | `/register` | `{botVersion,registration,configuration,roleConfiguration}` | `{bot,session}`；同事务冻结首次角色并绑定 Session，返回当前 Bot 版本和真实 Snapshot |
-| `/grant` | `{botVersion,grant,nativeSessionId}` | 现有 Controller grant 结果，含 token、到期时间、sessionId、testExecutionId、generation 与 Controller 身份 |
+| `/grant` | `{botVersion,grant,nativeSessionId}`，可选 `initializationEvidence` 见下文 | 现有 Controller grant 结果，含 token、到期时间、sessionId、testExecutionId、generation 与 Controller 身份 |
 | `/report` | `{botVersion,fence,controllerId,controllerInstanceId,nativeSessionId,result}` | 更新后的 Bot；`result` 为 `{state:"ready"或"failed",code:string或null}` |
 
 ### 首次登记与重放
@@ -176,7 +176,9 @@ Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字�
 
 `grant` 保留独立 `testExecutionId`、Controller 身份、`executionGeneration`、`kind` 和已有 `previousGeneration`/`stopProof` 语义；kind 为 bootstrap 或 reconnect。`nativeSessionId` 必须与当前 Session 精确一致，null 与非空值不同。bootstrap 或续期不能绕过当前 Bot 版本与绑定 Worker 校验。
 
-新 generation 必须保留已知、匹配的原 native ID；previousGeneration 必须是当前 generation，新 generation 恰好加一，stopProof 必须指向原 Controller instance，新 instance 必须不同。停证时间不得晚于服务端当前时间加 1 秒。恢复精确重放必须匹配原 previousGeneration、原 stopProof 和已登记的新 Controller instance。`never_started`、未知 native ID 或启动结果不明均不能授权新 generation，旧 fence 不能继续操作已推进的 Session。
+恢复已有原生会话的新 generation 必须保留已知、匹配的原 native ID；previousGeneration 必须是当前 generation，新 generation 恰好加一，stopProof 必须指向原 Controller instance，新 instance 必须不同。停证时间不得晚于服务端当前时间加 1 秒。恢复精确重放必须匹配原 previousGeneration、原 stopProof 和已登记的新 Controller instance。`never_started`、未知 native ID 或启动结果不明本身均不能授权新 generation，旧 fence 不能继续操作已推进的 Session。
+
+Codex Bot 的创建请求经本机证明确未派发时，两个 Bot grant 外层可携带 `initializationEvidence:{version:1,state:"not_dispatched"}`。仅当前和请求 native ID 都为 null、初始输入为 `not_required`、具备精确前代与真实停止证明时接受；原实例确实运行过，不能使用 `never_started`。该例外不适用于普通 Task/Test Session 或其他 Provider。证据与有界重试由[Worker 初始化恢复要求](worker-bot-runtime.md#codex-创建前失败)拥有。
 
 普通 Test 注册、grant 和 stop 不能作为 Bot 生命周期入口；普通 Test grant 仍不接受恢复参数。Bot Session 不出现在普通 Test 列表中，Task 的 claim 准入与普通 Test 权限保持不变。
 

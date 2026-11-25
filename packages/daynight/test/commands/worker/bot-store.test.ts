@@ -3,7 +3,10 @@ import { workerStoreFormat } from "../../../src/commands/worker/store-format.js"
 import { afterEach, describe, expect, it } from "vitest";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
-import type { Bot } from "../../../src/commands/worker/bots/types.js";
+import { openBotStore } from "../../../src/commands/worker/bots/store.js";
+import Database from "better-sqlite3";
+import path from "node:path";
+import { matchesInitializationDeletionStop, type Bot, type BotInitializationDeletionEvidence } from "../../../src/commands/worker/bots/types.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { bot, cleanupBotStores, createBotStoreFixture, handles, id, owner } from "./bot-store.fixtures.js";
 
@@ -58,6 +61,92 @@ describe("durable Bot inventory", () => {
 });
 
 describe("Bot deletion responsibility", () => {
+  const initializationDeletion = (authorization: BotInitializationDeletionEvidence["authorization"] = "not_prepared", disk = false) => {
+    const f = disk ? createBotStoreFixture(home => new Database(path.join(home, "initialization-deletion.sqlite"))) : fixture(), original = bot();
+    if (original.deletion !== null) throw new Error("fixture");
+    f.store.observe(owner, original, 1);
+    const intent = f.store.prepare(owner, id(3), { homeDirectory: f.home, recoveryLimit: 2 });
+    const registered = f.store.observe(owner, { ...original, version: "2", sessionId: id(4), testExecutionId: intent.executionId }, 2);
+    const executions = openBotExecutionStore(f.database, { onMigration: () => {} }); handles.push(executions);
+    const execution = executions.prepare(registered);
+    const target = { ...registered, intent: { ...registered.intent!, launchId: id(20), controllerInstanceId: id(21), executionGeneration: "2" } };
+    const previous = { launchId: intent.launchId, generation: "1", instanceId: intent.controllerInstanceId, recordId: id(20), stoppedAt: "2026-11-23T00:00:00Z",
+      initializationEvidence: { version: 1, state: "not_dispatched" },
+      initializationRetryEvidence: { version: 1, kind: "legacy_codex_version_gate", ticketHash: "a".repeat(64), snapshotHash: "b".repeat(64) } };
+    f.database.prepare("UPDATE bots SET record=?").run(JSON.stringify(target));
+    const targetExecution = { ...execution, launchId: id(20), executionGeneration: "2", previous, retainedLaunchIds: [intent.launchId], recoveryCount: 1,
+      initializationGrantState: authorization === "not_prepared" ? "not_submitted" : "refused" };
+    f.database.prepare("UPDATE bot_executions SET record=?").run(JSON.stringify(targetExecution));
+    const record = f.store.observe(owner, { id: id(3), workerId: owner.workerId, version: "3", deletion: { deletionId: id(8), requestedVersion: "2", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } }, 3);
+    const stop = { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: intent.executionId, executionGeneration: "1", controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
+      stopProof: { recordId: previous.recordId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: previous.stoppedAt } };
+    const evidence: BotInitializationDeletionEvidence = { version: 1, targetLaunchId: id(20), targetExecutionGeneration: "2", targetControllerInstanceId: id(21), predecessorLaunchId: intent.launchId,
+      ticketHash: previous.initializationRetryEvidence.ticketHash, snapshotHash: previous.initializationRetryEvidence.snapshotHash, authorization };
+    return { ...f, record, stop, evidence, targetExecution };
+  };
+
+  it.each(["not_prepared", "rejected"] as const)("retains an ungranted initialization target while deleting its exact stopped predecessor (%s)", authorization => {
+    const f = initializationDeletion(authorization);
+    expect(() => f.store.prepareDeletion(f.record, f.stop, [])).toThrow("original execution intent");
+    const recorded = f.store.recordInitializationDeletion(f.record, f.stop, f.evidence);
+    expect(recorded.intent).toEqual(f.record.intent);
+    expect(matchesInitializationDeletionStop(recorded, f.stop)).toBe(true);
+    const refreshed = f.store.observe(owner, recorded.observed, 4);
+    expect(refreshed.initializationDeletion).toEqual(recorded.initializationDeletion);
+    const prepared = f.store.prepareDeletion(refreshed, f.stop, []);
+    expect(prepared.intent?.executionGeneration).toBe("2");
+    expect(prepared.cleanup?.stop?.executionGeneration).toBe("1");
+    const completed = f.store.finishDeletion(prepared);
+    expect(completed).toMatchObject({ intent: null, definition: null, cleanup: { stop: f.stop, localCompleted: true } });
+    expect(completed.initializationDeletion).toEqual(recorded.initializationDeletion);
+    expect(matchesInitializationDeletionStop(completed, f.stop)).toBe(true);
+    expect(f.database.prepare("SELECT 1 FROM bot_executions").get()).toBeUndefined();
+  });
+
+  it("retains predecessor receipt provenance across SQLite reopen after logical erasure", () => {
+    const f = initializationDeletion("rejected", true), file = f.database.name;
+    const recorded = f.store.recordInitializationDeletion(f.record, f.stop, f.evidence);
+    const prepared = f.store.prepareDeletion(recorded, f.stop, []);
+    f.store.close();
+    const reopened = openBotStore(file, { onMigration: () => {} }); handles.push(reopened);
+    const retained = reopened.get(owner, id(3))!;
+    expect(retained).toEqual(prepared);
+    const completed = reopened.finishDeletion(retained);
+    reopened.close();
+    const finished = openBotStore(file, { onMigration: () => {} }); handles.push(finished);
+    expect(finished.get(owner, id(3))).toEqual(completed);
+    expect(matchesInitializationDeletionStop(finished.get(owner, id(3))!, f.stop)).toBe(true);
+    expect(completed.intent).toBeNull();
+    expect(completed.initializationDeletion?.evidence).toEqual(f.evidence);
+  });
+
+  it.each(["unknown", "acknowledged", "missing-grant-state", "submitted", "process", "snapshot", "previous-hash"])("refuses initialization predecessor deletion with %s target evidence", mode => {
+    const f = initializationDeletion();
+    const changed = structuredClone(f.targetExecution) as unknown as Record<string, unknown>;
+    if (mode === "unknown" || mode === "acknowledged") changed.initializationGrantState = mode;
+    if (mode === "missing-grant-state") delete changed.initializationGrantState;
+    if (mode === "submitted") changed.launchSubmission = "unknown";
+    if (mode === "process") changed.controllerProcess = { pid: 10 };
+    if (mode === "snapshot") changed.snapshot = {};
+    if (mode === "previous-hash") (changed.previous as { initializationRetryEvidence: { ticketHash: string } }).initializationRetryEvidence.ticketHash = "c".repeat(64);
+    f.database.prepare("UPDATE bot_executions SET record=?").run(JSON.stringify(changed));
+    expect(() => f.store.recordInitializationDeletion(f.record, f.stop, f.evidence)).toThrow("unsubmitted execution");
+    expect(f.store.get(owner, id(3))?.initializationDeletion).toBeUndefined();
+    expect(f.store.get(owner, id(3))?.intent).toEqual(f.record.intent);
+  });
+
+  it("rejects another stop or deletion and rechecks target submission before capturing cleanup", () => {
+    const f = initializationDeletion();
+    expect(() => f.store.recordInitializationDeletion(f.record, { ...f.stop, stopProof: { ...f.stop.stopProof, kind: "never_started" } }, f.evidence)).toThrow("original execution");
+    expect(() => f.store.recordInitializationDeletion(f.record, { ...f.stop, controllerInstanceId: id(90) }, f.evidence)).toThrow("original execution");
+    const recorded = f.store.recordInitializationDeletion(f.record, f.stop, f.evidence);
+    expect(() => f.store.recordInitializationDeletion(recorded, f.stop, { ...f.evidence, snapshotHash: "c".repeat(64) })).toThrow("cannot be replaced");
+    expect(matchesInitializationDeletionStop({ ...recorded, observed: { ...recorded.observed, deletion: { ...recorded.observed.deletion!, deletionId: id(99) } } }, f.stop)).toBe(false);
+    f.database.prepare("UPDATE bot_executions SET record=?").run(JSON.stringify({ ...f.targetExecution, initializationGrantState: "unknown" }));
+    expect(() => f.store.prepareDeletion(recorded, f.stop, [])).toThrow("unsubmitted execution");
+    expect(f.store.get(owner, id(3))?.cleanup).toBeUndefined();
+  });
+
   it("binds never-started recovery only with its exact retained execution and preserves the binding across erasure", () => {
     const f = fixture(), original = bot();
     if (original.deletion !== null) throw new Error("fixture");

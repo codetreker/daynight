@@ -31,10 +31,11 @@ type BotRecoveryRegistration struct {
 type BotRecoveryGrant struct {
 	BotRecoveryIdentity
 	BotRecoveryBinding
-	OperationID               string   `json:"operationId"`
-	ExpectedHostingGeneration int64    `json:"expectedHostingGeneration,string"`
-	Grant                     sp.Grant `json:"grant"`
-	ControllerToken           string   `json:"controllerToken"`
+	OperationID               string                     `json:"operationId"`
+	ExpectedHostingGeneration int64                      `json:"expectedHostingGeneration,string"`
+	Grant                     sp.Grant                   `json:"grant"`
+	ControllerToken           string                     `json:"controllerToken"`
+	InitializationEvidence    *BotInitializationEvidence `json:"initializationEvidence,omitempty"`
 }
 type BotRecoveryReport struct {
 	BotRecoveryIdentity
@@ -105,8 +106,8 @@ func (op *Operation) GrantBotRecovery(ctx context.Context, a *Access, p model.Pr
 	if _, err = sp.DecodeBotGrant(encode(input.Grant)); err != nil {
 		return empty, fault("invalid_input", "Invalid Bot recovery grant.")
 	}
-	if input.Grant.PreviousGeneration != nil && (input.NativeSessionID == nil || input.Grant.StopProof == nil || input.Grant.StopProof.Kind != "") {
-		return empty, conflict()
+	if err := checkBotGenerationRecovery(a.record, input.Grant, input.NativeSessionID, input.InitializationEvidence); err != nil {
+		return empty, err
 	}
 	hash := sha256.Sum256([]byte(input.ControllerToken))
 	if bytes.Equal(hash[:], a.record.GrantHash) {

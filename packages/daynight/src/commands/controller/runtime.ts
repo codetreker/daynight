@@ -125,7 +125,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const controllerProcess = await captureControllerProcessProof(ticket.launchId);
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
-  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, ...(ticket.claimId !== undefined ? { historyPolicy: "task_body" } : {}) }); }
+  try {
+    const initializationPredecessor = ticket.initializationRetry === undefined ? undefined : await readLaunchTicket(options.homeDirectory, ticket.initializationRetry.previousLaunchId, options.storageStateDirectory);
+    journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, ...(ticket.claimId !== undefined ? { historyPolicy: "task_body" } : {}), ...(initializationPredecessor === undefined ? {} : { initializationPredecessor }) });
+  }
   catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });
@@ -730,6 +733,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
       assertNativeDispatch,
+      ...(isBotHistoryTicket(ticket) && ticket.provider === "codex" ? { onNativeInitializationDispatch: () => journal.markNativeInitializationDispatching() } : {}),
       ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
       onNativeReadPolicy: policy => { nativeReadPolicy = policy; if (!policy) markdownCaptures.invalidateNativeReadPolicy(); },

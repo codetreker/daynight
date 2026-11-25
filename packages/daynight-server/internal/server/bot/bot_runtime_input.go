@@ -78,7 +78,7 @@ func botRegisterInput(raw []byte) (sessioncore.BotRegistration, error) {
 
 func botGrantInput(raw []byte) (sessioncore.BotGrant, error) {
 	var input sessioncore.BotGrant
-	fields, err := botRuntimeObject(raw, "botVersion", "grant", "nativeSessionId")
+	fields, err := botGrantObject(raw, "botVersion", "grant", "nativeSessionId")
 	if err != nil {
 		return input, err
 	}
@@ -92,6 +92,31 @@ func botGrantInput(raw []byte) (sessioncore.BotGrant, error) {
 		return input, httpx.InvalidInput("Invalid Bot grant values.")
 	}
 	return input, nil
+}
+
+// Only Bot grant envelopes admit creation-boundary evidence. The embedded grant
+// and ordinary Session endpoints retain their existing protocol.
+func botGrantObject(raw []byte, required ...string) (map[string]json.RawMessage, error) {
+	fields, err := jsonobject.Decode(raw, "Bot grant request", append(append([]string{}, required...), "initializationEvidence")...)
+	if err != nil || !jsonunicode.Valid(raw) {
+		return nil, httpx.InvalidInput("Invalid Bot grant request.")
+	}
+	for _, key := range required {
+		if _, ok := fields[key]; !ok {
+			return nil, httpx.InvalidInput("Bot grant request is incomplete.")
+		}
+	}
+	if raw, present := fields["initializationEvidence"]; present {
+		evidence, err := botRuntimeObject(raw, "version", "state")
+		if err != nil {
+			return nil, err
+		}
+		state, err := httpx.RequiredString(evidence, "state")
+		if err != nil || !bytes.Equal(bytes.TrimSpace(evidence["version"]), []byte("1")) || state != "not_dispatched" {
+			return nil, httpx.InvalidInput("Invalid Bot initialization evidence.")
+		}
+	}
+	return fields, nil
 }
 
 func botReportInput(raw []byte) (sessioncore.BotReport, error) {

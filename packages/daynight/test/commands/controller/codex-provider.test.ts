@@ -7,6 +7,8 @@ import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
 import type { ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
+import { startupFailure } from "../../../src/commands/controller/startup.js";
+import { LEGACY_CODEX_INITIALIZATION_GATE } from "../../../src/commands/controller/bot-initialization-evidence.js";
 
 let nativeHome: string;
 beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); nativeHome = await mkdtemp(join(base, "codex-provider-home-")); vi.stubEnv("CODEX_HOME", nativeHome); });
@@ -84,6 +86,49 @@ test("Codex startup does not persist settings after its seeded state fences disp
   const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
   expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
   expect(requests.filter(request => request.method === "thread/settings/update")).toEqual([]);
+});
+
+test("Codex records initialization dispatch before thread/start and refuses a failed journal write", async () => {
+  const log = join(nativeHome, "requests.jsonl"), failure = new Error("initialization journal unavailable");
+  let dispatches = 0;
+  await expect(openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {},
+    onNativeInitializationDispatch: () => { dispatches++; throw failure; },
+  })).rejects.toBe(failure);
+  expect(dispatches).toBe(1);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.some(request => request.method === "initialize")).toBe(true);
+  expect(requests.filter(request => request.method === "thread/start")).toEqual([]);
+});
+
+test("Codex distinguishes pre-dispatch initialization rejection from a dispatched native rejection", async () => {
+  for (const early of [true, false]) {
+    const log = join(nativeHome, `requests-${early}.jsonl`); let dispatches = 0;
+    await expect(openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, instructions: "original role",
+      env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, ...(early ? { CODEX_TEST_INITIALIZE: "reject" } : { CODEX_TEST_REJECT_ROLE: "native creation rejected" }) },
+      executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {},
+      onNativeInitializationDispatch: () => { dispatches++; },
+    })).rejects.toThrow();
+    expect(dispatches).toBe(early ? 0 : 1);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => request.method === "thread/start")).toHaveLength(early ? 0 : 1);
+  }
+});
+
+test.each(["native-rejection", "response-lost"])("Codex creation %s cannot become legacy non-dispatch evidence", async mode => {
+  const log = join(nativeHome, "requests.jsonl"); let dispatches = 0;
+  const error = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, instructions: "original role",
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, ...(mode === "native-rejection" ? { CODEX_TEST_REJECT_ROLE: LEGACY_CODEX_INITIALIZATION_GATE } : { CODEX_TEST_CREATE_DISCONNECT: "1" }) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {},
+    onNativeInitializationDispatch: () => { dispatches++; },
+  }).then(async provider => { await provider.close(); throw new Error("Fixture unexpectedly initialized"); }, error => error);
+  expect(dispatches).toBe(1);
+  expect(startupFailure(error)).toEqual(mode === "native-rejection" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_transport_unknown" });
+  if (mode === "native-rejection") expect(error.message).toBe(LEGACY_CODEX_INITIALIZATION_GATE);
+  else expect(error.message).not.toBe(LEGACY_CODEX_INITIALIZATION_GATE);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
 });
 
 test("Codex startup waits past an empty settings acknowledgement until the matching native record is complete", async () => {
