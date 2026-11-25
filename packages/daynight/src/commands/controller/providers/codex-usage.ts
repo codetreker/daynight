@@ -1,3 +1,4 @@
+import { valid } from "semver";
 import { createHash } from "node:crypto";
 
 /** The connected App Server supplies its version; PATH probes cannot replace it. */
@@ -5,8 +6,8 @@ export const codexUsageProviderVersion = (initialized: unknown): string | null =
   if (!initialized || typeof initialized !== "object") return null;
   const userAgent = (initialized as Record<string, unknown>).userAgent;
   if (typeof userAgent !== "string") return null;
-  const version = /^daynight\/(0\.169\.[01]) \(/.exec(userAgent)?.[1];
-  return version ?? null;
+  const version = /^daynight\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?) \(/.exec(userAgent)?.[1];
+  return version && version.length <= 128 && valid(version) !== null ? version : null;
 };
 
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

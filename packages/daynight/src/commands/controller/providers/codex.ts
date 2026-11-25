@@ -67,6 +67,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", nativeExited = false, nativeClosed = false, closed = false, closing = false, sending = false;
+  let usageVersion: string | null = null;
   let usageRollout: CodexUsageRollout | undefined, usageTimer: ReturnType<typeof setInterval> | undefined;
   let projection: CodexProjection;
   let authority: CodexReadAuthority | undefined;
@@ -181,7 +182,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     authority?.observe(string(message.method), message.params);
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
-    if (method === "rawResponse/completed" && p.threadId === nativeId && recoveryVersion === "0.169.0") options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion: recoveryVersion, event: message });
+    if (method === "rawResponse/completed" && p.threadId === nativeId && usageVersion !== null) options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion: usageVersion, event: message });
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
     if (method === "thread/settings/updated") { invalidateImages(); controls?.observe(p.threadSettings); refreshRequested = true; queueMicrotask(recoverImages); }
     if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); if (currentTurnId) { startingImageTurns?.add(currentTurnId); options.usageRuntime?.bindTurn?.(currentTurnId); } controls?.beginTurn(); interruptions.started(currentTurnId); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
@@ -315,6 +316,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   try {
     const initialized = record(await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } })); rpc.notify("initialized");
     initializedResponse = initialized;
+    usageVersion = codexUsageProviderVersion(initialized);
     // Recovery records the observed runtime without inheriting usage-profile
     // qualification. Compatibility is checked against the actual saved history.
     recoveryVersion = /^daynight\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?) \(/.exec(string(initialized.userAgent))?.[1] ?? "unknown";
@@ -346,7 +348,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         ...aliasOverrides,
       },
     };
-    if (!options.resumeNativeSessionId && options.usageRuntime && recoveryVersion === "0.169.0") Object.assign(startParams, { experimentalRawEvents: true });
+    if (!options.resumeNativeSessionId && options.usageRuntime && usageVersion !== null) Object.assign(startParams, { experimentalRawEvents: true });
     if (resumePath !== undefined) Object.assign(startParams, { path: resumePath });
     if (recovery && !options.resumeNativeSessionId) Object.assign(startParams, { historyMode: "legacy" });
     await configObserver?.prepare(startParams);
@@ -363,11 +365,11 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (recovery && !options.resumeNativeSessionId) await rpc.request("thread/name/set", { threadId: nativeId, name: "Daynight assistant" });
     // The response plane and original rollout share stable invocation identities.
     try {
-      const providerVersion = codexUsageProviderVersion(initialized);
+      const providerVersion = usageVersion;
       if (providerVersion) options.usageRuntime?.ready?.({ nativeSessionId: nativeId, providerVersion });
       else options.usageRuntime?.gap("profile_unverified");
-      if (options.usageRuntime && providerVersion === "0.169.0") {
-        usageRollout = new CodexUsageRollout({ file: recoveryPath, cwd: options.cwd, nativeSessionId: nativeId,
+      if (options.usageRuntime && providerVersion !== null) {
+        usageRollout = new CodexUsageRollout({ file: recoveryPath, cwd: options.cwd, nativeSessionId: nativeId, providerVersion,
           observe: event => options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion, event }), gap: reason => options.usageRuntime?.gap(reason) });
         await usageRollout.scan();
         usageTimer = setInterval(() => { void usageRollout?.scan(); }, 1000); usageTimer.unref();

@@ -15,7 +15,9 @@
 用量协议为 `daynight.usage.v1`，使用独立 HTTP 路径和独立确认，不扩展旧
 Task/Session 严格 codec。旧 Worker 不上报、旧前端不查询仍正常工作。
 能力接口的 404/501 表示服务不支持；超时和 5xx 是暂不可用，不得伪装成不支持。
-关闭写入不删除账本和迁移，不得使主任务或原生进程失败。
+服务环境未设置 `DAYNIGHT_USAGE_WRITE_ENABLED` 时默认启用写入；显式 `false` 关闭写入，
+显式 `true` 启用，仅接受这两个精确值。关闭写入不删除账本和迁移，读取继续可用，
+不得使主任务或原生进程失败。
 
 所有 UUID 必须是小写规范 UUID。计数、修订、代次和记录数使用规范十进制字符串，
 不接受 JSON number、符号、小数、指数、空白或前导零。token 单字段范围为
@@ -68,7 +70,13 @@ input+output，以及 profile 声明不相交的两类 cache 之和超过 input 
 | `codex-snapshot-unaccountable-v1` | 只登记 unsupported state | 不将累计或上下文快照变成 counted measurement |
 | `codex-response-0.169.0-v1` | `codex-response-v1:<thread/response 摘要>`，immutable 单响应 | input/output/total 为原生响应指标；正 cache read/reasoning 为子项，默认零值细项及 cache write 未知；只能 partial |
 
-Codex 响应 profile 仅适用于已核实的 `0.169.0`，不自动扩展到其他版本。
+Codex 响应 profile 不以二进制精确版本名单准入。CLI 必须从实际 App Server
+initialize 回执取得有效 semver，使用完整真实版本作为 `providerVersion`；未知或
+非法版本不能借用已知版本。新 state 使用 `codex-response-0.169.0-v1`，服务端对该
+profile 自动授予资格，无需部署逐版本配置。profile ID 中的 `0.169.0` 保留为历史
+数据合同标识，不表示可执行文件版本限制，也不证明其他版本已通过真实 E2E 验证。
+原线程 rollout 的 `session_meta.cli_version` 必须与本次实际握手版本精确一致；
+版本不匹配时拒绝该文件作为计量来源。原生字段、数值和来源身份仍须通过原 profile 校验。
 来源摘要是 UTF-8 `JSON.stringify([threadId,responseId])` 的 SHA-256 小写十六进制，
 不截断长 response ID；`nativeCallId` 保存该摘要，`nativeTurnId` 保存原 turn ID。
 实时通知与原线程回执路径下的 `token_usage_record.usage` 使用相同来源键，
@@ -80,13 +88,17 @@ Codex 响应 profile 仅适用于已核实的 `0.169.0`，不自动扩展到其�
 native_recovery_gap、subagent_scope_unknown、model_unknown，不能报告完整覆盖。
 旧 snapshot state 保留原口径，不能在同一代次自动升级为响应 profile。
 
-实际 runtime/SDK 未通过精确组合资格验证时为 `profile_unverified`，研究过字段不等于
-生产环境已验证。Provider JS number 不安全时不得转成看似精确的字符串。
+Copilot、Claude 等其他 Provider 的实际 runtime/SDK 未通过部署精确组合资格验证时为
+`profile_unverified`，研究过字段不等于生产环境已验证。Codex 响应 profile 的自动资格
+只决定既有数据合同准入，不扩大计量平面或免除原生证据校验。
+Provider JS number 不安全时不得转成看似精确的字符串。
 Copilot Controller 使用 `1.0.11/<runtime-version>` 作为 providerVersion，实时事件在
 历史恢复缓冲前持久化；ephemeral 通知不能从历史恢复，始终保留 native_recovery_gap，
 不承诺收齐落盘前的事件。采集错误和用量网络故障不得中止原生任务。
 能力接口通过 `profiles[].qualifiedVersions:[{providerVersion,capability}]`
-公开精确的已验证版本；基准 capability 和未列版本不能因此自动升级。
+公开部署配置的精确版本及其能力；其他 Provider 的基准 capability 和未列版本仍未验证。
+Codex 响应 profile 的基准 capability 已具资格，CLI 对具有真实版本的该 profile 使用
+此能力，不要求 `qualifiedVersions` 列出该版本。旧 snapshot profile 仍为 unsupported。
 
 `counted` 参与汇总；`included` 仅作明细，必须指向同 anchor 的 counted 父来源；
 `unattributed` 不参与总数且使覆盖不完整。不得混加 session、turn、call 和子 Agent 平面。

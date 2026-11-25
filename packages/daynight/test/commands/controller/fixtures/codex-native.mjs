@@ -87,6 +87,7 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
+  if(process.env.CODEX_TEST_RAW_USAGE)out({method:'rawResponse/completed',params:{threadId:'native-thread',turnId:turn.id,responseId:'response',usage:{inputTokens:100,outputTokens:10,totalTokens:110}}});
   if(process.env.CODEX_TEST_EXIT_BURST) {
    const messages=Array.from({length:1000},()=>({method:'item/agentMessage/delta',params:{threadId:'native-thread',turnId:turn.id,itemId:'final-answer',delta:'received output '}}));
    if(process.env.CODEX_TEST_EXIT_BURST==='unsupported request')messages.push({id:42,method:'unsupported/request',params:{threadId:'native-thread'}});

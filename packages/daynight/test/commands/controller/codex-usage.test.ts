@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { codexResponseIdentity, codexUsageProviderVersion, mapCodexUsageEvent } from "../../../src/commands/controller/providers/codex-usage.js";
 
-test.each(["0.169.0", "0.169.1"])("recognizes the connected Codex %s handshake", version => {
+test.each(["0.168.0", "0.169.0", "0.169.1", "0.169.2", "0.170.0", "1.2.3-beta.1+build.2"])("recognizes the connected Codex %s handshake", version => {
   expect(codexUsageProviderVersion({ userAgent: `daynight/${version} (Windows 11; x86_64)` })).toBe(version);
 });
 
@@ -54,6 +54,6 @@ test.each(["", "bad\nidentity", "\ud800", "x".repeat(65537)])("refuses invalid r
   const input = event(); input.params.responseId = responseId;
   expect(() => mapCodexUsageEvent(input)).toThrow("collector_failed");
 });
-test.each([{}, null, { userAgent: "codex/0.169.0 (Windows)" }, { userAgent: "daynight/0.169.2 (Windows)" }, { userAgent: "daynight/0.169.0-beta (Windows)" }])("does not assign a known capability to an unverified handshake %j", input => {
+test.each([...["01.2.3", "1.2.3-01", "1.2.3+a+b", "1.2.3+" + "a".repeat(128)].map(version => ({ userAgent: `daynight/${version} (Windows)` })), {}, null, { userAgent: "codex/0.169.0 (Windows)" }, { userAgent: "daynight/unknown (Windows)" }, { userAgent: "daynight/0.169 (Windows)" }])("does not assign a version to a malformed handshake %j", input => {
   expect(codexUsageProviderVersion(input)).toBeNull();
 });

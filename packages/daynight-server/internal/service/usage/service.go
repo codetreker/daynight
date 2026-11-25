@@ -31,7 +31,7 @@ func New(database store.UsageStore, options Options) (*Service, error) {
 	return &Service{database: database, writeEnabled: options.WriteEnabled, qualified: q}, nil
 }
 func (s *Service) qualify(p core.Profile, version string) core.Profile {
-	return core.Qualify(p, s.qualified[p.ID+"@"+version])
+	return core.Qualify(p, p.Provider == "codex" && p.ID == "codex-response-0.169.0-v1" || s.qualified[p.ID+"@"+version])
 }
 func (s *Service) profile(id, provider, version string) (core.Profile, error) {
 	p, e := core.FindProfile(id, provider)
@@ -50,7 +50,7 @@ type profileAdvertisement struct {
 func (s *Service) Capabilities() map[string]any {
 	profiles := []profileAdvertisement{}
 	for _, p := range core.Profiles() {
-		entry := profileAdvertisement{Profile: p, QualifiedVersions: []qualifiedVersion{}}
+		entry := profileAdvertisement{Profile: s.qualify(p, ""), QualifiedVersions: []qualifiedVersion{}}
 		versions := []string{}
 		for key := range s.qualified {
 			if version, ok := strings.CutPrefix(key, p.ID+"@"); ok {

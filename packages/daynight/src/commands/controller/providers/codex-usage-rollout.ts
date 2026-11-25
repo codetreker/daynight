@@ -13,7 +13,7 @@ export class CodexUsageRollout {
   private verified = false;
   private fingerprint: string | null = null;
   private flight: Promise<void> | null = null;
-  constructor(private readonly options: { file: string; cwd: string; nativeSessionId: string; observe(event: unknown): void; gap(reason: string): void }) {}
+  constructor(private readonly options: { file: string; cwd: string; nativeSessionId: string; providerVersion: string; observe(event: unknown): void; gap(reason: string): void }) {}
 
   scan(): Promise<void> {
     if (this.flight) return this.flight;
@@ -55,7 +55,7 @@ export class CodexUsageRollout {
           if (newline > 32 * 1024 * 1024) throw new Error("collector_failed");
           const entry = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(this.pending.subarray(0, newline)))), p = object(entry.payload);
           if (!this.verified) {
-            if (entry.type !== "session_meta" || p.id !== nativeSessionId || p.cli_version !== "0.169.0" || typeof p.cwd !== "string" || await realpath(p.cwd) !== await realpath(this.options.cwd)
+            if (entry.type !== "session_meta" || p.id !== nativeSessionId || p.cli_version !== this.options.providerVersion || typeof p.cwd !== "string" || await realpath(p.cwd) !== await realpath(this.options.cwd)
               || p.forked_from_id != null || object(p.source).subagent != null) throw new Error("collector_failed");
             this.verified = true;
           } else if (entry.type === "session_meta") throw new Error("collector_failed");

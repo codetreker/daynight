@@ -34,7 +34,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     const exact = (Array.isArray(profile?.qualifiedVersions) ? profile.qualifiedVersions : []).map(object).find(item => item.providerVersion === state.providerVersion);
     const value = object(exact?.capability ?? profile?.capability);
     if (value.profileId !== usageProfileId(state.provider, state.profileId) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
-    if (!exact && value.qualification === "verified") return { ...value, qualification: "unverified" };
+    if (!exact && value.qualification === "verified" && !(state.provider === "codex" && value.profileId === "codex-response-0.169.0-v1")) return { ...value, qualification: "unverified" };
     return value;
   };
   const qualified = (state: UsageState): boolean => capability(state)?.qualification === "verified";

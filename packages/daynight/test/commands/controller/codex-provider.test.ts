@@ -411,11 +411,19 @@ test.each(["inProgress", "completed"])("Codex historical Markdown waits for the 
   finally { await provider.close(); }
 });
 
-test.each([null, "native-thread"])("Codex registers connected usage capability and reports the missing rollout (resume=%s)", async resumeNativeSessionId => {
+test.each([null, "native-thread"].flatMap(resumeNativeSessionId => ["0.169.0", "0.170.0", "1.2.3-beta.1+build.2"].map(providerVersion => ({ resumeNativeSessionId, providerVersion }))))("Codex registers and collects connected usage across versions (%j)", async ({ resumeNativeSessionId, providerVersion }) => {
   const ready = vi.fn(), observe = vi.fn(), gap = vi.fn();
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId,
-    env: { ...process.env, CODEX_TEST_INITIALIZED: JSON.stringify({ userAgent: "daynight/0.169.0 (Windows 11; x86_64)" }) },
+    env: { ...process.env, CODEX_TEST_INITIALIZED: JSON.stringify({ userAgent: `daynight/${providerVersion} (Windows 11; x86_64)` }), CODEX_TEST_RAW_USAGE: "1", CODEX_TEST_REQUEST_LOG: join(nativeHome, "usage-requests.jsonl") },
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {}, usageRuntime: { ready, observe, gap } });
-  try { expect(ready).toHaveBeenCalledExactlyOnceWith({ nativeSessionId: "native-thread", providerVersion: "0.169.0" }); expect(observe).not.toHaveBeenCalled(); expect(gap).toHaveBeenCalledExactlyOnceWith("native_recovery_gap"); }
+  try {
+    expect(ready).toHaveBeenCalledExactlyOnceWith({ nativeSessionId: "native-thread", providerVersion });
+    const requests = (await readFile(join(nativeHome, "usage-requests.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.find(request => request.method === (resumeNativeSessionId ? "thread/resume" : "thread/start")).params.experimentalRawEvents).toBe(resumeNativeSessionId ? undefined : true);
+    await provider.send(textNativeInput("usage"), randomUUID(), null);
+    await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
+    expect(observe).toHaveBeenCalledWith({ nativeSessionId: "native-thread", providerVersion, event: expect.objectContaining({ method: "rawResponse/completed" }) });
+    expect(gap).toHaveBeenCalledWith("native_recovery_gap");
+  }
   finally { await provider.close(); }
 });

@@ -19,9 +19,9 @@ const usageRecord = (responseId = "response", patch: Record<string, unknown> = {
   thread_id: nativeSessionId, session_id: nativeSessionId, turn_id: turnId, root_turn_id: turnId, response_id: responseId,
   usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, cached_input_tokens: 40, cache_write_input_tokens: 60, reasoning_output_tokens: 5 }, ...patch,
 } });
-const collector = (observe?: (event: unknown) => void) => {
+const collector = (observe?: (event: unknown) => void, providerVersion = "0.169.0") => {
   const events: unknown[] = [], gaps: string[] = [];
-  const reader = new CodexUsageRollout({ file, cwd: root, nativeSessionId, observe: event => { events.push(event); observe?.(event); }, gap: reason => { gaps.push(reason); } });
+  const reader = new CodexUsageRollout({ file, cwd: root, nativeSessionId, providerVersion, observe: event => { events.push(event); observe?.(event); }, gap: reason => { gaps.push(reason); } });
   return { reader, events, gaps };
 };
 
@@ -87,4 +87,12 @@ test("drain waits for an in-flight scan and then reads the tail added after its 
   });
   await reader.scan(); expect(draining).toBeDefined(); await draining;
   expect(events).toHaveLength(2); expect(events[1]).toMatchObject({ params: { responseId: "tail" } }); expect(gaps).toEqual([]);
+});
+
+
+test.each(["0.168.0", "0.170.0", "1.2.3-beta.1+build.2"])("reads response records when rollout and connected Codex %s agree", async providerVersion => {
+  await writeFile(file, line(metadata({ cli_version: providerVersion })) + line(usageRecord()));
+  const { reader, events, gaps } = collector(undefined, providerVersion); await reader.scan();
+  expect(events).toHaveLength(1); expect(gaps).toEqual([]);
+  expect(mapCodexUsageEvent(events[0])?.metrics.totalTokens).toBe("110");
 });
