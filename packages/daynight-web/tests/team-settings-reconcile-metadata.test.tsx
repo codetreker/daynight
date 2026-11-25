@@ -36,7 +36,7 @@ it.each([true, false])("refreshes full Team after an unknown save readback (curr
   expect(screen.getByText(`Saved: ${enabled ? "On" : "Off"}`)).toBeVisible();
   expect(saveTeamSettings).toHaveBeenCalledOnce();
   await act(async () => refreshed.resolve(team(version)));
-  fireEvent.click(screen.getByRole("button", { name: "Edit", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
   const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
   fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "Renamed" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
@@ -63,7 +63,7 @@ it.each([["version_conflict", 409, 2n], ["invalid_input", 400, 1n]] as const)("r
     expect(screen.getByRole("switch", { name: "Allow nested subtasks" })).toHaveAttribute("aria-checked", "true");
     expect(getTeamSettings).toHaveBeenCalledTimes(2);
   } else expect(await screen.findByText("Unable to save. Check the details and try again.")).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Edit", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
   const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
   fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "Renamed" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
