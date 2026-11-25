@@ -17,10 +17,11 @@ type Props = {
   readonly onDenied: () => void;
   readonly onWrite: () => void;
   readonly onSaved: () => void;
+  readonly onReconciled?: () => void;
   readonly operation: ReturnType<typeof useOperation>;
 };
 
-export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied = false, editable, onIdentityMismatch, onDenied, onWrite, onSaved, operation }: Props) => {
+export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied = false, editable, onIdentityMismatch, onDenied, onWrite, onSaved, onReconciled, operation }: Props) => {
   const { locale } = useI18n(), zh = locale === "zh-CN";
   const m = zh ? {
     title: "任务设置", label: "允许嵌套子任务", hint: "允许在子任务下继续创建子任务。关闭后，已有的子任务不会改变。", current: "已保存", enabled: "开启", disabled: "关闭", save: "保存修改", cancel: "取消", saving: "正在保存", loading: "正在读取设置", failed: "无法读取设置。", retry: "重试", unavailable: "当前服务不支持此设置。", readonly: "只有 Team 管理员可以修改此设置。", conflict: "设置已变化。请核对当前值后重新保存。", unknown: "保存结果未知。请核对当前状态；读回不能确认原操作是否成功。", check: "查看当前状态", rejected: "保存失败，请检查后重试。", saved: "已保存", unsaved: "有未保存的修改"
@@ -33,7 +34,7 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
   const retryReason = useRef<"background" | "reconcile" | "conflict">("background");
   const floor = useRef<bigint | null>(null), authority = useRef(0);
   const latest = useRef<TeamSettings | null>(null), draftRef = useRef(false), epoch = useRef(0), fresh = useRef(false), reading = useRef<AbortController | null>(null);
-  const callbacks = useRef({ onDenied, onWrite, onSaved }); callbacks.current = { onDenied, onWrite, onSaved };
+  const callbacks = useRef({ onDenied, onWrite, onSaved, onReconciled }); callbacks.current = { onDenied, onWrite, onSaved, onReconciled };
   const access = useRef({ active, blocked, denied }); access.current = { active, blocked, denied };
   const op = useRef(operation); op.current = operation;
   const previousDenied = useRef(false);
@@ -62,7 +63,7 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
       const previous = latest.current;
       floor.current = result.settings.version; latest.current = result.settings; setCurrent(result.settings); setUnsupported(false); fresh.current = true;
       if (previous === null || draftRef.current === previous.allowNestedSubtask) { draftRef.current = result.settings.allowNestedSubtask; setDraft(draftRef.current); }
-      if (reason === "reconcile") op.current.clear();
+      if (reason === "reconcile") { op.current.clear(); callbacks.current.onReconciled?.(); }
       if (reason === "conflict") setConflict(draftRef.current !== result.settings.allowNestedSubtask);
     } catch (failure) {
       if (signal.aborted || admission.isInvalidated || generation !== epoch.current || authGeneration !== readAuthRequestGeneration()) return;
@@ -112,8 +113,11 @@ export const TeamNestedSettings = ({ teamId, admission, active, blocked, denied 
       if (observed !== null && draftRef.current === value && observed.allowNestedSubtask === value) { setSaved(true); }
       fresh.current = observed !== null; callbacks.current.onSaved();
     }, failure => {
-      if (failure instanceof ApiError && failure.code === "version_conflict") void read("conflict");
-      else if (failure instanceof ApiError && (failure.code === "forbidden" || failure.code === "not_found")) { ++authority.current; latest.current = null; setCurrent(null); callbacks.current.onDenied(); }
+      if (failure instanceof ApiError && (failure.code === "forbidden" || failure.code === "not_found")) { ++authority.current; latest.current = null; setCurrent(null); callbacks.current.onDenied(); }
+      else {
+        if (failure instanceof ApiError && failure.code === "version_conflict") void read("conflict");
+        callbacks.current.onReconciled?.();
+      }
     });
   };
   return <section className="panel team-nested-settings"><header className="panel-heading"><div><h2>{m.title}</h2></div></header><div className="panel-body settings-form">
