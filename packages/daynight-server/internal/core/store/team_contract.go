@@ -29,6 +29,7 @@ type TeamCreationDAO interface {
 type TeamWriteDAO interface {
 	Team(context.Context, string) (model.Team, error)
 	Rename(context.Context, string, string) (model.Team, error)
+	SetNestedSubtask(context.Context, string, bool) (model.Team, error)
 	HasProjects(context.Context) (bool, error)
 	Delete(context.Context) error
 	Member(context.Context, string) (model.TeamMember, error)

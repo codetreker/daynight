@@ -13,6 +13,34 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func serverAPITeamNestedSettingsFlow(t *testing.T, f *fixture) {
+	t.Helper()
+	team := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Nested settings", ExpectedUserID: f.userID}, http.StatusCreated)
+	path := "/api/v1/teams/" + team.ID + "/settings"
+	settings := requestJSON[api.TeamSettings](t, f, http.MethodGet, path, nil, http.StatusOK)
+	if settings.AllowNestedSubtask || settings.Version != team.Version {
+		t.Fatalf("initial settings: %+v", settings)
+	}
+	settings = requestJSON[api.TeamSettings](t, f, http.MethodPatch, path, map[string]any{"version": settings.Version, "expectedUserId": f.userID, "allowNestedSubtask": true}, http.StatusOK)
+	if !settings.AllowNestedSubtask || settings.Version != team.Version+1 {
+		t.Fatalf("enabled settings: %+v", settings)
+	}
+	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Nested project", RepoURL: "https://github.com/example/nested-" + team.ID, TeamID: &team.ID, ExpectedUserID: f.userID}, http.StatusCreated)
+	root := createTask(t, f, project, "Root", map[string]any{"status": "todo"})
+	child := requestJSON[api.Task](t, f, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Child", "status": "todo", "parentTaskId": root.ID}, http.StatusCreated)
+	headers := http.Header{"Daynight-Task-Relations": {"task-parent-v1"}}
+	grandchild := requestJSON[api.Task](t, f, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Grandchild", "status": "todo", "parentTaskId": child.ID}, http.StatusCreated, headers)
+	settings = requestJSON[api.TeamSettings](t, f, http.MethodPatch, path, map[string]any{"version": settings.Version, "expectedUserId": f.userID, "allowNestedSubtask": false}, http.StatusOK)
+	read := requestJSON[api.TeamSettings](t, f, http.MethodGet, path, nil, http.StatusOK)
+	if read != settings || read.AllowNestedSubtask {
+		t.Fatalf("disabled settings: %+v, read: %+v", settings, read)
+	}
+	actual := requestJSON[api.Task](t, f, http.MethodGet, taskPath(grandchild), nil, http.StatusOK, headers)
+	if actual.ID != grandchild.ID || actual.ParentTaskID == nil || *actual.ParentTaskID == nil || **actual.ParentTaskID != child.ID {
+		t.Fatalf("retained child: %+v", actual)
+	}
+}
+
 func serverAPIOrdinarySubtaskNormalFlow(t *testing.T, f *fixture) {
 	t.Helper()
 	project := createProject(t, f, "Ordinary subtasks")

@@ -31,6 +31,16 @@ func (tx *Writer) ParentTask(ctx context.Context, id string) (model.Task, error)
 	return pg.ReadTaskWithLock(ctx, tx.tx, tx.projectID, id, "")
 }
 
+func (tx *Writer) NestedSubtasksAllowed(ctx context.Context) (bool, error) {
+	var allowed bool
+	err := tx.tx.QueryRow(ctx, `SELECT team.allow_nested_subtask FROM project_ownership o
+		JOIN teams team ON team.id=o.team_id WHERE o.project_id=$1`, tx.projectID).Scan(&allowed)
+	if err != nil {
+		return false, pg.QueryError("read owning Team nested subtask policy", err)
+	}
+	return allowed, nil
+}
+
 func (tx *Writer) GoalProgresses(ctx context.Context, projectID string, ids []string) (map[string]model.GoalProgress, error) {
 	return (&Reader{tx: tx.tx}).GoalProgresses(ctx, projectID, ids)
 }

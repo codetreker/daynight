@@ -30,14 +30,14 @@ var _ store.TeamReader = (*reader)(nil)
 var _ store.TeamWriteDAO = (*writer)(nil)
 var _ store.TeamCreationDAO = (*creator)(nil)
 
-const teamProjection = `t.id::text,t.personal_user_id::text,t.name,t.version,t.created_at,t.updated_at,
+const teamProjection = `t.id::text,t.personal_user_id::text,t.name,t.version,t.allow_nested_subtask,t.created_at,t.updated_at,
 	m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at`
 
 func scanTeam(row pgx.Row) (model.Team, error) {
 	var team model.Team
 	var owner *string
 	m := &team.Membership
-	err := row.Scan(&team.ID, &owner, &team.Name, &team.Version, &team.CreatedAt, &team.UpdatedAt,
+	err := row.Scan(&team.ID, &owner, &team.Name, &team.Version, &team.AllowNestedSubtask, &team.CreatedAt, &team.UpdatedAt,
 		&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
 		return model.Team{}, err
@@ -119,6 +119,13 @@ func (tx *writer) Team(ctx context.Context, userID string) (model.Team, error) {
 func (tx *writer) Rename(ctx context.Context, userID, name string) (model.Team, error) {
 	if _, err := tx.tx.Exec(ctx, `UPDATE teams SET name=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, tx.teamID, name); err != nil {
 		return model.Team{}, pg.QueryError("rename Team", err)
+	}
+	return tx.Team(ctx, userID)
+}
+
+func (tx *writer) SetNestedSubtask(ctx context.Context, userID string, allow bool) (model.Team, error) {
+	if _, err := tx.tx.Exec(ctx, `UPDATE teams SET allow_nested_subtask=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, tx.teamID, allow); err != nil {
+		return model.Team{}, pg.QueryError("update Team settings", err)
 	}
 	return tx.Team(ctx, userID)
 }

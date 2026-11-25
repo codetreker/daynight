@@ -376,8 +376,9 @@ func (mock *taskReaderMock) TaskSyncDependencyStates(ctx context.Context, id str
 var _ store.TaskReader = (*taskReaderMock)(nil)
 
 type taskWriterMock struct {
-	ParentTaskFn     func(context.Context, string) (model.Task, error)
-	GoalProgressesFn func(context.Context, string, []string) (map[string]model.GoalProgress, error)
+	NestedSubtasksAllowedFn func(context.Context) (bool, error)
+	ParentTaskFn            func(context.Context, string) (model.Task, error)
+	GoalProgressesFn        func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	taskMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
@@ -397,6 +398,11 @@ type taskWriterMock struct {
 func (mock *taskWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
 	mock.need("GoalProgresses", mock.GoalProgressesFn != nil)
 	return mock.GoalProgressesFn(ctx, project, ids)
+}
+
+func (mock *taskWriterMock) NestedSubtasksAllowed(ctx context.Context) (bool, error) {
+	mock.need("NestedSubtasksAllowed", mock.NestedSubtasksAllowedFn != nil)
+	return mock.NestedSubtasksAllowedFn(ctx)
 }
 
 func (mock *taskWriterMock) ParentTask(ctx context.Context, id string) (model.Task, error) {

@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import type { createCompatGateway } from '../src/subtask-compat-gateway.ts';
 import { test, expect, topology, cliEnvironment, startOwnedCommand } from './fixtures.ts';
-import { verifyOldWorker } from './subtask-compat-worker.ts';
+import { createNestedFixtureTeam, verifyOldWorker } from './subtask-compat-worker.ts';
 
 type CompatTopology = typeof topology & { oldCliEntry: string; oldCliConfigDirectory: string; serverVersion: 'baseline' | 'candidate'; baselineSchema: string };
 const compat = topology as CompatTopology;
@@ -78,7 +78,7 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
   await page.getByRole('button', { name: 'Sign in with GitHub', exact: true }).click();
   await page.getByRole('button', { name: 'Authorize local identity', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Projects', exact: true })).toBeVisible();
-  await login(page, topology.cliEntry, topology.cliConfigDirectory);
+  const candidateToken = await login(page, topology.cliEntry, topology.cliConfigDirectory);
   const oldToken = await login(page, compat.oldCliEntry, compat.oldCliConfigDirectory);
   const token = await oauthGrant(page);
   const command = async (version: 'old' | 'new', args: string[], success = true) => {
@@ -89,7 +89,8 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
     if (!success) expect(result.exitCode).not.toBe(0);
     return result;
   };
-  const createProject = await command('old', ['project', 'create', `Compatibility ${randomUUID()}`, '--repo', `https://example.test/compat/${randomUUID()}.git`, '--team', 'personal', '--confirm']);
+  const team = compat.serverVersion === 'candidate' ? await createNestedFixtureTeam({ server: topology.baseURL, token: candidateToken, command: args => command('new', args), name: `Compatibility ${randomUUID()}` }) : undefined;
+  const createProject = await command('old', ['project', 'create', `Compatibility ${randomUUID()}`, '--repo', `https://example.test/compat/${randomUUID()}.git`, '--team', team?.id ?? 'personal', '--confirm']);
   const projectId = createProject.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   if (!projectId) throw new Error('Project creation returned no ID.');
   const create = async (version: 'old' | 'new', args: string[]): Promise<string> => {
@@ -135,7 +136,9 @@ test(`mixed versions: Web CLI and MCP against ${compat.serverVersion} Server`, a
 
   if (compat.serverVersion === 'candidate') {
     const parent = await create('new', ['--title', 'Mixed parent', '--status', 'todo']);
+    await team!.setAllowed(true);
     const child = await create('new', ['--title', 'Mixed child', '--parent-task', parent, '--status', 'todo']);
+    await team!.setAllowed(false);
     const childTask = await show('new', child);
     expect(childTask).toMatchObject({ id: child, parentTaskId: parent });
     const legacy = await show('old', child);

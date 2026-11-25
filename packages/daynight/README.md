@@ -1045,7 +1045,9 @@ sets the parent. A Goal cannot have a parent. Membership does not change Task
 identity, status, assignee, materials, dependencies or their classifications.
 
 Create, list, search and ready accept `--parent-task <task-id>` for an ordinary
-direct parent, mutually exclusive with `--parent`. Ordinary parentage is fixed
+direct parent, mutually exclusive with `--parent`. A Team's `allowNestedSubtask` setting defaults to false: creating a child of an
+ordinary child is rejected until the owning Team admin enables it. Existing trees
+remain available when disabled or after a Project transfer. Ordinary parentage is fixed
 at creation; the parent must be visible, nonterminal and in the same Project.
 It does not create a dependency or automatically start or complete the parent.
 Use `task list --parent-task <id> --all` to include terminal children. The

@@ -47,7 +47,7 @@ func TestTaskSyncDeletionMigrationRollbackAndRecovery(t *testing.T) {
 	var valid bool
 	err = pool.QueryRow(t.Context(), `SELECT to_regclass('tasks_project_effective_deleted_id') IS NOT NULL
  AND (SELECT count(*)=1 FROM tasks WHERE id=$1 AND deleted_at='2026-01-02'::timestamptz)
- AND (SELECT checksum=$2 FROM schema_migrations WHERE version=129)`, queryID(2), schemaMigrations[len(schemaMigrations)-1].checksum()).Scan(&valid)
+ AND (SELECT checksum=$2 FROM schema_migrations WHERE version=129)`, queryID(2), migrationsThrough(129)[len(migrationsThrough(129))-1].checksum()).Scan(&valid)
 	if err != nil || !valid {
 		t.Fatalf("migration facts: %v %v", valid, err)
 	}

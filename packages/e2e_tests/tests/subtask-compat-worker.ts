@@ -14,6 +14,37 @@ type Task = { id: string; assignedTo: string | null; version: number; status: st
 type Invoke = (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 const shellLiteral = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
+// Every candidate fixture owns a separate Team, so its temporary setting cannot
+// change another scenario's creation policy.
+export async function createNestedFixtureTeam(input: { server: string; token: string; command: Invoke; name: string }): Promise<{ id: string; setAllowed: (allowed: boolean) => Promise<void> }> {
+  const creation = await input.command(['team', 'create', input.name, '--confirm', '--json']);
+  if (creation.exitCode !== 0) throw new Error('Fixture Team creation failed.');
+  const team = JSON.parse(creation.stdout) as { id: string };
+  if (!/^[0-9a-f-]{36}$/.test(team.id)) throw new Error('Fixture Team creation returned no ID.');
+  const headers = { Authorization: `Bearer ${input.token}` };
+  const identity = await fetch(`${input.server}/api/v1/me`, { headers, signal: AbortSignal.timeout(30_000) });
+  if (identity.status !== 200) throw new Error(`Fixture identity read failed: ${identity.status}`);
+  const { id: userId } = await identity.json() as { id: string };
+  if (!/^[0-9a-f-]{36}$/.test(userId)) throw new Error('Fixture identity read returned no ID.');
+  const settingsURL = `${input.server}/api/v1/teams/${team.id}/settings`;
+  const read = async (): Promise<{ version: number; allowNestedSubtask: boolean }> => {
+    const response = await fetch(settingsURL, { headers, signal: AbortSignal.timeout(30_000) });
+    if (response.status !== 200 || response.headers.get('daynight-user-id') !== userId) throw new Error(`Fixture Team settings read failed: ${response.status}`);
+    const result = await response.json() as { version: number; allowNestedSubtask: boolean };
+    if (!Number.isSafeInteger(result.version) || result.version < 1 || typeof result.allowNestedSubtask !== 'boolean') throw new Error('Fixture Team settings response is invalid.');
+    return result;
+  };
+  expect((await read()).allowNestedSubtask).toBe(false);
+  return { id: team.id, setAllowed: async allowed => {
+    const before = await read();
+    expect(before.allowNestedSubtask).toBe(!allowed);
+    const response = await fetch(settingsURL, { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ version: before.version, expectedUserId: userId, allowNestedSubtask: allowed }), signal: AbortSignal.timeout(30_000) });
+    if (response.status !== 200 || response.headers.get('daynight-user-id') !== userId) throw new Error(`Fixture Team settings write failed: ${response.status}`);
+    expect(await response.json()).toEqual({ version: before.version + 1, allowNestedSubtask: allowed });
+    expect(await read()).toEqual({ version: before.version + 1, allowNestedSubtask: allowed });
+  } };
+}
+
 // Invoke once per isolated runner, with the candidate CLI used for fixture
 // mutations and either real Worker entry. The existing owner tracks one claim.
 export async function verifyGoalWorker(input: { entry: string; variant: 'candidate' | 'npm-0.72.0'; token: string; server: string; command: Invoke }): Promise<void> {
@@ -52,7 +83,8 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
       if (!id) throw new Error('Fixture creation returned no ID.');
       return id;
     };
-    const projectId = idFrom((await invoke(['project', 'create', `Goal Worker ${input.variant} ${randomUUID()}`, '--repo', remote, '--team', 'personal', '--confirm'])).stdout);
+    const team = await createNestedFixtureTeam({ server: input.server, token: input.token, command: input.command, name: `Goal Worker ${input.variant} ${randomUUID()}` });
+    const projectId = idFrom((await invoke(['project', 'create', `Goal Worker ${input.variant} ${randomUUID()}`, '--repo', remote, '--team', team.id, '--confirm'])).stdout);
     const create = async (args: string[]) => idFrom((await invoke(['task', 'create', '--project', projectId, ...args])).stdout);
     let leafId: string | undefined, originalClaim: string | undefined;
     const read = async (id: string): Promise<CompatTask & Task & { ready: boolean; allowAgents: boolean; parentId: string | null; parentTaskId: string | null }> => readCompatTask({
@@ -61,10 +93,12 @@ export async function verifyGoalWorker(input: { entry: string; variant: 'candida
     });
     const goal = await create(['--type', 'goal', '--title', 'Worker ancestor Goal']);
     const ancestors = [await create(['--title', 'Worker root', '--parent', goal, '--status', 'todo'])];
+    await team.setAllowed(true);
     for (let depth = 1; depth < 5; depth++) ancestors.push(await create(['--title', `Worker ancestor ${depth}`, '--parent-task', ancestors.at(-1)!, '--status', 'todo']));
     const leaf = await create(['--title', 'Worker open descendant', '--parent-task', ancestors.at(-1)!, '--status', 'todo']);
     leafId = leaf;
     const blocked = await create(['--title', 'Worker terminal descendant', '--parent-task', ancestors.at(-1)!, '--status', 'todo']);
+    await team.setAllowed(false);
     for (const id of [leaf, blocked]) {
       const task = await read(id);
       if (!task.assignedTo) throw new Error('Worker Task has no assignee.');

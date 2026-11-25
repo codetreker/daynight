@@ -50,6 +50,28 @@ func TestGoalWriteTimingParentAndProgress(t *testing.T) {
 	}
 }
 
+func TestNestedSubtaskPolicyReadsCurrentOwnership(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	writer := task.NewWriter(f.tx, f.project)
+	allowed, err := writer.NestedSubtasksAllowed(ctx)
+	mustOK(t, err)
+	if allowed {
+		t.Fatal("new Team must default to disabled")
+	}
+	_, err = f.tx.Exec(ctx, `UPDATE teams SET allow_nested_subtask=true WHERE id=$1`, f.user)
+	mustOK(t, err)
+	allowed, err = writer.NestedSubtasksAllowed(ctx)
+	mustOK(t, err)
+	if !allowed {
+		t.Fatal("updated policy was not read")
+	}
+	_, err = task.NewWriter(f.tx, f.other).NestedSubtasksAllowed(ctx)
+	if err == nil {
+		t.Fatal("missing ownership must fail")
+	}
+}
+
 func TestTaskHeaderReportsParentDeletion(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

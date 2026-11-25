@@ -3698,6 +3698,7 @@ their owner and reject rename and deletion.
 | `GET` | `/api/v1/teams` | `200`, member-filtered `{items,nextCursor}` page |
 | `GET` | `/api/v1/teams/{teamId}` | `200`, Team and the caller's real membership |
 | `PATCH` | `/api/v1/teams/{teamId}` | `200`, Team after exact-version rename |
+| `GET/PATCH` | `/api/v1/teams/{teamId}/settings` | `200`, versioned nested-subtask settings |
 | `DELETE` | `/api/v1/teams/{teamId}` | `200`, `{teamId,deleted:true}` after empty deletion |
 
 Create accepts `name` and `expectedUserId`; rename and delete also require a
@@ -3719,6 +3720,13 @@ A real rename at the maximum int64 version returns `version_exhausted`, while
 an exact-version same-name no-op still succeeds. An unconfirmed COMMIT returns `503 write_outcome_unknown`; cleanup failure
 retains `500 internal_error`. A lost response is not evidence of rollback and
 does not authorize automatic replay.
+
+Settings GET requires current Team membership and `team:read`, returning
+`{version,allowNestedSubtask}`. PATCH requires admin (including Personal owner),
+`team:read` and `team:write`, and exactly `{version,expectedUserId,allowNestedSubtask}`.
+The boolean defaults to false. An exact-version no-op preserves the version; a
+change increments it. Stale versions conflict, and an unknown write outcome must
+be checked by a separate GET without replay. Other Team responses are unchanged.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
 own the complete public contract. The
@@ -4260,7 +4268,10 @@ owns filtering, byte admission and ancestor Goal eligibility.
 
 Task POST and MCP `task_create` accept an optional non-null UUID `parentTaskId`
 for a visible nonterminal ordinary parent in the same Project. It conflicts with
-a non-null Goal `parentId`. PATCH and `task_update` reject `parentTaskId`; existing
+a non-null Goal `parentId`. A parent that itself has an ordinary parent requires
+its Project's current Team to enable `allowNestedSubtask`; otherwise creation
+returns `invalid_input` without a write. First-level children remain allowed,
+and existing trees survive disabling or Project transfer. PATCH and `task_update` reject `parentTaskId`; existing
 ordinary parent edges cannot be cleared or moved through `parentId`.
 Status PUT and `task_set_status` accept strict boolean `cancelDescendants` only
 for ordinary cancelled requests, including explicit false. Omission or false

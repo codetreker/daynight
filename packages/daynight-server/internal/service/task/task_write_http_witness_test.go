@@ -376,6 +376,10 @@ func (d *writeWitnessTaskDAO) GoalProgresses(context.Context, string, []string) 
 	panic(d.f.unexpected("TaskWriteDAO.GoalProgresses"))
 }
 
+func (d *writeWitnessTaskDAO) NestedSubtasksAllowed(context.Context) (bool, error) {
+	panic("unexpected NestedSubtasksAllowed")
+}
+
 func (d *writeWitnessTaskDAO) ParentTask(context.Context, string) (model.Task, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ParentTask"))
 }
