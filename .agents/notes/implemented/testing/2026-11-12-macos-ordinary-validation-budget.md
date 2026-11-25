@@ -13,8 +13,10 @@ during job finalization. A cancelled job cannot establish the required result.
 
 ## Decision
 
-The ordinary macOS matrix entry uses a 20-minute job limit. The other ordinary
-entries and all installed entries use 10 minutes. The complete test selection,
+The ordinary macOS matrix entry uses a 20-minute job limit. Windows ordinary
+entries and all installed entries use 10 minutes; the
+[Ubuntu validation budget](2026-11-25-ubuntu-ordinary-validation-budget.md)
+sets that ordinary entry to 12 minutes. The complete test selection,
 failure gate and individual test deadlines carry the same requirements. The
 ordinary macOS limit supersedes the uniform limit in the
 [independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md).
