@@ -2751,6 +2751,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	}
 	add("GET POST", "/api/v1/teams")
 	add("GET PATCH DELETE", team)
+	add("GET PATCH", team+"/settings")
 	add("GET POST", team+"/members")
 	add("POST PATCH DELETE", team+"/members/{userId}")
 	add("GET POST", team+"/invitations")

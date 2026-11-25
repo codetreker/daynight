@@ -1,4 +1,4 @@
--- Schema snapshot version: 129
+-- Schema snapshot version: 130
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1147,12 +1147,12 @@ CREATE TABLE "task_sessions" (
     "history_content_policy" "text",
     "online_mode" "text",
     "source_recovery_count" integer DEFAULT 0 NOT NULL,
-    CONSTRAINT "task_sessions_source_recovery_count_check" CHECK ((("source_recovery_count" >= 0) AND ("source_recovery_count" <= 4096))),
     CONSTRAINT "session_backend_content" CHECK (((("backend" = 'web'::"text") AND ("snapshot" IS NOT NULL) AND ("terminal_state" IS NULL)) OR (("backend" = 'herdr'::"text") AND ("scope" = 'task'::"text") AND ("snapshot" IS NULL) AND ("terminal_state" IS NOT NULL)))),
     CONSTRAINT "session_bot_scope" CHECK ((("bot_id" IS NULL) OR (("scope" = 'test'::"text") AND ("backend" = 'web'::"text")))),
     CONSTRAINT "session_scope_binding" CHECK (((("scope" = 'task'::"text") AND ("project_id" IS NOT NULL) AND ("task_id" IS NOT NULL) AND ("claim_id" IS NOT NULL) AND ("test_execution_id" IS NULL)) OR (("scope" = 'test'::"text") AND ("project_id" IS NULL) AND ("task_id" IS NULL) AND ("claim_id" IS NULL) AND ("test_execution_id" IS NOT NULL)))),
     CONSTRAINT "task_sessions_backend_check" CHECK (("backend" = ANY (ARRAY['web'::"text", 'herdr'::"text"]))),
-    CONSTRAINT "task_sessions_history_content_policy_check" CHECK (("history_content_policy" = ANY (ARRAY['legacy'::"text", 'task_body'::"text"])))
+    CONSTRAINT "task_sessions_history_content_policy_check" CHECK (("history_content_policy" = ANY (ARRAY['legacy'::"text", 'task_body'::"text"]))),
+    CONSTRAINT "task_sessions_source_recovery_count_check" CHECK ((("source_recovery_count" >= 0) AND ("source_recovery_count" <= 4096)))
 );
 
 CREATE TABLE "task_tags" (
@@ -1224,6 +1224,7 @@ CREATE TABLE "teams" (
     "version" bigint DEFAULT 1 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "allow_nested_subtask" boolean DEFAULT false NOT NULL,
     CONSTRAINT "teams_check" CHECK (((("personal_user_id" IS NOT NULL) AND ("name" IS NULL)) OR (("personal_user_id" IS NULL) AND ("name" IS NOT NULL)))),
     CONSTRAINT "teams_version_check" CHECK (("version" > 0))
 );
@@ -1984,11 +1985,11 @@ ALTER TABLE ONLY "session_resource_state"
 ALTER TABLE ONLY "session_resources"
     ADD CONSTRAINT "session_resources_pkey" PRIMARY KEY ("session_id", "resource_id");
 
-ALTER TABLE ONLY "session_source_recoveries"
-    ADD CONSTRAINT "session_source_recoveries_pkey" PRIMARY KEY ("session_id", "recovery_id");
-
 ALTER TABLE ONLY "session_source_hashes"
     ADD CONSTRAINT "session_source_hashes_pkey" PRIMARY KEY ("session_id", "source_epoch", "kind", "identity");
+
+ALTER TABLE ONLY "session_source_recoveries"
+    ADD CONSTRAINT "session_source_recoveries_pkey" PRIMARY KEY ("session_id", "recovery_id");
 
 ALTER TABLE ONLY "session_timeline"
     ADD CONSTRAINT "session_timeline_pkey" PRIMARY KEY ("session_id", "entry_id");

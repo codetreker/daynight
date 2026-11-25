@@ -111,6 +111,8 @@ type TaskWriteDAO interface {
 	TaskForDeletion(context.Context, string, bool) (model.Task, error)
 	// ParentTask reads under the Project write lock without acquiring a parent row lock.
 	ParentTask(context.Context, string) (model.Task, error)
+	// NestedSubtasksAllowed reads the owning Team policy under the Project write lock.
+	NestedSubtasksAllowed(context.Context) (bool, error)
 	GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TasksByID(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDs(context.Context, []string) ([]string, error)

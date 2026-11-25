@@ -2,6 +2,12 @@
 
 普通父子关系的读取投影和祖先领取规则见[父项读取设计](daynight-task-parent-reads.md)。`tasks.parent_id` 保存真实直属父项；服务内部通过 `CreateTask.ParentTaskID` 区分普通父项与既有 Goal 父项。普通父项必须属于同一项目、可见且未结束，只有新建 Task 可以指定它。已有普通父边不能移出或改挂，普通根与 Goal 的既有归属操作保持不变。
 
+## Team 嵌套策略
+
+Team 的 `allowNestedSubtask` 默认关闭。独立 settings API 的权限、版本和失败合同由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。共享创建准入先验证普通父项；只有父项自身已有普通父项时，在持有 Project 写锁的事务中通过 `project_ownership` 和 Team 主键读取当前所属 Team 设置。关闭返回 `invalid_input` 和 `Nested subtasks are disabled for this Team.`；存储失败如实传播。一级普通子任务和 Goal 直属 Task 的子任务不受限制。关闭或项目转移不修改历史关系，后续创建按当前所属 Team 判断。
+
+该读取使用 READ COMMITTED 语句快照，不锁 Team 行；并发保存以读取语句开始时已提交的设置为准。Project 锁与转移共享，保证读取归属与创建的顺序。升级时先暂停写入口并排空旧 Server 写入，执行迁移并启动全部新 writer，核对版本及迁移账本后恢复写流量。旧 Server 不重新检查迁移账本，混跑会绕过策略。回退使用能读精确账本且保持策略的 Server；恢复旧 Server 必须同时恢复配对数据库与附件。
+
 ## REST 与 MCP 写入
 
 `POST /api/v1/projects/{projectId}/tasks` 和 `task_create` 接受可选非空 UUID `parentTaskId`，与非空 Goal `parentId` 互斥；Goal 不能指定普通父项。解析后交给共享服务，使用既有 `task:write`、`task:dependencies` 及所选状态、指派要求。`PATCH` 和 `task_update` 不接受 `parentTaskId`；既有 `parentId` 输入继续交给服务检查普通父边不可变，不能借 null 清空该边。

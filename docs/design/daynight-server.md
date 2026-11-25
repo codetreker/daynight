@@ -428,6 +428,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 |---|---|
 | `GET/POST /api/v1/teams` | 本人成员资格分页；原子创建普通 Team 和创建者 admin |
 | `GET/PATCH/DELETE /api/v1/teams/{teamId}` | 读取本人关系，按元数据版本改名或核对名称后删除空 Team |
+| `GET/PATCH /api/v1/teams/{teamId}/settings` | 成员读取、admin 按元数据版本保存嵌套子任务策略 |
 | `POST /api/v1/projects` | 创建 project |
 | `GET /api/v1/projects` | 分页列出 project |
 | `GET /api/v1/projects/{projectId}` | 获取 project |

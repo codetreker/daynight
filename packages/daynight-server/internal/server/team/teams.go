@@ -18,6 +18,8 @@ import (
 type TeamOperations interface {
 	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
 	Get(context.Context, model.Principal, string) (model.Team, error)
+	GetSettings(context.Context, model.Principal, string) (coreteam.Settings, error)
+	UpdateSettings(context.Context, model.Principal, string, coreteam.ChangeSettings) (coreteam.Settings, error)
 	List(context.Context, model.Principal, model.PageRequest) (coreteam.TeamPage, error)
 	SearchMemberCandidates(context.Context, model.Principal, string, coreteam.CandidateSearchInput) (coreteam.CandidatePage, error)
 	Rename(context.Context, model.Principal, string, coreteam.ChangeTeam) (model.Team, error)
@@ -48,6 +50,9 @@ func RegisterRoutes(mux httpx.RouteRegistrar, teams TeamOperations, auth *authht
 	mux.HandleFunc("GET /api/v1/teams/{teamId}", auth.Require(h.get))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}", auth.Require(h.rename))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}", auth.Require(h.remove))
+	mux.HandleFunc("GET /api/v1/teams/{teamId}/settings", auth.Require(h.getSettings))
+	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/settings", auth.Require(h.updateSettings))
+	mux.HandleFunc("/api/v1/teams/{teamId}/settings", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH")))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/members", auth.Require(h.listMembers))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/member-candidates/search", auth.Require(h.searchMemberCandidates))
 	mux.HandleFunc("/api/v1/teams/{teamId}/member-candidates/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))

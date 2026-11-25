@@ -58,6 +58,54 @@ func TestOrdinaryCreationIntentAndParentAdmission(t *testing.T) {
 	faultCode(t, err, "invalid_input")
 }
 
+type nestedPolicyDAO struct {
+	ordinaryDAO
+	allowed bool
+	err     error
+	calls   int
+}
+
+func (d *nestedPolicyDAO) NestedSubtasksAllowed(context.Context) (bool, error) {
+	d.calls++
+	return d.allowed, d.err
+}
+
+func TestNestedCreationPolicy(t *testing.T) {
+	failure := errors.New("policy read failed")
+	for _, tc := range []struct {
+		name      string
+		parent    model.Task
+		allowed   bool
+		err       error
+		wantFault string
+		wantErr   error
+		calls     int
+	}{
+		{name: "first level", parent: model.Task{Type: model.TaskTypeTask, Status: model.TaskTodo}},
+		{name: "goal member", parent: model.Task{Type: model.TaskTypeTask, Status: model.TaskTodo, ParentType: model.TaskTypeGoal}},
+		{name: "disabled", parent: model.Task{Type: model.TaskTypeTask, Status: model.TaskTodo, ParentType: model.TaskTypeTask}, wantFault: "invalid_input", calls: 1},
+		{name: "enabled", parent: model.Task{Type: model.TaskTypeTask, Status: model.TaskTodo, ParentType: model.TaskTypeTask}, allowed: true, calls: 1},
+		{name: "storage failure", parent: model.Task{Type: model.TaskTypeTask, Status: model.TaskTodo, ParentType: model.TaskTypeTask}, err: failure, wantErr: failure, calls: 1},
+		{name: "terminal first", parent: model.Task{ID: goalID, Type: model.TaskTypeTask, Status: model.TaskDone, ParentType: model.TaskTypeTask}, wantFault: "task_parent_terminal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dao := &nestedPolicyDAO{ordinaryDAO: ordinaryDAO{parent: tc.parent}, allowed: tc.allowed, err: tc.err}
+			err := validateCreationParent(t.Context(), dao, ptr(goalID), true)
+			if tc.wantFault != "" {
+				fault := faultCode(t, err, tc.wantFault)
+				if tc.name == "disabled" && fault.Message != "Nested subtasks are disabled for this Team." {
+					t.Fatalf("message: %s", fault.Message)
+				}
+			} else if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error: %v", err)
+			}
+			if dao.calls != tc.calls {
+				t.Fatalf("policy calls = %d, want %d", dao.calls, tc.calls)
+			}
+		})
+	}
+}
+
 func TestOrdinaryParentCannotChange(t *testing.T) {
 	current := model.Task{ID: childID, Type: model.TaskTypeTask, Title: "child", ParentID: ptr(goalID), ParentType: model.TaskTypeTask, Status: model.TaskTodo, Version: 1, Properties: model.TaskProperties{}}
 	dao := &ordinaryDAO{current: current}

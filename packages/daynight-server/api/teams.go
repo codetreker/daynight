@@ -24,6 +24,11 @@ type TeamPage struct {
 	NextCursor *string `json:"nextCursor"`
 }
 
+type TeamSettings struct {
+	Version            int64 `json:"version"`
+	AllowNestedSubtask bool  `json:"allowNestedSubtask"`
+}
+
 type CreateTeamRequest struct {
 	Name           string `json:"name"`
 	ExpectedUserID string `json:"expectedUserId"`

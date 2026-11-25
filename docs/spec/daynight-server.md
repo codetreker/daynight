@@ -181,7 +181,7 @@ proposed/todo/cancelled 可有未满足前置，in_progress/done 的前置必须
 ## 状态与更新规则
 
 新建 task 和数据库默认值均为 `proposed`，初始版本为1，执行起止和取消时间均为null，`allowAgents=false`。
-创建接受 `title`、可选 `type`、`parentId`、`parentTaskId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo`、`tagIds` 和 `properties`；普通父项创建及不可改挂约束见[父子写入设计](../design/daynight-task-parent-writes.md)。
+创建接受 `title`、可选 `type`、`parentId`、`parentTaskId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo`、`tagIds` 和 `properties`；普通父项创建受当前所属 Team 嵌套设置约束，历史关系保留；创建及不可改挂约束见[父子写入设计](../design/daynight-task-parent-writes.md)。
 status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents 和执行时间。内部已确认的多步任务可显式创建 todo。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
 任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。字段、依赖和属性写入额度及完整 Task 成功响应预算见[输入与资源额度](daynight-api-input-limits.md)；确定的容量拒绝在提交前回滚。提交后发送失败不得表述为确定未写入。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
@@ -248,6 +248,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/teams` | 按本人成员资格返回 Team 分页 |
 | `GET` | `/api/v1/teams/{teamId}` | 返回 Team 与本人真实成员关系，不可见时 `404` |
 | `PATCH` | `/api/v1/teams/{teamId}` | 当前 admin 按元数据 version 保存原文名称，返回 `200` 和 Team |
+| `GET/PATCH` | `/api/v1/teams/{teamId}/settings` | 当前成员读取、admin 按版本保存嵌套子任务设置 |
 | `DELETE` | `/api/v1/teams/{teamId}` | 当前 admin 核对 version/name，原子删除空普通 Team，返回 `200` 和有限回执 |
 | `POST` | `/api/v1/projects` | 创建 project，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects` | 返回 project 分页列表 |

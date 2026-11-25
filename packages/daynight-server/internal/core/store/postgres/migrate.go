@@ -99,6 +99,9 @@ var botHistoryWindowsSQL string
 //go:embed schema/migrations/129_task_sync_deletions.sql
 var taskSyncDeletionsSQL string
 
+//go:embed schema/migrations/130_team_nested_subtasks.sql
+var teamNestedSubtasksSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -138,6 +141,7 @@ var schemaMigrations = []migration{
 	{version: 127, sql: sourceRecoverySQL},
 	{version: 128, sql: botHistoryWindowsSQL},
 	{version: 129, sql: taskSyncDeletionsSQL},
+	{version: 130, sql: teamNestedSubtasksSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

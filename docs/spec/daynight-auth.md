@@ -255,6 +255,8 @@ Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验
 | `POST /api/v1/teams` | `name,expectedUserId` | `201`，新普通 Team 与创建者 admin 成员关系；`Location` 指向新 Team |
 | `GET /api/v1/teams/{teamId}` | 当前 Team member/admin | `200`，Team 元数据与本人真实成员关系 |
 | `PATCH /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，保存后的 Team 与本人真实成员关系 |
+| `GET /api/v1/teams/{teamId}/settings` | 当前 Team 成员，`team:read` | `200`，`{version,allowNestedSubtask}` |
+| `PATCH /api/v1/teams/{teamId}/settings` | 当前 admin，`team:read` 与 `team:write`；`version,expectedUserId,allowNestedSubtask` | `200`，保存后的设置 |
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
 | `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
@@ -276,6 +278,8 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 允许重名，且同时不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes。通用请求大小限制保持。
 创建或真实改名时的超限名称、未知、重复、缺失、null、错误类型字段、非法 Unicode 转义、非规范 UUID，以及非正或越界版本
 返回 `400 invalid_input`；名称拒绝不改变 Team、成员关系或版本。
+
+Team 设置的 `allowNestedSubtask` 是严格布尔值，既有与新建 Team 默认均为 false。Personal Team 的 owner 可以配置；仅有 Project 授权的用户不能读取或修改。保存先核对身份、当前 admin 和精确元数据版本，再比较设置值；同值保留版本，改变值使版本加一。过期版本返回 `version_conflict`，最大版本的真实变更返回 `version_exhausted`。未知、重复、缺失、null 或类型错误的字段均被拒绝。提交结果未知时只能通过独立 GET 核对当前事实，不自动重放。该设置不改变其他 Team 响应。
 
 所有 Team 管理写入在任何领域 SQL 前核对 expectedUserId 与实际 principal；错主体返回
 `409 identity_mismatch`，Team、成员和 ownership 行及版本均不变。读取权不包含管理权，

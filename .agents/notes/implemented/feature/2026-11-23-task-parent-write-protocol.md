@@ -20,7 +20,7 @@ false are restricted to ordinary cancelled requests before same-status handling.
 Shared service transactions implement the lifecycle; protocol adapters do not
 walk or mutate the subtree. This exposes the
 [parent lifecycle decision](../architecture/2026-11-23-task-parent-lifecycle.md)
-through public inputs without changing default read representations.
+through public inputs without changing default read representations. The [Team policy](2026-11-25-team-nested-subtask-policy.md) now gates new deeper ordinary parent edges.
 
 The CLI selects the extended relation view and exposes ordinary parent creation
 and direct filtering separately from the existing Goal `--parent` option. Its

@@ -161,6 +161,8 @@ Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admi
 version 后才接受相同原文，即使存量名称超出新额度；真实改名前检查名称额度。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
+独立 Team settings 路径读取同一元数据版本和 `allowNestedSubtask`，不扩展原 Team DTO。读取在成员快照中执行，修改在既有 Team 写锁下重验真实成员、权限和版本；同值不写入，变更复用元数据版本与更新时间。Personal owner 允许修改此设置。Project 创建准入读取当前所属 Team 的策略，事务和发布顺序见[普通父子写入设计](daynight-task-parent-writes.md)。
+
 成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
 错误而不是静默丢弃。成员管理沿用 Team 排他锁，锁内重新读取操作者和目标的真实关系，先
 比较目标 version，再决定是否同角色 no-op。降低或移除 admin 时在同一锁内计数，保证并发

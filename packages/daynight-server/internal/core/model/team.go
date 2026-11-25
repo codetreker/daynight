@@ -13,10 +13,11 @@ type TeamMember struct {
 
 type Team struct {
 	TeamRef
-	Version    int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	Membership TeamMember
+	Version            int64
+	AllowNestedSubtask bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Membership         TeamMember
 }
 
 type TeamInvitation struct {

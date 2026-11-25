@@ -339,6 +339,15 @@ func validateCreationParent(ctx context.Context, dao store.TaskWriteDAO, parentI
 	if parent.Status.IsTerminal() {
 		return &model.Fault{Code: "task_parent_terminal", Message: "The parent task has ended.", TaskIDs: []string{parent.ID}}
 	}
+	if parent.ParentType == model.TaskTypeTask {
+		allowed, err := dao.NestedSubtasksAllowed(ctx)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return invalidInput("Nested subtasks are disabled for this Team.")
+		}
+	}
 	return nil
 }
 

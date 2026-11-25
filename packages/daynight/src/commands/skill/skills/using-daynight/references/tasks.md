@@ -46,7 +46,9 @@ dependencies, status, assignee and materials; changing it does not move material
 Existing Tasks and their materials are not migrated into Goals automatically.
 
 Create, list, search and ready also accept `--parent-task <task-id>` for a
-direct ordinary Task parent; it conflicts with `--parent`. Ordinary parentage is
+direct ordinary Task parent; it conflicts with `--parent`. A Team's `allowNestedSubtask` setting defaults to false: creating a child of an
+ordinary child is rejected until the owning Team admin enables it. Existing trees
+remain available when disabled or after a Project transfer. Ordinary parentage is
 fixed at creation and cannot be changed through update. A parent must be visible,
 in the same Project and nonterminal. Parentage does not create a dependency or
 automatically start or complete the parent. Use `--all` on list to include done
