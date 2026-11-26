@@ -30,12 +30,13 @@ func ScopedFromEnvironment(database store.UsageStore, current ProducerAuthorizat
 	return NewScoped(database, options, current)
 }
 func environmentOptions(lookup func(string) (string, bool)) (Options, bool, error) {
-	var options Options
+	options := Options{WriteEnabled: true}
 	if raw, present := lookup("DAYNIGHT_USAGE_WRITE_ENABLED"); present {
 		switch raw {
 		case "true":
 			options.WriteEnabled = true
 		case "false":
+			options.WriteEnabled = false
 		default:
 			return options, false, configurationError("DAYNIGHT_USAGE_WRITE_ENABLED", "must be exactly true or false")
 		}
@@ -54,7 +55,7 @@ func qualificationEntries(entries []string) (map[string]bool, error) {
 		id, version, ok := strings.Cut(entry, "@")
 		known := false
 		for _, p := range core.Profiles() {
-			known = known || p.ID == id && (p.Provider != "codex" || p.ID == "codex-response-0.169.0-v1" && version == "0.169.0")
+			known = known || p.ID == id && (p.Provider != "codex" || p.ID == "codex-response-0.169.0-v1")
 		}
 		if !ok || !known || !core.Text(version, 128) || strings.TrimSpace(version) != version || strings.ContainsAny(version, ",@") || seen[entry] {
 			return nil, configurationError("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "must contain unique supported profileId@providerVersion pairs separated by commas")

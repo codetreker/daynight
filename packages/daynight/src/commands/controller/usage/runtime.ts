@@ -24,7 +24,7 @@ export const createUsageRuntime = (options: UsageUploaderOptions & { generation:
     }
   };
   const ready = (input: { nativeSessionId: string; providerVersion: string }) => safe(() => {
-    if (current?.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) current = store.ensureState(options.generation, input.nativeSessionId, input.providerVersion, provider, provider === "codex" && input.providerVersion === "0.169.0" ? "codex-response-0.169.0-v1" : undefined);
+    if (current?.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) current = store.ensureState(options.generation, input.nativeSessionId, input.providerVersion, provider, provider === "codex" ? "codex-response-0.169.0-v1" : undefined);
     for (const reason of usageProfileReasons(provider, current.profileId)) pendingReasons.add(reason);
     for (const reason of pendingReasons) store.gap(current.stateId, reason);
   });

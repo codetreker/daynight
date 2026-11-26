@@ -120,7 +120,7 @@ test("Linux, Windows and macOS share independent ordinary and installed CLI matr
     assert.ok(stage.includes("run: pnpm build"));
     assert.doesNotMatch(stage, /VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error/);
   }
-  assert.ok(ordinary.includes("    timeout-minutes: ${{ matrix.os == 'macos-15' && 20 || 10 }}"));
+  assert.ok(ordinary.includes("    timeout-minutes: ${{ matrix.os == 'macos-15' && 20 || matrix.os == 'ubuntu-latest' && 12 || 10 }}"));
   assert.match(installed, /^    timeout-minutes: 10$/m);
 });
 

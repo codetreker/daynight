@@ -61,7 +61,8 @@ Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
 and records its own outcome. The ordinary jobs also typecheck and test the local
 development installer. Both native matrices include `ubuntu-latest`,
 `windows-latest` and `macos-15`. The ordinary macOS job has a 20-minute limit.
-The other ordinary jobs and all installed CLI jobs have 10-minute limits.
+The ordinary Ubuntu job has a 12-minute limit; Windows ordinary jobs and all
+installed CLI jobs have 10-minute limits.
 Windows ordinary tests use two independent runners with Vitest's built-in
 `--shard=1/2` and `--shard=2/2`. Their execution sets together cover the complete
 ordinary collection. Each Windows runner uses the same preparation and source

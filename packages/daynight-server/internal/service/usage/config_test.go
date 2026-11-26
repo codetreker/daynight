@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func lookup(values map[string]string) func(string) (string, bool) {
 
 func TestUsageConfigurationRequiresNoCursorKey(t *testing.T) {
 	options, enabled, err := environmentOptions(lookup(nil))
-	if err != nil || !enabled || options.WriteEnabled || len(options.QualifiedProfiles) != 0 {
+	if err != nil || !enabled || !options.WriteEnabled || len(options.QualifiedProfiles) != 0 {
 		t.Fatal(options, enabled, err)
 	}
 	options, enabled, err = environmentOptions(lookup(map[string]string{
@@ -91,43 +92,122 @@ func TestFromEnvironmentCreatesUsageWithoutKeys(t *testing.T) {
 	}
 }
 
-func TestCodexQualificationRequiresThePinnedResponseProfileAndVersion(t *testing.T) {
-	entry := "codex-response-0.169.0-v1@0.169.0"
-	service, err := New(nil, Options{WriteEnabled: true, QualifiedProfiles: []string{entry}})
-	if err != nil {
-		t.Fatal(err)
+func TestEnvironmentWriteDefaultAndExplicitOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   string
+		present bool
+		want    bool
+	}{
+		{name: "unset", want: true},
+		{name: "enabled", value: "true", present: true, want: true},
+		{name: "disabled", value: "false", present: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", tc.value)
+			if !tc.present {
+				if err := os.Unsetenv("DAYNIGHT_USAGE_WRITE_ENABLED"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+			service, err := FromEnvironment(nil)
+			if err != nil || service == nil || service.Capabilities()["writeEnabled"] != tc.want {
+				t.Fatalf("environment write setting: service=%v error=%v", service, err)
+			}
+			if !tc.want {
+				code(t, service.write(t.Context(), func(store.UsageScope) error {
+					t.Fatal("disabled write invoked callback")
+					return nil
+				}), "write_disabled")
+			}
+			service, err = ScopedFromEnvironment(nil, func(context.Context, store.UsageScope, model.Principal, time.Time, bool) (model.CredentialAuthorization, error) {
+				t.Fatal("construction invoked producer authorization")
+				return model.CredentialAuthorization{}, nil
+			})
+			if err != nil || service == nil || service.Capabilities()["writeEnabled"] != tc.want {
+				t.Fatalf("scoped environment write setting: service=%v error=%v", service, err)
+			}
+		})
 	}
-	p, err := service.profile("codex-response-0.169.0-v1", "codex", "0.169.0")
-	if err != nil || p.Capability.Qualification != "verified" {
-		t.Fatal("pinned response profile was not qualified", p, err)
-	}
-	p, err = service.profile("codex-response-0.169.0-v1", "codex", "0.169.1")
-	if err != nil || p.Capability.Qualification != "unverified" {
-		t.Fatal("qualification leaked to another version", p, err)
-	}
-	p, err = service.profile("codex-snapshot-unaccountable-v1", "codex", "0.169.0")
-	if err != nil || p.Capability.Qualification != "unsupported" {
-		t.Fatal("qualification upgraded legacy snapshots", p, err)
+}
+
+func TestCodexResponseQualificationIsIndependentOfProviderVersion(t *testing.T) {
+	for _, entries := range [][]string{
+		nil,
+		{"codex-response-0.169.0-v1@0.169.0"},
+		{"codex-response-0.169.0-v1@0.169.1", "codex-response-0.169.0-v1@unknown", "codex-response-0.169.0-v1@0.169.0-beta"},
+	} {
+		service, err := New(nil, Options{QualifiedProfiles: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, version := range []string{"", "0.169.0", "0.169.1", "unknown", "0.169.0-beta"} {
+			p, err := service.profile("codex-response-0.169.0-v1", "codex", version)
+			if err != nil || p.Capability.Qualification != "verified" {
+				t.Fatal("response profile was not automatically qualified", entries, version, p, err)
+			}
+			p, err = service.profile("codex-snapshot-unaccountable-v1", "codex", version)
+			if err != nil || p.Capability.Qualification != "unsupported" {
+				t.Fatal("qualification upgraded legacy snapshots", p, err)
+			}
+		}
+		if _, err := service.profile("codex-response-0.169.0-v1", "copilot", "0.169.0"); err == nil {
+			t.Fatal("response profile accepted a different provider")
+		}
+		profiles := service.Capabilities()["profiles"].([]profileAdvertisement)
+		found := false
+		for _, advertised := range profiles {
+			if advertised.ID == "codex-snapshot-unaccountable-v1" && (advertised.Capability.Qualification != "unsupported" || len(advertised.QualifiedVersions) != 0) {
+				t.Fatal("advertised qualification upgraded legacy snapshots", advertised)
+			}
+			if advertised.ID != "codex-response-0.169.0-v1" {
+				continue
+			}
+			found = true
+			if advertised.Capability.Qualification != "verified" || len(advertised.QualifiedVersions) != len(entries) {
+				t.Fatal("response profile did not advertise base verified capability", advertised)
+			}
+			for _, qualified := range advertised.QualifiedVersions {
+				if qualified.Capability.Qualification != "verified" {
+					t.Fatal("configured response version was not verified", qualified)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("response profile was omitted from capabilities")
+		}
 	}
 	for _, invalid := range []string{
-		"codex-response-0.169.0-v1@0.169.1", "codex-response-0.169.0-v1@unknown", "codex-response-0.169.0-v1@0.169.0-beta",
 		"codex-snapshot-unaccountable-v1@0.169.0", "codex-response-0.169.0-v1@ 0.169.0",
+		"codex-response-0.169.0-v1@", "codex-response-0.169.0-v1@0.169.0@extra",
 	} {
 		if _, err := New(nil, Options{QualifiedProfiles: []string{invalid}}); err == nil {
 			t.Fatalf("invalid Codex qualification accepted: %s", invalid)
 		}
 	}
-	profiles := service.Capabilities()["profiles"].([]profileAdvertisement)
-	found := false
-	for _, advertised := range profiles {
-		if advertised.ID == "codex-response-0.169.0-v1" {
-			found = true
-			if advertised.Capability.Qualification != "unverified" || len(advertised.QualifiedVersions) != 1 || advertised.QualifiedVersions[0].ProviderVersion != "0.169.0" || advertised.QualifiedVersions[0].Capability.Qualification != "verified" {
-				t.Fatal("advertised qualification changed its version scope", advertised)
+}
+
+func TestOtherProviderQualificationsRemainExact(t *testing.T) {
+	for _, tc := range []struct{ provider, profileID, version string }{
+		{"copilot", "copilot-event-1.0.11-v1", "1.0.11+1.0.105"},
+		{"claude", "claude-message-input-0.3.247-v1", "0.3.247"},
+	} {
+		service := newTestService(t, nil, Options{QualifiedProfiles: []string{tc.profileID + "@" + tc.version}})
+		for _, version := range []string{tc.version, tc.version + "-other", ""} {
+			want := "unverified"
+			if version == tc.version {
+				want = "verified"
+			}
+			p, err := service.profile(tc.profileID, tc.provider, version)
+			if err != nil || p.Capability.Qualification != want {
+				t.Fatal("other provider qualification changed its version scope", p, err)
 			}
 		}
-	}
-	if !found {
-		t.Fatal("response profile was omitted from capabilities")
+		for _, advertised := range service.Capabilities()["profiles"].([]profileAdvertisement) {
+			if advertised.ID == tc.profileID && (advertised.Capability.Qualification != "unverified" || len(advertised.QualifiedVersions) != 1 || advertised.QualifiedVersions[0].ProviderVersion != tc.version || advertised.QualifiedVersions[0].Capability.Qualification != "verified") {
+				t.Fatal("other provider advertisement changed its version scope", advertised)
+			}
+		}
 	}
 }

@@ -118,8 +118,15 @@ The uploader selects the fixed profile by that identity and the state's admitted
 profile. The original Codex snapshot profile registers unsupported coverage;
 stopped replay preserves this result instead of treating absent tokens as failure.
 The [response usage decision](../feature/2026-11-23-codex-response-token-usage.md)
-adds a separate evidenced Codex 0.169.0 plane, retaining old state semantics.
-Unverified handshakes do not acquire a supported-version capability.
+adds a separate response plane originally tested on Codex 0.169.0, retaining old
+state semantics. The
+[version admission decision](../simplification/2026-11-25-usage-default-enabled-codex-version-admission.md)
+enables usage writes by default in environment assembly and removes the Codex
+exact binary gate and per-version deployment requirement. New response states
+use the actual valid semver handshake and matching rollout metadata; missing or
+invalid versions cannot establish their identity. The original tested version
+remains evidence for that runtime, not E2E certification of later versions.
+Other providers retain exact deployment qualification.
 
 Claude admits immutable root-message input only when the actual SDK, CLI and
 Anthropic backend are known, retaining that combination in providerVersion.

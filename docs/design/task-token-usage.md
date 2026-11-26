@@ -95,12 +95,19 @@ seal 只代表原生停止并排空采集，不等同 Task done。
 
 ## 运行配置
 
-写开关 `DAYNIGHT_USAGE_WRITE_ENABLED` 默认 false，仅接受精确的 `true|false`。
+服务环境未设置 `DAYNIGHT_USAGE_WRITE_ENABLED` 时默认 true，仅接受精确的
+`true|false`；显式 false 关闭写入，账本、迁移和读取继续保留。此默认由环境装配
+负责，显式构造 service 的 `Options.WriteEnabled=false` 仍关闭写入。
 `DAYNIGHT_USAGE_QUALIFIED_PROFILES` 是逗号分隔且不重复的
-`profileId@providerVersion`，只允许支持的生产 profile；没有资格证据时保持未验证，
-不能仅因打开写开关就宣称真实 Provider 合格。
-能力接口的 `profiles[].qualifiedVersions` 列出精确版本及其 capability；
-基准 capability 与未列出的版本仍未验证，登记和能力协商使用相同版本判定。
+`profileId@providerVersion`，只允许支持的生产 profile。Copilot、Claude 等其他
+Provider 仍需部署配置精确资格；打开写开关不能替代其资格验证。
+
+服务端对 `codex-response-0.169.0-v1` 自动授予既有响应平面的资格，登记使用客户端
+实际取得的 `providerVersion`，不要求逐版本配置。能力接口对该 profile 公布具有资格
+的基准 capability；`profiles[].qualifiedVersions` 仍列出显式配置的版本及其能力，
+不是 Codex 响应 profile 的版本允许名单。其他 Provider 的基准 capability 与未列版本
+仍未验证，旧 Codex snapshot profile 仍为 unsupported。自动资格不表示所有版本已获
+真实 E2E 验证，也不放宽核心字段、指标和来源身份检查。
 
 用量路由在装配成功后挂载，不需要分页密钥或 S2S shared key。写入开关和
 Provider 资格配置仍须有效；S2S 认证和上报授权独立于分页。
@@ -217,8 +224,10 @@ Controller journal 格式 014 包含独立的 `usage_sources`、`usage_outbox` �
 不使原生任务失败；未成功持久化的事件不能宣称已经接收。
 
 上传器使用独立 HTTP 请求，能力和注册使用原服务的 PAT，batch 只用该 state 的
-usage grant。只有 `qualifiedVersions` 精确匹配时才发送 measurement；未验证版本
-保留本地计量，只上报 unavailable/profile_unverified 状态。未发送 measurement
+usage grant。Copilot、Claude 等其他 Provider 只有 `qualifiedVersions` 精确匹配时
+才发送 measurement；Codex 响应 profile 使用服务公布的具有资格的基准 capability，
+并保留实际握手版本，无需在该列表逐版本匹配。未验证的组合保留本地计量，只上报
+unavailable/profile_unverified 状态。未发送 measurement
 不能阻挡这种状态事件。execution_state 的完整 capability 必须匹配本次服务能力；
 资格或其他能力字段变化后，旧状态仅从本次批次中过滤，不改写正文/hash、
 不持久隔离或伪造 ACK，也不阻挡当前允许的 measurement 独立上传与 ACK。
@@ -257,16 +266,19 @@ Codex 与 Copilot 使用同一 journal、上传器和 stopped 补传机制。sta
 上传器按 state 中固定的 profile/provider 选择能力，并核对注册回执；旧 state 缺少
 profileId 时使用其历史 Provider profile，不因 CLI 升级改写计量口径。
 
-Codex 从实际 App Server initialize 回执的 `daynight/<version>` userAgent 读取版本，
-只准入已核实的 0.169.0/0.169.1；版本未核实不冒充原生 unsupported。
-新 `0.169.0` state 登记 `codex-response-0.169.0-v1`，其余已核实版本和旧 state
-保留 `codex-snapshot-unaccountable-v1`。新线程通过 experimentalRawEvents 接收
+Codex 从实际 App Server initialize 回执的 `daynight/<version>` userAgent 读取有效
+semver，包括合法预发布与构建元数据；不以精确二进制版本名单过滤，也不将完整版本
+改写为 `0.169.0`。未知或非法握手版本不能建立响应计量身份，原生执行继续。
+新 state 登记 `codex-response-0.169.0-v1`；该 ID 的版本段是历史数据合同名称。
+旧 `codex-snapshot-unaccountable-v1` state 保留 unsupported，恢复和 CLI 升级均不
+改写旧 state 的 profile。新线程通过 experimentalRawEvents 接收
 rawResponse/completed，冷恢复保持原 thread/resume，不能另建线程获取通知。
 responseId 与 threadId 的固定摘要映射到 immutable 来源；通知与 rollout 的单响应
 指标共用映射器。cache/reasoning 的默认零值缺少可观测性，不提升为已知零；模型未知。
 
 CodexUsageRollout 只读取启动或恢复回执 thread.path 指向的物理 regular file，
-核对原 session_meta 的版本、原生身份、cwd 和非 fork/子线程来源，拒绝链接、文件替换
+核对原 session_meta 的 `cli_version` 与本次 initialize 回执的完整真实版本精确一致，
+并核对原生身份、cwd 和非 fork/子线程来源；不与固定 `0.169.0` 比较。拒绝链接、文件替换
 和截断。按有界 buffer/单行/时间增量读完整 JSONL 行，不保存 transcript；末尾半行
 留给原 writer 完成。仅 token_usage_record.usage 入计量，累计与上下文事件不计。
 turn/started 先将原 turn→state 写入 journal，再接收响应；恢复保留原归属，未绑定
@@ -351,8 +363,10 @@ backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒�
 
 ## 兼容与回退
 
-写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的
-Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只有精确匹配资格配置的 0.169.0 response profile 提供部分覆盖，其余版本与旧 snapshot profile 报告不支持。
+服务环境的写入开关默认启用，显式 false 可关闭；只读能力与旧 Task/Session 协议独立。
+Copilot/Claude 等其他 Provider 未匹配部署精确资格时不准入 counted，合格组合也仅提供
+已证明的部分平面。Codex 新 state 在有效 semver 握手后使用自动资格的响应 profile，
+计量仍须满足原生字段与身份校验且最多 partial；旧 snapshot state 继续报告不支持。
 关闭新能力不停止原生执行、不修改旧累计 ACK，也不删除账本。
 
 迁移与 schema snapshot 同步维护，既有历史迁移不可改写。

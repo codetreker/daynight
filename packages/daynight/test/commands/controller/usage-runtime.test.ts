@@ -11,14 +11,14 @@ const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { try { for (const close of cleanups.splice(0).reverse()) await close(); } finally { vi.useRealTimers(); } });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
 
-const fixture = async (verified = true, provider: "copilot" | "codex" | "claude" = "copilot", codexResponses = false) => {
+const fixture = async (verified = true, provider: "copilot" | "codex" | "claude" = "copilot", codexResponses = false, codexVersion = "0.169.0", baseQualified = false) => {
   const profile = provider === "copilot" ? capability : provider === "claude" ? { ...capability, profileId: "claude-message-input-0.3.247-v1", measurementPlane: "root_message_input", recovery: "native_history_partial", subagents: "unknown" } : codexResponses ? { ...capability, profileId: "codex-response-0.169.0-v1", recovery: "native_history_partial", subagents: "unknown" } : { ...capability, profileId: "codex-snapshot-unaccountable-v1", qualification: "unsupported", measurementPlane: "none", revisionAuthority: "none", completion: "unsupported", recovery: "unsupported" };
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const db = new Database(":memory:"); cleanups.push(() => { db.close(); });
   db.exec(readFileSync(new URL("../../../src/commands/controller/sqlite/journal/014-usage.sql", import.meta.url), "utf8"));
   const store = openUsageStore(db, { read: action => db.transaction(action).deferred(), write: action => db.transaction(action).immediate() });
   const identity = { sessionId: randomUUID(), executionGeneration: "1", controllerInstanceId: randomUUID() };
-  const native = { nativeSessionId: randomUUID(), providerVersion: provider === "copilot" ? "1.0.11/1.0.105" : provider === "claude" ? "0.3.247/2.1.247/anthropic" : codexResponses ? "0.169.0" : "0.169.1" };
+  const native = { nativeSessionId: randomUUID(), providerVersion: provider === "copilot" ? "1.0.11/1.0.105" : provider === "claude" ? "0.3.247/2.1.247/anthropic" : codexVersion };
   const calls: string[] = [], batches: UsagePayload[][] = [];
   let holdBatch = false, release: (() => void) | null = null;
   const json = (response: ServerResponse, body: unknown, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
@@ -30,7 +30,7 @@ const fixture = async (verified = true, provider: "copilot" | "codex" | "claude"
       if (request.url === "/api/usage/v1/capabilities") {
         const unsupported = provider === "codex" && !codexResponses;
         const cap = { ...profile, qualification: unsupported ? "unsupported" : verified ? "verified" : "unverified" };
-        json(response, { protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: profile.profileId, provider, capability: { ...profile, qualification: unsupported ? "unsupported" : "unverified" }, qualifiedVersions: verified ? [{ providerVersion: native.providerVersion, capability: cap }] : [] }] });
+        json(response, { protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: profile.profileId, provider, capability: { ...profile, qualification: unsupported ? "unsupported" : baseQualified ? "verified" : "unverified" }, qualifiedVersions: verified && !baseQualified ? [{ providerVersion: native.providerVersion, capability: cap }] : [] }] });
       } else if (request.method === "GET") json(response, {}, 404);
       else if (request.url === "/api/usage/v1/registrations") {
         const state = store.states()[0]!;
@@ -97,11 +97,14 @@ test("an upload tick finishing during close cannot append collecting after the f
 });
 
 test("Codex reports unsupported coverage without converting snapshots to measurements", async () => {
-  const f = await fixture(false, "codex"); f.runtime.ready(f.native);
+  const f = await fixture(false, "codex");
+  f.store.ensureState("1", f.native.nativeSessionId, f.native.providerVersion, "codex");
+  f.runtime.ready(f.native);
   f.runtime.observe({ ...f.native, event: f.event(900) });
   await f.advance();
   await vi.waitFor(() => expect(f.store.pending(f.store.states()[0]!.stateId)).toHaveLength(1));
   expect(f.store.states()[0]!.provider).toBe("codex");
+  expect(f.store.states()[0]!.profileId).toBeUndefined();
   expect(f.store.pending(f.store.states()[0]!.stateId)[0]!.payload).toMatchObject({ collectionState: "unsupported", reasonCodes: ["provider_unsupported"] });
   await f.runtime.close();
   const events = f.batches.flat();
@@ -109,8 +112,8 @@ test("Codex reports unsupported coverage without converting snapshots to measure
   expect(events.every(event => event.kind === "execution_state")).toBe(true);
 });
 
-test("Codex binds response sources before durable ingress and independently uploads each source once", async () => {
-  const f = await fixture(true, "codex", true); f.runtime.ready(f.native); f.runtime.bindTurn("turn");
+test.each(["0.169.0", "0.170.0", "1.2.3-beta.1+build.2"])("Codex %s uploads each response once using the base qualified contract", async version => {
+  const f = await fixture(true, "codex", true, version, true); f.runtime.ready(f.native); f.runtime.bindTurn("turn");
   const event = { method: "rawResponse/completed", params: { threadId: f.native.nativeSessionId, turnId: "turn", responseId: "response", usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } } };
   f.runtime.observe({ ...f.native, event }); f.runtime.observe({ ...f.native, event });
   const original = f.store.pending(f.store.states()[0]!.stateId, 100, "measurement");
@@ -142,4 +145,18 @@ test("Claude durable ingress keeps known cache facts when native input precision
   await f.runtime.close();
   expect(f.batches.flat().filter(item => item.kind === "measurement")).toHaveLength(1);
   expect(f.batches.flat().find(item => item.seal === true)).toMatchObject({ collectionState: "partial", reasonCodes: expect.arrayContaining(["native_integer_unrepresentable", "subagent_scope_unknown"]) });
+});
+
+
+test("new Codex states retain measurements when an older server has not qualified their contract", async () => {
+  const f = await fixture(false, "codex", true, "0.170.0");
+  f.runtime.ready(f.native); f.runtime.bindTurn("turn");
+  f.runtime.observe({ ...f.native, event: { method: "rawResponse/completed", params: { threadId: f.native.nativeSessionId, turnId: "turn", responseId: "response", usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } } } });
+  await f.advance();
+  await vi.waitFor(() => expect(f.store.pending(f.store.states()[0]!.stateId).some(item => item.payload.kind === "execution_state")).toBe(true));
+  await f.advance();
+  await vi.waitFor(() => expect(f.batches.flat().some(item => item.kind === "execution_state")).toBe(true));
+  expect(f.store.states()[0]!.profileId).toBe("codex-response-0.169.0-v1");
+  expect(f.batches.flat().some(item => item.kind === "measurement")).toBe(false);
+  expect(f.store.pending(f.store.states()[0]!.stateId, 100, "measurement")).toHaveLength(1);
 });

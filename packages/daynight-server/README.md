@@ -87,13 +87,27 @@ execution coverage and native measurements. Usage writes do not update Tasks
 or alter Session acknowledgements. Task, standalone Test, Chain and Goal reads
 preserve exact decimal strings, unknown values and incomplete coverage.
 
-Writes default to disabled. Qualification is an explicit per-profile/provider
-version decision, not a consequence of enabling writes or researching native
-fields. Copilot and Claude expose only their evidenced partial measurement
-planes; Codex remains unsupported. Live Provider collection and UI consumption
-are separate from this backend.
-`profiles[].qualifiedVersions` advertises exact provider versions and their
-capabilities; the baseline capability and unlisted versions remain unverified.
+Environment assembly enables writes when `DAYNIGHT_USAGE_WRITE_ENABLED` is
+unset. Explicit `false` disables writes while preserving the ledger, migrations
+and reads; only exact `true|false` values are accepted. Explicit service
+`Options.WriteEnabled=false` still disables writes.
+
+The service automatically qualifies `codex-response-0.169.0-v1` for a real
+providerVersion without a per-version deployment entry. Its historic ID names
+the response data contract, not an executable version gate. The CLI obtains a
+valid semver from the actual App Server handshake, retains the full version,
+and requires rollout metadata to match it exactly. Native field, metric and
+identity validation remains mandatory, and coverage remains partial. Old
+snapshot states remain unsupported and are not upgraded. Automatic admission
+does not certify E2E coverage for other Codex versions.
+
+Copilot, Claude and other providers retain exact deployment-qualified version
+combinations and their existing measurement planes. Enabling writes does not
+qualify them. `profiles[].qualifiedVersions` advertises configured exact versions
+and capabilities; their baseline capability and unlisted versions remain
+unverified. The Codex response profile advertises a qualified baseline capability
+and does not require its version to appear in that list. Live Provider collection
+and UI consumption are separate from this backend.
 
 Usage routes do not require a pagination key or S2S shared key. Each page is
 authorized again, and unsigned cursors expire after 15 minutes or require a
@@ -1086,8 +1100,8 @@ diagnostics and cause categories.
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_S2S_SHARED_KEY` | Server-only S2S issuer key; empty disables issuance, otherwise 32–256 visible ASCII bytes | Empty (disabled) |
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
-| `DAYNIGHT_USAGE_WRITE_ENABLED` | Permit usage registrations, grant changes and batches; exactly `true` or `false` | `false` |
-| `DAYNIGHT_USAGE_QUALIFIED_PROFILES` | Comma-separated unique supported `profileId@providerVersion` qualification pairs | Empty (unverified) |
+| `DAYNIGHT_USAGE_WRITE_ENABLED` | Permit usage registrations, grant changes and batches; exactly `true` or `false` | `true` |
+| `DAYNIGHT_USAGE_QUALIFIED_PROFILES` | Comma-separated unique supported `profileId@providerVersion` qualification pairs; Codex response qualification is automatic | Empty (other providers unverified) |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |

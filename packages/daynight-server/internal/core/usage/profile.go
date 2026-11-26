@@ -63,7 +63,7 @@ func FindProfile(id, provider string) (Profile, error) {
 	return Profile{}, Fault("profile_unverified")
 }
 
-// Qualify is explicit deployment evidence, never a request-controlled upgrade.
+// Qualify applies service-owned admission policy, never a request-controlled upgrade.
 func Qualify(p Profile, qualified bool) Profile {
 	if qualified && p.Capability.Qualification == "unverified" {
 		p.Capability.Qualification = "verified"

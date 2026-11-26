@@ -11,7 +11,13 @@ while missing response details and child threads must remain explicit gaps.
 ## Decision
 
 The [usage contract](../../../../docs/spec/task-token-usage.md) admits a separate
-Codex 0.169.0 response profile. It hashes the complete thread/response identity
+Codex response profile with the historic ID codex-response-0.169.0-v1.
+0.169.0 was the original tested runtime; exact deployment qualification limited
+initial admission to that evidence. The
+[version admission decision](../simplification/2026-11-25-usage-default-enabled-codex-version-admission.md)
+replaces that version gate with automatic response-profile qualification and
+actual handshake provenance, without claiming E2E validation of later versions.
+The profile hashes the complete thread/response identity
 and counts immutable per-response metrics from opted-in notifications and the
 original thread's validated rollout. Persisted turn attribution retains the
 originating state when recovery reads an old response. Unbound history remains
@@ -21,7 +27,8 @@ owner; exited journals still require their original storage permit to migrate.
 
 This replaces the Codex unsupported-only choice described by the
 [single-table decision](../architecture/2026-11-18-single-table-token-usage.md),
-while retaining its single ledger, independent ACK and qualification rules.
+while retaining its single ledger, independent ACK and other Provider
+qualification rules.
 The old snapshot profile and old states remain unsupported.
 
 ## Alternatives
@@ -45,7 +52,10 @@ opaque identities within ledger field limits. Source deduplication and original
 grants remain authoritative across upload retries and recovery.
 
 Rollout persistence is best-effort; child threads and unbound historical turns
-remain outside coverage. The profile is always partial and requires explicit
-0.169.0 deployment qualification. Unknown models/details remain null. Older CLI
-binaries cannot resume the new journal format; compatible rollback retains the
-format and disables the response profile.
+remain outside coverage. The profile is always partial. Its original explicit
+0.169.0 deployment requirement bounded admission to the tested runtime; current
+admission uses the actual semver handshake and matching rollout version under
+the linked version admission decision. Native validation remains mandatory.
+Unknown models/details remain null. Older CLI binaries cannot resume the new
+journal format; compatible rollback retains the format and disables the response
+profile.
